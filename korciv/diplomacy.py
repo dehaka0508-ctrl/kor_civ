@@ -111,7 +111,10 @@ def enemies(g, a):
 
 
 def threshold(g, a, b, base):
-    return base + g.mods(a).add("treaty_threshold") + g.mods(b).add("treaty_threshold")
+    t = base + g.mods(a).add("treaty_threshold") + g.mods(b).add("treaty_threshold")
+    if g.hegemon is not None and g.hegemon not in (a, b):
+        t -= C.HEGEMON_TREATY_DISCOUNT   # 공동 견제 대상이 있으면 뭉치기 쉽다
+    return t
 
 
 def trade_m(g, ai, proposer) -> float:
@@ -508,8 +511,13 @@ def update_turn(g):
                 if g.hegemon == b and g.hegemon_share > 0:
                     s = g.hegemon_share
                     delta -= min(C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
-                if g.hegemon is not None and g.hegemon not in (a, b) and at_war(g, b, g.hegemon):
-                    delta += C.OP_HEGEMON_FIGHTER
+                if g.hegemon is not None and g.hegemon not in (a, b):
+                    if at_war(g, b, g.hegemon):
+                        delta += C.OP_HEGEMON_FIGHTER
+                    # 나머지 세력끼리는 가까워진다
+                    s = g.hegemon_share
+                    delta += C.HEGEMON_BALANCE_K * min(
+                        C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
                 delta += g.mods(b).add("ai_opinion_turn")
             v = (d.op.get((a, b), 0.0) + delta) * C.OPINION_DECAY
             d.op[(a, b)] = max(-100.0, min(100.0, v))

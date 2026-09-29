@@ -162,7 +162,7 @@ def _diplomacy(g, f):
                 D.sign_treaty(g, fid, b, kind)
                 break
     # 선전포고
-    if g.turn <= C.AI_WAR_GRACE_TURNS or len(D.enemies(g, fid)) >= 2:
+    if g.turn <= C.AI_WAR_GRACE_TURNS or len(D.enemies(g, fid)) >= C.AI_MAX_WARS:
         return
     my_mil = g.mil_power(fid) + 1
     my_regs = g.regions_of(fid)
@@ -181,7 +181,13 @@ def _diplomacy(g, f):
             continue
         their = g.mil_power(o) + sum(g.mil_power(x) for x in alive if x != o and D.allied(g, x, o)) + 1
         value = 0.5 + min(1.0, border_y / (my_avg_y * 4))
-        W = (f.aggression / 10) * (my_mil / their) * value - D.opinion(g, fid, o) / 100
+        mine = my_mil
+        if g.hegemon == o:
+            # 공동 전선: 이미 패권 세력과 싸우는 세력의 전력 일부를 더한다
+            mine += C.HEGEMON_JOINT_FRONT * sum(g.mil_power(x) for x in alive
+                                                if x not in (fid, o) and D.at_war(g, x, o)
+                                                and not D.at_war(g, x, fid))
+        W = (f.aggression / 10) * (mine / their) * value - D.opinion(g, fid, o) / 100
         W -= len(D.enemies(g, fid)) * 0.5
         if g.hegemon == o:
             W += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))

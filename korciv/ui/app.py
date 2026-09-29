@@ -67,6 +67,9 @@ class App:
         self.ctx_menu = None
         self.fog_reveal = False
         self.dip_state = None
+        self.show_terrain = True
+        self.spec_sel = None
+        self.lm_name = ""
 
     # ------------------------------------------------------------ 게임 시작·저장
     def start_game(self, settings: Settings):
@@ -314,9 +317,10 @@ class App:
     def draw_map(self, pick_mode=False):
         mv = self.map
         key = ("pick", self.setup.start) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
-                                                              self.game.turn if self.game else 0)
+                                                              self.game.turn if self.game else 0,
+                                                              self.show_terrain)
         base = mv.render_base(key, self.theme, self.region_colors(pick_mode), self.sea_colors(), self.mode,
-                              self.map_labels())
+                              self.map_labels(), show_terrain=self.show_terrain and not pick_mode)
         self.screen.blit(base, mv.view.topleft)
         self.gui.push_clip(mv.view)
         if pick_mode:
@@ -365,6 +369,7 @@ class App:
             for rid in set(g.battle_regions):
                 if rid in self.world.regions:
                     mv.outline(self.screen, rid, col, 3)
+        self.draw_landmarks()
         self.draw_capitals()
         self.draw_occupations()
         self.draw_orders()
@@ -404,6 +409,29 @@ class App:
             x, y = self.map.label_screen(f.capital)
             self.star((x, y - (14 if self.map.z >= 2 else 0)), 7 if self.map.z < 2 else 9,
                       mix(self.faction_rgb(f.id), (0, 0, 0), 0.2))
+
+    def draw_landmarks(self):
+        g = self.game
+        mv = self.map
+        pid = g.player_id
+        for r in g.regions.values():
+            building = r.project and r.project.kind == "landmark"
+            if not (r.landmark or building):
+                continue
+            if not (r.owner == pid or g.is_explored(pid, r.id) or self.fog_reveal):
+                continue
+            x, y = mv.label_screen(r.id)
+            if not mv.view.collidepoint(x, y):
+                continue
+            x += 16 if mv.z >= 2 else 8
+            y -= 14 if mv.z >= 2 else 6
+            col = (241, 196, 15) if r.landmark else (180, 180, 180)
+            pygame.draw.polygon(self.screen, col, [(x, y - 9), (x + 4, y + 6), (x - 4, y + 6)])
+            pygame.draw.polygon(self.screen, mix(col, (0, 0, 0), 0.4), [(x, y - 9), (x + 4, y + 6), (x - 4, y + 6)], 1)
+            pygame.draw.line(self.screen, mix(col, (0, 0, 0), 0.4), (x - 6, y + 6), (x + 6, y + 6), 2)
+            if mv.z >= 3 and r.landmark:
+                t = render_text(r.landmark_name or g.default_landmark_name(r.id), 11, (122, 88, 0), "bold")
+                self.screen.blit(t, t.get_rect(midleft=(x + 7, y)))
 
     def draw_occupations(self):
         g = self.game
@@ -617,6 +645,9 @@ class App:
                     lines.append("방어 병력 없음 → 진입 후 점령 시작")
                 else:
                     lines.append(f"공격력 A {pv['A']:.0f} / 방어력 D {pv['D']:.0f} (방어선 {pv['line']}단계)")
+                    if pv.get("terrain"):
+                        tr = pv["terrain"]
+                        lines.append(f"{tr['label']}({tr['name']}·{tr['note']}) 공격 ×{tr['mult']}")
                     if mode == "surprise":
                         lines.append(f"기습 성공률 {pv['surprise_p']*100:.0f}%")
                         lines.append(f"성공 시 적 피해 {pv['def_dmg_win']:.0f} / 아군 {pv['att_dmg_win']:.0f}")
@@ -788,8 +819,22 @@ class App:
                           tooltip=f"지도 모드 ({i+1})"):
                 self.mode = key
                 self.changed()
+        # 지형 경계 토글·범례
+        t = pygame.Rect(r.right + 8, r.y, 176, 48)
+        gui.panel(t)
+        on = gui.checkbox((t.x + 10, t.y + 4, 150, 20), "지형 경계", self.show_terrain, size=12)
+        if on != self.show_terrain:
+            self.show_terrain = on
+            self.changed()
+        from .mapview import TERRAIN_COLORS
+        for i, (kind, label) in enumerate((("도하", "도하"), ("돌파", "산악 돌파"))):
+            lx = t.x + 12 + i * 70
+            pygame.draw.line(self.screen, TERRAIN_COLORS[kind], (lx, t.y + 36), (lx + 16, t.y + 36), 4)
+            gui.text((lx + 20, t.y + 36), label, 11, self.theme.muted, anchor="midleft")
+        if gui.hover(t):
+            gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n점선: 맞닿지 않은 하구·수로 경로"
         # 줌 표시
-        gui.text((r.right + 12, r.centery), f"×{self.map.z:.1f}", 12, self.theme.muted, anchor="midleft")
+        gui.text((t.right + 10, r.centery), f"×{self.map.z:.1f}", 12, self.theme.muted, anchor="midleft")
 
     def draw_end_turn(self):
         gui = self.gui

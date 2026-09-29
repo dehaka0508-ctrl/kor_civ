@@ -126,6 +126,19 @@ class World:
                 self.land_adj[a].add(b)
                 self.land_adj[b].add(a)
                 self.bridges[frozenset((a, b))] = r["연결수단"]
+        # 지형 경계(도하·산악 돌파). 맞닿지 않은 하구 등도 도하 경로로 인접 처리한다.
+        self.terrain: dict[frozenset, dict] = {}
+        self.terrain_lines = geo.get("terrain", [])
+        tpath = os.path.join(data_dir, "terrain-borders.csv")
+        if os.path.exists(tpath):
+            with open(tpath, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    a, b = r["구역A_ID"], r["구역B_ID"]
+                    self.terrain[frozenset((a, b))] = {
+                        "kind": "도하" if r["구분"] == "도하" else "돌파", "label": r["구분"],
+                        "name": r["지형"], "note": r["근거"], "mult": float(r["공격배수"])}
+                    self.land_adj[a].add(b)
+                    self.land_adj[b].add(a)
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":
@@ -182,6 +195,9 @@ class World:
 
     def is_bridge(self, a: str, b: str) -> bool:
         return frozenset((a, b)) in self.bridges
+
+    def terrain_between(self, a: str, b: str):
+        return self.terrain.get(frozenset((a, b)))
 
 
 def _bfs(world: World, start: str, max_d: int) -> dict:

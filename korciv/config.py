@@ -107,8 +107,11 @@ REBEL_SUPPRESS_LOSS = 0.10
 REBEL_ACCEPT_TURNS = 4     # 요구 수용: 산출 4턴분
 REBEL_ACCEPT_TAX_CUT = 0.05
 REBEL_THRESHOLD = -50
-REBEL_INDEPENDENCE = "random"   # 진압 실패 시 독립 지역: "random"(기획서) 또는 "rebel_region"
-MAX_FACTIONS = 24          # 보완안: 세력 수 상한. 넘으면 독립 지역은 새 세력 대신 중립이 된다
+# 진압 실패 시 반란 지역이 그 지역을 수도로 하는 새 국가로 독립한다(건물·인구·산출·진행 중 공사 계승).
+REBEL_MAX_PER_PARENT = 3   # 한 국가에서 분리독립한 반란 세력(생존) 최대 수. 넘으면 기존 반란 세력에 합류
+REBEL_HAPPY_FLOOR_TURNS = 24   # 신생 국가는 이 기간 동안 행복도가 0 아래로 내려가지 않는다
+REBEL_SIBLING_OPINION = 40     # 같은 국가에서 독립한 세력끼리: 체제 같거나 유사 +40, 다르면 -40
+MAX_FACTIONS = 30          # 안전장치: 세력 수 상한. 넘으면 독립 지역은 중립이 된다
 
 # ---------------------------------------------------------------- 군사 (6절)
 UNITS = {
@@ -134,7 +137,8 @@ NAVAL_STEPS = 2
 LAND_STEPS_OWN = 2
 
 LINE_BONUS = 0.25          # 방어선 돌격 방어 x(1 + 0.25L)
-RIVER_CROSS = 0.9          # 도하 (연륙교 경유 공격에 적용)
+# 지형 경계(도하·산악 돌파) 공격 배수는 data/terrain-borders.csv 의 공격배수 열(기본 0.9)을 쓴다.
+BRIDGE_ATTACK_MULT = 1.0   # 연륙교는 기획서 2절대로 '육지처럼' 취급(지형 경계에 있으면 그 배수 적용)
 FLANK_BONUS = 0.1          # n개 지역 동시 공격 x(1 + 0.1(n-1))
 AMPHIBIOUS = 0.8
 SURPRISE_BASE = 0.90
@@ -209,6 +213,14 @@ HEGEMON_OP_MAX = 0.6
 HEGEMON_WAR_K = 1.5
 HEGEMON_WAR_MAX = 0.5
 HEGEMON_TRADE_M = 0.2
+# 7절 "한 세력이 독주하면 나머지 AI가 서로 가까워진다": 패권 세력이 아닌 AI끼리
+# 견제 강도(0.2 + 2(s-0.35), 최대 0.6)에 이 배수를 곱한 만큼 매 턴 우호도 상승
+HEGEMON_BALANCE_K = 1.5
+# 공동의 패권 세력이 있는 두 비패권 세력은 조약·동맹 우호도 문턱이 이만큼 낮아진다
+HEGEMON_TREATY_DISCOUNT = 20
+# 패권 세력에 대한 선전포고 점수에서, 이미 패권 세력과 싸우는 세력의 전력을 이 비율만큼 내 전력에 더한다(공동 전선)
+HEGEMON_JOINT_FRONT = 0.5
+AI_MAX_WARS = 2
 
 # ---------------------------------------------------------------- 승리 (10절)
 ECON_VICTORY_RATIO = 2.0

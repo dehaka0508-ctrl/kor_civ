@@ -166,3 +166,21 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
         if s > best_score:
             best, best_score = g["key"], s
     return best
+
+
+# 정치체제 계열 (반란 세력끼리 우호/적대 판정). 계열이 겹치면 '유사'.
+GOV_FAMILIES = {
+    "absolute": {"군주정", "권위주의"},
+    "constitutional": {"군주정", "민주정"},
+    "presidential": {"민주정"},
+    "parliamentary": {"민주정"},
+    "socialist": {"권위주의"},
+    "fascist": {"권위주의"},
+    "philosopher": {"철인"},
+}
+
+
+def gov_similar(a: str | None, b: str | None) -> bool:
+    if a is None or b is None:
+        return False
+    return a == b or bool(GOV_FAMILIES.get(a, set()) & GOV_FAMILIES.get(b, set()))

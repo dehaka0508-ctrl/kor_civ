@@ -26,6 +26,7 @@ class Project:
     paid: float = 0.0
     border: Optional[str] = None   # 방어선: 인접 구역 ID 또는 "coast"
     stalled: bool = False
+    name: Optional[str] = None     # 랜드마크 이름
 
     @property
     def remaining(self) -> int:
@@ -45,6 +46,9 @@ class Region:
     project: Optional[Project] = None
     occ: Optional[dict] = None          # {"by": fid, "progress": n, "need": n}
     supplied: set = field(default_factory=set)
+    spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
+    spec_block: set = field(default_factory=set)   # 수동 제외 특산물
+    landmark_name: str = ""
     famine: float = 0.0
     h_delta: float = 0.0
     phi: float = 1.0
@@ -121,6 +125,7 @@ class Faction:
     tax_locked_until: int = 0
     alive: bool = True
     auto_food: bool = True
+    auto_specialty: bool = True     # 행복도 낮은 지역부터 자동 배분
     liquefy: bool = True
     buy_count: dict = field(default_factory=dict)   # 이번 턴 구매 개수(가격 상승용)
     trade_buy: float = 0.0
@@ -135,6 +140,8 @@ class Faction:
     ai: dict = field(default_factory=dict)
     rebel_of: Optional[int] = None
     eliminated_turn: Optional[int] = None
+    founded_turn: int = 1
+    happy_floor_until: int = 0      # 신생 독립국: 이 턴까지 행복도 하한 0
 
 
 @dataclass

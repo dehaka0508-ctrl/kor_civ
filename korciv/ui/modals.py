@@ -177,6 +177,10 @@ def draw_active_modal(app):
         draw_help(app)
     elif name == "gameover":
         draw_gameover(app)
+    elif name == "landmark_name":
+        draw_landmark_name(app)
+    elif name == "specialty":
+        draw_specialty(app)
 
 
 def close(app):
@@ -193,7 +197,7 @@ def draw_rebellion(app):
     r = modal_frame(app, 560, 380, "반란 발생!")
     info = app.world.regions[rid]
     gui.text((r.x + 24, r.y + 56), f"{info.name} · 행복도 {rr.happy:+.1f} · 인구 {rr.pop:.1f}만", 15, weight="semibold")
-    gui.wrap((r.x + 24, r.y + 84), "다른 행동보다 먼저 대응해야 합니다. 진압에 실패하면 내 영토 중 한 지역이 새 AI 세력으로 독립합니다.",
+    gui.wrap((r.x + 24, r.y + 84), "다른 행동보다 먼저 대응해야 합니다. 진압에 실패하면 이 지역이 수도가 되어 새 국가로 분리독립합니다(건물·인구 계승, 첫 24턴 행복도 0 이상).",
              r.w - 48, 13, t.muted)
     cost = g.rebellion_accept_cost(pid, rid)
     p = g.suppress_chance(pid, rid)
@@ -502,4 +506,133 @@ def draw_gameover(app):
         app.scene = "setup"
         app.reset_ui()
     if gui.button((r.right - 264, r.bottom - 64, 240, 44), "지도 계속 보기"):
+        close(app)
+
+
+# ------------------------------------------------------------------ 랜드마크 이름
+def draw_landmark_name(app):
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    rid = app.modal[1]
+    r = modal_frame(app, 520, 300, "랜드마크 이름 짓기")
+    info = app.world.regions[rid]
+    turns = g.mods(g.player_id).value("landmark_turns", C.LANDMARK_TURNS)
+    gui.text((r.x + 24, r.y + 56), f"{info.name} · {turns}턴 동안 매 턴 {C.LANDMARK_COST_PER_TURN:,} 지불", 13, t.muted)
+    gui.text((r.x + 24, r.y + 92), "이름", 13, t.muted, "semibold")
+    app.lm_name = gui.text_input((r.x + 24, r.y + 114, r.w - 48, 38), "lm_name", app.lm_name, size=15, max_len=16)
+    gui.text((r.x + 24, r.y + 160), f"비워 두면 「{g.default_landmark_name(rid)}」로 짓습니다.", 12, t.muted)
+    if gui.button((r.x + 24, r.bottom - 64, 220, 44), "착공", "primary"):
+        gui.focus = None
+        ok, msg = g.start_project(g.player_id, rid, "landmark", "landmark", name=app.lm_name)
+        app.toast(msg, None if ok else t.bad)
+        close(app)
+        app.changed()
+    if gui.button((r.right - 244, r.bottom - 64, 220, 44), "취소"):
+        gui.focus = None
+        close(app)
+
+
+# ------------------------------------------------------------------ 특산물 배분
+def draw_specialty(app):
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    pid = g.player_id
+    f = g.player
+    r = modal_frame(app, 980, 660, "특산물 배분")
+    if gui.button((r.right - 44, r.y + 16, 28, 28), "×", "ghost", size=18):
+        close(app)
+        return
+    gui.text((r.x + 24, r.y + 52), f"한 지역에 최대 {C.SPECIALTY_MAX_TYPES}종, 종류별 턴당 1개 소비 · 공급 시작 +3 / 중단 −3 (1회)"
+             " · 변경은 다음 턴 자원 단계에 반영", 12, t.muted)
+    f.auto_specialty = gui.checkbox((r.right - 260, r.y + 20, 220, 24), "행복도 낮은 지역부터 자동", f.auto_specialty)
+    # 재고
+    stock = {k: v for k, v in f.specialty.items() if v > 0}
+    kinds = g.specialty_kinds(pid)
+    prod = {}
+    for rr in g.regions_of(pid):
+        sp = app.world.regions[rr.id].specialty
+        if sp and rr.b["specialty"]:
+            prod[sp] = prod.get(sp, 0) + rr.b["specialty"]
+    used = {}
+    for rr in g.regions_of(pid):
+        for k in rr.supplied:
+            used[k] = used.get(k, 0) + 1
+    # 좌: 지역 목록 (행복도 낮은 순)
+    regs = sorted(g.regions_of(pid), key=lambda rr: rr.happy)
+    left = pygame.Rect(r.x + 16, r.y + 80, 430, r.h - 150)
+    pygame.draw.rect(app.screen, t.panel_alt, left, border_radius=8)
+    off = gui.begin_scroll("spec_regions", left, len(regs) * 34 + 8)
+    y = left.y + 4 - off
+    for rr in regs:
+        row = pygame.Rect(left.x + 4, y, left.w - 12, 30)
+        sel = app.spec_sel == rr.id
+        if sel:
+            pygame.draw.rect(app.screen, t.panel, row, border_radius=6)
+            pygame.draw.rect(app.screen, t.accent, row, 1, border_radius=6)
+        gui.text((row.x + 8, row.y + 6), app.world.regions[rr.id].name, 13, weight="semibold", max_w=170)
+        hc = t.good if rr.happy >= 0 else t.bad
+        gui.text((row.x + 190, row.y + 6), f"{rr.happy:+.0f}", 13, hc)
+        marks = (" 고정" if rr.spec_pin else "") + (" 제외" if rr.spec_block else "")
+        gui.text((row.right - 8, row.y + 6), f"{len(rr.supplied)}/{C.SPECIALTY_MAX_TYPES} {marks}", 12, t.muted,
+                 anchor="topright")
+        if gui.hover(row) and gui.clicked:
+            gui.clicked = False
+            app.spec_sel = rr.id
+        y += 34
+    gui.end_scroll("spec_regions", left, len(regs) * 34 + 8)
+    # 우: 선택 지역 편집
+    x = r.x + 470
+    w = r.right - 24 - x
+    y = r.y + 80
+    rid = app.spec_sel
+    if rid not in g.regions or g.regions[rid].owner != pid:
+        gui.text((x, y), "왼쪽에서 지역을 고르세요.", 14, t.muted)
+        gui.text((x, y + 30), f"보유 특산물 {len(kinds)}종 · 재고 {sum(stock.values())}개", 13)
+    else:
+        rr = g.regions[rid]
+        gui.text((x, y), f"{app.world.regions[rid].name}  (행복도 {rr.happy:+.1f})", 16, weight="bold")
+        y += 30
+        gui.text((x, y), "종류", 12, t.muted)
+        gui.text((x + 170, y), "재고/생산", 12, t.muted)
+        gui.text((x + 250, y), "상태", 12, t.muted)
+        y += 22
+        area = pygame.Rect(x - 4, y, w + 8, r.bottom - 70 - y)
+        rows = kinds
+        off = gui.begin_scroll("spec_kinds", area, len(rows) * 34)
+        yy = y - off
+        for k in rows:
+            if k in rr.spec_pin:
+                st, col = "고정 공급", t.accent
+            elif k in rr.spec_block:
+                st, col = "제외", t.bad
+            elif k in rr.supplied:
+                st, col = "공급 중(자동)", t.good
+            else:
+                st, col = "-", t.muted
+            gui.text((x, yy + 6), k, 13, max_w=160)
+            gui.text((x + 170, yy + 6), f"{stock.get(k, 0)}/{prod.get(k, 0)}", 12, t.muted)
+            gui.text((x + 250, yy + 6), st, 12, col, "semibold")
+            bx = x + w - 170
+            if gui.button((bx, yy + 2, 54, 26), "고정", size=11, selected=k in rr.spec_pin,
+                          tooltip="이 지역에 우선 공급"):
+                ok, msg = g.set_specialty(pid, rid, k, "auto" if k in rr.spec_pin else "pin")
+                if not ok:
+                    app.toast(msg, t.bad)
+            if gui.button((bx + 58, yy + 2, 54, 26), "제외", size=11, selected=k in rr.spec_block,
+                          tooltip="이 지역에는 공급하지 않음", color=t.bad):
+                g.set_specialty(pid, rid, k, "auto" if k in rr.spec_block else "block")
+            if gui.button((bx + 116, yy + 2, 54, 26), "자동", size=11, tooltip="수동 지정 해제"):
+                g.set_specialty(pid, rid, k, "auto")
+            yy += 34
+        gui.end_scroll("spec_kinds", area, len(rows) * 34)
+        if not rows:
+            gui.text((x, y), "보유한 특산물이 없습니다.", 13, t.muted)
+    if gui.button((r.x + 16, r.bottom - 56, 220, 40), "모든 수동 지정 해제", size=12):
+        for rr in g.regions_of(pid):
+            rr.spec_pin.clear()
+            rr.spec_block.clear()
+        app.toast("모든 지역을 자동 배분으로 되돌렸습니다.")
+    if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)

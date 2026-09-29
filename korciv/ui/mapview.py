@@ -33,6 +33,20 @@ def pip(x, y, poly):
     return bool(np.count_nonzero(cond) % 2)
 
 
+TERRAIN_COLORS = {"도하": (77, 171, 247), "돌파": (148, 216, 45)}   # 하늘색 / 연두색
+
+
+def dashed(surf, p1, p2, color, width=2, dash=6):
+    x1, y1 = p1
+    x2, y2 = p2
+    d = math.hypot(x2 - x1, y2 - y1)
+    n = max(2, int(d / dash))
+    for i in range(0, n, 2):
+        a, b = i / n, min(1, (i + 1) / n)
+        pygame.draw.line(surf, color, (x1 + (x2 - x1) * a, y1 + (y2 - y1) * a),
+                         (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), width)
+
+
 class MapView:
     MIN_Z, MAX_Z = 0.8, 8.0
 
@@ -59,6 +73,9 @@ class MapView:
         self.label.update({sid: proj(*p) for sid, p in SEA_LABELS.items()})
         self.province_lines = [proj_arr(r) for rings in world.province_outlines.values() for r in rings]
         self.do8_lines = [proj_arr(r) for rings in world.do8_outlines.values() for r in rings]
+        # 지형 경계: (종류, [선...], 연결선 여부)
+        self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
+                               t["connector"]) for t in world.terrain_lines]
         self.view = pygame.Rect(0, 0, 800, 800)
         self.z = 1.0
         self.cx, self.cy = 280.0, 520.0
@@ -162,7 +179,7 @@ class MapView:
         return not (x1 * s + ox < self.view.x or x0 * s + ox > self.view.right
                     or y1 * s + oy < self.view.y or y0 * s + oy > self.view.bottom)
 
-    def render_base(self, key, theme, colors, sea_colors, mode, labels):
+    def render_base(self, key, theme, colors, sea_colors, mode, labels, show_terrain=True):
         """colors: rid -> (fill, outline). 캐시가 유효하면 그대로 쓴다."""
         full_key = (key, self.version, self.view.size, theme.dark)
         if self.cache is not None and self.cache_key == full_key:
@@ -203,6 +220,19 @@ class MapView:
         if mode == "do8":
             for arr in self.do8_lines:
                 pygame.draw.lines(surf, theme.do8_line, True, sp(arr), 2)
+        if show_terrain:
+            tw = 3 if self.z < 2 else (4 if self.z < 4 else 5)
+            for kind, lines, connector in self.terrain_lines:
+                col = TERRAIN_COLORS[kind]
+                for arr in lines:
+                    pts = sp(arr)
+                    if len(pts) < 2:
+                        continue
+                    if connector:
+                        dashed(surf, pts[0], pts[-1], col, tw)
+                    else:
+                        pygame.draw.lines(surf, (255, 255, 255), False, pts, tw + 2)
+                        pygame.draw.lines(surf, col, False, pts, tw)
         # 해역 이름
         for sid in self.sea_polys:
             x, y = self.label[sid]

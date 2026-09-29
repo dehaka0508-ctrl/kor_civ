@@ -314,6 +314,42 @@ def build():
             "area": round(g.area, 6),
         }
 
+    # ---- 지형 경계(도하·산악 돌파) 선: terrain-borders.csv
+    id2name = {r["ID"]: n for n, r in by_name.items()}
+    terrain = []
+    tpath = os.path.join(DATA, "terrain-borders.csv")
+    if os.path.exists(tpath):
+        from shapely.geometry import LineString, MultiLineString
+        from shapely.ops import linemerge, nearest_points
+        with open(tpath, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                a, b = row["구역A_ID"], row["구역B_ID"]
+                if id2name.get(a) != row["구역A"] or id2name.get(b) != row["구역B"]:
+                    raise SystemExit(f"지형 경계 ID·이름 불일치: {row}")
+                ga, gb = geom[id2name[a]], geom[id2name[b]]
+                cross = {src[id2name[a]], src[id2name[b]]} & {"N", "M"} and {src[id2name[a]], src[id2name[b]]} & {"S", "M"}
+                lines = []
+                for tol in ((0.02,) if cross else (0.0008, 0.004, 0.01)):
+                    shared = ga.boundary.intersection(gb.buffer(tol))
+                    if shared.length >= 0.003:
+                        break
+                parts = []
+                if not shared.is_empty and shared.length >= 0.003:
+                    merged = linemerge(shared) if shared.geom_type != "LineString" else shared
+                    parts = list(getattr(merged, "geoms", [merged]))
+                for ln in parts:
+                    if ln.geom_type != "LineString" or ln.length < 0.002:
+                        continue
+                    ln = ln.simplify(0.0015)
+                    lines.append([(round(x, 4), round(y, 4)) for x, y in ln.coords])
+                connector = not lines
+                if connector:  # 맞닿지 않은 경계(하구 등)는 가장 가까운 두 점을 잇는다
+                    p1, p2 = nearest_points(ga, gb)
+                    lines.append([(round(p1.x, 4), round(p1.y, 4)), (round(p2.x, 4), round(p2.y, 4))])
+                terrain.append({"a": a, "b": b, "kind": row["구분"], "name": row["지형"],
+                                "note": row["근거"], "mult": float(row["공격배수"]),
+                                "connector": connector, "lines": lines})
+
     # ---- 광역·조선 8도 외곽선 (경계선 그리기용)
     def outlines(key_fn, tol):
         groups = defaultdict(list)
@@ -337,6 +373,7 @@ def build():
     do8 = outlines(lambda r: r["조선8도"], 0.003)
 
     result = {
+        "terrain": terrain,
         "provinces": provinces,
         "do8": do8,
         "source": {

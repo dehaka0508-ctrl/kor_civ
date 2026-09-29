@@ -9,7 +9,7 @@ from . import config as C
 from . import diplomacy as D
 from . import rules as R
 from .data import DO8, load_world
-from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government
+from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, gov_similar
 from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES
 
 SUFFIXES = ("구역", "지구", "시", "군", "구")
@@ -66,6 +66,10 @@ class Game:
     def __setstate__(self, s):
         self.__dict__.update(s)
         self.world = load_world()
+        for r in self.regions.values():   # 이전 버전 세이브 호환
+            for attr in ("spec_pin", "spec_block"):
+                if not hasattr(r, attr):
+                    setattr(r, attr, set())
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -538,12 +542,16 @@ class Game:
                 if k == "inf":
                     atk *= m.mult("atk_inf")
                 val += atk
+            if not amph:
+                terr = w.terrain_between(a.loc, target)
+                if terr:
+                    val *= terr["mult"]          # 도하·산악 돌파
+                elif w.is_bridge(a.loc, target):
+                    val *= C.BRIDGE_ATTACK_MULT
             if mode == "assault":
                 val *= m.mult("atk_assault")
                 if amph:
                     val *= C.AMPHIBIOUS * m.value("amphib_extra", 1.0)
-                elif w.is_bridge(a.loc, target):
-                    val *= C.RIVER_CROSS
             if tgt_owner != NEUTRAL and D.at_war(self, fid, tgt_owner):
                 allies_in = any(D.allied(self, fid, x) and D.at_war(self, x, tgt_owner)
                                 for x in self.alive_ids() if x != fid)
@@ -581,6 +589,8 @@ class Game:
         dd, ad = R.battle_damage(A, Dv, 1.0)
         res = {"A": A, "D": Dv, "def_dmg": dd, "att_dmg": ad, "line": line, "defenders": sum(
             a.count() for a in defenders)}
+        if not self.world.is_sea(army.loc):
+            res["terrain"] = self.world.terrain_between(army.loc, target)
         if mode == "surprise":
             rr = self.regions[target]
             p = R.surprise_chance(rr.lines.get(main, 0), self.mods(army.owner).add("surprise"))
@@ -752,7 +762,7 @@ class Game:
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
         return opts
 
-    def start_project(self, fid, rid, kind, key, border=None):
+    def start_project(self, fid, rid, kind, key, border=None, name=None):
         rr = self.regions.get(rid)
         if not rr or rr.owner != fid:
             return False, "내 지역이 아닙니다."
@@ -775,7 +785,10 @@ class Game:
             rr.h_delta += C.UNIT_START_HAPPY[u["weight"]]
         rr.project = Project(kind=kind, key=key, level=opt["level"], turns=opt["turns"],
                              per_turn=opt["per_turn"], border=opt["border"])
-        return True, f"{opt['name']} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
+        if kind == "landmark":
+            rr.project.name = (name or "").strip()[:16] or self.default_landmark_name(rid)
+        label = f"랜드마크 「{rr.project.name}」" if kind == "landmark" else opt["name"]
+        return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
 
     def cancel_project(self, fid, rid):
         rr = self.regions.get(rid)
@@ -1468,11 +1481,12 @@ class Game:
                        region=tgt.id, fids=(f.id,))
         elif p.kind == "landmark":
             rr.landmark = True
+            rr.landmark_name = p.name or self.default_landmark_name(rr.id)
             rr.h_delta += C.LANDMARK_HAPPY
             for n in self.world.land_adj[rr.id]:
                 if self.regions[n].owner == f.id:
                     self.regions[n].h_delta += C.LANDMARK_ADJ_HAPPY
-            text = f"{name} 랜드마크 완공!"
+            text = f"{name} 랜드마크 「{rr.landmark_name}」 완공!"
         elif p.kind == "capital":
             f.capital = rr.id
             for r in self.regions_of(f.id):
@@ -1551,24 +1565,69 @@ class Game:
         f.last.update(food_prod=prod, food_cons=cons, famine=famine)
 
     def _distribute_specialties(self, f, regs):
+        """① 수동 고정 → ② 기존 공급 유지 → ③ 자동: 행복도 낮은 지역부터. 제외 지정은 건너뛴다."""
         stock = f.specialty
-        keep = []
+        old = {r.id: set(r.supplied) for r in regs}
+        new = {r.id: set() for r in regs}
+
+        def give(r, kind):
+            if (len(new[r.id]) >= C.SPECIALTY_MAX_TYPES or kind in new[r.id] or kind in r.spec_block
+                    or stock.get(kind, 0) < 1):
+                return
+            stock[kind] -= 1
+            new[r.id].add(kind)
+
+        order = sorted(regs, key=lambda r: (r.happy, r.id))
+        for r in order:
+            for kind in sorted(r.spec_pin):
+                give(r, kind)
+        for r in order:
+            for kind in sorted(old[r.id]):
+                give(r, kind)
+        if f.auto_specialty:
+            for r in order:
+                for kind in sorted(stock, key=lambda k: (-stock[k], k)):
+                    if len(new[r.id]) >= C.SPECIALTY_MAX_TYPES:
+                        break
+                    give(r, kind)
         for r in regs:
-            for kind in list(r.supplied):
-                if stock.get(kind, 0) >= 1:
-                    stock[kind] -= 1
-                    keep.append((r, kind))
-                else:
-                    r.supplied.discard(kind)
-                    r.h_delta -= C.SPECIALTY_HAPPY
-        for r in sorted(regs, key=lambda r: r.happy):
-            for kind in sorted(stock, key=lambda k: -stock[k]):
-                if len(r.supplied) >= C.SPECIALTY_MAX_TYPES:
-                    break
-                if stock[kind] >= 1 and kind not in r.supplied:
-                    stock[kind] -= 1
-                    r.supplied.add(kind)
-                    r.h_delta += C.SPECIALTY_HAPPY
+            r.h_delta += C.SPECIALTY_HAPPY * (len(new[r.id] - old[r.id]) - len(old[r.id] - new[r.id]))
+            r.supplied = new[r.id]
+
+    def specialty_kinds(self, fid):
+        """이 세력이 가진(재고 또는 생산) 특산물 종류."""
+        f = self.factions[fid]
+        kinds = {k for k, v in f.specialty.items() if v > 0}
+        kinds |= {self.info(r.id).specialty for r in self.regions_of(fid)
+                  if self.info(r.id).specialty and r.b["specialty"]}
+        return sorted(kinds)
+
+    def set_specialty(self, fid, rid, kind, state):
+        """state: pin(고정 공급) / block(제외) / auto(수동 지정 해제). 다음 자원 단계에 반영."""
+        r = self.regions[rid]
+        if r.owner != fid:
+            return False, "내 지역이 아닙니다."
+        r.spec_pin.discard(kind)
+        r.spec_block.discard(kind)
+        if state == "pin":
+            if len(r.spec_pin) >= C.SPECIALTY_MAX_TYPES:
+                return False, f"한 지역에는 최대 {C.SPECIALTY_MAX_TYPES}종까지 공급합니다."
+            r.spec_pin.add(kind)
+        elif state == "block":
+            r.spec_block.add(kind)
+        return True, ""
+
+    # ---- 랜드마크 이름
+    def default_landmark_name(self, rid) -> str:
+        short = self.info(rid).short
+        base = short
+        for suf in ("구역", "지구", "시", "군", "구"):
+            if short.endswith(suf) and len(short) > len(suf):
+                base = short[: -len(suf)]
+                break
+        if len(base) <= 1:   # 광역시 북구·중구처럼 한 글자가 되면 '구'를 붙인다
+            base = short
+        return f"{base} 타워"
 
     # ---- 9. 세수·유지비
     def upkeep(self, fid) -> float:
@@ -1632,7 +1691,8 @@ class Game:
                     dur = self.turn - wv["start"]
                     if dur > 0 and dur % period == 0:
                         t += C.WAR_ONGOING_HAPPY
-            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX))
+            floor = 0.0 if f.happy_floor_until > self.turn else C.HAPPY_MIN
+            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor)
         for r in self.regions.values():
             r.bombed = False
             if r.owner == NEUTRAL:
@@ -1641,9 +1701,9 @@ class Game:
             if r.owner not in per_fac:
                 r.h_delta = 0.0
                 continue
-            t, cap = per_fac[r.owner]
+            t, cap, floor = per_fac[r.owner]
             h = (r.happy + r.h_delta + t) * C.HAPPY_DECAY
-            r.happy = max(C.HAPPY_MIN, min(cap, h))
+            r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
 
     def avg_happiness(self, fid) -> float:
@@ -1726,53 +1786,84 @@ class Game:
             msg = f"{name}: 반란 진압 성공 (행복도 +5, 진압 병력 10% 손실)"
             self.event("rebel", msg, region=rid, fids=(fid,))
             return msg
-        # 진압 실패 → 독립
-        regs = self.regions_of(fid)
-        if len(regs) <= 1:
-            nf = self._spawn_rebel(fid, rid, Rv)
+        # 진압 실패 → 반란 지역이 독립(그 지역을 수도로 하는 국가)
+        last = len(self.regions_of(fid)) <= 1
+        nf, joined = self._spawn_rebel(fid, rid, Rv)
+        if last:
             msg = f"{name}: 진압 실패. 마지막 영토가 {nf.name}(으)로 독립해 멸망했습니다."
-            self.event("rebel", msg, region=rid, fids=(fid, nf.id))
-            return msg
-        if C.REBEL_INDEPENDENCE == "random":
-            target = self.rng.choice(regs).id
+        elif joined:
+            msg = f"{name}: 진압 실패! 기존 반란 세력 {nf.name}에 합류했습니다."
         else:
-            target = rid
-        nf = self._spawn_rebel(fid, target, Rv)
-        msg = f"{name}: 진압 실패! {self.info(target).name}이(가) {nf.name}(으)로 독립했습니다."
-        self.event("rebel", msg, region=target, fids=(fid, nf.id))
+            msg = f"{name}: 진압 실패! {nf.name}(으)로 분리독립했습니다."
+        self.event("rebel", msg, region=rid, fids=(fid, nf.id))
         return msg
 
+    def rebel_children(self, fid):
+        return [f for f in self.factions if f.alive and f.rebel_of == fid]
+
     def _spawn_rebel(self, fid, rid, Rv):
-        nid = len(self.factions)
-        if nid >= C.MAX_FACTIONS:
+        """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
+        rr = self.regions[rid]
+        n_inf = max(1, int(round(Rv / 12)))
+        keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit", "landmark") else None
+        siblings = self.rebel_children(fid)
+        if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
+            if siblings:
+                adj = [s for s in siblings if any(self.regions[n].owner == s.id for n in self.world.land_adj[rid])]
+                target = (adj or sorted(siblings, key=lambda s: -self.region_count(s.id)))[0]
+                self.transfer_region(rid, target.id, reason="독립")
+                rr.project = keep_project
+                self.new_army(target.id, rid, {"inf": n_inf})
+                if target.happy_floor_until > self.turn:
+                    rr.happy = max(rr.happy, 0.0)
+                return target, True
             self.transfer_region(rid, NEUTRAL, reason="독립")
-            self.regions[rid].happy = 0.0
-            self.new_army(NEUTRAL, rid, {"inf": max(1, int(round(Rv / 12)))})
-            return type("Neutral", (), {"name": "중립 지역", "id": NEUTRAL})()
+            rr.happy = 0.0
+            self.new_army(NEUTRAL, rid, {"inf": n_inf})
+            return type("Neutral", (), {"name": "중립 지역", "id": NEUTRAL})(), True
+        nid = len(self.factions)
         info = self.info(rid)
-        color = C.REBEL_COLORS[(nid - 10) % len(C.REBEL_COLORS)] if nid >= 10 else C.FACTION_COLORS[nid]
-        leader = "custom"
-        f = Faction(id=nid, name=f"{faction_name_from(info.short)[:-1]} 반란군", color=color, leader=leader,
-                    leader_name="반란 지도자", gov=None, is_ai=True, capital=rid, aggression=7,
-                    rebel_of=fid)
-        f.gov = ai_pick_government(self.rng, 7, 0, 0)
-        f.res = {"food": self.regions[rid].pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
+        used = {f.color for f in self.factions if f.alive}
+        palette = C.FACTION_COLORS + C.REBEL_COLORS
+        color = next((c for c in palette if c not in used), palette[nid % len(palette)])
+        taken = {f.leader for f in self.factions if f.alive}
+        pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "custom" and l["key"] not in taken]
+        lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "custom"])
+        leader = LEADER_BY_KEY[lk]
+        name = faction_name_from(info.short)
+        if any(f.name == name for f in self.factions):
+            name = name[:-1] + " 공화국"
+        f = Faction(id=nid, name=name, color=color, leader=lk, leader_name=leader["name"], gov=None,
+                    is_ai=True, capital=rid, aggression=leader["aggr"], rebel_of=fid)
+        f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"])
+        diff = C.DIFFICULTIES[self.settings.difficulty]
+        f.pop_mult, f.income_mult = diff[1], diff[2]
+        f.res = {"food": rr.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
         f.money = C.START_MONEY * C.MONEY_SCALE
+        f.founded_turn = self.turn
+        f.happy_floor_until = self.turn + C.REBEL_HAPPY_FLOOR_TURNS
         self.factions.append(f)
         self.transfer_region(rid, nid, reason="독립")
-        self.regions[rid].happy = 0.0
-        n_inf = max(1, int(round(Rv / 12)))
+        rr.project = keep_project            # 진행 중이던 공사·생산 계승
+        rr.happy = max(rr.happy, 0.0)
+        f.last = {"gdp": rr.output, "tax": rr.output * f.tax, "upkeep": 0, "net": 0,
+                  "food_prod": rr.food, "food_cons": rr.pop}
         self.new_army(nid, rid, {"inf": n_inf})
         for other in self.factions:
             if other.id != nid:
                 self.dip.op[(nid, other.id)] = 0.0
                 if other.is_ai:
                     self.dip.op[(other.id, nid)] = 0.0
+        # 같은 국가에서 독립한 세력끼리: 체제가 같거나 유사하면 우호, 다르면 적대
+        for sib in siblings:
+            v = C.REBEL_SIBLING_OPINION if gov_similar(f.gov, sib.gov) else -C.REBEL_SIBLING_OPINION
+            self.dip.op[(nid, sib.id)] = v
+            self.dip.op[(sib.id, nid)] = v
         D._start_war(self, nid, fid, happiness=False)  # 독립 전쟁은 선전포고 행복도 벌칙 없음
         self.dip.op[(nid, fid)] = -100
         if self.factions[fid].is_ai:
             self.dip.op[(fid, nid)] = -100
-        return f
+        return f, False
 
     # ------------------------------------------------------------------ 국력·패권
     def _update_power(self):

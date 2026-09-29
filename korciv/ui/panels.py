@@ -140,7 +140,7 @@ def draw_left(app, rect):
         if r.b[k]:
             chips.append(BUILDING_NAMES[k])
     if r.landmark:
-        chips.append("★랜드마크")
+        chips.append(f"★ {r.landmark_name or g.default_landmark_name(node)}")
     for bk, lv in sorted(r.lines.items()):
         if lv:
             nm = "해안" if bk == "coast" else app.world.regions[bk].short
@@ -161,9 +161,25 @@ def draw_left(app, rect):
         res.append(f"특산물: {info.specialty}")
     if info.coastal:
         res.append("해안: " + ", ".join(app.world.seas[s].name for s in info.seas))
-    if r.supplied and owner == pid:
-        res.append(f"특산물 공급 {len(r.supplied)}종")
     y = draw_chips(gui, x, y, w, res or ["없음"])
+    if owner == pid:
+        y = section(gui, x, y + 6, w, f"특산물 공급 {len(r.supplied)}/{C.SPECIALTY_MAX_TYPES}종")
+        sup = [k + (" (고정)" if k in r.spec_pin else "") for k in sorted(r.supplied)]
+        y = draw_chips(gui, x, y, w, sup or ["없음"])
+        if gui.button((x, y - 2, 120, 26), "배분 수정", size=12):
+            app.spec_sel = node
+            app.modal = ("specialty", None)
+        y += 30
+    terr = [(n, app.world.terrain_between(node, n)) for n in sorted(app.world.land_adj[node])]
+    terr = [(n, tr) for n, tr in terr if tr]
+    if terr:
+        y = section(gui, x, y + 6, w, "지형 경계 (넘는 공격 ×0.9)")
+        from .mapview import TERRAIN_COLORS
+        for n, tr in terr:
+            pygame.draw.line(gui.screen, TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 14, y + 9), 4)
+            gui.text((x + 20, y), f"{app.world.regions[n].short} · {tr['label']}({tr['name']})", 12, max_w=w - 24)
+            y += 20
+        y += 4
     # 주둔 부대
     y = section(gui, x, y + 6, w, "주둔 부대")
     arms = g.armies_at(node) if visible else []
@@ -225,7 +241,7 @@ def project_name(app, p):
     if p.kind == "annex":
         return f"편입: {app.world.regions[p.key].name}"
     if p.kind == "landmark":
-        return "랜드마크 건설"
+        return f"랜드마크 「{p.name}」" if p.name else "랜드마크 건설"
     if p.kind == "capital":
         return "천도"
     return p.kind
@@ -367,10 +383,14 @@ def draw_action_tab(app, body):
             if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):
-                ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
-                app.toast(msg, None if ok else t.bad)
-                if ok:
-                    app.changed()
+                if o["kind"] == "landmark":
+                    app.lm_name = g.default_landmark_name(rid)
+                    app.modal = ("landmark_name", rid)
+                else:
+                    ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+                    app.toast(msg, None if ok else t.bad)
+                    if ok:
+                        app.changed()
             yy += 44
     gui.end_scroll("actions", area, content)
 
@@ -542,6 +562,11 @@ def draw_nation_tab(app, body):
     y = section(gui, x, y, w, f"특산물 (재고 {sum(stock.values())}개 · 공급 {supplied}건, 자동 배분)")
     kinds = [app.world.regions[r.id].specialty for r in g.regions_of(pid) if app.world.regions[r.id].specialty]
     y = draw_chips(gui, x, y, w, kinds[:12] + ([f"외 {len(kinds)-12}종"] if len(kinds) > 12 else []) or ["없음"])
+    f.auto_specialty = gui.checkbox((x, y, w - 110, 24), "행복도 낮은 지역부터 자동", f.auto_specialty, size=12)
+    if gui.button((x + w - 100, y - 2, 100, 26), "배분 수정", size=12):
+        app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
+        app.modal = ("specialty", None)
+    y += 30
     # 통계
     y = section(gui, x, y + 4, w, "국가 통계")
     y = kv(gui, x, y, w, "GDP", f"{f.last.get('gdp', 0):,.0f}")
@@ -565,7 +590,8 @@ def draw_nation_tab(app, body):
         st = D.stage(g, o.id, pid)
         op = D.opinion(g, o.id, pid)
         gui.text((x + 16, y + 2), o.name, 13, weight="semibold", max_w=110)
-        gui.text((x + 16, y + 20), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}", 11,
+        origin = f" · {g.fname(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
+        gui.text((x + 16, y + 20), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}{origin}", 11,
                  t.bad if st == -1 else t.muted, max_w=w - 80)
         if gui.button((x + w - 58, y + 6, 58, 26), "외교", size=12):
             app.open_diplomacy(o.id)
