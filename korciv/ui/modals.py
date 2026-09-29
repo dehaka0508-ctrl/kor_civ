@@ -96,6 +96,7 @@ def draw_setup(app):
     gui.text((x2 + 80, y), st_name, 14, weight="semibold")
     if gui.button((x2 + 250, y - 6, 110, 30), "지도에서 선택"):
         app.scene = "pick_start"
+        app.pick_popup = None
         app.map.z = 1.0
         app.map.cx, app.map.cy = 280, 520
         app.map.invalidate()
@@ -122,16 +123,138 @@ def draw_setup(app):
         app.load()
     if gui.button((r.right - 196, r.bottom - 64, 170, 44), "게임 시작", "primary", size=16, weight="bold",
                   enabled=any(s.victories.values())):
-        seed = int(s.seed) if s.seed.strip().isdigit() else random.randrange(1_000_000)
-        settings = Settings(
-            n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
-            victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
-            player_leader_name=s.custom_name.strip() if s.leader == "custom" else "",
-            player_name=s.name.strip() or "대한", player_start=s.start,
-            ai_leaders=[k for k in s.ai_leaders[: s.n_enemies] if k], seed=seed)
-        app.start_game(settings)
+        start_from_setup(app)
     gui.text((r.x + 32, r.bottom - 44), "조작: 좌클릭 선택 · 우클릭 명령 · 휠 확대 · 드래그 이동 · Enter 턴 종료 · F1 도움말",
              12, t.muted)
+
+
+def start_from_setup(app):
+    s = app.setup
+    if not any(s.victories.values()):
+        s.victories["conquest"] = True
+    seed = int(s.seed) if s.seed.strip().isdigit() else random.randrange(1_000_000)
+    settings = Settings(
+        n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
+        victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
+        player_leader_name=s.custom_name.strip() if s.leader == "custom" else "",
+        player_name=s.name.strip() or "대한", player_start=s.start,
+        ai_leaders=[k for k in (s.ai_leaders or [])[: s.n_enemies] if k], seed=seed)
+    app.start_game(settings)
+
+
+def josa_euro(word: str) -> str:
+    """받침이 있으면(ㄹ 제외) '으로', 없으면 '로'."""
+    ch = word[-1]
+    if "가" <= ch <= "힣":
+        jong = (ord(ch) - 0xAC00) % 28
+        return "로" if jong in (0, 8) else "으로"
+    return "(으)로"
+
+
+def draw_start_popup(app, rid):
+    """지도에서 지역을 고르면 뜨는 시작 정보 팝업."""
+    from .. import rules as R
+    from .mapview import TERRAIN_COLORS
+    gui = app.gui
+    t = app.theme
+    w = app.world
+    info = w.regions[rid]
+    sw, sh = app.screen.get_size()
+    ph = min(500, sh - 40)
+    r = modal_frame(app, 600, ph)
+    x, cw = r.x + 28, r.w - 56
+    gui.text((x, r.y + 20), info.name, 22, weight="bold")
+    sub = f"{info.rtype} · 조선 {info.do8}도 · {'남한' if info.ns == '남' else ('북한' if info.ns == '북' else '남북 병합')}"
+    if info.island:
+        sub += f" · {info.island}"
+    gui.text((x, r.y + 54), sub, 13, t.muted)
+    y = r.y + 86
+    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False, 1.0)
+    food = R.food_output(info.farm, info.fishery)
+    half = (cw - 20) // 2
+
+    def stat(col, row, k, v, vc=None):
+        xx = x + col * (half + 20)
+        yy = y + row * 24
+        gui.text((xx, yy), k, 13, t.muted)
+        gui.text((xx + half, yy), v, 13, vc or t.text, "semibold", anchor="topright")
+
+    stat(0, 0, "인구", f"{info.pop0:,.1f}만 명")
+    stat(1, 0, "산출(GDP)", f"{out:,.0f} /턴")
+    stat(0, 1, "세수(세율 10%)", f"{out * 0.1:,.0f} /턴")
+    stat(1, 1, "시작 자금", f"{C.START_MONEY:,}")
+    bal = food - info.pop0
+    stat(0, 2, "식량 생산 / 소비", f"{food:,.0f} / {info.pop0:,.0f}")
+    stat(1, 2, "식량 수지", f"{bal:+,.0f} /턴", t.good if bal >= 0 else t.bad)
+    y += 3 * 24 + 8
+
+    def chips(title, items):
+        nonlocal y
+        gui.text((x, y), title, 12, t.muted, "semibold")
+        y += 20
+        cx = x
+        from .theme import font
+        for c in items or ["없음"]:
+            cwid = font(12).size(c)[0] + 16
+            if cx + cwid > x + cw and cx > x:
+                cx = x
+                y += 26
+            rr = pygame.Rect(cx, y, cwid, 22)
+            pygame.draw.rect(app.screen, t.panel_alt, rr, border_radius=11)
+            gui.text(rr.center, c, 12, anchor="center")
+            cx += cwid + 6
+        y += 30
+
+    blds = [f"{nm} {lv}단계" for nm, lv in (("농장", info.farm), ("어장", info.fishery), ("공장", info.factory),
+                                             ("은행", info.bank)) if lv]
+    if info.specialty:
+        blds.append("특산물 시설 1단계")
+    if info.start_port:
+        blds.append("항구")
+    chips("건물", blds)
+    res = []
+    if info.oil:
+        res.append(f"정유 석유 {info.oil}/턴")
+    if info.coal:
+        res.append(f"탄광 석탄 {info.coal}/턴")
+    if info.power_self:
+        res.append(f"자체 발전 전기 {info.power_self}/턴")
+    if info.power_source:
+        res.append(info.power_source)
+    if info.specialty:
+        res.append(f"특산물: {info.specialty}")
+    chips("자원·특산물", res)
+    geo = [f"인접 지역 {len(w.land_adj[rid])}곳"]
+    if info.coastal:
+        geo.append("해안: " + ", ".join(w.seas[s].name for s in info.seas))
+    units = "보병 1" + (" · 상륙함 1" if info.island == "무연륙 섬" else "")
+    geo.append(f"시작 병력 {units}")
+    chips("지리·병력", geo)
+    terr = [(n, w.terrain_between(rid, n)) for n in sorted(w.land_adj[rid])]
+    terr = [(n, tr) for n, tr in terr if tr]
+    if terr:
+        gui.text((x, y), "지형 경계 (넘어오는 공격 ×0.9)", 12, t.muted, "semibold")
+        y += 20
+        for n, tr in terr[:4]:
+            pygame.draw.line(app.screen, TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 16, y + 9), 4)
+            gui.text((x + 24, y), f"{w.regions[n].name} · {tr['label']}({tr['name']})", 12, max_w=cw - 24)
+            y += 20
+        if len(terr) > 4:
+            gui.text((x + 24, y), f"외 {len(terr) - 4}곳", 12, t.muted)
+    bw = (cw - 12) // 2
+    by = r.bottom - 68
+    if gui.button((x, by, bw, 46), f"{info.short}{josa_euro(info.short)} 시작", "primary", size=15, weight="bold"):
+        app.setup.start = rid
+        app.pick_popup = None
+        start_from_setup(app)
+        return
+    if gui.button((x + bw + 12, by, bw, 46), "이전", size=15):
+        app.pick_popup = None
+        app.scene = "setup"
+        return
+    for k in gui.keys:
+        if k.key == pygame.K_ESCAPE:   # Esc: 팝업만 닫고 다른 지역 고르기
+            app.pick_popup = None
 
 
 # ------------------------------------------------------------------ 정치체제

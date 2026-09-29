@@ -37,7 +37,9 @@ class Gui:
         self.tooltip = None
         self.ui_rects = []
         self.time = pygame.time.get_ticks()
-        self.mouse = pygame.mouse.get_pos()
+        mx, my = pygame.mouse.get_pos()
+        sc = getattr(self, "mouse_scale", 1.0) or 1.0
+        self.mouse = (int(mx / sc), int(my / sc))
         for e in events:
             if e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                 self.clicked = True

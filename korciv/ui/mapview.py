@@ -48,7 +48,7 @@ def dashed(surf, p1, p2, color, width=2, dash=6):
 
 
 class MapView:
-    MIN_Z, MAX_Z = 0.8, 8.0
+    MIN_Z, MAX_Z = 0.8, 40.0
 
     def __init__(self, world):
         self.world = world
@@ -241,8 +241,10 @@ class MapView:
         # 구역 이름
         if self.z >= 2.0:
             placed = []
-            size = 11 if self.z < 3 else (12 if self.z < 5 else 13)
+            size = 11 if self.z < 3 else (12 if self.z < 5 else (13 if self.z < 10 else 15))
+            color = theme.text if not theme.dark else (230, 232, 235)
             order = sorted(self.rbbox, key=lambda r: -self.area[r])
+            skipped = []
             for rid in order:
                 x, y = self.label[rid]
                 px, py = x * s + ox, y * s + oy
@@ -251,12 +253,22 @@ class MapView:
                 name = labels.get(rid)
                 if not name:
                     continue
-                t = render_text(name, size, theme.text if not theme.dark else (230, 232, 235), "semibold")
+                t = render_text(name, size, color, "semibold")
                 r = t.get_rect(center=(px, py - (6 if self.z >= 4 else 0)))
                 if any(r.colliderect(p) for p in placed):
+                    skipped.append((rid, name, px, py))
                     continue
                 placed.append(r.inflate(4, 2))
                 surf.blit(t, r)
+            # 겹쳐서 빠진 이름: 작은 글씨로 다시, 구역이 글자보다 넓거나 충분히 확대했으면 겹쳐도 표시
+            for rid, name, px, py in skipped:
+                t = render_text(name, max(10, size - 2), color, "semibold")
+                r = t.get_rect(center=(px, py))
+                x0, y0, x1, y1 = self.rbbox[rid]
+                wide = (x1 - x0) * s >= r.w * 0.9
+                if wide or self.z >= 8 or not any(r.colliderect(p) for p in placed):
+                    placed.append(r.inflate(2, 0))
+                    surf.blit(t, r)
         self.cache = surf
         self.cache_key = full_key
         return surf

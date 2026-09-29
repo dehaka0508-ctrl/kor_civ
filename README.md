@@ -7,6 +7,12 @@
 
 ## 실행
 
+**Windows: `게임실행.bat`을 더블클릭하세요.**
+Python이 없으면 자동으로 설치하고(winget), 처음 한 번 필요한 부품(pygame, numpy)을 설치한 뒤 게임을 켭니다.
+"Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누르세요. macOS·Linux는 `./run.sh`.
+
+직접 실행하려면:
+
 ```bash
 pip install -r requirements.txt      # pygame, numpy
 python -m korciv                      # 게임 시작 (1440×900, 최소 1280×800)

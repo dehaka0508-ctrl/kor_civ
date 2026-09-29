@@ -28,15 +28,37 @@ DO8_COLORS = {"경기": "#A5D8FF", "충청": "#B2F2BB", "전라": "#FFEC99", "�
               "강원": "#D0BFFF", "황해": "#FFD8A8", "평안": "#99E9F2", "함경": "#E9ECEF"}
 
 
+def _dpi_aware():
+    """Windows 화면 배율 때문에 창이 확대돼 모니터 밖으로 넘치지 않도록 실제 픽셀 단위를 쓴다."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 class App:
     def __init__(self, width=1440, height=900, screenshot=None):
+        _dpi_aware()
         pygame.init()
         pygame.display.set_caption("한반도 시군구 문명")
         flags = pygame.RESIZABLE
-        self.screen = pygame.display.set_mode((width, height), flags)
+        # 모니터보다 큰 창이 되지 않게 (Windows 배율 125~150%에서 버튼이 화면 밖으로 잘리던 문제)
+        info = pygame.display.Info()
+        if info.current_w > 0 and info.current_h > 0:
+            width = min(width, info.current_w - 40)
+            height = min(height, info.current_h - 90)
+        self.window = pygame.display.set_mode((max(960, width), max(640, height)), flags)
+        self._setup_canvas()
         self.clock = pygame.time.Clock()
         self.theme = Theme()
         self.gui = Gui(self.screen, self.theme)
+        self.gui.mouse_scale = self.ui_scale
         self.world = load_world()
         self.map = MapView(self.world)
         self.game: Game | None = None
@@ -45,6 +67,23 @@ class App:
         self.running = True
         self.screenshot = screenshot
         self.reset_ui()
+
+    # 창이 설계 크기(1280x800)보다 작으면 큰 캔버스에 그린 뒤 축소해서 보여 준다
+    DESIGN_W, DESIGN_H = 1280, 800
+
+    def _setup_canvas(self):
+        ww, wh = self.window.get_size()
+        s = min(1.0, ww / self.DESIGN_W, wh / self.DESIGN_H)
+        self.ui_scale = s
+        if s < 1.0:
+            self.screen = pygame.Surface((int(ww / s), int(wh / s)))
+        else:
+            self.screen = self.window
+        if hasattr(self, "gui"):
+            self.gui.screen = self.screen
+            self.gui.mouse_scale = s
+        if hasattr(self, "map"):
+            self.map.invalidate()
 
     def reset_ui(self):
         self.sel = None              # 선택한 구역/해역 ID
@@ -68,6 +107,7 @@ class App:
         self.fog_reveal = False
         self.dip_state = None
         self.show_terrain = True
+        self.pick_popup = None
         self.spec_sel = None
         self.lm_name = ""
 
@@ -118,17 +158,19 @@ class App:
                 if e.type == pygame.QUIT:
                     self.running = False
                 elif e.type == pygame.VIDEORESIZE:
-                    w, h = max(1280, e.w), max(800, e.h)
-                    self.screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
-                    self.gui.screen = self.screen
+                    w, h = max(960, e.w), max(640, e.h)
+                    self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+                    self._setup_canvas()
             self.gui.begin(events)
             self.frame()
+            if self.screen is not self.window:
+                pygame.transform.smoothscale(self.screen, self.window.get_size(), self.window)
             pygame.display.flip()
             self.clock.tick(60)
             frames += 1
             if max_frames and frames >= max_frames:
                 if self.screenshot:
-                    pygame.image.save(self.screen, self.screenshot)
+                    pygame.image.save(self.window, self.screenshot)
                 break
         pygame.quit()
 
@@ -146,21 +188,32 @@ class App:
     def draw_pick_start(self):
         sw, sh = self.screen.get_size()
         self.map.set_view((0, TOP_H, sw, sh - TOP_H))
+        popup = self.pick_popup
+        self.gui.input_enabled = popup is None
         self.draw_map(pick_mode=True)
         g = self.gui
         g.panel((0, 0, sw, TOP_H), radius=0, shadow=False)
-        g.text((20, TOP_H // 2), "시작 구역을 클릭해 고르세요", 18, weight="bold", anchor="midleft")
-        chosen = self.setup.start
-        if chosen:
-            info = self.world.regions[chosen]
-            g.text((360, TOP_H // 2), f"선택: {info.name} · 인구 {info.pop0:.1f}만 · 산출 {info.output0:,.0f}",
-                   15, anchor="midleft")
-        if g.button((sw - 300, 10, 130, 36), "이 구역에서 시작", "primary", enabled=bool(chosen)):
+        if g.button((12, 10, 120, 36), "← 설정으로"):
+            self.pick_popup = None
             self.scene = "setup"
-        if g.button((sw - 160, 10, 140, 36), "취소(무작위)"):
-            self.setup.start = None
-            self.scene = "setup"
-        self.map_input(pick_mode=True)
+            return
+        g.text((148, TOP_H // 2), "시작할 지역을 클릭하세요 · 휠로 확대, 드래그로 이동", 16, weight="bold", anchor="midleft")
+        from .mapview import TERRAIN_COLORS
+        lx = min(sw - 220, 640)
+        for i, (kind, label) in enumerate((("도하", "도하(강)"), ("돌파", "산악 돌파"))):
+            x = lx + i * 100
+            pygame.draw.line(self.screen, TERRAIN_COLORS[kind], (x, TOP_H // 2), (x + 18, TOP_H // 2), 4)
+            g.text((x + 24, TOP_H // 2), label, 12, self.theme.muted, anchor="midleft")
+        if popup is None:
+            self.map_input(pick_mode=True)
+            if self.hover in self.world.regions:
+                g.tooltip = self.world.regions[self.hover].name
+            for k in g.keys:
+                if k.key == pygame.K_ESCAPE:
+                    self.scene = "setup"
+        else:
+            self.gui.input_enabled = True
+            modals.draw_start_popup(self, popup)
 
     # ------------------------------------------------------------ 메인 화면
     def draw_main(self):
@@ -212,9 +265,9 @@ class App:
         fog_on = g and g.settings.fog > 0 and not self.fog_reveal
         for rid in self.world.order:
             info = self.world.regions[rid]
-            if not g:
+            if not g or pick_mode:
                 fill = t.neutral
-                if pick_mode and self.setup.start == rid:
+                if pick_mode and rid in (self.pick_popup, self.setup.start):
                     fill = t.accent
                 out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
                 continue
@@ -316,11 +369,11 @@ class App:
     # ------------------------------------------------------------ 지도 그리기
     def draw_map(self, pick_mode=False):
         mv = self.map
-        key = ("pick", self.setup.start) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
+        key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain)
         base = mv.render_base(key, self.theme, self.region_colors(pick_mode), self.sea_colors(), self.mode,
-                              self.map_labels(), show_terrain=self.show_terrain and not pick_mode)
+                              self.map_labels(), show_terrain=self.show_terrain)
         self.screen.blit(base, mv.view.topleft)
         self.gui.push_clip(mv.view)
         if pick_mode:
@@ -539,6 +592,7 @@ class App:
         # 드래그로 이동
         buttons = pygame.mouse.get_pressed()
         rel = pygame.mouse.get_rel()
+        rel = (rel[0] / self.ui_scale, rel[1] / self.ui_scale)
         if buttons[0] or buttons[1]:
             if not self.dragging and not over_ui:
                 self.dragging = True
@@ -565,7 +619,7 @@ class App:
             node = self.hover
             if pick_mode:
                 if node in self.world.regions:
-                    self.setup.start = node
+                    self.pick_popup = node
                     mv.invalidate()
                 return
             self.select(node)
