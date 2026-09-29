@@ -577,24 +577,24 @@ def draw_nation_tab(app, body):
     # 자원 시장
     y = section(gui, x, y + 4, w, "자원 시장 (구매/판매가, 같은 턴 추가 구매 +10%)")
     for res in C.RESOURCES:
+        gui.text((x, y + 5), C.RESOURCE_NAMES[res], 13, weight="semibold")
+        gui.text((x + 40, y + 5), f"{f.res.get(res, 0):,.0f}", 13)
         bp, sp = g.buy_price(pid, res), g.sell_price(pid, res)
-        gui.text((x, y), C.RESOURCE_NAMES[res], 13, weight="semibold")
-        gui.text((x + 44, y), f"보유 {f.res.get(res, 0):,.0f}", 13)
-        gui.text((x + w, y + 1), f"구매 {bp:,.0f} / 판매 {sp:,.0f}", 11, t.muted, anchor="topright")
-        y += 22
-        qtys = (1, 10, 100) if res == "food" else (1, 10)
-        cells = [("+", q) for q in qtys] + [("−", q) for q in qtys]
-        cw = (w - 4 * (len(cells) - 1)) / len(cells)
-        for i, (sign, q) in enumerate(cells):
-            rect = (x + i * (cw + 4), y, cw, 26)
-            if sign == "+":
-                if gui.button(rect, f"+{q}", size=11, tooltip=f"{q}개 구매"):
-                    n, s_ = g.market_buy(pid, res, q)
-                    app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
-            elif gui.button(rect, f"−{q}", size=11, tooltip=f"{q}개 판매"):
-                n, s_ = g.market_sell(pid, res, q)
-                app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 판매 (+{s_:,.0f})")
-        y += 34
+        gui.text((x + 96, y + 5), f"{bp:,.0f}/{sp:,.0f}", 11, t.muted)
+        bx = x + w - 150
+        q1, q2 = (10, 100) if res == "food" else (1, 10)   # 식량은 10·100 단위
+        bs = 9 if res == "food" else 11
+        if gui.button((bx, y, 36, 24), f"+{q1}", size=bs, tooltip=f"{q1}개 구매 ({bp * q1:,.0f})"):
+            n, s_ = g.market_buy(pid, res, q1)
+            app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
+        if gui.button((bx + 38, y, 36, 24), f"+{q2}", size=bs, tooltip=f"{q2}개 구매"):
+            n, s_ = g.market_buy(pid, res, q2)
+            app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
+        if gui.button((bx + 76, y, 36, 24), f"−{q1}", size=bs, tooltip=f"{q1}개 판매 ({sp * q1:,.0f})"):
+            g.market_sell(pid, res, q1)
+        if gui.button((bx + 114, y, 36, 24), f"−{q2}", size=bs, tooltip=f"{q2}개 판매"):
+            g.market_sell(pid, res, q2)
+        y += 30
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
     f.liquefy = gui.checkbox((x, y, w, 24), f"석유 비축 {C.OIL_RESERVE_FOR_LIQUEFY} 미만이면 석탄액화", f.liquefy)

@@ -42,19 +42,8 @@ def _dpi_aware():
         pass
 
 
-# 명령 화살표: 세력 색(파랑·주황·초록·보라·분홍…)과 겹치지 않는 색 + 검은 테두리
-ORDER_COLORS = {"move": (255, 224, 102), "attack": (255, 61, 61), "land": (0, 229, 255), "bombard": (255, 146, 43)}
-
-
-def hammer(surf, center, color, u=1.0):
-    """생산 집중 표시용 망치 아이콘."""
-    x, y = center
-    s = 1.1 * u
-    handle = [(x - 5 * s, y + 7 * s), (x - 3 * s, y + 9 * s), (x + 4 * s, y + 1 * s), (x + 2 * s, y - 1 * s)]
-    pygame.draw.polygon(surf, (140, 90, 40), handle)
-    head = [(x - 1 * s, y - 6 * s), (x + 3 * s, y - 9 * s), (x + 9 * s, y - 3 * s), (x + 5 * s, y)]
-    pygame.draw.polygon(surf, color, head)
-    pygame.draw.polygon(surf, (255, 255, 255), head, max(1, int(u)))
+# 명령 화살표 색(기존 색) — 얇은 흰 테두리로 영토 색과 구분
+ORDER_COLORS = {"move": (47, 111, 222), "attack": (201, 42, 42), "land": (12, 166, 120), "bombard": (230, 119, 0)}
 
 
 class App:
@@ -532,7 +521,7 @@ class App:
                 self.screen.blit(t, t.get_rect(midleft=(x + 8 * u, y)))
 
     def draw_focus(self):
-        """생산 집중 중인 내 지역: 지명 옆 망치 표시."""
+        """생산 집중 중인 내 지역: 지명 오른쪽에 [P]."""
         g = self.game
         mv = self.map
         u = ui_scale()
@@ -543,10 +532,10 @@ class App:
             if not mv.view.collidepoint(x, y):
                 continue
             if mv.z >= 2.0:
-                w_txt = render_text(self.world.regions[r.id].short, 11, (0, 0, 0), "semibold").get_width()
-                x += w_txt / 2 + 9 * u
-            active = g.focus_active(r)
-            hammer(self.screen, (x, y), (70, 70, 70) if active else (150, 150, 150), u)
+                x += render_text(self.world.regions[r.id].short, 11, (0, 0, 0), "semibold").get_width() / 2 + 3 * u
+            col = (25, 25, 25) if g.focus_active(r) else (130, 130, 130)
+            t = render_text("[P]", 11, col, "bold")
+            self.screen.blit(t, t.get_rect(midleft=(x, y - (6 * u if mv.z >= 4 else 0))))
 
     def draw_occupations(self):
         g = self.game
@@ -583,25 +572,25 @@ class App:
                 self.arrow(pts, ORDER_COLORS["attack" if o["type"] == "attack" else "land"])
             elif o["type"] == "bombard":
                 q = mv.label_screen(o["target"])
-                self.dashed(p0, q, (20, 20, 20), width_k=4)
+                self.dashed(p0, q, (255, 255, 255), width_k=4)
                 self.dashed(p0, q, ORDER_COLORS["bombard"])
                 self.arrowhead(p0, q, ORDER_COLORS["bombard"], outline=True)
 
     def arrow(self, pts, color):
         """영토 색과 겹치지 않도록 검은 테두리를 두른 굵은 화살표."""
         u = ui_scale()
-        pygame.draw.lines(self.screen, (20, 20, 20), False, pts, max(6, int(7 * u)))
-        pygame.draw.lines(self.screen, color, False, pts, max(3, int(4 * u)))
+        pygame.draw.lines(self.screen, (255, 255, 255), False, pts, max(5, int(5 * u)))
+        pygame.draw.lines(self.screen, color, False, pts, max(3, int(3 * u)))
         self.arrowhead(pts[-2], pts[-1], color, outline=True)
 
     def arrowhead(self, p1, p2, color, outline=False):
         ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        L = 16 * ui_scale()
+        L = 13 * ui_scale()
         pts = [p2, (p2[0] - L * math.cos(ang - 0.45), p2[1] - L * math.sin(ang - 0.45)),
                (p2[0] - L * math.cos(ang + 0.45), p2[1] - L * math.sin(ang + 0.45))]
         pygame.draw.polygon(self.screen, color, pts)
         if outline:
-            pygame.draw.polygon(self.screen, (20, 20, 20), pts, max(1, int(1.5 * ui_scale())))
+            pygame.draw.polygon(self.screen, (255, 255, 255), pts, max(1, int(1 * ui_scale())))
 
     def draw_armies(self):
         g = self.game

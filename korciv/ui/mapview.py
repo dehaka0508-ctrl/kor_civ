@@ -76,8 +76,6 @@ class MapView:
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
-        # 강 조각 사이 연결선: 강이 끊기지 않게 같은 색으로 잇는다
-        self.terrain_lines += [("도하", [proj_arr(l["line"])], False) for l in getattr(world, "river_links", [])]
         self.view = pygame.Rect(0, 0, 800, 800)
         self.z = 1.0
         self.cx, self.cy = 280.0, 520.0
