@@ -49,6 +49,7 @@ class Region:
     spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
     spec_block: set = field(default_factory=set)   # 수동 제외 특산물
     landmark_name: str = ""
+    acquired_seq: int = 0          # 영토를 얻은 순서(수도 0) — '다음 지역' 순회용
     famine: float = 0.0
     h_delta: float = 0.0
     phi: float = 1.0

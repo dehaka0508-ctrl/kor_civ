@@ -7,7 +7,7 @@ import numpy as np
 import pygame
 
 from ..data import SEA_LABELS, SEA_POLYS
-from .theme import mix, render_text
+from .theme import mix, render_text, ui_scale
 
 COS = math.cos(math.radians(38.0))
 LON0, LAT1 = 124.0, 43.1
@@ -214,14 +214,14 @@ class MapView:
                 pygame.draw.lines(surf, line, True, pts, 1)
             else:
                 pygame.draw.aalines(surf, line, True, pts)
-        pw = 2 if self.z >= 2.5 else 1
+        pw = max(1, int((2 if self.z >= 2.5 else 1) * ui_scale()))
         for arr in self.province_lines:
             pygame.draw.lines(surf, theme.province_line, True, sp(arr), pw)
         if mode == "do8":
             for arr in self.do8_lines:
                 pygame.draw.lines(surf, theme.do8_line, True, sp(arr), 2)
         if show_terrain:
-            tw = 3 if self.z < 2 else (4 if self.z < 4 else 5)
+            tw = max(2, int((3 if self.z < 2 else (4 if self.z < 4 else 5)) * ui_scale()))
             for kind, lines, connector in self.terrain_lines:
                 col = TERRAIN_COLORS[kind]
                 for arr in lines:
@@ -264,9 +264,7 @@ class MapView:
             for rid, name, px, py in skipped:
                 t = render_text(name, max(10, size - 2), color, "semibold")
                 r = t.get_rect(center=(px, py))
-                x0, y0, x1, y1 = self.rbbox[rid]
-                wide = (x1 - x0) * s >= r.w * 0.9
-                if wide or self.z >= 8 or not any(r.colliderect(p) for p in placed):
+                if self.z >= 10 or not any(r.colliderect(p) for p in placed):
                     placed.append(r.inflate(2, 0))
                     surf.blit(t, r)
         self.cache = surf

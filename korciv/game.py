@@ -799,6 +799,12 @@ class Game:
         rr.project = None
         return True, f"취소: {refund:,.0f} 환급"
 
+    def review_order(self, fid):
+        """수도부터 영토를 얻은 순서대로."""
+        cap = self.factions[fid].capital
+        regs = self.regions_of(fid)
+        return [r.id for r in sorted(regs, key=lambda r: (r.id != cap, getattr(r, "acquired_seq", 0), r.id))]
+
     def idle_slots(self, fid) -> int:
         return sum(1 for r in self.regions.values() if r.owner == fid and not r.project and not r.occ)
 
@@ -906,6 +912,8 @@ class Game:
         rr.project = None
         rr.occ = None
         rr.supplied = set()
+        self.acq_counter = getattr(self, "acq_counter", 0) + 1
+        rr.acquired_seq = self.acq_counter
         if old != NEUTRAL:
             for army in list(self.armies_at(rid, old)):
                 self.teleport_home(army)

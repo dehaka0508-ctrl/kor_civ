@@ -16,7 +16,7 @@ from ..state import NEUTRAL, Settings
 from . import modals, panels
 from .gui import Gui
 from .mapview import MapView
-from .theme import Theme, desaturate, fmt_money, hex2rgb, mix, render_text
+from .theme import Theme, desaturate, fmt_money, hex2rgb, measure, mix, render_text, set_ui_scale, ui_scale
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".korciv", "saves")
 TOP_H = 56
@@ -43,22 +43,26 @@ def _dpi_aware():
 
 
 class App:
-    def __init__(self, width=1440, height=900, screenshot=None):
+    def __init__(self, width=None, height=None, screenshot=None):
         _dpi_aware()
         pygame.init()
         pygame.display.set_caption("한반도 시군구 문명")
         flags = pygame.RESIZABLE
-        # 모니터보다 큰 창이 되지 않게 (Windows 배율 125~150%에서 버튼이 화면 밖으로 잘리던 문제)
+        # 모니터 크기에 맞춰 크게 연다(최대화하면 UI 전체가 화면에 맞게 커진다)
         info = pygame.display.Info()
+        if info.current_w > 0 and info.current_h > 0 and width is None:
+            width = int(info.current_w * 0.92)
+            height = int(info.current_h * 0.86)
+        width, height = width or 1440, height or 900
         if info.current_w > 0 and info.current_h > 0:
-            width = min(width, info.current_w - 40)
-            height = min(height, info.current_h - 90)
-        self.window = pygame.display.set_mode((max(960, width), max(640, height)), flags)
-        self._setup_canvas()
+            width = min(width, info.current_w)
+            height = min(height, info.current_h)
+        self.window = pygame.display.set_mode((max(800, width), max(500, height)), flags)
+        self.screen = self.window
+        self._update_scale()
         self.clock = pygame.time.Clock()
         self.theme = Theme()
         self.gui = Gui(self.screen, self.theme)
-        self.gui.mouse_scale = self.ui_scale
         self.world = load_world()
         self.map = MapView(self.world)
         self.game: Game | None = None
@@ -68,22 +72,27 @@ class App:
         self.screenshot = screenshot
         self.reset_ui()
 
-    # 창이 설계 크기(1280x800)보다 작으면 큰 캔버스에 그린 뒤 축소해서 보여 준다
+    # UI 는 논리 좌표 1280x800 기준으로 배치하고, 창 크기에 맞춰 비율을 유지하며 확대한다
     DESIGN_W, DESIGN_H = 1280, 800
 
-    def _setup_canvas(self):
+    def _update_scale(self):
+        self.screen = self.window
         ww, wh = self.window.get_size()
-        s = min(1.0, ww / self.DESIGN_W, wh / self.DESIGN_H)
-        self.ui_scale = s
-        if s < 1.0:
-            self.screen = pygame.Surface((int(ww / s), int(wh / s)))
-        else:
-            self.screen = self.window
+        u = max(0.5, min(4.0, ww / self.DESIGN_W, wh / self.DESIGN_H))
+        set_ui_scale(u)
         if hasattr(self, "gui"):
             self.gui.screen = self.screen
-            self.gui.mouse_scale = s
         if hasattr(self, "map"):
             self.map.invalidate()
+
+    def lsize(self):
+        """화면 크기(논리 좌표)."""
+        return self.gui.size()
+
+    def set_map_view(self):
+        W, H = self.screen.get_size()
+        top = int(round(TOP_H * ui_scale()))
+        self.map.set_view((0, top, W, H - top))
 
     def reset_ui(self):
         self.sel = None              # 선택한 구역/해역 ID
@@ -110,6 +119,7 @@ class App:
         self.pick_popup = None
         self.spec_sel = None
         self.lm_name = ""
+        self.visited = set()         # 이번 턴 '다음 지역'으로 확인한 지역
 
     # ------------------------------------------------------------ 게임 시작·저장
     def start_game(self, settings: Settings):
@@ -158,13 +168,15 @@ class App:
                 if e.type == pygame.QUIT:
                     self.running = False
                 elif e.type == pygame.VIDEORESIZE:
-                    w, h = max(960, e.w), max(640, e.h)
-                    self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
-                    self._setup_canvas()
+                    w, h = max(800, e.w), max(500, e.h)
+                    if (w, h) != self.window.get_size():
+                        self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+                    self._update_scale()
+                elif e.type == getattr(pygame, "WINDOWSIZECHANGED", -1):
+                    self.window = pygame.display.get_surface()
+                    self._update_scale()
             self.gui.begin(events)
             self.frame()
-            if self.screen is not self.window:
-                pygame.transform.smoothscale(self.screen, self.window.get_size(), self.window)
             pygame.display.flip()
             self.clock.tick(60)
             frames += 1
@@ -186,8 +198,8 @@ class App:
 
     # ------------------------------------------------------------ 시작 구역 고르기
     def draw_pick_start(self):
-        sw, sh = self.screen.get_size()
-        self.map.set_view((0, TOP_H, sw, sh - TOP_H))
+        sw, sh = self.lsize()
+        self.set_map_view()
         popup = self.pick_popup
         self.gui.input_enabled = popup is None
         self.draw_map(pick_mode=True)
@@ -197,12 +209,13 @@ class App:
             self.pick_popup = None
             self.scene = "setup"
             return
-        g.text((148, TOP_H // 2), "시작할 지역을 클릭하세요 · 휠로 확대, 드래그로 이동", 16, weight="bold", anchor="midleft")
         from .mapview import TERRAIN_COLORS
-        lx = min(sw - 220, 640)
+        lx = max(560, sw - 240)
+        g.text((148, TOP_H // 2), "시작할 지역을 클릭하세요 · 휠로 확대, 드래그로 이동", 15, weight="bold", anchor="midleft",
+               max_w=lx - 160)
         for i, (kind, label) in enumerate((("도하", "도하(강)"), ("돌파", "산악 돌파"))):
             x = lx + i * 100
-            pygame.draw.line(self.screen, TERRAIN_COLORS[kind], (x, TOP_H // 2), (x + 18, TOP_H // 2), 4)
+            g.line(TERRAIN_COLORS[kind], (x, TOP_H // 2), (x + 18, TOP_H // 2), 4)
             g.text((x + 24, TOP_H // 2), label, 12, self.theme.muted, anchor="midleft")
         if popup is None:
             self.map_input(pick_mode=True)
@@ -218,8 +231,8 @@ class App:
     # ------------------------------------------------------------ 메인 화면
     def draw_main(self):
         game = self.game
-        sw, sh = self.screen.get_size()
-        self.map.set_view((0, TOP_H, sw, sh - TOP_H))
+        sw, sh = self.lsize()
+        self.set_map_view()
         modal_open = self.scene == "government" or self.active_modal() is not None
         self.gui.input_enabled = not modal_open
         self.draw_map()
@@ -229,7 +242,7 @@ class App:
         elif self.sel:
             if self.gui.button((12, TOP_H + 12, 36, 36), "›", tooltip="구역 정보 펼치기"):
                 self.left_open = True
-        panels.draw_right(self, pygame.Rect(sw - RIGHT_W - 12, TOP_H + 12, RIGHT_W, sh - TOP_H - 96))
+        panels.draw_right(self, pygame.Rect(sw - RIGHT_W - 12, TOP_H + 12, RIGHT_W, sh - TOP_H - 132))
         self.draw_mode_chips()
         self.draw_end_turn()
         self.draw_toasts()
@@ -282,6 +295,9 @@ class App:
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
             fill = self.mode_color(rid, r, owner, info)
+            if self.mode == "political" and visible and owner == pid and r.project:
+                # 생산·행동이 진행 중인 내 지역은 더 진한 색
+                fill = mix(self.faction_rgb(owner), (0, 0, 0), 0.18)
             if not visible:
                 fill = mix(desaturate(fill, 0.7), (0, 0, 0), 0.25)
             out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
@@ -369,19 +385,22 @@ class App:
     # ------------------------------------------------------------ 지도 그리기
     def draw_map(self, pick_mode=False):
         mv = self.map
+        busy = 0 if pick_mode or not self.game else hash(frozenset(
+            r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
         key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
-                                                              self.show_terrain)
+                                                              self.show_terrain, busy)
         base = mv.render_base(key, self.theme, self.region_colors(pick_mode), self.sea_colors(), self.mode,
                               self.map_labels(), show_terrain=self.show_terrain)
         self.screen.blit(base, mv.view.topleft)
-        self.gui.push_clip(mv.view)
+        self.screen.set_clip(mv.view)
+        u = ui_scale()
         if pick_mode:
             if self.hover and self.hover in self.world.regions:
-                mv.outline(self.screen, self.hover, self.theme.text, 2)
+                mv.outline(self.screen, self.hover, self.theme.text, max(2, int(2 * u)))
             if self.setup.start:
-                mv.outline(self.screen, self.setup.start, (255, 255, 255), 3)
-            self.gui.pop_clip()
+                mv.outline(self.screen, self.setup.start, (255, 255, 255), max(3, int(3 * u)))
+            self.screen.set_clip(None)
             return
         g = self.game
         # 이동 범위
@@ -412,8 +431,8 @@ class App:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
             else:
-                mv.outline(self.screen, self.sel, (255, 255, 255), 4)
-                mv.outline(self.screen, self.sel, self.theme.text, 2)
+                mv.outline(self.screen, self.sel, (255, 255, 255), max(4, int(4 * u)))
+                mv.outline(self.screen, self.sel, self.theme.text, max(2, int(2 * u)))
         # 전투 강조 (1초)
         dt = pygame.time.get_ticks() - self.flash_t
         if dt < 1200 and g.battle_regions:
@@ -427,9 +446,10 @@ class App:
         self.draw_occupations()
         self.draw_orders()
         self.draw_armies()
-        self.gui.pop_clip()
+        self.screen.set_clip(None)
 
     def dashed(self, p1, p2, color, dash=6):
+        dash = dash * ui_scale()
         x1, y1 = p1
         x2, y2 = p2
         d = math.hypot(x2 - x1, y2 - y1)
@@ -439,7 +459,7 @@ class App:
         for i in range(0, n, 2):
             a, b = i / n, min(1, (i + 1) / n)
             pygame.draw.line(self.screen, color, (x1 + (x2 - x1) * a, y1 + (y2 - y1) * a),
-                             (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), 2)
+                             (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), max(2, int(2 * ui_scale())))
 
     def star(self, center, r, color):
         cx, cy = center
@@ -460,7 +480,8 @@ class App:
                     or g.is_explored(g.player_id, f.capital)):
                 continue
             x, y = self.map.label_screen(f.capital)
-            self.star((x, y - (14 if self.map.z >= 2 else 0)), 7 if self.map.z < 2 else 9,
+            u = ui_scale()
+            self.star((x, y - (16 * u if self.map.z >= 2 else 0)), (8 if self.map.z < 2 else 10) * u,
                       mix(self.faction_rgb(f.id), (0, 0, 0), 0.2))
 
     def draw_landmarks(self):
@@ -476,15 +497,18 @@ class App:
             x, y = mv.label_screen(r.id)
             if not mv.view.collidepoint(x, y):
                 continue
-            x += 16 if mv.z >= 2 else 8
-            y -= 14 if mv.z >= 2 else 6
+            u = ui_scale()
+            x += (18 if mv.z >= 2 else 9) * u
+            y -= (16 if mv.z >= 2 else 7) * u
             col = (241, 196, 15) if r.landmark else (180, 180, 180)
-            pygame.draw.polygon(self.screen, col, [(x, y - 9), (x + 4, y + 6), (x - 4, y + 6)])
-            pygame.draw.polygon(self.screen, mix(col, (0, 0, 0), 0.4), [(x, y - 9), (x + 4, y + 6), (x - 4, y + 6)], 1)
-            pygame.draw.line(self.screen, mix(col, (0, 0, 0), 0.4), (x - 6, y + 6), (x + 6, y + 6), 2)
+            tri = [(x, y - 11 * u), (x + 5 * u, y + 7 * u), (x - 5 * u, y + 7 * u)]
+            pygame.draw.polygon(self.screen, col, tri)
+            pygame.draw.polygon(self.screen, mix(col, (0, 0, 0), 0.4), tri, 1)
+            pygame.draw.line(self.screen, mix(col, (0, 0, 0), 0.4), (x - 7 * u, y + 7 * u), (x + 7 * u, y + 7 * u),
+                             max(2, int(2 * u)))
             if mv.z >= 3 and r.landmark:
                 t = render_text(r.landmark_name or g.default_landmark_name(r.id), 11, (122, 88, 0), "bold")
-                self.screen.blit(t, t.get_rect(midleft=(x + 7, y)))
+                self.screen.blit(t, t.get_rect(midleft=(x + 8 * u, y)))
 
     def draw_occupations(self):
         g = self.game
@@ -493,10 +517,15 @@ class App:
                 continue
             x, y = self.map.label_screen(r.id)
             col = self.faction_rgb(r.occ["by"])
-            rect = pygame.Rect(0, 0, 30, 6)
-            rect.center = (x, y + 14)
-            self.gui.progress(rect, r.occ["progress"] / max(1, r.occ["need"]), col, (255, 255, 255))
-            pygame.draw.rect(self.screen, col, rect, 1, border_radius=3)
+            u = ui_scale()
+            rect = pygame.Rect(0, 0, int(36 * u), max(6, int(7 * u)))
+            rect.center = (x, y + 16 * u)
+            frac = min(1.0, r.occ["progress"] / max(1, r.occ["need"]))
+            pygame.draw.rect(self.screen, (255, 255, 255), rect, border_radius=rect.h // 2)
+            if frac > 0:
+                pygame.draw.rect(self.screen, col, (rect.x, rect.y, max(rect.h, int(rect.w * frac)), rect.h),
+                                 border_radius=rect.h // 2)
+            pygame.draw.rect(self.screen, col, rect, 1, border_radius=rect.h // 2)
 
     def draw_orders(self):
         g = self.game
@@ -508,14 +537,14 @@ class App:
             p0 = mv.label_screen(a.loc)
             if o["type"] == "move":
                 pts = [p0] + [mv.label_screen(n) for n in o["path"]]
-                pygame.draw.lines(self.screen, (47, 111, 222), False, pts, 3)
+                pygame.draw.lines(self.screen, (47, 111, 222), False, pts, max(3, int(3 * ui_scale())))
                 self.arrowhead(pts[-2], pts[-1], (47, 111, 222))
             elif o["type"] in ("attack", "land"):
                 pts = [p0] + [mv.label_screen(n) for n in o.get("path", [])]
                 if pts[-1] != mv.label_screen(o["target"]):
                     pts.append(mv.label_screen(o["target"]))
                 col = (201, 42, 42) if o["type"] == "attack" else (12, 166, 120)
-                pygame.draw.lines(self.screen, col, False, pts, 3)
+                pygame.draw.lines(self.screen, col, False, pts, max(3, int(3 * ui_scale())))
                 self.arrowhead(pts[-2], pts[-1], col)
             elif o["type"] == "bombard":
                 self.dashed(p0, mv.label_screen(o["target"]), (230, 119, 0))
@@ -523,8 +552,9 @@ class App:
 
     def arrowhead(self, p1, p2, color):
         ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        pts = [p2, (p2[0] - 12 * math.cos(ang - 0.45), p2[1] - 12 * math.sin(ang - 0.45)),
-               (p2[0] - 12 * math.cos(ang + 0.45), p2[1] - 12 * math.sin(ang + 0.45))]
+        L = 13 * ui_scale()
+        pts = [p2, (p2[0] - L * math.cos(ang - 0.45), p2[1] - L * math.sin(ang - 0.45)),
+               (p2[0] - L * math.cos(ang + 0.45), p2[1] - L * math.sin(ang + 0.45))]
         pygame.draw.polygon(self.screen, color, pts)
 
     def draw_armies(self):
@@ -548,14 +578,16 @@ class App:
             if not mv.view.collidepoint(x, y):
                 continue
             arms.sort(key=lambda a: (a.owner != pid, a.owner, a.id))
-            w = 30 if mv.z < 2 else 38
+            u = ui_scale()
+            w = int((34 if mv.z < 2 else 42) * u)
+            ph = int(19 * u)
             n = len(arms)
             start = x - (n * (w + 2)) / 2
-            yy = y + (8 if mv.z >= 2 else 4)
+            yy = y + (10 if mv.z >= 2 else 5) * u
             if mv.z >= 4 and not self.world.is_sea(loc):
-                yy += 12
+                yy += 14 * u
             for i, a in enumerate(arms):
-                r = pygame.Rect(int(start + i * (w + 2)), int(yy), w, 16)
+                r = pygame.Rect(int(start + i * (w + 2)), int(yy), w, ph)
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
                 pygame.draw.rect(self.screen, col, r, border_radius=4)
                 if a.id == self.sel_army:
@@ -563,11 +595,11 @@ class App:
                 else:
                     pygame.draw.rect(self.screen, mix(col, (0, 0, 0), 0.35), r, 1, border_radius=4)
                 icon_key = max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
-                panels.unit_icon(self.screen, icon_key, (r.x + 8, r.centery), (255, 255, 255))
+                panels.unit_icon(self.screen, icon_key, (r.x + int(9 * u), r.centery), (255, 255, 255), 1.1 * u)
                 t = render_text(str(a.count()), 11, (255, 255, 255), "bold")
-                self.screen.blit(t, t.get_rect(midright=(r.right - 3, r.centery)))
+                self.screen.blit(t, t.get_rect(midright=(r.right - int(3 * u), r.centery)))
                 if a.order and a.owner == pid:
-                    pygame.draw.circle(self.screen, (255, 212, 59), (r.right - 1, r.y + 1), 3)
+                    pygame.draw.circle(self.screen, (255, 212, 59), (r.right - 1, r.y + 1), max(3, int(3.5 * u)))
         # 줌 4배 이상: 인구 배지
         if mv.z >= 4:
             for rid in self.world.order:
@@ -577,14 +609,14 @@ class App:
                 if not (g.is_explored(pid, rid) or self.fog_reveal):
                     continue
                 t = render_text(f"{g.regions[rid].pop:.1f}만", 10, self.theme.muted, "semibold")
-                self.screen.blit(t, t.get_rect(center=(x, y + 8)))
+                self.screen.blit(t, t.get_rect(center=(x, y + 10 * ui_scale())))
 
     # ------------------------------------------------------------ 지도 입력
     def map_input(self, pick_mode=False):
         gui = self.gui
         mv = self.map
-        pos = gui.mouse
-        over_ui = gui.over_ui(pos) or not mv.view.collidepoint(pos)
+        pos = gui.mouse_phys
+        over_ui = gui.over_ui(gui.mouse) or not mv.view.collidepoint(pos)
         self.hover = None if over_ui else mv.pick(pos)
         if not over_ui and gui.wheel:
             mv.zoom_at(pos, 1.2 ** gui.wheel)
@@ -592,7 +624,6 @@ class App:
         # 드래그로 이동
         buttons = pygame.mouse.get_pressed()
         rel = pygame.mouse.get_rel()
-        rel = (rel[0] / self.ui_scale, rel[1] / self.ui_scale)
         if buttons[0] or buttons[1]:
             if not self.dragging and not over_ui:
                 self.dragging = True
@@ -624,7 +655,7 @@ class App:
                 return
             self.select(node)
         if gui.rclicked and not pick_mode:
-            self.right_click(self.hover, pos)
+            self.right_click(self.hover, gui.mouse)
         if not pick_mode and self.hover and self.sel_army:
             self.order_tooltip(self.hover)
 
@@ -717,7 +748,8 @@ class App:
             if g.focus:
                 continue
             if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self.end_turn()
+                if pygame.key.get_mods() & pygame.KMOD_SHIFT or not self.next_region():
+                    self.end_turn()
             elif k.key == pygame.K_ESCAPE:
                 if self.sel_army:
                     self.sel_army = None
@@ -782,6 +814,7 @@ class App:
             return
         before = self.snapshot()
         g.end_turn()
+        self.visited = set()
         self.prev_values = before
         self.prev_t = pygame.time.get_ticks()
         self.flash_t = pygame.time.get_ticks()
@@ -811,10 +844,10 @@ class App:
         g = self.game
         f = g.player
         gui = self.gui
-        sw, _ = self.screen.get_size()
+        sw, _ = self.lsize()
         gui.panel((0, 0, sw, TOP_H), radius=0, shadow=True, border=False)
-        pygame.draw.line(self.screen, self.theme.border, (0, TOP_H - 1), (sw, TOP_H - 1))
-        pygame.draw.rect(self.screen, self.faction_rgb(f.id), (16, 14, 8, 28), border_radius=3)
+        gui.line(self.theme.border, (0, TOP_H - 1), (sw, TOP_H - 1))
+        gui.rect(self.faction_rgb(f.id), (16, 14, 8, 28), radius=3)
         from ..leaders import GOV_BY_KEY
         gov = GOV_BY_KEY.get(f.gov, {}).get("name", "체제 미정")
         gui.text((32, 8), f.name, 18, weight="bold")
@@ -842,12 +875,11 @@ class App:
              f"{sum(r.project.per_turn for r in g.regions_of(f.id) if r.project):,.0f}"),
         ]
         for key, label, val, col, tip in items:
-            from .theme import font
-            vw = max(font(15, "semibold").size(val)[0], font(11).size(label)[0]) + 22
+            vw = max(measure(val, 15, "semibold")[0], measure(label, 11)[0]) + 22
             r = pygame.Rect(x - vw, 6, vw, TOP_H - 12)
             prev = self.prev_values.get(key)
             if highlight and prev is not None and self._differs(prev, snap[key]):
-                pygame.draw.rect(self.screen, (255, 243, 191), r, border_radius=6)
+                gui.rect((255, 243, 191), r, radius=6)
             gui.text((r.centerx, r.y + 4), label, 11, self.theme.muted, anchor="midtop")
             gui.text((r.centerx, r.bottom - 4), val, 15, col or self.theme.text, "semibold", anchor="midbottom")
             if gui.hover(r):
@@ -864,13 +896,14 @@ class App:
     # ------------------------------------------------------------ 하단
     def draw_mode_chips(self):
         gui = self.gui
-        sw, sh = self.screen.get_size()
+        sw, sh = self.lsize()
         w = 74
         r = pygame.Rect(12, sh - 60, len(MAP_MODES) * (w + 4) + 12, 48)
         gui.panel(r)
         for i, (key, label) in enumerate(MAP_MODES):
+            tip = f"지도 모드 ({i+1})" + ("\n내 영토 중 진한 색 = 생산·행동 진행 중" if key == "political" else "")
             if gui.button((r.x + 8 + i * (w + 4), r.y + 8, w, 32), label, selected=self.mode == key,
-                          tooltip=f"지도 모드 ({i+1})"):
+                          tooltip=tip):
                 self.mode = key
                 self.changed()
         # 지형 경계 토글·범례
@@ -883,47 +916,76 @@ class App:
         from .mapview import TERRAIN_COLORS
         for i, (kind, label) in enumerate((("도하", "도하"), ("돌파", "산악 돌파"))):
             lx = t.x + 12 + i * 70
-            pygame.draw.line(self.screen, TERRAIN_COLORS[kind], (lx, t.y + 36), (lx + 16, t.y + 36), 4)
+            gui.line(TERRAIN_COLORS[kind], (lx, t.y + 36), (lx + 16, t.y + 36), 4)
             gui.text((lx + 20, t.y + 36), label, 11, self.theme.muted, anchor="midleft")
         if gui.hover(t):
             gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n점선: 맞닿지 않은 하구·수로 경로"
         # 줌 표시
         gui.text((t.right + 10, r.centery), f"×{self.map.z:.1f}", 12, self.theme.muted, anchor="midleft")
 
+    def review_queue(self):
+        """아직 확인하지 않은 빈 슬롯 지역(수도 → 획득 순)."""
+        g = self.game
+        return [rid for rid in g.review_order(g.player_id)
+                if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ]
+
+    def next_region(self):
+        q = self.review_queue()
+        if not q:
+            return False
+        rid = q[0]
+        self.visited.add(rid)
+        self.select(rid)
+        self.tab = "action"
+        self.left_open = True
+        self.map.center_on(rid, zoom=2.0 if self.map.z < 2.0 else None)
+        return True
+
     def draw_end_turn(self):
         gui = self.gui
         g = self.game
-        sw, sh = self.screen.get_size()
+        sw, sh = self.lsize()
         r = pygame.Rect(sw - 172, sh - 68, 160, 56)
         gui.block(r)
-        if gui.button(r, "턴 종료", "primary", size=17, weight="bold", tooltip="Enter", radius=10,
-                      enabled=not g.game_over):
-            self.end_turn()
-        idle = g.idle_slots(g.player_id)
-        if idle:
+        queue = self.review_queue() if not g.game_over else []
+        if queue:
+            if gui.button(r, "다음 지역", "primary", size=17, weight="bold", radius=10, color=self.theme.warn,
+                          tooltip="생산·행동이 비어 있는 지역을 수도부터 획득 순서대로 엽니다 (Enter)"):
+                self.next_region()
+            skip = pygame.Rect(r.x, r.y - 36, r.w, 30)
+            gui.block(skip)
+            if gui.button(skip, "바로 턴 종료", "default", size=12, tooltip="남은 지역을 건너뛰고 턴 종료 (Shift+Enter)"):
+                self.end_turn()
             c = (r.right - 6, r.y + 6)
-            pygame.draw.circle(self.screen, self.theme.warn, c, 13)
-            gui.text(c, str(idle), 12, (255, 255, 255), "bold", anchor="center")
+            gui.circle(self.theme.bad, c, 14)
+            gui.text(c, str(len(queue)), 12, (255, 255, 255), "bold", anchor="center")
             if gui.hover(pygame.Rect(c[0] - 13, c[1] - 13, 26, 26)):
-                gui.tooltip = f"미지정 슬롯 {idle}곳 (Tab으로 순회)"
+                gui.tooltip = f"확인하지 않은 빈 슬롯 지역 {len(queue)}곳"
+        elif gui.button(r, "턴 종료", "primary", size=17, weight="bold", tooltip="Enter", radius=10,
+                        enabled=not g.game_over):
+            self.end_turn()
 
     def draw_toasts(self):
         now = pygame.time.get_ticks()
         self.toasts = [t for t in self.toasts if now - t[2] < 6000]
-        sw, _ = self.screen.get_size()
+        sw, _ = self.lsize()
+        u = ui_scale()
         x = sw // 2
         y = TOP_H + 12
         for text, col, t0 in self.toasts:
             alpha = 1.0 if now - t0 < 5000 else 1 - (now - t0 - 5000) / 1000
             surf = render_text(text, 13, (255, 255, 255), "semibold")
-            r = surf.get_rect(midtop=(x, y)).inflate(28, 14)
-            bg = pygame.Surface(r.size, pygame.SRCALPHA)
+            tw, th = surf.get_width() / u, surf.get_height() / u
+            lr = pygame.Rect(0, 0, int(tw + 30), int(th + 14))
+            lr.midtop = (x, y)
+            pr = self.gui.R(lr)
+            bg = pygame.Surface(pr.size, pygame.SRCALPHA)
             base = (33, 37, 41) if col is None or col == self.theme.text else col
-            pygame.draw.rect(bg, (*base, int(230 * alpha)), bg.get_rect(), border_radius=8)
-            self.screen.blit(bg, r)
+            pygame.draw.rect(bg, (*base, int(230 * alpha)), bg.get_rect(), border_radius=int(8 * u))
+            self.screen.blit(bg, pr)
             surf.set_alpha(int(255 * alpha))
-            self.screen.blit(surf, surf.get_rect(center=r.center))
-            y += r.h + 6
+            self.screen.blit(surf, surf.get_rect(center=pr.center))
+            y += lr.h + 6
 
     # ------------------------------------------------------------ 외교
     def open_diplomacy(self, fid):
@@ -934,8 +996,8 @@ class App:
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="한반도 시군구 문명")
-    ap.add_argument("--width", type=int, default=1440)
-    ap.add_argument("--height", type=int, default=900)
+    ap.add_argument("--width", type=int, default=None)
+    ap.add_argument("--height", type=int, default=None)
     ap.add_argument("--screenshot", help="몇 프레임 뒤 스크린샷을 저장하고 종료(테스트용)")
     ap.add_argument("--frames", type=int, default=0)
     ap.add_argument("--quickstart", action="store_true", help="설정 화면 없이 기본값으로 바로 시작")

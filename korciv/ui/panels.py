@@ -9,7 +9,7 @@ from .. import config as C
 from .. import diplomacy as D
 from ..leaders import GOV_BY_KEY, LEADER_BY_KEY
 from ..state import BUILDING_NAMES, NEUTRAL
-from .theme import fmt_money, hex2rgb, mix
+from .theme import fmt_money, hex2rgb, measure, mix
 
 
 # ------------------------------------------------------------------ 유닛 아이콘 (단색 실루엣)
@@ -48,7 +48,7 @@ def unit_icon(surf, key, center, color, s=1.0):
 
 def section(gui, x, y, w, title):
     gui.text((x, y), title, 12, gui.t.muted, "semibold")
-    pygame.draw.line(gui.screen, gui.t.border, (x, y + 20), (x + w, y + 20))
+    gui.line(gui.t.border, (x, y + 20), (x + w, y + 20))
     return y + 26
 
 
@@ -86,7 +86,7 @@ def draw_left(app, rect):
         gui.text((x, y), "미탐색 지역입니다.", 13, t.muted)
         return
     col = app.faction_rgb(owner)
-    pygame.draw.rect(gui.screen, col, (x, y + 2, 12, 12), border_radius=3)
+    gui.rect(col, (x, y + 2, 12, 12), radius=3)
     oname = g.fname(owner)
     if owner not in (NEUTRAL,) and owner != pid:
         st = D.stage(g, owner, pid)
@@ -117,14 +117,14 @@ def draw_left(app, rect):
         gui.text((x + w, y), f"{r.happy:+.1f}", 13, t.good if r.happy >= 0 else t.bad, "semibold", anchor="topright")
         y += 20
         bar = pygame.Rect(x, y, w, 8)
-        pygame.draw.rect(gui.screen, t.panel_alt, bar, border_radius=4)
+        gui.rect(t.panel_alt, bar, radius=4)
         mid = bar.centerx
         hw = int(abs(r.happy) / 100 * w / 2)
         if r.happy >= 0:
-            pygame.draw.rect(gui.screen, t.happy_pos, (mid, bar.y, hw, 8), border_radius=4)
+            gui.rect(t.happy_pos, (mid, bar.y, hw, 8), radius=4)
         else:
-            pygame.draw.rect(gui.screen, t.happy_neg, (mid - hw, bar.y, hw, 8), border_radius=4)
-        pygame.draw.line(gui.screen, t.muted, (mid, bar.y - 2), (mid, bar.bottom + 1))
+            gui.rect(t.happy_neg, (mid - hw, bar.y, hw, 8), radius=4)
+        gui.line(t.muted, (mid, bar.y - 2), (mid, bar.bottom + 1))
         y += 16
         if r.happy <= C.REBEL_THRESHOLD and owner == pid:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(pid, node)*100:.1f}%/턴", t.bad)
@@ -176,7 +176,7 @@ def draw_left(app, rect):
         y = section(gui, x, y + 6, w, "지형 경계 (넘는 공격 ×0.9)")
         from .mapview import TERRAIN_COLORS
         for n, tr in terr:
-            pygame.draw.line(gui.screen, TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 14, y + 9), 4)
+            gui.line(TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 14, y + 9), 4)
             gui.text((x + 20, y), f"{app.world.regions[n].short} · {tr['label']}({tr['name']})", 12, max_w=w - 24)
             y += 20
         y += 4
@@ -190,8 +190,8 @@ def draw_left(app, rect):
         col = (130, 130, 130) if a.owner == NEUTRAL else app.faction_rgb(a.owner)
         rr = pygame.Rect(x, y, w, 24)
         if a.id == app.sel_army:
-            pygame.draw.rect(gui.screen, t.panel_alt, rr, border_radius=6)
-        pygame.draw.rect(gui.screen, col, (x + 4, y + 6, 10, 12), border_radius=3)
+            gui.rect(t.panel_alt, rr, radius=6)
+        gui.rect(col, (x + 4, y + 6, 10, 12), radius=3)
         gui.text((x + 20, y + 3), f"{g.fname(a.owner)} · {a.label()}", 13, max_w=w - 24)
         if a.owner == pid and gui.hover(rr) and gui.clicked:
             gui.clicked = False
@@ -218,13 +218,12 @@ def draw_left(app, rect):
 def draw_chips(gui, x, y, w, chips):
     cx = x
     for c in chips:
-        from .theme import font
-        cw = font(12).size(c)[0] + 16
+        cw = measure(c, 12)[0] + 16
         if cx + cw > x + w and cx > x:
             cx = x
             y += 26
         r = pygame.Rect(cx, y, cw, 22)
-        pygame.draw.rect(gui.screen, gui.t.panel_alt, r, border_radius=11)
+        gui.rect(gui.t.panel_alt, r, radius=11)
         gui.text(r.center, c, 12, anchor="center")
         cx += cw + 6
     return y + 28
@@ -283,7 +282,7 @@ def draw_sea_info(app, rect, sid):
     y = section(gui, x, y + 6, w, "해역의 함대")
     for a in g.armies_at(sid):
         if a.owner == g.player_id or g.is_visible(g.player_id, sid) or app.fog_reveal:
-            pygame.draw.rect(gui.screen, app.faction_rgb(a.owner), (x, y + 5, 10, 12), border_radius=3)
+            gui.rect(app.faction_rgb(a.owner), (x, y + 5, 10, 12), radius=3)
             r = pygame.Rect(x, y, w, 24)
             gui.text((x + 16, y + 2), f"{g.fname(a.owner)} · {a.label()}", 13, max_w=w - 20)
             if a.owner == g.player_id and gui.hover(r) and gui.clicked:
@@ -433,7 +432,7 @@ def draw_army_tab(app, body):
             n = army.units.get(k, 0)
             if not n:
                 continue
-            unit_icon(gui.screen, k, (x + 8, y + 11), t.text)
+            gui.icon(k, (x + 8, y + 11), t.text)
             u = C.UNITS[k]
             gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
             dmg = army.dmg.get(k, 0)
@@ -586,7 +585,7 @@ def draw_nation_tab(app, body):
     for o in g.factions:
         if o.id == pid or not o.alive:
             continue
-        pygame.draw.rect(gui.screen, hex2rgb(o.color), (x, y + 6, 10, 14), border_radius=3)
+        gui.rect(hex2rgb(o.color), (x, y + 6, 10, 14), radius=3)
         st = D.stage(g, o.id, pid)
         op = D.opinion(g, o.id, pid)
         gui.text((x + 16, y + 2), o.name, 13, weight="semibold", max_w=110)

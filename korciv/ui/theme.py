@@ -68,23 +68,51 @@ class Theme:
         self.happy_pos = hex2rgb("#2F9E44")
 
 
+# UI 배율: 화면 요소는 논리 좌표로 배치하고 그릴 때 u 배 한다(창 크기에 맞춤).
+# 글자는 버튼·패널보다 FONT_BOOST 만큼 더 키운다(글자 2.5배 : 버튼 2배 = 1.25).
+UI = {"u": 1.0}
+FONT_BOOST = 1.25
+
 _fonts: dict = {}
+_text_cache: dict = {}
+
+
+def set_ui_scale(u: float):
+    if abs(UI["u"] - u) > 1e-6:
+        UI["u"] = u
+        _fonts.clear()
+        _text_cache.clear()
+
+
+def ui_scale() -> float:
+    return UI["u"]
+
+
+def font_px(size: float) -> int:
+    return max(6, int(round(size * UI["u"] * FONT_BOOST)))
 
 
 def font(size: int, weight: str = "regular") -> pygame.font.Font:
-    key = (size, weight)
+    """실제 픽셀 크기로 만든 글꼴(논리 크기 size 기준)."""
+    px = font_px(size)
+    key = (px, weight)
     f = _fonts.get(key)
     if f is None:
-        f = pygame.font.Font(os.path.join(FONT_DIR, FONT_FILES[weight]), size)
+        f = pygame.font.Font(os.path.join(FONT_DIR, FONT_FILES[weight]), px)
         _fonts[key] = f
     return f
 
 
-_text_cache: dict = {}
+def measure(text: str, size: int, weight: str = "regular"):
+    """글자 폭·높이(논리 좌표)."""
+    w, h = font(size, weight).size(text)
+    u = UI["u"]
+    return w / u, h / u
 
 
 def render_text(text: str, size: int, color, weight="regular"):
-    key = (text, size, tuple(color), weight)
+    """실제 픽셀 크기의 글자 이미지."""
+    key = (text, font_px(size), tuple(color), weight)
     s = _text_cache.get(key)
     if s is None:
         s = font(size, weight).render(text, True, color)

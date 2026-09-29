@@ -9,7 +9,7 @@ from .. import config as C
 from .. import diplomacy as D
 from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY
 from ..state import NEUTRAL, Settings
-from .theme import hex2rgb, mix
+from .theme import hex2rgb, measure, mix
 
 
 class SetupState:
@@ -27,10 +27,10 @@ class SetupState:
 
 
 def modal_frame(app, w, h, title=None):
-    sw, sh = app.screen.get_size()
-    dim = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    dim = pygame.Surface(app.screen.get_size(), pygame.SRCALPHA)
     dim.fill((0, 0, 0, 90))
     app.screen.blit(dim, (0, 0))
+    sw, sh = app.gui.size()
     r = pygame.Rect(0, 0, w, h)
     r.center = (sw // 2, sh // 2)
     app.gui.panel(r, radius=12)
@@ -44,7 +44,7 @@ def draw_setup(app):
     gui = app.gui
     t = app.theme
     s = app.setup
-    sw, sh = app.screen.get_size()
+    sw, sh = app.gui.size()
     r = pygame.Rect(0, 0, 1180, 760)
     r.center = (sw // 2, sh // 2)
     gui.panel(r, radius=14)
@@ -159,7 +159,7 @@ def draw_start_popup(app, rid):
     t = app.theme
     w = app.world
     info = w.regions[rid]
-    sw, sh = app.screen.get_size()
+    sw, sh = app.gui.size()
     ph = min(500, sh - 40)
     r = modal_frame(app, 600, ph)
     x, cw = r.x + 28, r.w - 56
@@ -193,14 +193,13 @@ def draw_start_popup(app, rid):
         gui.text((x, y), title, 12, t.muted, "semibold")
         y += 20
         cx = x
-        from .theme import font
         for c in items or ["없음"]:
-            cwid = font(12).size(c)[0] + 16
+            cwid = measure(c, 12)[0] + 16
             if cx + cwid > x + cw and cx > x:
                 cx = x
                 y += 26
             rr = pygame.Rect(cx, y, cwid, 22)
-            pygame.draw.rect(app.screen, t.panel_alt, rr, border_radius=11)
+            gui.rect(t.panel_alt, rr, radius=11)
             gui.text(rr.center, c, 12, anchor="center")
             cx += cwid + 6
         y += 30
@@ -236,7 +235,7 @@ def draw_start_popup(app, rid):
         gui.text((x, y), "지형 경계 (넘어오는 공격 ×0.9)", 12, t.muted, "semibold")
         y += 20
         for n, tr in terr[:4]:
-            pygame.draw.line(app.screen, TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 16, y + 9), 4)
+            gui.line(TERRAIN_COLORS[tr["kind"]], (x, y + 9), (x + 16, y + 9), 4)
             gui.text((x + 24, y), f"{w.regions[n].name} · {tr['label']}({tr['name']})", 12, max_w=cw - 24)
             y += 20
         if len(terr) > 4:
@@ -267,8 +266,8 @@ def draw_government(app):
     for gdef in GOVERNMENTS:
         row = pygame.Rect(r.x + 24, y, r.w - 48, 64)
         hov = gui.hover(row)
-        pygame.draw.rect(app.screen, t.panel_alt if hov else t.panel, row, border_radius=8)
-        pygame.draw.rect(app.screen, t.border, row, 1, border_radius=8)
+        gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
+        gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
         tgt = f"AI 목표 호전성 {gdef['target']}" if gdef["target"] else "플레이어 전용"
         gui.text((row.right - 16, row.y + 12), tgt, 11, t.muted, anchor="topright")
@@ -354,7 +353,7 @@ def draw_proposal(app):
         return
     r = modal_frame(app, 520, 260, "외교 제안")
     f = g.factions[fid]
-    pygame.draw.rect(app.screen, hex2rgb(f.color), (r.x + 24, r.y + 62, 12, 16), border_radius=3)
+    gui.rect(hex2rgb(f.color), (r.x + 24, r.y + 62, 12, 16), radius=3)
     gui.text((r.x + 44, r.y + 60), f"{f.name}({f.leader_name})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "
@@ -428,7 +427,7 @@ def draw_diplomacy(app):
         close(app)
         return
     r = modal_frame(app, 980, 700)
-    pygame.draw.rect(app.screen, hex2rgb(other.color), (r.x + 24, r.y + 22, 14, 22), border_radius=3)
+    gui.rect(hex2rgb(other.color), (r.x + 24, r.y + 22, 14, 22), radius=3)
     from ..leaders import GOV_BY_KEY
     gui.text((r.x + 46, r.y + 18), f"{other.name}", 20, weight="bold")
     gui.text((r.x + 46, r.y + 46), f"{other.leader_name} · {GOV_BY_KEY.get(other.gov, {}).get('name', '')} · "
@@ -445,7 +444,7 @@ def draw_diplomacy(app):
         cell = pygame.Rect(sx + i * 128, r.y + 20, 122, 30)
         active = st >= i + 1
         col = t.bad if st == -1 else (t.accent if active else t.panel_alt)
-        pygame.draw.rect(app.screen, col, cell, border_radius=15)
+        gui.rect(col, cell, radius=15)
         gui.text(cell.center, nm, 12, (255, 255, 255) if active or st == -1 else t.muted, "semibold", anchor="center")
     status = "전쟁 중" if st == -1 else D.STAGE_NAMES[st]
     gui.text((sx, r.y + 58), f"상대의 우호도 {op:+.1f} · 현재 {status}"
@@ -490,7 +489,7 @@ def draw_diplomacy(app):
         ds.counter = None
     # 조약 버튼
     y = r.bottom - 110
-    pygame.draw.line(app.screen, t.border, (r.x + 24, y - 10), (r.right - 24, y - 10))
+    gui.line(t.border, (r.x + 24, y - 10), (r.right - 24, y - 10))
     gui.text((r.x + 24, y), "조약·전쟁", 14, weight="bold")
     y += 26
     bw = (r.w - 48 - 5 * 8) / 6
@@ -552,7 +551,7 @@ def draw_ranking(app):
         for pos, row in enumerate(sorted(rows, key=lambda rr: -rr[k])):
             ranks[(row["fid"], k)] = pos + 1
     for row in sorted(rows, key=lambda rr: -rr["regions"]):
-        pygame.draw.rect(app.screen, hex2rgb(g.factions[row["fid"]].color), (x0, y + 6, 10, 16), border_radius=3)
+        gui.rect(hex2rgb(g.factions[row["fid"]].color), (x0, y + 6, 10, 16), radius=3)
         me = row["fid"] == g.player_id
         gui.text((x0 + 16, y + 4), row["name"] + (" (나)" if me else ""), 14, weight="bold" if me else "regular")
         for i, (k, _) in enumerate(cols):
@@ -588,8 +587,11 @@ def draw_log(app):
 HELP = """[조작]
 좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
-Enter: 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드   F2: 개발자 안개 토글
+Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드   F2: 개발자 안개 토글
 F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
+
+· 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
+· 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
 
 [규칙 요약]
 · 각 내 지역은 턴마다 슬롯 1개: 건물 착공, 유닛 생산, 인접 중립 지역 편입 중 하나.
@@ -685,15 +687,15 @@ def draw_specialty(app):
     # 좌: 지역 목록 (행복도 낮은 순)
     regs = sorted(g.regions_of(pid), key=lambda rr: rr.happy)
     left = pygame.Rect(r.x + 16, r.y + 80, 430, r.h - 150)
-    pygame.draw.rect(app.screen, t.panel_alt, left, border_radius=8)
+    gui.rect(t.panel_alt, left, radius=8)
     off = gui.begin_scroll("spec_regions", left, len(regs) * 34 + 8)
     y = left.y + 4 - off
     for rr in regs:
         row = pygame.Rect(left.x + 4, y, left.w - 12, 30)
         sel = app.spec_sel == rr.id
         if sel:
-            pygame.draw.rect(app.screen, t.panel, row, border_radius=6)
-            pygame.draw.rect(app.screen, t.accent, row, 1, border_radius=6)
+            gui.rect(t.panel, row, radius=6)
+            gui.rect(t.accent, row, 1, radius=6)
         gui.text((row.x + 8, row.y + 6), app.world.regions[rr.id].name, 13, weight="semibold", max_w=170)
         hc = t.good if rr.happy >= 0 else t.bad
         gui.text((row.x + 190, row.y + 6), f"{rr.happy:+.0f}", 13, hc)
