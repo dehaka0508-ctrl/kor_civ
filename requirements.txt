@@ -1,0 +1,6 @@
+pygame>=2.5
+numpy>=1.24
+# 지도 재생성(tools/build_map.py)에만 필요
+# shapely>=2.0
+# 테스트
+# pytest

@@ -1,0 +1,168 @@
+"""지도자(8절)와 정치체제(9절).
+
+효과는 키-값으로 적고, 엔진은 mult/add/value 로 합산해 쓴다.
+- mult 키: 값 v 를 (1 + v) 배수로 곱한다. 지도자와 체제 효과는 곱으로 합산(9절).
+- add 키: 더한다.
+- value 키: 지도자·체제 중 하나가 정한 값(없으면 기본값).
+"""
+from __future__ import annotations
+
+LEADERS = [
+    dict(key="dangun", name="단군왕검", aggr=3,
+         buff=("홍익인간", "전 지역 행복도 +0.1/턴"), debuff=("신화 시대", "공군 생산비 +20%"),
+         fx={"happy_turn": 0.1, "cost_air": 0.20}),
+    dict(key="jumong", name="주몽", aggr=6,
+         buff=("명궁", "포병 폭격 피해 +15%"), debuff=("내륙 건국", "해군 생산비 +15%"),
+         fx={"bomb_art": 0.15, "cost_naval": 0.15}),
+    dict(key="gwanggaeto", name="광개토대왕", aggr=9,
+         buff=("정복군주", "돌격 공격력 +15%"), debuff=("원정 피로", "전쟁 지속 페널티가 4턴마다 -1"),
+         fx={"atk_assault": 0.15, "war_period": 4}),
+    dict(key="yeon", name="연개소문", aggr=8,
+         buff=("천리장성", "방어선 효과 0.25L → 0.30L"), debuff=("권신 정치", "모든 AI 시작 우호도 -10"),
+         fx={"line_k": 0.30, "start_opinion": -10}),
+    dict(key="geunchogo", name="근초고왕", aggr=6,
+         buff=("해상 왕국", "해군 생산비 -20%"), debuff=("양면 전선", "육군 유지비 +10%"),
+         fx={"cost_naval": -0.20, "upkeep_land": 0.10}),
+    dict(key="muryeong", name="무령왕", aggr=3,
+         buff=("중흥 외교", "거래 요구 배수 m -0.1"), debuff=("웅진 천도", "방어선 건설비 +15%"),
+         fx={"trade_m": -0.1, "cost_line": 0.15}),
+    dict(key="seondeok", name="선덕여왕", aggr=2,
+         buff=("첨성대", "랜드마크 건설 15턴 → 10턴"), debuff=("비담의 난", "반란 확률 x1.2"),
+         fx={"landmark_turns": 10, "rebel_prob": 0.2}),
+    dict(key="muyeol", name="무열왕", aggr=5,
+         buff=("나당 외교", "조약·동맹·연합 체결 우호도 문턱 -15"), debuff=("외세 의존", "동맹 없이 전쟁 시 돌격 공격력 -10%"),
+         fx={"treaty_threshold": -15, "no_ally_assault": -0.10}),
+    dict(key="suro", name="가야 수로왕", aggr=4,
+         buff=("철의 왕국", "전차 생산비 -15%"), debuff=("연맹 체제", "점령·편입 소요 턴 +20%"),
+         fx={"cost_tank": -0.15, "occ_time": 0.20}),
+    dict(key="daejoyeong", name="대조영", aggr=7,
+         buff=("천문령 승리", "첫 48턴 보병 생산비 -30%"), debuff=("유민 국가", "점령지 초기 행복도 추가 -10"),
+         fx={"inf_cost_early": -0.30, "occupied_happy_extra": -10}),
+    dict(key="gyeonhwon", name="견훤", aggr=8,
+         buff=("기습의 명수", "기습 성공률 +10%p"), debuff=("금산사 유폐", "반란 확률 x1.3"),
+         fx={"surprise": 0.10, "rebel_prob": 0.3}),
+    dict(key="wanggeon", name="태조 왕건", aggr=5,
+         buff=("호족 포용", "점령지 행복도: 불행 지역 +10, 행복 지역 -H/2"), debuff=("호족 연합", "세율 상한 50% → 40%"),
+         fx={"wanggeon_occupy": True, "tax_max": 0.40}),
+    dict(key="gongmin", name="공민왕", aggr=5,
+         buff=("반원 개혁", "전쟁 시작 행복도 -10 → -5"), debuff=("개혁 반발", "반란 진압 성공률 -15%p"),
+         fx={"war_start_happy": -5, "suppress": -0.15}),
+    dict(key="seonggye", name="태조 이성계", aggr=7,
+         buff=("백전백승", "보병 공격력 +15%"), debuff=("위화도 회군", "상륙 돌격 추가 x0.85"),
+         fx={"atk_inf": 0.15, "amphib_extra": 0.85}),
+    dict(key="sejong", name="세종", aggr=2,
+         buff=("민본 과학", "생산 건물 건설 시간 -20%"), debuff=("문치주의", "군 생산비 +10%"),
+         fx={"build_time_prod": -0.20, "cost_mil": 0.10}),
+    dict(key="gwanghae", name="광해군", aggr=3,
+         buff=("중립 외교", "제3국 전쟁 때문에 생기는 우호도 감소 없음"), debuff=("정통성 약화", "지역 행복도 상한 80"),
+         fx={"neutral_diplomacy": True, "happy_cap": 80}),
+    dict(key="jeongjo", name="정조", aggr=4,
+         buff=("신해통공", "은행 산출 +15%"), debuff=("벽파 견제", "세율 변경 후 4턴간 재변경 불가"),
+         fx={"output_bank": 0.15, "tax_lock": 4}),
+    dict(key="honggyeongrae", name="홍경래", aggr=8,
+         buff=("민란의 불꽃", "즉시 병합 기준 행복도 -50 → -30"), debuff=("반란군 출신", "모든 AI 시작 우호도 -15"),
+         fx={"instant_annex_h": -30, "start_opinion": -15}),
+    dict(key="kimgu", name="김구", aggr=4,
+         buff=("임시정부", "영토 3칸 이하일 때 방어력 +30%"), debuff=("무장 열세", "전차·공군 생산비 +15%"),
+         fx={"defense_small": 0.30, "cost_tank": 0.15, "cost_air": 0.15}),
+    dict(key="syngman", name="이승만", aggr=5,
+         buff=("한미동맹", "동맹과 공동 전쟁 시 공격력 +15%"), debuff=("3·15의 그늘", "평균 행복도 -30 이하에서 반란 확률 x2"),
+         fx={"ally_war_atk": 0.15, "avg_rebel": 2.0}),
+    dict(key="kimilsung", name="김일성", aggr=9,
+         buff=("천리마 운동", "공장 건설 시간 -25%"), debuff=("자력갱생", "시장 구매가 +30%, 판매가 -30%"),
+         fx={"build_time_factory": -0.25, "market_buy": 0.30, "market_sell": -0.30}),
+    dict(key="parkcj", name="박정희", aggr=6,
+         buff=("경제개발계획", "공장 산출 +15%"), debuff=("유신 체제", "세율 15% 초과분 행복도 감소 x1.5"),
+         fx={"output_factory": 0.15, "tax_over15": 1.5}),
+    dict(key="kimdj", name="김대중", aggr=1,
+         buff=("햇볕정책", "모든 AI 우호도 +0.2/턴"), debuff=("외환위기 수습", "시작 자금 -30%"),
+         fx={"ai_opinion_turn": 0.2, "start_money": -0.30}),
+    dict(key="custom", name="직접 입력", aggr=5,
+         buff=("없음", "효과 없음"), debuff=("없음", "효과 없음"), fx={}),
+]
+LEADER_BY_KEY = {l["key"]: l for l in LEADERS}
+
+GOVERNMENTS = [
+    dict(key="absolute", name="전제군주제", target=7.5,
+         buff=("왕권 통치", "세율 10% 초과분의 행복도 감소 -30%"), debuff=("", "은행 산출 -10%"),
+         fx={"tax_over10": 0.7, "output_bank": -0.10}),
+    dict(key="constitutional", name="입헌군주제", target=3.5,
+         buff=("", "전 지역 행복도 +0.1/턴"), debuff=("", "전쟁 시작 행복도 감소 x1.5"),
+         fx={"happy_turn": 0.1, "war_start_mult": 1.5}),
+    dict(key="presidential", name="대통령제", target=5.5,
+         buff=("", "모든 건물 건설 시간 -10%"), debuff=("", "전쟁 지속 페널티가 4턴마다 -1"),
+         fx={"build_time_all": -0.10, "war_period": 4}),
+    dict(key="parliamentary", name="의원내각제", target=1.5,
+         buff=("", "은행 산출 +10%"), debuff=("", "선전포고 후 2턴간 공격 불가(의회 동의)"),
+         fx={"output_bank": 0.10, "parliament_delay": 2}),
+    dict(key="socialist", name="사회주의", target=6.0,
+         buff=("", "공장 건설비 -15%"), debuff=("", "은행 산출 -25%"),
+         fx={"cost_factory": -0.15, "output_bank": -0.25}),
+    dict(key="fascist", name="파시즘", target=9.5,
+         buff=("", "군 생산비 -15%"), debuff=("", "모든 AI 시작 우호도 -10"),
+         fx={"cost_mil": -0.15, "start_opinion": -10}),
+    dict(key="philosopher", name="철인통치", target=None,
+         buff=("", "없음"), debuff=("", "없음"), fx={}),
+]
+GOV_BY_KEY = {g["key"]: g for g in GOVERNMENTS}
+
+MULT_KEYS = {
+    "cost_air", "cost_naval", "cost_tank", "cost_mil", "cost_line", "cost_factory",
+    "upkeep_land", "bomb_art", "atk_assault", "atk_inf", "build_time_prod", "build_time_all",
+    "build_time_factory", "output_bank", "output_factory", "rebel_prob", "market_buy",
+    "market_sell", "start_money", "occ_time", "inf_cost_early", "no_ally_assault",
+    "ally_war_atk", "defense_small",
+}
+ADD_KEYS = {"happy_turn", "surprise", "trade_m", "treaty_threshold", "start_opinion",
+            "ai_opinion_turn", "suppress", "occupied_happy_extra"}
+
+
+def effects(leader_key: str, gov_key: str | None):
+    out = []
+    l = LEADER_BY_KEY.get(leader_key)
+    if l:
+        out.append(l["fx"])
+    g = GOV_BY_KEY.get(gov_key) if gov_key else None
+    if g:
+        out.append(g["fx"])
+    return out
+
+
+class Mods:
+    """한 세력의 지도자·체제 효과 합산기."""
+
+    def __init__(self, leader_key: str, gov_key: str | None):
+        self.fx = effects(leader_key, gov_key)
+
+    def mult(self, key: str) -> float:
+        m = 1.0
+        for fx in self.fx:
+            if key in fx:
+                m *= 1.0 + fx[key]
+        return m
+
+    def add(self, key: str) -> float:
+        return sum(fx.get(key, 0) for fx in self.fx)
+
+    def value(self, key: str, default=None):
+        for fx in self.fx:
+            if key in fx:
+                return fx[key]
+        return default
+
+    def has(self, key: str) -> bool:
+        return any(key in fx for fx in self.fx)
+
+
+def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int) -> str:
+    """9절: 1 - |호전성 - 목표| / 10 + U(0, 0.1), 공장 >= 은행이면 사회주의 +0.2."""
+    best, best_score = None, -1e9
+    for g in GOVERNMENTS:
+        if g["target"] is None:
+            continue
+        s = 1 - abs(aggression - g["target"]) / 10 + rng.random() * 0.1
+        if g["key"] == "socialist" and factory_level >= bank_level:
+            s += 0.2
+        if s > best_score:
+            best, best_score = g["key"], s
+    return best
