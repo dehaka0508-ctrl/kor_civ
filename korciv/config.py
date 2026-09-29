@@ -24,8 +24,9 @@ LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
 FOOD_PER_G = 15            # 농장·어장 식량 15 * g(L)
 FOOD_PER_POP = 1           # 인구 1만 명당 식량 소비/턴
 START_FOOD_TURNS = 5       # 시작 식량 = 인구 * 5
-COAST_FISH_BONUS = 0.25    # 해안선 점유 시 어장 식량·산출 +25%
-COAST_NAVAL_DEF = 0.25     # 해안선 점유 시 그 해역 해전 방어 +25%
+COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전부 보유) 시 바다 어장 식량·산출 +20%
+COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
+RIVER_FISH_MULT = 0.70     # 하천 어장(도하 경계를 가진 내륙 지역)은 바다 어장 생산력의 70%
 
 FUEL_PHI = {"coal": 1.0, "oil": 1.1, "elec": 1.25, "none": 0.25}
 FUEL_AUTO_ORDER = ("elec", "coal", "oil")   # 자동 연료: 석유는 군 생산용으로 아낀다
@@ -48,7 +49,7 @@ CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
 CAPITAL_LOST_HAPPY = -10
 PROJECT_REFUND = 0.5
-FOCUS_POP_BONUS = 0.5      # 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출(30P) +50%
+FOCUS_POP_BONUS = 0.15     # 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출(30P) +15%
 DEBT_HAPPY = -1.0          # 보완안: 자금이 음수인 턴에는 전 지역 행복도 -1
 
 # 생산 건물: 단계 L 비용 = base * L^1.5, 소요 2L턴

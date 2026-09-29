@@ -447,8 +447,10 @@ def draw_diplomacy(app):
         gui.rect(col, cell, radius=15)
         gui.text(cell.center, nm, 12, (255, 255, 255) if active or st == -1 else t.muted, "semibold", anchor="center")
     status = "전쟁 중" if st == -1 else D.STAGE_NAMES[st]
+    pl = D.peace_left(g, pid, fid)
     gui.text((sx, r.y + 58), f"상대의 우호도 {op:+.1f} · 현재 {status}"
-             + (f" · 전쟁 점수 {D.war_score(g, pid, fid):+.1f}" if st == -1 else ""), 13,
+             + (f" · 전쟁 점수 {D.war_score(g, pid, fid):+.1f}" if st == -1 else "")
+             + (f" · 강화 불가침 {pl}턴 남음" if pl else ""), 13,
              t.bad if st == -1 else t.text)
     # 거래
     col_w = 300
@@ -510,8 +512,8 @@ def draw_diplomacy(app):
     p = D.pair(pid, fid)
     if st != -1:
         if p in g.dip.nonaggr and p not in g.dip.alliance:
-            if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "불가침 파기", "danger",
-                          tooltip="모든 세력의 우호도 -30"):
+            if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "불가침 파기", "danger", enabled=pl == 0,
+                          tooltip="모든 세력의 우호도 -30" if pl == 0 else f"강화 불가침 {pl}턴 동안 파기 불가"):
                 ok, msg = D.break_nonaggr(g, pid, fid)
                 app.toast(msg or "불가침조약을 파기했습니다.", t.bad)
             i += 1
@@ -592,7 +594,7 @@ F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
 · 정치 지도에서 진한 색 내 영토는 생산·행동(또는 생산 집중)이 진행 중인 지역입니다.
-· 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +50% (행동 탭에서 켜고 끔).
+· 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15% (행동 탭에서 켜고 끔).
 · 좌상단 [국가 현황]: 재정·자원·특산물 재고, 지출 우선순위(드래그로 순서 변경).
 
 [규칙 요약]

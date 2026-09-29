@@ -706,7 +706,7 @@ class Game:
             ok, why = True, ""
             if lv > spec["max"]:
                 continue
-            if key == "fishery" and not info.can_fish:
+            if key == "fishery" and not self.can_fish(rid):
                 ok, why = False, "바다·하천 인접 지역만"
             if key == "specialty" and not info.specialty:
                 ok, why = False, "특산물 지정 지역만"
@@ -761,6 +761,47 @@ class Game:
             y = max(rr.output, self.region_output_estimate(rid))
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
         return opts
+
+    def building_effect(self, fid, rid, opt) -> str:
+        """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
+        rr = self.regions[rid]
+        info = self.info(rid)
+        key, lv = opt["key"], opt["level"]
+        m = self.mods(fid)
+        dg = R.g(lv) - R.g(lv - 1)
+        if key == "farm":
+            return f"완공 시 턴당 식량 +{C.FOOD_PER_G * dg:.0f}, 산출 +{C.FARM_OUTPUT * dg:.0f}"
+        if key == "fishery":
+            fm = self.fish_mult(fid, rid)
+            kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
+            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * dg * fm:.1f}, 산출 +{C.FISH_OUTPUT * dg * fm:.0f}")
+        if key == "factory":
+            return (f"턴당 산출 +{C.FACTORY_OUTPUT * dg * m.mult('output_factory'):,.0f}(석탄 기준, 연료 1/턴 소비)")
+        if key == "bank":
+            return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank'):,.0f}"
+        if key == "power":
+            return f"석탄·석유 → 전기 턴당 최대 {2 * lv}개 (공장 산출 x1.25)"
+        if key == "liquefy":
+            return f"석탄 → 석유 턴당 최대 {lv}개"
+        if key == "specialty":
+            return f"특산물 「{info.specialty}」 턴당 {lv}개"
+        if key == "extract":
+            what = "석유" if info.is_oil else "석탄"
+            return f"{what} 턴당 +1 (합계 {(info.oil or info.coal) + lv}개)"
+        if key == "line":
+            k = m.value("line_k", C.LINE_BONUS)
+            return f"이 경계 돌격 방어 x{1 + k * lv:.2f}, 기습 성공률 {max(0, 90 - 15 * lv)}%"
+        if key == "shelter":
+            return f"폭격 피해 ÷{1 + C.SHELTER_K * lv:.1f}"
+        if key == "aa":
+            return f"폭격기 피해 x{1 - C.AA_DMG_K * lv:.1f}, 격추 {int(C.AA_SHOOT_K * lv * 100)}%"
+        if key == "academy":
+            return "이 지역 유닛 생산비 −25%, 인접 −10%"
+        if key == "airport":
+            return f"공군 {C.AIRPORT_CAPACITY}대 주둔·출격"
+        if key == "port":
+            return "해군 생산·정박"
+        return ""
 
     def start_project(self, fid, rid, kind, key, border=None, name=None):
         rr = self.regions.get(rid)
@@ -893,8 +934,16 @@ class Game:
             return None if o == NEUTRAL else o
         return None
 
+    def can_fish(self, rid) -> bool:
+        """바다(해안) 또는 하천(도하 경계) 인접 지역."""
+        info = self.info(rid)
+        return info.coastal or info.fishery > 0 or rid in self.world.river_regions
+
     def fish_mult(self, fid, rid):
-        for s in self.info(rid).seas:
+        info = self.info(rid)
+        if not info.coastal and rid in self.world.river_regions:
+            return C.RIVER_FISH_MULT          # 하천 어장
+        for s in info.seas:
             if self.coast_controller(s) == fid:
                 return 1 + C.COAST_FISH_BONUS
         return 1.0
@@ -920,7 +969,7 @@ class Game:
         if rr.owner != fid:
             return False, "내 지역이 아닙니다."
         rr.focus = bool(on)
-        return True, "생산 집중 " + ("켬: 인구 산출 +50%" if on else "끔")
+        return True, "생산 집중 " + (f"켬: 인구 산출 +{C.FOCUS_POP_BONUS:.0%}" if on else "끔")
 
     def region_output_estimate(self, rid):
         rr = self.regions[rid]

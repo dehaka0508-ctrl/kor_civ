@@ -42,6 +42,21 @@ def _dpi_aware():
         pass
 
 
+# 명령 화살표: 세력 색(파랑·주황·초록·보라·분홍…)과 겹치지 않는 색 + 검은 테두리
+ORDER_COLORS = {"move": (255, 224, 102), "attack": (255, 61, 61), "land": (0, 229, 255), "bombard": (255, 146, 43)}
+
+
+def hammer(surf, center, color, u=1.0):
+    """생산 집중 표시용 망치 아이콘."""
+    x, y = center
+    s = 1.1 * u
+    handle = [(x - 5 * s, y + 7 * s), (x - 3 * s, y + 9 * s), (x + 4 * s, y + 1 * s), (x + 2 * s, y - 1 * s)]
+    pygame.draw.polygon(surf, (140, 90, 40), handle)
+    head = [(x - 1 * s, y - 6 * s), (x + 3 * s, y - 9 * s), (x + 9 * s, y - 3 * s), (x + 5 * s, y)]
+    pygame.draw.polygon(surf, color, head)
+    pygame.draw.polygon(surf, (255, 255, 255), head, max(1, int(u)))
+
+
 class App:
     def __init__(self, width=None, height=None, screenshot=None):
         _dpi_aware()
@@ -300,7 +315,7 @@ class App:
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
             fill = self.mode_color(rid, r, owner, info)
-            if self.mode == "political" and visible and owner == pid and (r.project or r.focus):
+            if self.mode == "political" and visible and owner == pid and r.project:
                 # 생산·행동이 진행 중인 내 지역은 더 진한 색
                 fill = mix(self.faction_rgb(owner), (0, 0, 0), 0.18)
             if not visible:
@@ -391,7 +406,7 @@ class App:
     def draw_map(self, pick_mode=False):
         mv = self.map
         busy = 0 if pick_mode or not self.game else hash(frozenset(
-            r.id for r in self.game.regions.values() if r.owner == self.game.player_id and (r.project or r.focus)))
+            r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
         key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
@@ -447,13 +462,14 @@ class App:
                 if rid in self.world.regions:
                     mv.outline(self.screen, rid, col, 3)
         self.draw_landmarks()
+        self.draw_focus()
         self.draw_capitals()
         self.draw_occupations()
         self.draw_orders()
         self.draw_armies()
         self.screen.set_clip(None)
 
-    def dashed(self, p1, p2, color, dash=6):
+    def dashed(self, p1, p2, color, dash=6, width_k=2):
         dash = dash * ui_scale()
         x1, y1 = p1
         x2, y2 = p2
@@ -464,7 +480,7 @@ class App:
         for i in range(0, n, 2):
             a, b = i / n, min(1, (i + 1) / n)
             pygame.draw.line(self.screen, color, (x1 + (x2 - x1) * a, y1 + (y2 - y1) * a),
-                             (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), max(2, int(2 * ui_scale())))
+                             (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), max(2, int(width_k * ui_scale())))
 
     def star(self, center, r, color):
         cx, cy = center
@@ -515,6 +531,23 @@ class App:
                 t = render_text(r.landmark_name or g.default_landmark_name(r.id), 11, (122, 88, 0), "bold")
                 self.screen.blit(t, t.get_rect(midleft=(x + 8 * u, y)))
 
+    def draw_focus(self):
+        """생산 집중 중인 내 지역: 지명 옆 망치 표시."""
+        g = self.game
+        mv = self.map
+        u = ui_scale()
+        for r in g.regions_of(g.player_id):
+            if not r.focus:
+                continue
+            x, y = mv.label_screen(r.id)
+            if not mv.view.collidepoint(x, y):
+                continue
+            if mv.z >= 2.0:
+                w_txt = render_text(self.world.regions[r.id].short, 11, (0, 0, 0), "semibold").get_width()
+                x += w_txt / 2 + 9 * u
+            active = g.focus_active(r)
+            hammer(self.screen, (x, y), (70, 70, 70) if active else (150, 150, 150), u)
+
     def draw_occupations(self):
         g = self.game
         for r in g.regions.values():
@@ -542,25 +575,33 @@ class App:
             p0 = mv.label_screen(a.loc)
             if o["type"] == "move":
                 pts = [p0] + [mv.label_screen(n) for n in o["path"]]
-                pygame.draw.lines(self.screen, (47, 111, 222), False, pts, max(3, int(3 * ui_scale())))
-                self.arrowhead(pts[-2], pts[-1], (47, 111, 222))
+                self.arrow(pts, ORDER_COLORS["move"])
             elif o["type"] in ("attack", "land"):
                 pts = [p0] + [mv.label_screen(n) for n in o.get("path", [])]
                 if pts[-1] != mv.label_screen(o["target"]):
                     pts.append(mv.label_screen(o["target"]))
-                col = (201, 42, 42) if o["type"] == "attack" else (12, 166, 120)
-                pygame.draw.lines(self.screen, col, False, pts, max(3, int(3 * ui_scale())))
-                self.arrowhead(pts[-2], pts[-1], col)
+                self.arrow(pts, ORDER_COLORS["attack" if o["type"] == "attack" else "land"])
             elif o["type"] == "bombard":
-                self.dashed(p0, mv.label_screen(o["target"]), (230, 119, 0))
-                self.arrowhead(p0, mv.label_screen(o["target"]), (230, 119, 0))
+                q = mv.label_screen(o["target"])
+                self.dashed(p0, q, (20, 20, 20), width_k=4)
+                self.dashed(p0, q, ORDER_COLORS["bombard"])
+                self.arrowhead(p0, q, ORDER_COLORS["bombard"], outline=True)
 
-    def arrowhead(self, p1, p2, color):
+    def arrow(self, pts, color):
+        """영토 색과 겹치지 않도록 검은 테두리를 두른 굵은 화살표."""
+        u = ui_scale()
+        pygame.draw.lines(self.screen, (20, 20, 20), False, pts, max(6, int(7 * u)))
+        pygame.draw.lines(self.screen, color, False, pts, max(3, int(4 * u)))
+        self.arrowhead(pts[-2], pts[-1], color, outline=True)
+
+    def arrowhead(self, p1, p2, color, outline=False):
         ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        L = 13 * ui_scale()
+        L = 16 * ui_scale()
         pts = [p2, (p2[0] - L * math.cos(ang - 0.45), p2[1] - L * math.sin(ang - 0.45)),
                (p2[0] - L * math.cos(ang + 0.45), p2[1] - L * math.sin(ang + 0.45))]
         pygame.draw.polygon(self.screen, color, pts)
+        if outline:
+            pygame.draw.polygon(self.screen, (20, 20, 20), pts, max(1, int(1.5 * ui_scale())))
 
     def draw_armies(self):
         g = self.game

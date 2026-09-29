@@ -146,7 +146,7 @@ def draw_region_info(app, rect):
         if r.happy <= C.REBEL_THRESHOLD and owner == pid:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(pid, node)*100:.1f}%/턴", t.bad)
     if owner == pid and r.focus:
-        y = kv(gui, x, y, w, "생산 집중", "적용 중 (인구 산출 +50%)" if g.focus_active(r) else "대기 (건설·생산 중)",
+        y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
     if r.occ and visible:
         y = kv(gui, x, y, w, "점령 진행", f"{g.fname(r.occ['by'])} {r.occ['progress']}/{r.occ['need']}턴", t.warn)
@@ -356,8 +356,8 @@ def draw_action_tab(app, body):
     y = body.y
     gui.text((x, y), app.world.regions[rid].name, 15, weight="bold")
     y += 26
-    # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +50%
-    on = gui.checkbox((x, y, w, 26), "생산 집중 (인구 산출 +50%)", r.focus, size=13)
+    # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
+    on = gui.checkbox((x, y, w, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
     if on != r.focus:
         ok, msg = g.set_focus(pid, rid, on)
         app.toast(msg)
@@ -388,7 +388,7 @@ def draw_action_tab(app, body):
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
               ("특수", [o for o in opts if o["kind"] in ("landmark", "capital")])]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
-    content = sum(28 + len(lst) * 44 for _, lst in groups if lst)
+    content = sum(28 + sum(60 if o["kind"] == "build" else 44 for o in lst) for _, lst in groups if lst)
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
     money = g.player.money
@@ -409,6 +409,9 @@ def draw_action_tab(app, body):
             if not o["ok"]:
                 sub = o["why"]
             gui.text((x, yy + 21), sub, 11, t.muted if o["ok"] else t.bad, max_w=w - 70)
+            eff = g.building_effect(pid, rid, o) if o["kind"] == "build" else ""
+            if eff:
+                gui.text((x, yy + 38), eff, 11, t.good, "semibold", max_w=w - 70)
             if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):
@@ -420,7 +423,7 @@ def draw_action_tab(app, body):
                     app.toast(msg, None if ok else t.bad)
                     if ok:
                         app.changed()
-            yy += 44
+            yy += 60 if (o["kind"] == "build") else 44
     gui.end_scroll("actions", area, content)
 
 
@@ -552,13 +555,21 @@ def draw_nation_tab(app, body):
     y = section(gui, x, y, w, "세율")
     tmax = g.tax_max(pid)
     locked = f.tax_locked_until > g.turn
-    val, released = gui.slider((x, y + 4, w - 60, 20), f.tax * 100, 0, tmax * 100, 1, "tax", enabled=not locked)
+    cur = round(f.tax * 100)
+    new_val = None
+    if gui.button((x, y, 28, 28), "−", size=14, enabled=not locked and cur > 0, tooltip="세율 1%p 내리기"):
+        new_val = cur - 1
+    val, released = gui.slider((x + 40, y + 4, w - 122, 20), cur, 0, tmax * 100, 1, "tax", enabled=not locked)
+    if gui.button((x + w - 74, y, 28, 28), "+", size=14, enabled=not locked and cur < tmax * 100,
+                  tooltip="세율 1%p 올리기"):
+        new_val = cur + 1
     gui.text((x + w, y + 4), f"{val:.0f}%", 15, weight="semibold", anchor="topright")
-    if abs(val / 100 - f.tax) > 1e-6 and (released or not gui.down):
-        ok, msg = g.set_tax(pid, val / 100)
-        if not ok:
-            app.toast(msg, t.bad)
-    y += 30
+    if released:
+        new_val = val
+    if new_val is not None and abs(new_val / 100 - f.tax) > 1e-6:
+        ok, msg = g.set_tax(pid, new_val / 100)
+        app.toast(msg if ok else msg, None if ok else t.bad)
+    y += 34
     gdp = sum(g.region_output_estimate(r.id) for r in g.regions_of(pid))
     eff = 0.1 * (10 - val)
     gui.text((x, y), f"예상 세수 {gdp * val / 100:,.0f}/턴 · 행복도 {eff:+.1f}/턴" + (" · 잠김" if locked else ""), 12, t.muted)
@@ -566,21 +577,24 @@ def draw_nation_tab(app, body):
     # 자원 시장
     y = section(gui, x, y + 4, w, "자원 시장 (구매/판매가, 같은 턴 추가 구매 +10%)")
     for res in C.RESOURCES:
-        gui.text((x, y + 5), C.RESOURCE_NAMES[res], 13, weight="semibold")
-        gui.text((x + 40, y + 5), f"{f.res.get(res, 0):,.0f}", 13)
         bp, sp = g.buy_price(pid, res), g.sell_price(pid, res)
-        gui.text((x + 96, y + 5), f"{bp:,.0f}/{sp:,.0f}", 11, t.muted)
-        bx = x + w - 150
-        if gui.button((bx, y, 36, 24), "+1", size=11, tooltip=f"1개 구매 {bp:,.0f}"):
-            g.market_buy(pid, res, 1)
-        if gui.button((bx + 38, y, 36, 24), "+10", size=11, tooltip="10개 구매"):
-            n, s = g.market_buy(pid, res, 10)
-            app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s:,.0f})")
-        if gui.button((bx + 76, y, 36, 24), "−1", size=11, tooltip=f"1개 판매 {sp:,.0f}"):
-            g.market_sell(pid, res, 1)
-        if gui.button((bx + 114, y, 36, 24), "−10", size=11, tooltip="10개 판매"):
-            g.market_sell(pid, res, 10)
-        y += 30
+        gui.text((x, y), C.RESOURCE_NAMES[res], 13, weight="semibold")
+        gui.text((x + 44, y), f"보유 {f.res.get(res, 0):,.0f}", 13)
+        gui.text((x + w, y + 1), f"구매 {bp:,.0f} / 판매 {sp:,.0f}", 11, t.muted, anchor="topright")
+        y += 22
+        qtys = (1, 10, 100) if res == "food" else (1, 10)
+        cells = [("+", q) for q in qtys] + [("−", q) for q in qtys]
+        cw = (w - 4 * (len(cells) - 1)) / len(cells)
+        for i, (sign, q) in enumerate(cells):
+            rect = (x + i * (cw + 4), y, cw, 26)
+            if sign == "+":
+                if gui.button(rect, f"+{q}", size=11, tooltip=f"{q}개 구매"):
+                    n, s_ = g.market_buy(pid, res, q)
+                    app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
+            elif gui.button(rect, f"−{q}", size=11, tooltip=f"{q}개 판매"):
+                n, s_ = g.market_sell(pid, res, q)
+                app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 판매 (+{s_:,.0f})")
+        y += 34
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
     f.liquefy = gui.checkbox((x, y, w, 24), f"석유 비축 {C.OIL_RESERVE_FOR_LIQUEFY} 미만이면 석탄액화", f.liquefy)

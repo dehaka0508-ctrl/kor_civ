@@ -66,6 +66,7 @@ class Gui:
         self.text_events = []
         self.tooltip = None
         self.ui_rects = []
+        self.released_id = None
         self.time = pygame.time.get_ticks()
         mx, my = pygame.mouse.get_pos()
         self.mouse_phys = (mx, my)
@@ -75,6 +76,7 @@ class Gui:
             if e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                 self.clicked = True
                 self.down = False
+                self.released_id = self.drag_id   # 방금 놓은 슬라이더는 이번 프레임에 값을 확정
                 self.drag_id = None
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 self.down = True
@@ -264,22 +266,30 @@ class Gui:
         return new
 
     def slider(self, rect, value, lo, hi, step, sid, enabled=True):
+        """(값, 확정 여부). 끄는 동안 값이 따라 움직이고, 놓는 순간 확정(True)된다."""
         r = pygame.Rect(rect)
         t = self.t
+        if not hasattr(self, "_slider_vals"):
+            self._slider_vals = {}
+        result, done = value, False
+        if enabled and self.drag_id is None and self.down and self.hover(r.inflate(0, 14)) \
+                and self.released_id is None:
+            self.drag_id = sid
+        if enabled and self.drag_id == sid:
+            f = max(0.0, min(1.0, (self.mouse[0] - r.x) / r.w))
+            result = round(round((lo + f * (hi - lo)) / step) * step, 6)
+            self._slider_vals[sid] = result
+        elif self.released_id == sid:
+            result = self._slider_vals.pop(sid, value)
+            done = True
+        value = result
         frac = (value - lo) / (hi - lo) if hi > lo else 0
         self.rect(t.panel_alt, (r.x, r.centery - 3, r.w, 6), radius=3)
         self.rect(t.accent if enabled else t.muted, (r.x, r.centery - 3, max(1, int(r.w * frac)), 6), radius=3)
         knob = (int(r.x + r.w * frac), r.centery)
         self.circle(t.panel, knob, 10)
         self.circle(t.accent if enabled else t.muted, knob, 10, 2)
-        if enabled and self.hover(r.inflate(0, 14)) and self.down and self.drag_id is None:
-            self.drag_id = sid
-        if self.drag_id == sid and enabled:
-            f = max(0.0, min(1.0, (self.mouse[0] - r.x) / r.w))
-            v = lo + f * (hi - lo)
-            v = round(round(v / step) * step, 6)
-            return v, not self.down
-        return value, False
+        return value, done
 
     def progress(self, rect, frac, color=None, bg=None):
         r = pygame.Rect(rect)

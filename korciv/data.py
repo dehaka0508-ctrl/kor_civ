@@ -145,7 +145,16 @@ class World:
                     self.terrain[frozenset((a, b))] = {
                         "kind": kind, "label": r["구분"],
                         "name": r["지형"], "note": r["근거"], "mult": float(r["공격배수"])}
+        # 수계 연결(자동): 끊긴 강 조각을 잇는 경계는 같은 강의 도하 경계
+        for t in self.terrain_lines:
+            fp = frozenset((t["a"], t["b"]))
+            if t.get("auto") and fp not in self.terrain and t["b"] in self.land_adj[t["a"]]:
+                self.terrain[fp] = {"kind": "도하", "label": "도하", "name": t["name"], "note": t["note"],
+                                    "mult": t["mult"]}
         self.terrain_lines = [t for t in self.terrain_lines if frozenset((t["a"], t["b"])) in self.terrain]
+        self.river_links = geo.get("river_links", [])
+        # 도하 경계를 가진 지역(하천 어장 가능)
+        self.river_regions = {rid for fp, t in self.terrain.items() if t["kind"] == "도하" for rid in fp}
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":

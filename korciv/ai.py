@@ -448,7 +448,7 @@ def _slots(g, f, threat, military=True):
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):
             lv = r.b[key] + 1
-            if lv > 5 or (key == "fishery" and not info.can_fish):
+            if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
                 continue
             cost = R.prod_building_cost(key, lv)
             turns = g.build_time(fid, key, R.prod_building_turns(lv))

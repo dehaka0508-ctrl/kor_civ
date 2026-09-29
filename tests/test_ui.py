@@ -69,3 +69,35 @@ def test_map_pick(app):
     mv.center_on("S002")
     x, y = mv.label_screen("S002")
     assert mv.pick((int(x), int(y))) == "S002"
+
+
+def test_tax_slider_release_commits(app):
+    from korciv.state import Settings
+    app.start_game(Settings(seed=5, n_enemies=1))
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    app.tab = "nation"
+    app.left_open = False
+    gui = app.gui
+    orig = pygame.mouse.get_pos
+    try:
+        # 슬라이더 위치: 우측 패널 국가 탭 첫 줄 (논리 좌표 → 실제 픽셀)
+        sw, sh = app.lsize()
+        x0 = sw - 320 - 12 + 14 + 40
+        wdt = 320 - 28 - 122
+        y = 56 + 12 + 52 + 26 + 4 + 10
+        u = gui.u
+        def at(lx):
+            p = (int(lx * u), int(y * u))
+            pygame.mouse.get_pos = lambda: p
+            return p
+        at(x0 + wdt * 0.1)
+        gui.begin([]); app.frame()
+        p = at(x0 + wdt * 0.1)
+        gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=p)]); app.frame()
+        p = at(x0 + wdt * 0.6)
+        gui.begin([]); app.frame()
+        gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=p)]); app.frame()
+        assert app.game.player.tax == pytest.approx(0.30, abs=0.02)
+    finally:
+        pygame.mouse.get_pos = orig

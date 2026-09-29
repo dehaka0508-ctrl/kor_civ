@@ -301,3 +301,33 @@ def test_spending_priority_order():
     g._fund_projects()
     assert g.regions[rids[2]].project.funded
     assert g.regions[rids[0]].project.stalled and g.regions[rids[1]].project.stalled
+
+
+def test_river_fishery_and_coast_bonus():
+    g = new_game(player_start="S002", n_enemies=1)
+    n = g.world.name_to_id
+    inland_river = n["경북 상주시"]            # 낙동강 도하 경계, 내륙
+    assert not g.info(inland_river).coastal and g.can_fish(inland_river)
+    assert g.fish_mult(0, inland_river) == pytest.approx(C.RIVER_FISH_MULT)
+    assert not g.can_fish(n["충북 증평군"])      # 해안도 강도 아님
+    # 해역의 해안 지역을 모두 가지면 바다 어장 +20%
+    sea = "SEA3"
+    for rid in g.world.seas[sea].coast:
+        g.regions[rid].owner = 0
+    coast = g.world.seas[sea].coast[0]
+    assert g.coast_controller(sea) == 0
+    assert g.fish_mult(0, coast) == pytest.approx(1 + C.COAST_FISH_BONUS) == pytest.approx(1.2)
+    assert C.COAST_NAVAL_DEF == pytest.approx(0.10)
+
+
+def test_peace_nonaggression_locked_24_turns():
+    g = new_game(n_enemies=2)
+    D.declare_war(g, 0, 1)
+    D.make_peace(g, 0, 1)
+    assert D.peace_left(g, 0, 1) == 24
+    ok, msg = D.break_nonaggr(g, 0, 1)
+    assert not ok and "강화" in msg
+    ok, _ = D.declare_war(g, 0, 1)
+    assert not ok
+    g.turn += 24
+    assert D.peace_left(g, 0, 1) == 0

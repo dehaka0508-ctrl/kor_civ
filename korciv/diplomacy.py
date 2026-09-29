@@ -28,6 +28,7 @@ class DiploState:
         self.rejected: set = set()    # 이번 턴 거절된 (제안국, 상대)
         self.peace_streak = 0
         self.next_cid = 1
+        self.peace_until: dict = {}    # pair -> 강화 불가침 만료 턴
 
 
 # ------------------------------------------------------------------ 조회
@@ -104,6 +105,11 @@ def stage(g, a, b) -> int:
     if pair(a, b) in g.dip.friends:
         return 1
     return 0
+
+
+def peace_left(g, a, b) -> int:
+    """강화 후 파기할 수 없는 불가침 남은 턴."""
+    return max(0, getattr(g.dip, "peace_until", {}).get(pair(a, b), 0) - g.turn)
 
 
 def enemies(g, a):
@@ -196,7 +202,10 @@ def make_peace(g, a, b, _done=None):
         return
     done.add(p)
     del g.dip.wars[p]
-    g.dip.nonaggr[p] = g.turn + C.PEACE_TREATY_TURNS
+    g.dip.nonaggr[p] = max(g.dip.nonaggr.get(p, 0), g.turn + C.PEACE_TREATY_TURNS)
+    if not hasattr(g.dip, "peace_until"):
+        g.dip.peace_until = {}
+    g.dip.peace_until[p] = g.turn + C.PEACE_TREATY_TURNS   # 강화 불가침: 이 기간에는 파기 불가
     g.dip.no_attack_until.pop((a, b), None)
     g.dip.no_attack_until.pop((b, a), None)
     for r in g.regions.values():
@@ -232,6 +241,8 @@ def add_war_score(g, a, b, v):
 
 def break_nonaggr(g, a, b):
     p = pair(a, b)
+    if peace_left(g, a, b) > 0:
+        return False, f"강화 불가침 기간입니다({peace_left(g, a, b)}턴 남음). 파기할 수 없습니다."
     if p in g.dip.alliance or same_coalition(g, a, b):
         return False, "동맹·연합은 먼저 탈퇴해야 합니다."
     if p not in g.dip.nonaggr:

@@ -189,6 +189,174 @@ def polygons_of(geom):
     return [g for g in getattr(geom, "geoms", []) if isinstance(g, Polygon)]
 
 
+def connect_rivers(terrain, adjacency, geom, id2name, src):
+    """강(수계)마다 도하 경계 조각이 끊기지 않도록, 끊긴 조각 사이를 실제 지역 경계선을 따라가는
+    가장 짧은 경로로 잇는다. 경로에 쓰인 경계도 같은 강의 도하 경계(자동)가 된다."""
+    import networkx as nx
+    from shapely.ops import linemerge
+
+    GRID = 0.002
+
+    def key(x, y):
+        return (round(x / GRID), round(y / GRID))
+
+    G = nx.Graph()
+
+    def add_line(coords, pair):
+        prev = None
+        for x, y in coords:
+            k = key(x, y)
+            if prev is not None and k != prev:
+                d = math.hypot(k[0] - prev[0], k[1] - prev[1]) * GRID
+                if G.has_edge(prev, k):
+                    G[prev][k]["pairs"].add(pair)
+                else:
+                    G.add_edge(prev, k, w=d, pairs={pair})
+                G.nodes[k]["xy"] = (x, y)
+                G.nodes[prev].setdefault("xy", (x, y))
+            else:
+                G.add_node(k, xy=(x, y))
+            prev = k
+
+    # 모든 인접 쌍의 공유 경계선
+    for a, b in adjacency:
+        ga, gb = geom[id2name[a]], geom[id2name[b]]
+        cross = {src[id2name[a]], src[id2name[b]]} != {src[id2name[a]]}
+        tol = 0.02 if cross else 0.0008
+        shared = ga.boundary.intersection(gb.buffer(tol))
+        if shared.is_empty:
+            continue
+        merged = linemerge(shared) if shared.geom_type not in ("LineString",) else shared
+        for ln in getattr(merged, "geoms", [merged]):
+            if ln.geom_type == "LineString" and ln.length >= 0.001:
+                add_line(ln.simplify(0.001).coords, (a, b))
+    # 지형 파일의 연결선(하구 등)
+    for t in terrain:
+        if t["connector"]:
+            for ln in t["lines"]:
+                add_line(ln, tuple(sorted((t["a"], t["b"]))))
+
+    # 경계선 끝점(교차점 부근)이 서로 붙지 않은 곳을 600m 이내 가장 가까운 점과 잇는다
+    cell = defaultdict(list)
+    for n in G.nodes:
+        cell[(n[0] // 3, n[1] // 3)].append(n)
+    for n in [n for n in G.nodes if G.degree(n) <= 1]:
+        best = None
+        cx, cy = n[0] // 3, n[1] // 3
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for m in cell[(cx + dx, cy + dy)]:
+                    if m == n or G.has_edge(n, m):
+                        continue
+                    d = math.hypot(m[0] - n[0], m[1] - n[1]) * GRID
+                    if d <= 0.006 and (best is None or d < best[0]):
+                        best = (d, m)
+        if best:
+            G.add_edge(n, best[1], w=best[0], pairs=set())
+    comps_g = list(nx.connected_components(G))
+    print(f"경계 그래프: 노드 {G.number_of_nodes()}, 연결 성분 {len(comps_g)}, 최대 {max(len(c) for c in comps_g)}")
+    rivers = defaultdict(list)
+    for t in terrain:
+        if t["kind"] == "도하":
+            rivers[t["name"]].append(t)
+    known = {frozenset((t["a"], t["b"])) for t in terrain}
+    added = {}
+    links = []   # 경계가 아닌 시각적 연결선
+    for river, segs in rivers.items():
+        seg_nodes = set()
+        H = nx.Graph()
+        for t in segs:
+            for ln in t["lines"]:
+                ks = [key(x, y) for x, y in ln]
+                for k in ks:
+                    if k not in G:
+                        # 가장 가까운 그래프 노드에 붙인다
+                        near = min(G.nodes, key=lambda n: (n[0] - k[0]) ** 2 + (n[1] - k[1]) ** 2)
+                        k = near
+                    seg_nodes.add(k)
+                    H.add_node(k)
+                for k1, k2 in zip(ks, ks[1:]):
+                    if k1 in G and k2 in G and k1 != k2:
+                        H.add_edge(k1, k2)
+        comps = [set(c) for c in nx.connected_components(H)]
+        if len(comps) <= 1:
+            continue
+
+        def cdist(ca, cb):
+            best = None
+            for n1 in ca:
+                for n2 in cb:
+                    d = math.hypot(n1[0] - n2[0], n1[1] - n2[1]) * GRID
+                    if best is None or d < best[0]:
+                        best = (d, n1, n2)
+            return best
+
+        # 1) 2km 이내로 붙은 조각은 곧바로 잇는다
+        merged_flag = True
+        while merged_flag and len(comps) > 1:
+            merged_flag = False
+            for i in range(len(comps)):
+                for j in range(i + 1, len(comps)):
+                    d, n1, n2 = cdist(comps[i], comps[j])
+                    if d <= 0.02:
+                        links.append((river, [G.nodes[n1]["xy"], G.nodes[n2]["xy"]]))
+                        comps[i] |= comps[j]
+                        del comps[j]
+                        merged_flag = True
+                        break
+                if merged_flag:
+                    break
+        if len(comps) <= 1:
+            continue
+        # 2) 남은 조각은 최소 신장 트리로: 경계선 경로가 자연스러우면(직선의 3배 이내) 경계를 따르고,
+        #    아니면 직선으로 잇는다(시각적 연결만)
+        C = nx.Graph()
+        info = {}
+        for i, ca in enumerate(comps):
+            lengths, ps = nx.multi_source_dijkstra(G, ca, cutoff=1.0, weight="w")
+            for j in range(i + 1, len(comps)):
+                cb = comps[j]
+                straight, s1, s2 = cdist(ca, cb)
+                best = min(((lengths[n], n) for n in cb if n in lengths), default=None)
+                if best is not None and best[0] <= straight * 3.0 + 0.01:
+                    info[(i, j)] = ("path", ps[best[1]])
+                    C.add_edge(i, j, w=best[0])
+                else:
+                    info[(i, j)] = ("line", [G.nodes[s1]["xy"], G.nodes[s2]["xy"]])
+                    C.add_edge(i, j, w=straight * 1.3)
+        for i, j in nx.minimum_spanning_edges(C, weight="w", data=False):
+            kind, val = info[(min(i, j), max(i, j))]
+            if kind == "line":
+                links.append((river, val))
+                continue
+            for n1, n2 in zip(val, val[1:]):
+                seg = [G.nodes[n1]["xy"], G.nodes[n2]["xy"]]
+                owners = [pr for pr in G[n1][n2]["pairs"] if frozenset(pr) not in known]
+                if not owners:
+                    links.append((river, seg))
+                for pair in owners:
+                    added.setdefault((river, pair), []).append(seg)
+    out = []
+    from shapely.geometry import MultiLineString
+    for (river, (a, b)), segs in added.items():
+        used = sum(math.hypot(p2[0] - p1[0], p2[1] - p1[1]) for p1, p2 in segs)
+        if used < 0.004 or frozenset((a, b)) in known:
+            links.extend((river, sg) for sg in segs)   # 스치기만 한 경계는 도하로 치지 않는다
+            continue
+        known.add(frozenset((a, b)))
+        merged = linemerge(MultiLineString(segs))
+        lines = [[(round(x, 4), round(y, 4)) for x, y in ln.coords]
+                 for ln in getattr(merged, "geoms", [merged])]
+        out.append({"a": a, "b": b, "kind": "도하", "name": river, "note": "수계 연결(자동)", "mult": 0.9,
+                    "connector": False, "auto": True, "lines": lines})
+    print(f"수계 연결: 도하 경계 {len(out)}쌍 추가, 연결선 {len(links)}개")
+    RIVER_LINKS.extend({"name": r, "line": [(round(x, 4), round(y, 4)) for x, y in ln]} for r, ln in links)
+    return out
+
+
+RIVER_LINKS = []
+
+
 def build():
     regions = load_regions()
     by_name = {r["표기명"]: r for r in regions}
@@ -350,6 +518,8 @@ def build():
                                 "note": row["근거"], "mult": float(row["공격배수"]),
                                 "connector": connector, "lines": lines})
 
+    terrain += connect_rivers(terrain, adjacency, geom, id2name, src)
+
     # ---- 광역·조선 8도 외곽선 (경계선 그리기용)
     def outlines(key_fn, tol):
         groups = defaultdict(list)
@@ -374,6 +544,7 @@ def build():
 
     result = {
         "terrain": terrain,
+        "river_links": RIVER_LINKS,
         "provinces": provinces,
         "do8": do8,
         "source": {
