@@ -134,11 +134,18 @@ class World:
             with open(tpath, encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
                     a, b = r["구역A_ID"], r["구역B_ID"]
+                    kind = "도하" if r["구분"] == "도하" else "돌파"
+                    if b not in self.land_adj[a]:
+                        # 경계가 실제로 맞닿지 않은 쌍: 강 하구·수로(도하)만 건너는 경로로 인정하고,
+                        # 산악 돌파는 인접이 아니므로 무시한다(예: 북청군–김형권군 후치령)
+                        if kind != "도하":
+                            continue
+                        self.land_adj[a].add(b)
+                        self.land_adj[b].add(a)
                     self.terrain[frozenset((a, b))] = {
-                        "kind": "도하" if r["구분"] == "도하" else "돌파", "label": r["구분"],
+                        "kind": kind, "label": r["구분"],
                         "name": r["지형"], "note": r["근거"], "mult": float(r["공격배수"])}
-                    self.land_adj[a].add(b)
-                    self.land_adj[b].add(a)
+        self.terrain_lines = [t for t in self.terrain_lines if frozenset((t["a"], t["b"])) in self.terrain]
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":

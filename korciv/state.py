@@ -27,6 +27,8 @@ class Project:
     border: Optional[str] = None   # 방어선: 인접 구역 ID 또는 "coast"
     stalled: bool = False
     name: Optional[str] = None     # 랜드마크 이름
+    priority: float = 0.0          # 자금 지출 우선순위(작을수록 먼저). 기본은 착수 순서
+    funded: bool = False
 
     @property
     def remaining(self) -> int:
@@ -49,6 +51,7 @@ class Region:
     spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
     spec_block: set = field(default_factory=set)   # 수동 제외 특산물
     landmark_name: str = ""
+    focus: bool = False            # 생산 집중(건설·병력 생산을 안 할 때 인구 산출 +50%)
     acquired_seq: int = 0          # 영토를 얻은 순서(수도 0) — '다음 지역' 순회용
     famine: float = 0.0
     h_delta: float = 0.0

@@ -48,6 +48,7 @@ CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
 CAPITAL_LOST_HAPPY = -10
 PROJECT_REFUND = 0.5
+FOCUS_POP_BONUS = 0.5      # 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출(30P) +50%
 DEBT_HAPPY = -1.0          # 보완안: 자금이 음수인 턴에는 전 지역 행복도 -1
 
 # 생산 건물: 단계 L 비용 = base * L^1.5, 소요 2L턴

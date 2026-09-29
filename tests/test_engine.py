@@ -60,7 +60,7 @@ def test_cancel_refund_and_stall():
     assert g.player.money == pytest.approx(money + paid * 0.5)
     g.start_project(0, "S002", "build", "bank")
     g.player.money = 0
-    g._phase_projects(("build",))
+    g._fund_projects()
     assert g.regions["S002"].project.stalled
 
 
@@ -275,3 +275,29 @@ def test_landmark_naming():
     g.regions["S002"].landmark = False
     ok, _ = g.start_project(0, "S002", "landmark", "landmark")
     assert g.regions["S002"].project.name == "강남 타워"
+
+
+def test_production_focus_bonus():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    base = g.calc_output("S002", phi=1.0)
+    g.set_focus(0, "S002", True)
+    assert g.calc_output("S002", phi=1.0) == pytest.approx(base + 30 * r.pop * C.FOCUS_POP_BONUS)
+    g.start_project(0, "S002", "build", "farm")          # 건설 중에는 효과 없음
+    assert g.calc_output("S002", phi=1.0) == pytest.approx(base)
+    assert g.idle_slots(0) == 0
+
+
+def test_spending_priority_order():
+    g = new_game(player_start="S002", n_enemies=1)
+    rids = ["S002"] + sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, rids[1:])
+    for rid in rids:
+        ok, _ = g.start_project(0, rid, "build", "bank")
+        assert ok
+    per = g.regions["S002"].project.per_turn
+    g.player.money = per * 1.5            # 한 건만 낼 수 있음
+    g.set_priority_order(0, [rids[2], rids[0], rids[1]])
+    g._fund_projects()
+    assert g.regions[rids[2]].project.funded
+    assert g.regions[rids[0]].project.stalled and g.regions[rids[1]].project.stalled

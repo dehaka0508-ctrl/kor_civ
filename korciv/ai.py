@@ -54,6 +54,8 @@ def plan_turn(g, fid):
     _austerity(g, f, threat)
     _army_orders(g, f, threat)
     _slots(g, f, threat)
+    for r in g.regions_of(fid):   # 슬롯이 비는 지역은 생산 집중(건설·생산 중엔 효과 없음)
+        r.focus = True
 
 
 # ------------------------------------------------------------------ 위협도
@@ -424,7 +426,7 @@ def _slots(g, f, threat, military=True):
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     at_war = bool(D.enemies(g, fid))
-    idle = [r for r in regs if not r.project and not r.occ]
+    idle = [r for r in regs if not r.project and not r.occ and (f.is_ai or not r.focus)]
     cands = []
     # 군 생산 수요
     mil_units = sum(a.count() for a in g.armies.values() if a.owner == fid)

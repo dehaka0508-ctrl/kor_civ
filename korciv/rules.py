@@ -14,9 +14,9 @@ def g(level: int) -> float:
 
 
 def region_output(pop, farm, fishery, factory, bank, landmark, phi=1.0,
-                  fish_mult=1.0, bank_mult=1.0, factory_mult=1.0) -> float:
-    """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) + 9000K"""
-    return (C.POP_OUTPUT * pop
+                  fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0) -> float:
+    """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) + 9000K (pop_mult: 생산 집중)"""
+    return (C.POP_OUTPUT * pop * pop_mult
             + C.FARM_OUTPUT * g(farm)
             + C.FISH_OUTPUT * g(fishery) * fish_mult
             + C.FACTORY_OUTPUT * g(factory) * phi * factory_mult

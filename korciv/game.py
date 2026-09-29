@@ -785,6 +785,8 @@ class Game:
             rr.h_delta += C.UNIT_START_HAPPY[u["weight"]]
         rr.project = Project(kind=kind, key=key, level=opt["level"], turns=opt["turns"],
                              per_turn=opt["per_turn"], border=opt["border"])
+        self.proj_counter = getattr(self, "proj_counter", 0) + 1
+        rr.project.priority = self.proj_counter
         if kind == "landmark":
             rr.project.name = (name or "").strip()[:16] or self.default_landmark_name(rid)
         label = f"랜드마크 「{rr.project.name}」" if kind == "landmark" else opt["name"]
@@ -806,7 +808,20 @@ class Game:
         return [r.id for r in sorted(regs, key=lambda r: (r.id != cap, getattr(r, "acquired_seq", 0), r.id))]
 
     def idle_slots(self, fid) -> int:
-        return sum(1 for r in self.regions.values() if r.owner == fid and not r.project and not r.occ)
+        return sum(1 for r in self.regions.values() if r.owner == fid and not r.project and not r.occ
+                   and not getattr(r, "focus", False))
+
+    def projects_by_priority(self, fid):
+        """자금 지출 우선순위 순서의 (지역, 작업) 목록."""
+        regs = [r for r in self.regions.values() if r.owner == fid and r.project]
+        return sorted(regs, key=lambda r: (r.project.priority, r.id))
+
+    def set_priority_order(self, fid, rids):
+        for i, rid in enumerate(rids):
+            r = self.regions.get(rid)
+            if r and r.owner == fid and r.project:
+                r.project.priority = i + 1
+        self.proj_counter = max(getattr(self, "proj_counter", 0), len(rids) + 1)
 
     # ------------------------------------------------------------------ 국가 명령
     def tax_max(self, fid):
@@ -891,7 +906,21 @@ class Game:
         phi = rr.phi if phi is None else phi
         return R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
                                rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
-                               m.mult("output_bank"), m.mult("output_factory"))
+                               m.mult("output_bank"), m.mult("output_factory"),
+                               1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
+
+    # ---- 생산 집중
+    @staticmethod
+    def focus_active(rr) -> bool:
+        """건설·병력 생산을 하지 않는 동안에만 효과(편입은 해당 없음)."""
+        return getattr(rr, "focus", False) and (rr.project is None or rr.project.kind == "annex")
+
+    def set_focus(self, fid, rid, on):
+        rr = self.regions[rid]
+        if rr.owner != fid:
+            return False, "내 지역이 아닙니다."
+        rr.focus = bool(on)
+        return True, "생산 집중 " + ("켬: 인구 산출 +50%" if on else "끔")
 
     def region_output_estimate(self, rid):
         rr = self.regions[rid]
@@ -1032,7 +1061,8 @@ class Game:
         self._phase_naval()
         self._phase_bombard()
         self._phase_attack()
-        # 6. 점령·편입
+        # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
+        self._fund_projects()
         self._phase_occupation()
         self._phase_projects(("annex",))
         # 7. 건설·생산
@@ -1437,29 +1467,39 @@ class Game:
                 self.complete_occupation(fid, rr.id)
 
     # ---- 6~7. 슬롯 진행
+    def _fund_projects(self):
+        """세력마다 우선순위 순서로 이번 턴 비용을 낸다. 모자라면 그 작업은 정지(뒤의 더 싼 작업은 진행 가능)."""
+        for f in self.factions:
+            if not f.alive:
+                continue
+            for rr in self.projects_by_priority(f.id):
+                p = rr.project
+                p.funded = False
+                if rr.occ:
+                    p.stalled = True
+                    continue
+                if p.kind == "annex":
+                    tgt = self.regions[p.key]
+                    if tgt.owner != NEUTRAL or (tgt.occ and tgt.occ["by"] != rr.owner):
+                        f.money += p.paid * C.PROJECT_REFUND
+                        rr.project = None
+                        continue
+                if f.money < p.per_turn:
+                    p.stalled = True
+                    continue
+                f.money -= p.per_turn
+                p.paid += p.per_turn
+                p.funded = True
+                p.stalled = False
+
     def _phase_projects(self, kinds):
-        order = list(self.regions.values())
-        for rr in order:
+        for rr in list(self.regions.values()):
             p = rr.project
-            if not p or p.kind not in kinds or rr.owner == NEUTRAL:
+            if not p or p.kind not in kinds or rr.owner == NEUTRAL or not getattr(p, "funded", False):
                 continue
             f = self.factions[rr.owner]
-            if rr.occ:
-                p.stalled = True
-                continue
-            if p.kind == "annex":
-                tgt = self.regions[p.key]
-                if tgt.owner != NEUTRAL or (tgt.occ and tgt.occ["by"] != rr.owner):
-                    f.money += p.paid * C.PROJECT_REFUND
-                    rr.project = None
-                    continue
-            if f.money < p.per_turn:
-                p.stalled = True
-                continue
-            f.money -= p.per_turn
-            p.paid += p.per_turn
+            p.funded = False
             p.progress += 1
-            p.stalled = False
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)

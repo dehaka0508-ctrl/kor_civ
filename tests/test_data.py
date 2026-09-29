@@ -55,3 +55,13 @@ def test_cross_border_links():
     n = w.name_to_id
     assert n["황북 개성시"] in w.land_adj[n["경기 파주시"]]
     assert n["강원 평강군"] in w.land_adj[n["강원 철원군"]]
+
+
+def test_mountain_pass_not_adjacent_unless_touching():
+    w = load_world()
+    n = w.name_to_id
+    assert n["양강 김형권군"] not in w.land_adj[n["함남 북청군"]]
+    assert n["양강 백암군"] not in w.land_adj[n["함북 김책시"]]
+    # 도하 하구 경로는 인접
+    assert n["황북 개성시"] in w.land_adj[n["인천 강화군"]]
+    assert w.terrain_between(n["경북 문경시"], n["충북 괴산군"])["kind"] == "돌파"

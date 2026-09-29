@@ -60,13 +60,30 @@ def kv(gui, x, y, w, k, v, vcol=None):
 
 # ------------------------------------------------------------------ 좌측 패널
 def draw_left(app, rect):
+    """좌측 패널: [국가 현황] / [지역 정보] 탭, 접기 가능."""
+    gui = app.gui
+    t = app.theme
+    gui.panel(rect)
+    tw = (rect.w - 60) / 2
+    for i, (k, label) in enumerate((("nation", "국가 현황"), ("region", "지역 정보"))):
+        if gui.button((rect.x + 12 + i * (tw + 4), rect.y + 10, tw, 32), label, selected=app.left_tab == k, size=14):
+            app.left_tab = k
+    if gui.button((rect.right - 40, rect.y + 10, 30, 32), "‹", "ghost", size=16, tooltip="접기"):
+        app.left_open = False
+        return
+    body = pygame.Rect(rect.x, rect.y + 48, rect.w, rect.h - 48)
+    if app.left_tab == "nation":
+        draw_nation_status(app, body)
+    elif not app.sel:
+        gui.text((body.x + 16, body.y + 10), "지도에서 지역을 선택하세요.", 13, t.muted)
+    else:
+        draw_region_info(app, body)
+
+
+def draw_region_info(app, rect):
     gui = app.gui
     g = app.game
     t = app.theme
-    gui.panel(rect)
-    if gui.button((rect.right - 34, rect.y + 8, 26, 26), "‹", "ghost", tooltip="접기"):
-        app.left_open = False
-        return
     node = app.sel
     x, w = rect.x + 16, rect.w - 32
     pid = g.player_id
@@ -128,6 +145,9 @@ def draw_left(app, rect):
         y += 16
         if r.happy <= C.REBEL_THRESHOLD and owner == pid:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(pid, node)*100:.1f}%/턴", t.bad)
+    if owner == pid and r.focus:
+        y = kv(gui, x, y, w, "생산 집중", "적용 중 (인구 산출 +50%)" if g.focus_active(r) else "대기 (건설·생산 중)",
+               t.good if g.focus_active(r) else t.muted)
     if r.occ and visible:
         y = kv(gui, x, y, w, "점령 진행", f"{g.fname(r.occ['by'])} {r.occ['progress']}/{r.occ['need']}턴", t.warn)
     # 건물
@@ -336,6 +356,16 @@ def draw_action_tab(app, body):
     y = body.y
     gui.text((x, y), app.world.regions[rid].name, 15, weight="bold")
     y += 26
+    # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +50%
+    on = gui.checkbox((x, y, w, 26), "생산 집중 (인구 산출 +50%)", r.focus, size=13)
+    if on != r.focus:
+        ok, msg = g.set_focus(pid, rid, on)
+        app.toast(msg)
+        app.changed()
+    if r.focus:
+        state = "적용 중" if g.focus_active(r) else "대기: 건설·생산 중에는 효과 없음"
+        gui.text((x + w, y + 4), state, 11, t.good if g.focus_active(r) else t.muted, anchor="topright")
+    y += 32
     if r.project:
         y = draw_project(app, x, y, w, rid, r.project)
         y = section(gui, x, y, w, "슬롯 사용 중 — 완료 후 새 작업 지정")
@@ -559,27 +589,13 @@ def draw_nation_tab(app, body):
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     supplied = sum(len(r.supplied) for r in g.regions_of(pid))
     y = section(gui, x, y, w, f"특산물 (재고 {sum(stock.values())}개 · 공급 {supplied}건, 자동 배분)")
-    kinds = [app.world.regions[r.id].specialty for r in g.regions_of(pid) if app.world.regions[r.id].specialty]
-    y = draw_chips(gui, x, y, w, kinds[:12] + ([f"외 {len(kinds)-12}종"] if len(kinds) > 12 else []) or ["없음"])
     f.auto_specialty = gui.checkbox((x, y, w - 110, 24), "행복도 낮은 지역부터 자동", f.auto_specialty, size=12)
     if gui.button((x + w - 100, y - 2, 100, 26), "배분 수정", size=12):
         app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
         app.modal = ("specialty", None)
     y += 30
-    # 통계
-    y = section(gui, x, y + 4, w, "국가 통계")
-    y = kv(gui, x, y, w, "GDP", f"{f.last.get('gdp', 0):,.0f}")
-    y = kv(gui, x, y, w, "국력", f"{g.power.get(pid, 0):.2f}" + (" (패권)" if g.hegemon == pid else ""))
-    y = kv(gui, x, y, w, "지역 / 인구", f"{g.region_count(pid)}곳 / {g.total_pop(pid):,.0f}만")
-    y = kv(gui, x, y, w, "군 전력 / 유지비", f"{g.mil_power(pid):,.0f} / {g.upkeep(pid):,.0f}")
-    lm = [app.world.regions[r.id].do8 for r in g.regions_of(pid) if r.landmark]
-    y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")
-    lead = LEADER_BY_KEY[f.leader]
-    gov = GOV_BY_KEY.get(f.gov, {})
-    y = gui.wrap((x, y + 4), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / {lead['debuff'][0]}({lead['debuff'][1]})",
-                 w, 11, t.muted)
-    if gov:
-        y = gui.wrap((x, y), f"체제 {gov['name']}: {gov['buff'][1]} / {gov['debuff'][1]}", w, 11, t.muted)
+    gui.text((x, y), "국가 통계·재정·특산물 재고는 좌측 [국가 현황] 탭에 있습니다.", 11, t.muted)
+    y += 18
     # 외교
     y = section(gui, x, y + 8, w, "외교")
     for o in g.factions:
@@ -611,3 +627,160 @@ def draw_nation_tab(app, body):
         app.modal = ("ranking", max(g.rankings))
     y += 40
     gui.end_scroll("nation", area, y - y0)
+
+
+# ------------------------------------------------------------------ 좌측 [국가 현황]
+PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "landmark": "랜드마크", "capital": "천도"}
+
+
+def draw_nation_status(app, body):
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    f = g.player
+    pid = f.id
+    x, w = body.x + 16, body.w - 32
+    area = pygame.Rect(body.x, body.y, body.w, body.h - 6)
+    content = getattr(app, "_nation_h", 1600)
+    off = gui.begin_scroll("nation_status", area, content)
+    y = body.y + 4 - off
+    y0 = y
+    regs = g.regions_of(pid)
+    last = f.last
+    # 국가 통계
+    y = section(gui, x, y, w, "국가 통계")
+    y = kv(gui, x, y, w, "GDP", f"{last.get('gdp', 0):,.0f} /턴")
+    y = kv(gui, x, y, w, "국력", f"{g.power.get(pid, 0):.2f}" + (" (패권)" if g.hegemon == pid else ""))
+    y = kv(gui, x, y, w, "지역 / 인구", f"{len(regs)}곳 / {g.total_pop(pid):,.0f}만")
+    y = kv(gui, x, y, w, "평균 행복도", f"{g.avg_happiness(pid):+.1f}")
+    y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
+    lm = [app.world.regions[r.id].do8 for r in regs if r.landmark]
+    y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")
+    lead = LEADER_BY_KEY[f.leader]
+    gov = GOV_BY_KEY.get(f.gov, {})
+    y = gui.wrap((x, y + 2), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
+                 f"{lead['debuff'][0]}({lead['debuff'][1]})", w, 11, t.muted)
+    if gov:
+        y = gui.wrap((x, y), f"체제 {gov['name']}: {gov['buff'][1]} / {gov['debuff'][1]}", w, 11, t.muted)
+    # 재정
+    items = g.projects_by_priority(pid)
+    spend = {}
+    for rr in items:
+        k = rr.project.kind
+        n, s = spend.get(k, (0, 0.0))
+        spend[k] = (n + 1, s + rr.project.per_turn)
+    total_spend = sum(s for _, s in spend.values())
+    y = section(gui, x, y + 6, w, "재정 (턴당)")
+    y = kv(gui, x, y, w, "자금", f"{f.money:,.0f}", t.bad if f.money < 0 else None)
+    y = kv(gui, x, y, w, "세수", f"+{last.get('tax', 0):,.0f} (세율 {f.tax*100:.0f}%)", t.good)
+    y = kv(gui, x, y, w, "군 유지비", f"−{g.upkeep(pid):,.0f}", t.bad)
+    y = kv(gui, x, y, w, "시장 구매 / 판매", f"−{last.get('buy', 0):,.0f} / +{last.get('sell', 0):,.0f}")
+    y = kv(gui, x, y, w, "순수익", f"{last.get('net', 0):+,.0f}", t.good if last.get("net", 0) >= 0 else t.bad)
+    for k in ("build", "unit", "annex", "landmark", "capital"):
+        if k in spend:
+            n, s = spend[k]
+            y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s:,.0f}")
+    y = kv(gui, x, y, w, "진행 중 작업 지출 합", f"−{total_spend:,.0f}", t.bad if total_spend > f.money else None)
+    stalled = sum(1 for rr in items if rr.project.stalled)
+    if stalled:
+        y = kv(gui, x, y, w, "자금 부족으로 정지", f"{stalled}건", t.bad)
+    focus = [r for r in regs if g.focus_active(r)]
+    bonus = sum(C.POP_OUTPUT * r.pop * C.FOCUS_POP_BONUS for r in focus)
+    y = kv(gui, x, y, w, "생산 집중 지역", f"{len(focus)}곳 (+{bonus:,.0f})")
+    # 자원
+    y = section(gui, x, y + 6, w, "자원 비축")
+    y = kv(gui, x, y, w, "식량", f"{f.res.get('food', 0):,.0f} (생산 {last.get('food_prod', 0):,.0f} / 소비 "
+           f"{last.get('food_cons', 0):,.0f})")
+    y = kv(gui, x, y, w, "석유 / 석탄 / 전기",
+           f"{f.res.get('oil', 0):,.0f} / {f.res.get('coal', 0):,.0f} / {f.res.get('elec', 0):,.0f}")
+    # 지출 우선순위 (드래그)
+    y = section(gui, x, y + 6, w, "지출 우선순위 (드래그로 순서 변경)")
+    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted)
+    y += 20
+    y = draw_priority_list(app, x, y, w, items)
+    # 특산물 재고
+    stock = {k: v for k, v in f.specialty.items() if v > 0}
+    kinds = sorted(set(stock) | set(g.specialty_kinds(pid)))
+    y = section(gui, x, y + 6, w, f"특산물 재고 {sum(stock.values())}개 · {len(kinds)}종 (눌러서 생산지 열기)")
+    producer = {app.world.regions[r.id].specialty: r.id for r in regs
+                if app.world.regions[r.id].specialty}
+    supplied = {}
+    for r in regs:
+        for k in r.supplied:
+            supplied[k] = supplied.get(k, 0) + 1
+    for k in kinds:
+        row = pygame.Rect(x, y, w, 26)
+        src = producer.get(k)
+        hov = src and gui.hover(row)
+        if hov:
+            gui.rect(t.panel_alt, row, radius=6)
+        gui.text((x + 6, y + 4), k, 13, t.accent if src else t.text, "semibold" if src else "regular", max_w=w * 0.55)
+        info = f"재고 {stock.get(k, 0)} · 공급 {supplied.get(k, 0)}곳"
+        gui.text((x + w - 4, y + 5), info, 11, t.muted, anchor="topright")
+        if hov:
+            gui.tooltip = f"생산지: {app.world.regions[src].name} (클릭하면 지역 정보·행동 메뉴)"
+            if gui.clicked:
+                gui.clicked = False
+                app.select(src)
+                app.tab = "action"
+                app.left_tab = "region"
+                app.map.center_on(src)
+        y += 28
+    if not kinds:
+        gui.text((x, y), "없음", 13, t.muted)
+        y += 24
+    app._nation_h = y - y0 + 20
+    gui.end_scroll("nation_status", area, app._nation_h)
+
+
+def draw_priority_list(app, x, y, w, items):
+    """자금 지출 우선순위 목록. 행을 끌어 순서를 바꾼다."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    row_h = 44
+    n = len(items)
+    if not n:
+        gui.text((x, y), "진행 중인 작업이 없습니다.", 13, t.muted)
+        return y + 26
+    top = y
+    drag = getattr(app, "prio_drag", None)
+    ids = [rr.id for rr in items]
+    if drag not in ids:
+        drag = app.prio_drag = None
+    # 끌기 시작
+    if drag is None and gui.down and gui.drag_id is None:
+        for i, rid in enumerate(ids):
+            if gui.hover(pygame.Rect(x, top + i * row_h, w, row_h - 4)):
+                app.prio_drag = drag = rid
+                gui.drag_id = "prio"
+                break
+    target = None
+    if drag is not None:
+        target = max(0, min(n - 1, int((gui.mouse[1] - top) // row_h)))
+    order = ids
+    if drag is not None:
+        order = [r for r in ids if r != drag]
+        order.insert(target, drag)
+    for i, rid in enumerate(order):
+        rr = g.regions[rid]
+        p = rr.project
+        row = pygame.Rect(x, top + i * row_h, w, row_h - 4)
+        dragged = rid == drag
+        gui.rect(t.accent if dragged else t.panel_alt, row, radius=8)
+        fg = (255, 255, 255) if dragged else t.text
+        sub = (235, 240, 255) if dragged else t.muted
+        gui.text((row.x + 8, row.y + 3), f"{i + 1}. {app.world.regions[rid].short} · {project_name(app, p)}", 12, fg,
+                 "semibold", max_w=w - 16)
+        state = "정지" if p.stalled else f"남은 {p.remaining}턴"
+        gui.text((row.x + 8, row.y + 21), f"턴당 {p.per_turn:,.0f} · {state}", 11,
+                 (t.bad if p.stalled and not dragged else sub))
+        gui.text((row.right - 8, row.centery), "≡", 16, sub, anchor="midright")
+    # 놓기
+    if drag is not None and not gui.down:
+        app.prio_drag = None
+        if order != ids:
+            g.set_priority_order(g.player_id, order)
+            gui.clicked = False
+            app.toast(f"우선순위 변경: {app.world.regions[drag].short} → {order.index(drag) + 1}번")
+    return top + n * row_h + 4

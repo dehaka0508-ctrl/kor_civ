@@ -120,6 +120,8 @@ class App:
         self.spec_sel = None
         self.lm_name = ""
         self.visited = set()         # 이번 턴 '다음 지역'으로 확인한 지역
+        self.left_tab = "region"      # 좌측 패널: nation / region
+        self.prio_drag = None
 
     # ------------------------------------------------------------ 게임 시작·저장
     def start_game(self, settings: Settings):
@@ -237,11 +239,14 @@ class App:
         self.gui.input_enabled = not modal_open
         self.draw_map()
         self.draw_topbar()
-        if self.sel and self.left_open:
+        if self.left_open:
             panels.draw_left(self, pygame.Rect(12, TOP_H + 12, LEFT_W, sh - TOP_H - 90))
-        elif self.sel:
-            if self.gui.button((12, TOP_H + 12, 36, 36), "›", tooltip="구역 정보 펼치기"):
+        else:
+            b = pygame.Rect(12, TOP_H + 12, 120, 36)
+            self.gui.block(b)
+            if self.gui.button(b, "국가 현황 ›", tooltip="국가 현황·지역 정보 펼치기"):
                 self.left_open = True
+                self.left_tab = "nation"
         panels.draw_right(self, pygame.Rect(sw - RIGHT_W - 12, TOP_H + 12, RIGHT_W, sh - TOP_H - 132))
         self.draw_mode_chips()
         self.draw_end_turn()
@@ -295,7 +300,7 @@ class App:
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
             fill = self.mode_color(rid, r, owner, info)
-            if self.mode == "political" and visible and owner == pid and r.project:
+            if self.mode == "political" and visible and owner == pid and (r.project or r.focus):
                 # 생산·행동이 진행 중인 내 지역은 더 진한 색
                 fill = mix(self.faction_rgb(owner), (0, 0, 0), 0.18)
             if not visible:
@@ -386,7 +391,7 @@ class App:
     def draw_map(self, pick_mode=False):
         mv = self.map
         busy = 0 if pick_mode or not self.game else hash(frozenset(
-            r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
+            r.id for r in self.game.regions.values() if r.owner == self.game.player_id and (r.project or r.focus)))
         key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
@@ -671,6 +676,7 @@ class App:
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
         self.left_open = True
+        self.left_tab = "region"
         if mine and self.tab == "action" and g.regions.get(node) is None:
             self.tab = "army"
 
@@ -927,7 +933,8 @@ class App:
         """아직 확인하지 않은 빈 슬롯 지역(수도 → 획득 순)."""
         g = self.game
         return [rid for rid in g.review_order(g.player_id)
-                if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ]
+                if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ
+                and not g.regions[rid].focus]
 
     def next_region(self):
         q = self.review_queue()
