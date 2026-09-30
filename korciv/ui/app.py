@@ -12,7 +12,7 @@ from .. import config as C
 from .. import diplomacy as D
 from ..data import SEA_NAMES, load_world
 from ..game import Game
-from ..state import NEUTRAL, Settings
+from ..state import NEUTRAL, Army, Settings
 from . import modals, panels
 from .gui import Gui
 from .mapview import MapView
@@ -417,13 +417,13 @@ class App:
         if army and army.owner == g.player_id:
             reach = g.reachable(army)
             ov = pygame.Surface(mv.view.size, pygame.SRCALPHA)
-            for node, opt in reach.items():
+            # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
+            for node, opt in sorted(reach.items(), key=lambda kv: not self.world.is_sea(kv[0])):
                 col = {"move": (47, 111, 222), "attack": (201, 42, 42), "land": (12, 166, 120),
                        "bombard": (230, 119, 0)}[opt["action"]]
                 a = 115 if opt["strong"] else 60
                 if self.world.is_sea(node):
-                    pts = [(x - mv.view.x, y - mv.view.y) for x, y in mv._screen_poly(mv.sea_polys[node])]
-                    pygame.draw.polygon(ov, (*col, 45), pts)
+                    mv.sea_overlay(ov, node, (*col, 45))
                 else:
                     mv.fill_overlay(ov, node, (*col, a))
             self.screen.blit(ov, mv.view.topleft)
@@ -575,6 +575,17 @@ class App:
                 self.dashed(p0, q, (255, 255, 255), width_k=4)
                 self.dashed(p0, q, ORDER_COLORS["bombard"])
                 self.arrowhead(p0, q, ORDER_COLORS["bombard"], outline=True)
+                continue
+            # 여러 턴 자동 이동: 이번 턴 도착지부터 최종 목적지까지 남은 경로를 점선으로
+            if getattr(a, "goto", None) and a.goto != (o.get("path") or [a.loc])[-1]:
+                end = (o.get("path") or [a.loc])[-1]
+                probe = Army(0, a.owner, end, a.units)
+                route = g.plan_route(probe, a.goto) or [a.goto]
+                pts = [mv.label_screen(end)] + [mv.label_screen(n) for n in route]
+                for p, q in zip(pts, pts[1:]):
+                    self.dashed(p, q, (255, 255, 255), width_k=4)
+                    self.dashed(p, q, ORDER_COLORS["move"])
+                self.arrowhead(pts[-2], pts[-1], ORDER_COLORS["move"], outline=True)
 
     def arrow(self, pts, color):
         """영토 색과 겹치지 않도록 검은 테두리를 두른 굵은 화살표."""
@@ -865,7 +876,7 @@ class App:
                 continue
             kinds_count[e["kind"]] = kinds_count.get(e["kind"], 0) + 1
             if shown < 6 and e["kind"] in ("battle", "captured", "complete", "rebel", "war", "peace", "eliminated",
-                                             "famine", "capital", "bomb", "victory", "diplo"):
+                                             "famine", "capital", "bomb", "victory", "diplo", "info"):
                 col = {"battle": self.theme.bad, "war": self.theme.bad, "rebel": self.theme.warn,
                        "famine": self.theme.warn, "victory": self.theme.good}.get(e["kind"])
                 self.toast(e["text"], col)

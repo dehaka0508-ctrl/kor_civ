@@ -383,7 +383,13 @@ def build():
         "regions": out_regions,
         "adjacency": sorted(adjacency),
     }
-    with open(os.path.join(DATA, "map_geometry.json"), "w", encoding="utf-8") as f:
+    path = os.path.join(DATA, "map_geometry.json")
+    if os.path.exists(path):   # tools/build_seas.py가 만든 해역 모양은 유지
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+        if "seas" in old:
+            result["seas"] = old["seas"]
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
     return result, by_name
 

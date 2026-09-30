@@ -10,32 +10,46 @@ from functools import lru_cache
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
-SEA_IDS = ["SEA1", "SEA2", "SEA3", "SEA4", "SEA5", "SEA6"]
+SEA_IDS = ["SEA1", "SEA2", "SEA3", "SEA4", "SEA5", "SEA6", "SEA7", "SEA8"]
 SEA_NAMES = {"SEA1": "서북해", "SEA2": "서남해", "SEA3": "남서해",
-             "SEA4": "남동해", "SEA5": "동남해", "SEA6": "동북해"}
+             "SEA4": "남동해", "SEA5": "동남해", "SEA6": "동북해",
+             "SEA7": "독도 해역", "SEA8": "제주도 연안"}
 SEA_DESC = {
     "SEA1": "NLL 북쪽 서해", "SEA2": "NLL 남쪽 서해 (인천~전남 신안)", "SEA3": "진도~광양",
     "SEA4": "하동~부산", "SEA5": "강원 고성 남쪽 동해", "SEA6": "강원 고성 북쪽 동해",
+    "SEA7": "울릉도·독도 주변 (상륙함이 있어야 편입)", "SEA8": "제주도 주변 (상륙함이 있어야 편입)",
 }
+SEA_ADJ = {"SEA1": ["SEA2"], "SEA2": ["SEA1", "SEA3"], "SEA3": ["SEA2", "SEA4", "SEA8"],
+           "SEA4": ["SEA3", "SEA5", "SEA8"], "SEA5": ["SEA4", "SEA6", "SEA7"], "SEA6": ["SEA5", "SEA7"],
+           "SEA7": ["SEA5", "SEA6"], "SEA8": ["SEA3", "SEA4"]}
+# 섬 전용 해역: 이 해역에만 닿은 섬은 해당 해역에 상륙함이 있어야 편입할 수 있다
+ISLAND_SEAS = {"SEA7", "SEA8"}
 SEA_BY_NAME = {v: k for k, v in SEA_NAMES.items()}
 
-# 해역 표시용 다각형 (lon, lat). 육지가 위에 그려지므로 해안선을 정확히 따를 필요는 없다.
+# 해역 원형 다각형 (lon, lat). tools/build_seas.py가 육지를 잘라내 해안선에 맞춘 모양을
+# map_geometry.json의 "seas"에 저장하며, 게임은 그쪽을 쓴다(없으면 이 원형으로 대체).
 SEA_POLYS = {
     "SEA1": [(123.0, 39.82), (124.33, 39.82), (124.6, 40.05), (125.3, 40.0), (125.9, 39.3),
              (126.9, 38.0), (126.9, 37.62), (123.0, 37.62)],
     "SEA2": [(123.0, 37.62), (126.9, 37.62), (127.0, 37.3), (127.0, 35.2), (126.55, 34.75),
              (126.3, 34.45), (125.0, 33.95), (123.0, 33.95)],
     "SEA3": [(123.0, 33.95), (125.0, 33.95), (126.3, 34.45), (126.55, 34.75), (127.0, 35.2),
-             (127.78, 35.15), (127.82, 34.65), (126.55, 33.47), (126.55, 32.6), (123.0, 32.6)],
-    "SEA4": [(126.55, 32.6), (126.55, 33.47), (127.82, 34.65), (127.78, 35.15), (129.2, 35.45),
-             (129.32, 35.3), (130.3, 34.3), (130.3, 32.6)],
-    "SEA5": [(130.3, 32.6), (130.3, 34.3), (129.32, 35.3), (129.2, 35.45), (128.7, 37.0),
-             (128.3, 38.62), (128.9, 38.62), (132.2, 37.2), (132.2, 32.6)],
+             (127.78, 35.15), (127.82, 34.65), (126.55, 33.47), (126.55, 31.0), (123.0, 31.0)],
+    "SEA4": [(126.55, 31.0), (126.55, 33.47), (127.82, 34.65), (127.78, 35.15), (129.2, 35.45),
+             (129.32, 35.3), (130.3, 34.3), (130.3, 31.0)],
+    "SEA5": [(130.3, 31.0), (130.3, 34.3), (129.32, 35.3), (129.2, 35.45), (128.7, 37.0),
+             (128.3, 38.62), (128.9, 38.62), (132.2, 37.2), (132.2, 31.0)],
     "SEA6": [(128.3, 38.62), (127.2, 39.4), (128.5, 40.6), (130.0, 41.8), (130.5, 42.3),
              (130.7, 42.29), (131.3, 42.38), (132.2, 42.65), (132.2, 37.2), (128.9, 38.62)],
+    "SEA7": [(130.45, 37.5), (130.6, 37.8), (131.0, 37.92), (131.6, 37.78), (132.15, 37.42),
+             (132.1, 37.05), (131.7, 36.95), (131.0, 37.08), (130.55, 37.25)],
+    "SEA8": [(125.8, 33.25), (125.95, 32.95), (126.55, 32.85), (127.2, 33.0), (127.35, 33.4),
+             (127.0, 33.75), (126.62, 33.82), (126.55, 34.08), (126.2, 34.08), (126.05, 33.8),
+             (125.85, 33.6)],
 }
 SEA_LABELS = {"SEA1": (124.35, 38.75), "SEA2": (125.4, 36.4), "SEA3": (125.8, 33.7),
-              "SEA4": (128.6, 34.25), "SEA5": (130.2, 36.6), "SEA6": (130.2, 40.0)}
+              "SEA4": (128.6, 34.25), "SEA5": (130.2, 36.6), "SEA6": (130.2, 40.0),
+              "SEA7": (131.55, 37.2), "SEA8": (126.55, 33.02)}
 
 PROVINCE_ORDER = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원",
                   "충북", "충남", "전북", "전남", "경북", "경남", "제주", "평양", "남포", "라선",
@@ -67,7 +81,8 @@ class RegionInfo:
     power_self: int
     power_source: str
     power_site: bool     # 기존 화력발전소 소재지(발전소 건설비 50%)
-    specialty: str
+    specialty: str       # 표시용(여러 개면 ", "로 연결)
+    specialties: tuple
     note: str
     output0: float
     food0: float
@@ -156,13 +171,10 @@ class World:
                 self.land_adj[rid] = set()
 
         self.seas: dict[str, SeaInfo] = {}
-        for i, sid in enumerate(SEA_IDS):
-            adj = []
-            if i > 0:
-                adj.append(SEA_IDS[i - 1])
-            if i < len(SEA_IDS) - 1:
-                adj.append(SEA_IDS[i + 1])
-            self.seas[sid] = SeaInfo(sid, SEA_NAMES[sid], SEA_DESC[sid], adj)
+        for sid in SEA_IDS:
+            self.seas[sid] = SeaInfo(sid, SEA_NAMES[sid], SEA_DESC[sid], list(SEA_ADJ[sid]))
+        # 해안선에 맞춰 자른 해역 모양: sid -> [{"ext": ring, "holes": [ring...]}]
+        self.sea_shapes = geo.get("seas") or {sid: [{"ext": p, "holes": []}] for sid, p in SEA_POLYS.items()}
         for rid in self.order:
             for sid in self.regions[rid].seas:
                 self.seas[sid].coast.append(rid)
@@ -173,19 +185,27 @@ class World:
         short = name.split(" ", 1)[1] if " " in name else name
         seas = tuple(SEA_BY_NAME[s.strip()] for s in r["인접해역"].split(",") if s.strip())
         src = r["발전원"] or ""
+        specs = tuple(x.strip() for x in (r["특산물"] or "").split(",") if x.strip())
         return RegionInfo(
             id=r["ID"], name=name, short=short, province=r["광역"], ns=r["남북"], orig=r["원명칭"],
             rtype=r["유형"], do8=r["조선8도"], pop0=float(r["인구"]), coastal=r["해안"] == "Y",
             seas=seas, island=r["섬"] or "", start_port=r["시작항구"] == "Y",
             farm=int(r["농장"]), fishery=int(r["어장"]), factory=int(r["공장"]), bank=int(r["은행"]),
             oil=int(r["정유"]), coal=int(r["탄광"]), power_self=int(r["자체발전"]),
-            power_source=src, power_site="화력" in src, specialty=r["특산물"] or "",
+            power_source=src, power_site="화력" in src, specialty=", ".join(specs), specialties=specs,
             note=r["비고"] or "", output0=float(r["초기산출"] or 0), food0=float(r["식량생산"] or 0),
         )
 
     # ------------------------------------------------------------ 그래프
     def is_sea(self, node: str) -> bool:
         return node in self.seas
+
+    def island_seas_of(self, rid: str) -> tuple:
+        """섬 전용 해역에만 닿은 섬이면 그 해역들, 아니면 ()."""
+        seas = self.regions[rid].seas
+        if seas and all(s in ISLAND_SEAS for s in seas):
+            return seas
+        return ()
 
     def node_name(self, node: str) -> str:
         if node in self.seas:

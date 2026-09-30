@@ -70,6 +70,9 @@ class Game:
             for attr in ("spec_pin", "spec_block"):
                 if not hasattr(r, attr):
                     setattr(r, attr, set())
+        for a in self.armies.values():
+            if not hasattr(a, "goto"):
+                a.goto = None
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -478,10 +481,21 @@ class Game:
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
+        a.goto = None
         if target is None:
             a.order = None
             return True, "명령 취소"
         reach = self.reachable(a)
+        if not force_bombard and target not in reach and target != a.loc:
+            # 한 턴에 못 가는 곳: 최단 경로로 여러 턴에 걸쳐 자동 이동
+            route = self.plan_route(a, target)
+            if not route:
+                return False, "갈 수 있는 경로가 없습니다."
+            a.goto = target
+            if not self._goto_step(a):
+                a.goto = None
+                return False, "이번 턴에 경로를 따라 움직일 수 없습니다."
+            return True, f"자동 이동: {self.world.node_name(target)}까지 {len(route)}칸 (매 턴 자동 진행)"
         if force_bombard:
             if not self._can_bombard(a, target):
                 return False, "폭격할 수 없는 대상입니다."
@@ -502,6 +516,118 @@ class Game:
         else:
             a.order = {"type": "move", "path": opt["path"]}
         return True, {"move": "이동", "attack": "공격", "land": "상륙", "bombard": "폭격"}[act] + " 명령"
+
+    # ---- 여러 턴 자동 이동
+    def plan_route(self, army, target):
+        """army 위치에서 target까지 최단 경로(시작 제외). 중간 지점은 지나갈 수 있는 곳만."""
+        w = self.world
+        fid = army.owner
+        dom = army.domain()
+        start = army.loc
+        if target == start or (target not in self.regions and not w.is_sea(target)):
+            return None
+
+        def passable(v):
+            if w.is_sea(v) or self.hostile_units_at(fid, v):
+                return False
+            o = self.regions[v].owner
+            return self.friendly_territory(fid, v) or (o != NEUTRAL and not self.hostile(fid, o)
+                                                        and D.has_passage(self, fid, o))
+
+        if dom == "land":
+            if w.is_sea(start) or w.is_sea(target):
+                return None
+
+            def nbrs(u):
+                return w.land_adj[u]
+            ok_mid = passable
+        elif dom == "naval":
+            if not w.is_sea(target):
+                rr = self.regions[target]
+                if not (rr.owner == fid and rr.b["port"]) and army.count(("land",)) == 0:
+                    return None
+
+            def nbrs(u):
+                if w.is_sea(u):
+                    return list(w.seas[u].adj) + list(w.seas[u].coast)
+                return list(w.regions[u].seas)
+
+            def ok_mid(v):
+                return w.is_sea(v)
+        elif dom == "air":
+            if w.is_sea(target) or w.is_sea(start):
+                return None
+            bases = {r for r, rr in self.regions.items() if rr.owner == fid and rr.b["airport"]}
+
+            def nbrs(u):
+                return [v for v in w.distances_from(u, C.AIR_RANGE) if v in bases or v == target]
+
+            def ok_mid(v):
+                return v in bases
+        else:
+            return None
+        prev = {start: None}
+        q = deque([start])
+        while q:
+            u = q.popleft()
+            if u == target:
+                break
+            if u != start and not ok_mid(u):
+                continue
+            for v in nbrs(u):
+                if v not in prev:
+                    prev[v] = u
+                    q.append(v)
+        if target not in prev:
+            return None
+        path = []
+        u = target
+        while u != start:
+            path.append(u)
+            u = prev[u]
+        return path[::-1]
+
+    def _goto_step(self, a) -> bool:
+        """자동 이동 중인 부대에 이번 턴 명령을 준다. 못 움직이면 False."""
+        tgt = a.goto
+        if not tgt or a.loc == tgt:
+            a.goto = None
+            return False
+        route = self.plan_route(a, tgt)
+        if not route:
+            return False
+        reach = self.reachable(a)
+        for node in reversed(route):
+            opt = reach.get(node)
+            if not opt:
+                continue
+            if node == tgt and opt["action"] != "bombard":
+                if opt["action"] == "attack":
+                    a.order = {"type": "attack", "target": node, "mode": "assault", "path": opt["path"]}
+                elif opt["action"] == "land":
+                    a.order = {"type": "land", "target": node, "path": opt["path"]}
+                else:
+                    a.order = {"type": "move", "path": opt["path"]}
+                a.goto = None          # 마지막 구간
+                return True
+            if opt["action"] == "move":
+                a.order = {"type": "move", "path": opt["path"]}
+                return True
+        return False
+
+    def _advance_gotos(self):
+        for a in list(self.armies.values()):
+            if not getattr(a, "goto", None) or a.order:
+                continue
+            if a.loc == a.goto:
+                a.goto = None
+                continue
+            if not self._goto_step(a):
+                if a.owner == self.player_id:
+                    self.event("info", f"{self.world.node_name(a.loc)}의 부대: "
+                               f"{self.world.node_name(a.goto)}까지 가는 길이 막혀 자동 이동을 멈춥니다.",
+                               region=a.loc, fids=(a.owner,))
+                a.goto = None
 
     def _can_bombard(self, a, target):
         if self.world.is_sea(target) or not self.hostile(a.owner, self.regions[target].owner):
@@ -668,14 +794,30 @@ class Game:
                     disc = max(disc, C.ACADEMY_ADJ)
         return c * (1 - disc)
 
+    def landing_ship_in(self, fid, seas) -> bool:
+        """해당 해역(또는 그 해역에 닿은 자국 항구)에 상륙함이 있는가."""
+        w = self.world
+        for a in self.armies.values():
+            if a.owner != fid or not a.units.get("lst"):
+                continue
+            if a.loc in seas or (not w.is_sea(a.loc) and set(w.regions[a.loc].seas) & set(seas)):
+                return True
+        return False
+
     def annex_targets(self, fid, rid):
         w = self.world
         cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)
         if self.regions[rid].b["port"]:
             for s in w.regions[rid].seas:
                 for v in w.seas[s].coast:
-                    if self.regions[v].owner == NEUTRAL:
+                    if self.regions[v].owner == NEUTRAL and not w.island_seas_of(v):
                         cands.add(v)
+        # 울릉도·제주도: 섬 전용 해역에 상륙함을 보내야 해안 지역에서 편입할 수 있다
+        if w.regions[rid].coastal:
+            for v in w.order:
+                seas = w.island_seas_of(v)
+                if seas and v != rid and self.regions[v].owner == NEUTRAL and self.landing_ship_in(fid, seas):
+                    cands.add(v)
         busy = {r.project.key for r in self.regions.values()
                 if r.owner == fid and r.project and r.project.kind == "annex"}
         out = []
@@ -784,7 +926,8 @@ class Game:
         if key == "liquefy":
             return f"석탄 → 석유 턴당 최대 {lv}개"
         if key == "specialty":
-            return f"특산물 「{info.specialty}」 턴당 {lv}개"
+            each = " 각" if len(info.specialties) > 1 else ""
+            return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
         if key == "extract":
             what = "석유" if info.is_oil else "석탄"
             return f"{what} 턴당 +1 (합계 {(info.oil or info.coal) + lv}개)"
@@ -1141,6 +1284,7 @@ class Game:
         # 12. 다음 턴 시작: 반란 판정
         self._phase_rebellion()
         self._update_fog()
+        self._advance_gotos()
         if self.player.alive and self.player.is_ai is False:
             ai.propose_to_player(self)
 
@@ -1605,8 +1749,9 @@ class Game:
             if info.is_coal:
                 res["coal"] += info.coal + r.b["extract"]
             res["elec"] += info.power_self
-            if info.specialty and r.b["specialty"]:
-                f.specialty[info.specialty] = f.specialty.get(info.specialty, 0) + r.b["specialty"]
+            if r.b["specialty"]:
+                for sp in info.specialties:
+                    f.specialty[sp] = f.specialty.get(sp, 0) + r.b["specialty"]
         factories = sorted([r for r in active if r.b["factory"] > 0], key=lambda r: -r.b["factory"])
         want_elec = sum(1 for r in factories if r.fuel in ("auto", "elec"))
         want_coal = sum(1 for r in factories if r.fuel == "coal")
@@ -1695,8 +1840,7 @@ class Game:
         """이 세력이 가진(재고 또는 생산) 특산물 종류."""
         f = self.factions[fid]
         kinds = {k for k, v in f.specialty.items() if v > 0}
-        kinds |= {self.info(r.id).specialty for r in self.regions_of(fid)
-                  if self.info(r.id).specialty and r.b["specialty"]}
+        kinds |= {sp for r in self.regions_of(fid) if r.b["specialty"] for sp in self.info(r.id).specialties}
         return sorted(kinds)
 
     def set_specialty(self, fid, rid, kind, state):

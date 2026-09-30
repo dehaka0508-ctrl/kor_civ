@@ -331,3 +331,52 @@ def test_peace_nonaggression_locked_24_turns():
     assert not ok
     g.turn += 24
     assert D.peace_left(g, 0, 1) == 0
+
+
+def test_island_annex_needs_landing_ship_in_island_sea():
+    g = new_game(player_start="S002", n_enemies=1)
+    n = g.world.name_to_id
+    busan, jeju_s = n["부산 중구"], n["제주 서귀포시"]
+    _own(g, 0, [busan])
+    g.regions[busan].b["port"] = 1
+    # 항구가 있어도 같은 해역(남동해) 해로만으로는 제주·울릉을 편입할 수 없다
+    assert jeju_s not in {t["target"] for t in g.annex_targets(0, busan)}
+    fleet = g.new_army(0, "SEA4", {"lst": 1})
+    assert jeju_s not in {t["target"] for t in g.annex_targets(0, busan)}
+    fleet.loc = "SEA8"                          # 제주도 연안에 상륙함
+    assert jeju_s in {t["target"] for t in g.annex_targets(0, busan)}
+    assert n["경북 울릉군"] not in {t["target"] for t in g.annex_targets(0, busan)}
+
+
+def test_multi_turn_route_moves_automatically():
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    dist = w.distances_from("S002", 8)
+    far = next(r for r, d in sorted(dist.items(), key=lambda kv: -kv[1])
+               if not w.is_sea(r) and d >= 5 and w.regions[r].island == "")
+    # 가는 길의 지역을 모두 자국 영토로
+    prev, q = {"S002": None}, [ "S002"]
+    while q:
+        u = q.pop(0)
+        for v in w.land_adj[u]:
+            if v not in prev:
+                prev[v] = u
+                q.append(v)
+    path, u = [], far
+    while u != "S002":
+        path.append(u)
+        u = prev[u]
+    _own(g, 0, path)
+    for rid in path:
+        for a in list(g.armies_at(rid)):
+            g.remove_army(a)
+    army = g.new_army(0, "S002", {"inf": 3})
+    assert far not in g.reachable(army)
+    ok, msg = g.order_army(army.id, far)
+    assert ok and army.goto == far, msg
+    for _ in range(len(path)):
+        g.player.money += 10_000
+        g.end_turn()
+        if army.loc == far:
+            break
+    assert army.loc == far and army.goto is None

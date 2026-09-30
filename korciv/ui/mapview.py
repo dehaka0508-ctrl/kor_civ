@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pygame
 
-from ..data import SEA_LABELS, SEA_POLYS
+from ..data import SEA_LABELS
 from .theme import mix, render_text, ui_scale
 
 COS = math.cos(math.radians(38.0))
@@ -69,7 +69,9 @@ class MapView:
             self.rbbox[rid] = (bx0, by0, bx1, by1)
             self.label[rid] = proj(*geo["label"])
         self.polys.sort(key=lambda p: -self.area[p[0]])
-        self.sea_polys = {sid: proj_arr(p) for sid, p in SEA_POLYS.items()}
+        # 해역: sid -> [(바깥 테두리, [섬 구멍...])] — 해안선에 맞춰 잘린 모양
+        self.sea_polys = {sid: [(proj_arr(p["ext"]), [proj_arr(h) for h in p["holes"]]) for p in parts]
+                          for sid, parts in world.sea_shapes.items()}
         self.label.update({sid: proj(*p) for sid, p in SEA_LABELS.items()})
         self.province_lines = [proj_arr(r) for rings in world.province_outlines.values() for r in rings]
         self.do8_lines = [proj_arr(r) for rings in world.do8_outlines.values() for r in rings]
@@ -161,9 +163,10 @@ class MapView:
                 best, best_area = rid, self.area[rid]
         if best:
             return best
-        for sid, arr in self.sea_polys.items():
-            if pip(bx, by, arr):
-                return sid
+        for sid, parts in self.sea_polys.items():
+            for ext, holes in parts:
+                if pip(bx, by, ext) and not any(pip(bx, by, h) for h in holes):
+                    return sid
         return None
 
     # ------------------------------------------------------------ 렌더
@@ -194,10 +197,12 @@ class MapView:
         def sp(arr):
             return (arr * s + (ox, oy)).tolist()
 
-        for sid, arr in self.sea_polys.items():
-            pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), sp(arr))
-        for sid, arr in self.sea_polys.items():
-            pygame.draw.lines(surf, theme.sea_line, True, sp(arr), 1)
+        for sid, parts in self.sea_polys.items():
+            for ext, _ in parts:
+                pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), sp(ext))
+        for sid, parts in self.sea_polys.items():
+            for ext, _ in parts:
+                pygame.draw.lines(surf, theme.sea_line, True, sp(ext), 1)
         view = pygame.Rect(0, 0, *self.view.size)
         thin = s < 1.2
         for rid, arr, bbox in self.polys:
@@ -284,4 +289,15 @@ class MapView:
                 pygame.draw.polygon(overlay, rgba, pts)
 
     def sea_outline(self, screen, sid, color, width=3):
-        pygame.draw.lines(screen, color, True, self._screen_poly(self.sea_polys[sid]), width)
+        for ext, holes in self.sea_polys[sid]:
+            pygame.draw.lines(screen, color, True, self._screen_poly(ext), width)
+            for h in holes:
+                pygame.draw.lines(screen, color, True, self._screen_poly(h), max(1, width - 1))
+
+    def sea_overlay(self, overlay, sid, rgba):
+        """해역을 반투명하게 칠한다. 섬(구멍)은 투명하게 비운다 — 육지 오버레이보다 먼저 호출."""
+        ox, oy = self.view.x, self.view.y
+        for ext, holes in self.sea_polys[sid]:
+            pygame.draw.polygon(overlay, rgba, [(x - ox, y - oy) for x, y in self._screen_poly(ext)])
+            for h in holes:
+                pygame.draw.polygon(overlay, (0, 0, 0, 0), [(x - ox, y - oy) for x, y in self._screen_poly(h)])

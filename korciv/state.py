@@ -74,6 +74,7 @@ class Army:
     units: dict = field(default_factory=dict)
     dmg: dict = field(default_factory=dict)
     order: Optional[dict] = None
+    goto: Optional[str] = None      # 여러 턴 자동 이동의 최종 목적지
 
     def count(self, kinds=None) -> int:
         if kinds is None:

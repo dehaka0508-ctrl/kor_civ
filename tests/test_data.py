@@ -45,9 +45,14 @@ def test_every_mainland_region_has_neighbor_and_is_connected():
 def test_sea_coasts():
     w = load_world()
     counts = {s.name: len(s.coast) for s in w.seas.values()}
-    assert counts == {"서북해": 33, "서남해": 32, "남서해": 13, "남동해": 19, "동남해": 16, "동북해": 24}
+    assert counts == {"서북해": 33, "서남해": 32, "남서해": 11, "남동해": 17, "동남해": 15, "동북해": 23,
+                      "독도 해역": 1, "제주도 연안": 2}
     assert w.seas["SEA1"].adj == ["SEA2"]
-    assert w.seas["SEA3"].adj == ["SEA2", "SEA4"]
+    assert w.seas["SEA3"].adj == ["SEA2", "SEA4", "SEA8"]
+    assert w.island_seas_of(w.name_to_id["제주 서귀포시"]) == ("SEA8",)
+    assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("울릉 오징어", "독도 새우")
+    # 해안선에 맞춘 해역 모양이 저장되어 있다
+    assert set(w.sea_shapes) == set(w.seas)
 
 
 def test_cross_border_links():

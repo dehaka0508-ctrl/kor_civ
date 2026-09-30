@@ -681,9 +681,9 @@ def draw_specialty(app):
     kinds = g.specialty_kinds(pid)
     prod = {}
     for rr in g.regions_of(pid):
-        sp = app.world.regions[rr.id].specialty
-        if sp and rr.b["specialty"]:
-            prod[sp] = prod.get(sp, 0) + rr.b["specialty"]
+        if rr.b["specialty"]:
+            for sp in app.world.regions[rr.id].specialties:
+                prod[sp] = prod.get(sp, 0) + rr.b["specialty"]
     used = {}
     for rr in g.regions_of(pid):
         for k in rr.supplied:

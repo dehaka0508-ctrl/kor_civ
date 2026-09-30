@@ -515,10 +515,14 @@ def draw_army_tab(app, body):
             if gui.button((x + w - 70, y - 4, 70, 26), "취소", size=12):
                 g.order_army(army.id, None)
             y += 26
+            if army.goto:
+                gui.text((x, y), f"최종 목적지: {app.world.node_name(army.goto)} (매 턴 자동 이동)", 12, t.muted)
+                y += 22
         else:
-            gui.wrap((x, y), "지도에서 우클릭으로 이동·공격 대상을 지정하세요. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다.",
+            gui.wrap((x, y), "지도에서 우클릭으로 이동·공격 대상을 지정하세요. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
+                             "범위 밖을 우클릭하면 최단 경로로 여러 턴에 걸쳐 자동 이동합니다.",
                      w, 12, t.muted)
-            y += 58
+            y += 78
     else:
         gui.text((x, y), "부대를 선택하세요.", 13, t.muted)
         y += 26
@@ -529,7 +533,7 @@ def draw_army_tab(app, body):
     off = gui.begin_scroll("armies", area, len(mine) * 28)
     yy = y - off
     for a in mine:
-        lab = f"{app.world.node_name(a.loc)} · {a.label()}" + (" ▶" if a.order else "")
+        lab = f"{app.world.node_name(a.loc)} · {a.label()}" + (" ▶" if a.order or a.goto else "")
         if gui.button((x, yy, w, 26), lab, "ghost", selected=a.id == app.sel_army, weight="regular", size=12):
             app.sel_army = a.id
             app.sel = a.loc
@@ -716,8 +720,7 @@ def draw_nation_status(app, body):
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     kinds = sorted(set(stock) | set(g.specialty_kinds(pid)))
     y = section(gui, x, y + 6, w, f"특산물 재고 {sum(stock.values())}개 · {len(kinds)}종 (눌러서 생산지 열기)")
-    producer = {app.world.regions[r.id].specialty: r.id for r in regs
-                if app.world.regions[r.id].specialty}
+    producer = {sp: r.id for r in regs for sp in app.world.regions[r.id].specialties}
     supplied = {}
     for r in regs:
         for k in r.supplied:
