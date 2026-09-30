@@ -276,10 +276,15 @@ def project_name(app, p):
 def draw_project(app, x, y, w, rid, p):
     gui = app.gui
     t = app.theme
-    gui.text((x, y), project_name(app, p), 14, weight="semibold")
-    gui.text((x + w, y), f"남은 {p.remaining}턴", 12, t.muted, anchor="topright")
+    name = project_name(app, p)
+    if p.kind == "annex":
+        n = app.game.joint_count(app.game.regions[rid].owner, p.key)
+        if n > 1:
+            name += f" (공동 {n}곳)"
+    gui.text((x, y), name, 14, weight="semibold", max_w=w - 70)
+    gui.text((x + w, y), f"남은 {app.game.project_left(rid)}턴", 12, t.muted, anchor="topright")
     y += 22
-    gui.progress((x, y, w, 8), p.progress / max(1, p.turns), t.warn if p.stalled else t.accent)
+    gui.progress((x, y, w, 8), min(1.0, p.progress / max(1, p.turns)), t.warn if p.stalled else t.accent)
     y += 14
     gui.text((x, y), f"턴당 {p.per_turn:,.0f} · 낸 비용 {p.paid:,.0f}" + (" · 자금 부족으로 정지" if p.stalled else ""),
              12, t.bad if p.stalled else t.muted)
@@ -799,7 +804,7 @@ def draw_priority_list(app, x, y, w, items):
         sub = (235, 240, 255) if dragged else t.muted
         gui.text((row.x + 8, row.y + 3), f"{i + 1}. {app.world.regions[rid].short} · {project_name(app, p)}", 12, fg,
                  "semibold", max_w=w - 16)
-        state = "정지" if p.stalled else f"남은 {p.remaining}턴"
+        state = "정지" if p.stalled else f"남은 {app.game.project_left(rid)}턴"
         gui.text((row.x + 8, row.y + 21), f"턴당 {p.per_turn:,.0f} · {state}", 11,
                  (t.bad if p.stalled and not dragged else sub))
         gui.text((row.right - 8, row.centery), "≡", 16, sub, anchor="midright")

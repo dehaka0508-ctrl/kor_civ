@@ -465,3 +465,31 @@ def test_ai_keeps_fighting_when_front_is_favorable():
     g.turn += 20
     ok, why = D.treaty_check(g, 1, 0, "peace")
     assert ok, why
+
+
+def test_joint_annex_speeds_up():
+    from korciv import rules as R
+    assert [R.joint_reduction(n) for n in range(1, 7)] == [0, 0.33, 0.5, 0.6, 0.7, 0.7]
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    # 서로 다른 내 지역 3곳이 같은 중립 지역에 맞닿도록
+    tgt = next(v for v in w.order if g.regions[v].owner == NEUTRAL and g.region_value(v)[0] >= 5
+               and len([n for n in w.land_adj[v] if g.regions[n].owner == NEUTRAL]) >= 3)
+    mine = sorted(n for n in w.land_adj[tgt] if g.regions[n].owner == NEUTRAL)[:3]
+    _own(g, 0, mine)
+    base = g.neutral_turns(0, tgt)
+    for i, rid in enumerate(mine):
+        ok, msg = g.start_project(0, rid, "annex", tgt)
+        assert ok, msg
+        if i == 1:
+            opt = next(o for o in g.options(0, mine[2]) if o["kind"] == "annex" and o["key"] == tgt)
+            assert "공동 3곳" in opt["name"]
+    assert g.project_left(mine[0]) == R.joint_turns(base, 3)
+    turns = 0
+    while g.regions[tgt].owner != 0 and turns < base + 2:
+        g.player.money += 50_000
+        g.end_turn()
+        turns += 1
+    assert g.regions[tgt].owner == 0
+    assert turns <= R.joint_turns(base, 3) < base
+    assert all(g.regions[r].project is None for r in mine)

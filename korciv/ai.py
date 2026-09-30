@@ -633,14 +633,17 @@ def _slots(g, f, threat, military=True):
         info = g.info(r.id)
         # 편입
         for t in g.annex_targets(fid, r.id):
-            if t["busy"]:
+            # 이미 편입 중인 대상은 오래 걸리는(가치 4 이상) 곳만 공동 편입으로 거든다
+            if t["joint"] and (t["joint"] >= 3 or t["value"] < 4):
                 continue
             tr = g.regions[t["target"]]
             y = g.region_output_estimate(t["target"])
             food = R.food_output(tr.b["farm"], tr.b["fishery"])
             per_turn = y * tax + food * C.MARKET_BUY["food"] * (1.0 if food_short else 0.15)
             # 완공까지 슬롯이 묶이고 이득은 그 뒤부터: 가치가 높은(오래 걸리는) 지역일수록 할인
-            gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["turns"]) * wts.get("expansion", 1)
+            gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["eff_turns"]) * wts.get("expansion", 1)
+            if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
+                gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
             cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):

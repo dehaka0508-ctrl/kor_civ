@@ -85,6 +85,17 @@ def value_turns(value: int, time_mult=1.0) -> int:
     return max(1, int(math.floor(t * time_mult + 0.5)))
 
 
+def joint_reduction(n: int) -> float:
+    """동시에 편입하는 지역 수 n -> 소요 시간 감소율."""
+    if n <= 1:
+        return 0.0
+    return C.JOINT_ANNEX_REDUCTION[min(n, max(C.JOINT_ANNEX_REDUCTION))]
+
+
+def joint_turns(base_turns: int, n: int) -> int:
+    return max(1, math.ceil(base_turns * (1 - joint_reduction(n)) - 1e-9))
+
+
 def annex_cost(output: float, owned_regions: int = 0) -> float:
     base = C.ANNEX_BASE_COST + C.ANNEX_COST_OUTPUT * output
     return base * (1 + C.ANNEX_COST_PER_REGION * owned_regions) * C.MONEY_SCALE

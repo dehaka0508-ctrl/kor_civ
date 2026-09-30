@@ -837,15 +837,20 @@ class Game:
                 seas = w.island_seas_of(v)
                 if seas and v != rid and self.regions[v].owner == NEUTRAL and self.landing_ship_in(fid, seas):
                     cands.add(v)
-        busy = {r.project.key for r in self.regions.values()
-                if r.owner == fid and r.project and r.project.kind == "annex"}
+        joint = {}
+        for r in self.regions.values():
+            if r.owner == fid and r.project and r.project.kind == "annex":
+                joint[r.project.key] = joint.get(r.project.key, 0) + 1
         out = []
         for v in sorted(cands):
             rr = self.regions[v]
             if rr.occ:
                 continue
-            out.append({"target": v, "turns": self.neutral_turns(fid, v), "cost": self.annex_cost(fid, v),
-                        "value": self.region_value(v)[0], "busy": v in busy, "sea": v not in w.land_adj[rid]})
+            base = self.neutral_turns(fid, v)
+            n = joint.get(v, 0)
+            out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
+                        "value": self.region_value(v)[0], "joint": n, "sea": v not in w.land_adj[rid],
+                        "eff_turns": R.joint_turns(base, n + 1)})
         return out
 
     def options(self, fid, rid):
@@ -910,9 +915,11 @@ class Game:
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
-            add("annex", t["target"], f"편입: {self.info(t['target']).name} (가치 {t['value']})"
-                + (" (해로)" if t["sea"] else ""),
-                t["cost"], t["turns"], not t["busy"], "이미 편입 중" if t["busy"] else "")
+            name = f"편입: {self.info(t['target']).name} (가치 {t['value']})" + (" (해로)" if t["sea"] else "")
+            if t["joint"]:
+                n = t["joint"] + 1
+                name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
+            add("annex", t["target"], name, t["cost"], t["turns"])
         if not rr.landmark:
             busy = any(r.project and r.project.kind == "landmark" and r.id == rid for r in self.regions.values())
             turns = m.value("landmark_turns", C.LANDMARK_TURNS)
@@ -1716,9 +1723,12 @@ class Game:
                 p.stalled = False
 
     def _phase_projects(self, kinds):
+        if "annex" in kinds:
+            self._phase_joint_annex()
         for rr in list(self.regions.values()):
             p = rr.project
-            if not p or p.kind not in kinds or rr.owner == NEUTRAL or not getattr(p, "funded", False):
+            if not p or p.kind not in kinds or p.kind == "annex" or rr.owner == NEUTRAL \
+                    or not getattr(p, "funded", False):
                 continue
             f = self.factions[rr.owner]
             p.funded = False
@@ -1726,6 +1736,49 @@ class Game:
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
+
+    def project_left(self, rid) -> int:
+        """남은 턴. 공동 편입은 함께하는 지역 수에 따른 속도로 계산."""
+        rr = self.regions[rid]
+        p = rr.project
+        if not p:
+            return 0
+        rest = max(0.0, p.turns - p.progress)
+        if p.kind == "annex":
+            n = self.joint_count(rr.owner, p.key)
+            rest *= 1 - R.joint_reduction(n)
+        return max(1, math.ceil(rest - 1e-9)) if rest > 0 else 0
+
+    def joint_count(self, fid, target) -> int:
+        return sum(1 for r in self.regions.values()
+                   if r.owner == fid and r.project and r.project.kind == "annex" and r.project.key == target)
+
+    def _phase_joint_annex(self):
+        """편입: 같은 세력이 같은 대상을 여러 지역에서 편입하면 진행도를 함께 쌓는다."""
+        groups = {}
+        for rr in self.regions.values():
+            p = rr.project
+            if p and p.kind == "annex" and rr.owner != NEUTRAL:
+                groups.setdefault((rr.owner, p.key), []).append(rr)
+        for (fid, tgt), members in groups.items():
+            funded = [rr for rr in members if getattr(rr.project, "funded", False)]
+            if not funded:
+                continue
+            step = 1 / (1 - R.joint_reduction(len(funded)))
+            prog = max(rr.project.progress for rr in members) + step
+            for rr in members:
+                rr.project.progress = prog
+                rr.project.funded = False
+            need = max(rr.project.turns for rr in members)
+            if prog >= need - 1e-9:
+                lead = max(funded, key=lambda r: r.project.paid)
+                p = lead.project
+                for rr in members:
+                    rr.project = None
+                self._complete_project(self.factions[fid], lead, p)
+                if len(members) > 1:
+                    self.event("complete", f"{self.info(tgt).name}: {len(members)}개 지역 공동 편입 완료",
+                               region=tgt, fids=(fid,))
 
     def _complete_project(self, f, rr, p):
         name = self.info(rr.id).name
