@@ -493,3 +493,56 @@ def test_joint_annex_speeds_up():
     assert g.regions[tgt].owner == 0
     assert turns <= R.joint_turns(base, 3) < base
     assert all(g.regions[r].project is None for r in mine)
+
+
+def test_net_includes_project_spending():
+    g = new_game(player_start="S002", n_enemies=1)
+    ok, _ = g.start_project(0, "S002", "build", "bank")
+    assert ok
+    per = g.regions["S002"].project.per_turn
+    before = g.player.money
+    g.end_turn()
+    last = g.player.last
+    assert last["spend"]["build"] == pytest.approx(per)
+    assert last["net"] == pytest.approx(last["tax"] + last["sell"] + last["refund"]
+                                        - last["upkeep"] - last["buy"] - per)
+    assert g.player.money - before == pytest.approx(last["net"])
+
+
+def test_hijacked_annex_cancelled_and_refunded():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    ok, _ = g.start_project(0, "S002", "annex", tgt)
+    g.player.money += 50_000
+    g._fund_projects()
+    paid = g.regions["S002"].project.paid
+    assert paid > 0
+    # AI(1)가 이 편입을 하던 중 플레이어가 먼저 차지하면 AI 작업 취소·환급·우호도 하락
+    ai_src = next(n for n in g.world.land_adj[tgt] if n != "S002")
+    _own(g, 1, [ai_src])
+    g.regions[ai_src].project = None
+    ok, msg = g.start_project(1, ai_src, "annex", tgt)
+    assert ok, msg
+    g.factions[1].money += 50_000
+    g._fund_projects()
+    ai_paid = g.regions[ai_src].project.paid
+    money = g.factions[1].money
+    op = D.opinion(g, 1, 0)
+    g.transfer_region(tgt, 0)
+    assert g.regions[ai_src].project is None
+    assert g.factions[1].money == pytest.approx(money + ai_paid)
+    assert D.opinion(g, 1, 0) == pytest.approx(op + C.OP_HIJACK + C.OP_LAND_GRAB)   # 가로채기 + 영토 경쟁
+
+
+def test_food_bought_before_projects():
+    g = new_game(player_start="S002", n_enemies=1)
+    f = g.player
+    f.res["food"] = 0
+    ok, _ = g.start_project(0, "S002", "build", "bank")
+    per = g.regions["S002"].project.per_turn
+    short = -g.expected_food_balance(f)
+    assert short > 0
+    f.money = per + 5        # 식량을 사면 공사비가 모자란다
+    g._fund_projects()
+    assert f.res["food"] >= short - 1e-6
+    assert g.regions["S002"].project.stalled

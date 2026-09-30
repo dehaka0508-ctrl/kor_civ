@@ -135,6 +135,8 @@ class Faction:
     buy_count: dict = field(default_factory=dict)   # 이번 턴 구매 개수(가격 상승용)
     trade_buy: float = 0.0
     trade_sell: float = 0.0
+    spend: dict = field(default_factory=dict)       # 이번 턴 작업 지출 {종류: 금액}
+    refund: float = 0.0                             # 이번 턴 환급
     last: dict = field(default_factory=dict)        # 지난 턴 통계
     pop_mult: float = 1.0
     income_mult: float = 1.0

@@ -703,17 +703,31 @@ def draw_nation_status(app, body):
         n, s = spend.get(k, (0, 0.0))
         spend[k] = (n + 1, s + rr.project.per_turn)
     total_spend = sum(s for _, s in spend.values())
-    y = section(gui, x, y + 6, w, "재정 (턴당)")
+    y = section(gui, x, y + 6, w, "재정 (지난 턴 실제 수입·지출)")
     y = kv(gui, x, y, w, "자금", f"{f.money:,.0f}", t.bad if f.money < 0 else None)
-    y = kv(gui, x, y, w, "세수", f"+{last.get('tax', 0):,.0f} (세율 {f.tax*100:.0f}%)", t.good)
-    y = kv(gui, x, y, w, "군 유지비", f"−{g.upkeep(pid):,.0f}", t.bad)
-    y = kv(gui, x, y, w, "시장 구매 / 판매", f"−{last.get('buy', 0):,.0f} / +{last.get('sell', 0):,.0f}")
-    y = kv(gui, x, y, w, "순수익", f"{last.get('net', 0):+,.0f}", t.good if last.get("net", 0) >= 0 else t.bad)
+    spent = last.get("spend", {})
+    income = last.get("tax", 0) + last.get("sell", 0) + last.get("refund", 0)
+    outgo = last.get("upkeep", 0) + last.get("buy", 0) + sum(spent.values())
+    y = kv(gui, x, y, w, "수입 합계", f"+{income:,.0f}", t.good)
+    y = kv(gui, x, y, w, "  세수", f"+{last.get('tax', 0):,.0f} (세율 {f.tax*100:.0f}%)")
+    if last.get("sell", 0):
+        y = kv(gui, x, y, w, "  시장 판매", f"+{last.get('sell', 0):,.0f}")
+    if last.get("refund", 0):
+        y = kv(gui, x, y, w, "  환급", f"+{last.get('refund', 0):,.0f}")
+    y = kv(gui, x, y, w, "지출 합계", f"−{outgo:,.0f}", t.bad)
+    y = kv(gui, x, y, w, "  군 유지비", f"−{last.get('upkeep', 0):,.0f}")
+    if last.get("buy", 0):
+        y = kv(gui, x, y, w, "  시장 구매(식량 자동 구매 포함)", f"−{last.get('buy', 0):,.0f}")
+    for k in ("build", "unit", "annex", "landmark", "capital"):
+        if spent.get(k):
+            y = kv(gui, x, y, w, f"  {PROJECT_KIND_NAMES[k]}", f"−{spent[k]:,.0f}")
+    y = kv(gui, x, y, w, "턴당 순수익", f"{last.get('net', 0):+,.0f}", t.good if last.get("net", 0) >= 0 else t.bad)
+    y = section(gui, x, y + 6, w, "이번 턴 예정 작업 지출")
     for k in ("build", "unit", "annex", "landmark", "capital"):
         if k in spend:
-            n, s = spend[k]
-            y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s:,.0f}")
-    y = kv(gui, x, y, w, "진행 중 작업 지출 합", f"−{total_spend:,.0f}", t.bad if total_spend > f.money else None)
+            n, s_ = spend[k]
+            y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s_:,.0f}")
+    y = kv(gui, x, y, w, "합계", f"−{total_spend:,.0f}", t.bad if total_spend > f.money else None)
     stalled = sum(1 for rr in items if rr.project.stalled)
     if stalled:
         y = kv(gui, x, y, w, "자금 부족으로 정지", f"{stalled}건", t.bad)

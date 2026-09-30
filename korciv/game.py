@@ -73,6 +73,9 @@ class Game:
         for a in self.armies.values():
             if not hasattr(a, "goto"):
                 a.goto = None
+        for f in self.factions:
+            if not hasattr(f, "spend"):
+                f.spend, f.refund = {}, 0.0
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -1157,6 +1160,7 @@ class Game:
             return
         rr.owner = new_owner
         rr.project = None
+        prev_occ = rr.occ
         rr.occ = None
         rr.supplied = set()
         self.acq_counter = getattr(self, "acq_counter", 0) + 1
@@ -1167,6 +1171,17 @@ class Game:
                 taken = w.setdefault("taken", {})
                 taken[new_owner] = taken.get(new_owner, 0) + 1
         if old == NEUTRAL and new_owner != NEUTRAL:
+            # 가로채기: 이 지역을 편입하던 다른 세력의 작업은 즉시 취소·환급
+            for other in self.regions.values():
+                p = other.project
+                if p and p.kind == "annex" and p.key == rid and other.owner not in (NEUTRAL, new_owner):
+                    self._cancel_hijacked(other, new_owner)
+            if prev_occ and prev_occ["by"] not in (NEUTRAL, new_owner):
+                victim = self.factions[prev_occ["by"]]
+                if victim.is_ai:
+                    D.add_opinion(self, victim.id, new_owner, C.OP_HIJACK)
+                self.event("info", f"{self.info(rid).name}을(를) {self.fname(new_owner)}이(가) 먼저 차지해 "
+                           f"{victim.name}의 점령이 취소되었습니다.", region=rid, fids=(victim.id,))
             # 영토 경쟁: 이 중립 지역과 맞닿은 다른 세력은 먼저 가져간 쪽을 못마땅하게 여긴다
             rivals = {self.regions[n].owner for n in self.world.land_adj[rid]} - {NEUTRAL, new_owner}
             for b in rivals:
@@ -1314,6 +1329,8 @@ class Game:
             f.buy_count = {}
             f.trade_buy = 0.0
             f.trade_sell = 0.0
+            f.spend = {}
+            f.refund = 0.0
         for a in self.armies.values():
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
                 a.order = None
@@ -1702,6 +1719,7 @@ class Game:
         for f in self.factions:
             if not f.alive:
                 continue
+            self._reserve_food(f)          # 식량 부족이 예상되면 식량 구매가 최우선
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
                 p.funded = False
@@ -1710,17 +1728,48 @@ class Game:
                     continue
                 if p.kind == "annex":
                     tgt = self.regions[p.key]
-                    if tgt.owner != NEUTRAL or (tgt.occ and tgt.occ["by"] != rr.owner):
-                        f.money += p.paid * C.PROJECT_REFUND
-                        rr.project = None
+                    if tgt.owner != NEUTRAL:
+                        self._cancel_hijacked(rr, tgt.owner)
+                        continue
+                    if tgt.occ and tgt.occ["by"] != rr.owner:
+                        p.stalled = True          # 다른 세력이 무력 점령 중: 결과를 기다린다
                         continue
                 if f.money < p.per_turn:
                     p.stalled = True
                     continue
                 f.money -= p.per_turn
                 p.paid += p.per_turn
+                f.spend[p.kind] = f.spend.get(p.kind, 0.0) + p.per_turn
                 p.funded = True
                 p.stalled = False
+
+    def expected_food_balance(self, f) -> float:
+        """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
+        regs = self.regions_of(f.id)
+        prod = sum(0.0 if r.occ else R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id))
+                   for r in regs)
+        cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
+        return f.res.get("food", 0) + prod - cons
+
+    def _reserve_food(self, f):
+        if f.auto_food:
+            short = self.expected_food_balance(f)
+            if short < 0:
+                self.market_buy(f.id, "food", math.ceil(-short))
+
+    def _cancel_hijacked(self, rr, taker):
+        """편입하던 중립 지역을 다른 세력이 가져감: 작업 취소, 낸 비용 전액 환급, 빼앗긴 AI는 우호도 하락."""
+        p = rr.project
+        f = self.factions[rr.owner]
+        f.money += p.paid
+        f.refund += p.paid
+        rr.project = None
+        if taker not in (NEUTRAL, f.id):
+            if f.is_ai:
+                D.add_opinion(self, f.id, taker, C.OP_HIJACK)
+            self.event("info", f"{self.info(p.key).name}을(를) {self.fname(taker)}이(가) 먼저 차지해 "
+                       f"{self.info(rr.id).name}의 편입이 취소되었습니다 (환급 {p.paid:,.0f}).",
+                       region=p.key, fids=(f.id,))
 
     def _phase_projects(self, kinds):
         if "annex" in kinds:
@@ -1976,8 +2025,10 @@ class Game:
         revenue = gdp * f.tax * f.income_mult
         up = self.upkeep(f.id)
         f.money += revenue - up
+        spent = sum(f.spend.values())
         f.last.update(gdp=gdp, tax=revenue, upkeep=up, buy=f.trade_buy, sell=f.trade_sell,
-                      net=revenue - up - f.trade_buy + f.trade_sell)
+                      spend=dict(f.spend), refund=f.refund,
+                      net=revenue + f.trade_sell + f.refund - up - f.trade_buy - spent)
         if f.money < 0:
             for r in self.regions_of(f.id):
                 r.h_delta += C.DEBT_HAPPY
