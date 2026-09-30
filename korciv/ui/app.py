@@ -136,22 +136,44 @@ class App:
         self.map.center_on(self.game.player.capital, zoom=2.2)
         self.sel = self.game.player.capital
 
-    def save(self, name="quicksave"):
+    def save(self, name="slot1"):
         if not self.game:
-            return
+            return False
         os.makedirs(SAVE_DIR, exist_ok=True)
         path = os.path.join(SAVE_DIR, name + ".sav")
         with open(path, "wb") as f:
             pickle.dump(self.game, f)
         self.toast(f"저장했습니다: {path}")
+        return True
 
-    def load(self, name="quicksave"):
+    @staticmethod
+    def slot_info(slot: int):
+        """저장 슬롯(1~3) 정보: 없으면 None, 있으면 {"path", "mtime", "label"}."""
+        path = os.path.join(SAVE_DIR, f"slot{slot}.sav")
+        if not os.path.exists(path):
+            return None
+        info = {"path": path, "mtime": os.path.getmtime(path), "label": ""}
+        try:
+            with open(path, "rb") as f:
+                g = pickle.load(f)
+            info["label"] = f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"
+        except Exception:
+            info["label"] = "(읽을 수 없는 파일)"
+        return info
+
+    def open_slots(self, mode):
+        """mode: save / save_exit / load — 슬롯 선택 창."""
+        self.slot_cache = {i: self.slot_info(i) for i in range(1, C.SAVE_SLOTS + 1)}
+        self.modal = ("saveslots", mode)
+
+    def load(self, name="slot1"):
         path = os.path.join(SAVE_DIR, name + ".sav")
         if not os.path.exists(path):
             self.toast("저장 파일이 없습니다.", self.theme.bad)
             return
         with open(path, "rb") as f:
             self.game = pickle.load(f)
+        self.modal = None
         self.reset_ui()
         self.scene = "main" if self.game.setup_done else "government"
         self.map.center_on(self.game.player.capital, zoom=2.0)
@@ -195,7 +217,12 @@ class App:
     def frame(self):
         self.screen.fill(self.theme.bg)
         if self.scene == "setup":
+            slots_open = bool(self.modal and self.modal[0] == "saveslots")
+            self.gui.input_enabled = not slots_open
             modals.draw_setup(self)
+            self.gui.input_enabled = True
+            if slots_open:
+                modals.draw_save_slots(self)
         elif self.scene == "pick_start":
             self.draw_pick_start()
         elif self.scene in ("government", "main"):
@@ -535,7 +562,7 @@ class App:
                 x += render_text(self.world.regions[r.id].short, 11, (0, 0, 0), "semibold").get_width() / 2 + 3 * u
             col = (25, 25, 25) if g.focus_active(r) else (130, 130, 130)
             t = render_text("[P]", 11, col, "bold")
-            self.screen.blit(t, t.get_rect(midleft=(x, y - (6 * u if mv.z >= 4 else 0))))
+            self.screen.blit(t, t.get_rect(midleft=(x + 2 * u, y + 2 * u - (6 * u if mv.z >= 4 else 0))))
 
     def draw_occupations(self):
         g = self.game
@@ -824,9 +851,9 @@ class App:
                 self.toast("개발자 안개 토글: " + ("전체 공개" if self.fog_reveal else "기본"))
                 self.changed()
             elif k.key == pygame.K_F5:
-                self.save()
+                self.open_slots("save")
             elif k.key == pygame.K_F9:
-                self.load()
+                self.open_slots("load")
             elif k.key == pygame.K_TAB:
                 self.next_idle()
             elif k.key == pygame.K_a and not pygame.key.get_mods() & pygame.KMOD_CTRL:

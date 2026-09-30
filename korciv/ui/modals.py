@@ -120,7 +120,7 @@ def draw_setup(app):
     s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
     # 하단 버튼
     if gui.button((r.right - 360, r.bottom - 64, 150, 44), "불러오기"):
-        app.load()
+        app.open_slots("load")
     if gui.button((r.right - 196, r.bottom - 64, 170, 44), "게임 시작", "primary", size=16, weight="bold",
                   enabled=any(s.victories.values())):
         start_from_setup(app)
@@ -303,6 +303,47 @@ def draw_active_modal(app):
         draw_landmark_name(app)
     elif name == "specialty":
         draw_specialty(app)
+    elif name == "saveslots":
+        draw_save_slots(app)
+
+
+def draw_save_slots(app):
+    """저장 슬롯 3개: 저장 / 저장하고 나가기 / 불러오기."""
+    import time
+    gui = app.gui
+    t = app.theme
+    mode = app.modal[1]
+    title = {"save": "저장할 슬롯 선택", "save_exit": "저장하고 나가기 — 슬롯 선택", "load": "불러올 슬롯 선택"}[mode]
+    r = modal_frame(app, 560, 120 + 76 * C.SAVE_SLOTS, title)
+    y = r.y + 64
+    for i in range(1, C.SAVE_SLOTS + 1):
+        info = app.slot_cache.get(i)
+        row = pygame.Rect(r.x + 24, y, r.w - 48, 64)
+        gui.rect(t.panel_alt, row, radius=8)
+        gui.text((row.x + 16, row.y + 10), f"슬롯 {i}", 15, weight="bold")
+        if info:
+            when = time.strftime("%m-%d %H:%M", time.localtime(info["mtime"]))
+            gui.text((row.x + 16, row.y + 36), f"{info['label']} · 저장 {when}", 12, t.muted, max_w=row.w - 150)
+        else:
+            gui.text((row.x + 16, row.y + 36), "비어 있음", 12, t.muted)
+        if mode == "load":
+            label, ok = "불러오기", info is not None
+        else:
+            label, ok = ("덮어쓰기" if info else "저장"), True
+        if gui.button((row.right - 116, row.y + 14, 104, 36), label, "primary" if ok else "default", enabled=ok, size=13):
+            if mode == "load":
+                app.load(f"slot{i}")
+                return
+            if app.save(f"slot{i}"):
+                close(app)
+                if mode == "save_exit":
+                    app.game = None
+                    app.reset_ui()
+                    app.scene = "setup"
+                return
+        y += 76
+    if gui.button((r.right - 144, r.bottom - 56, 120, 40), "취소"):
+        close(app)
 
 
 def close(app):
