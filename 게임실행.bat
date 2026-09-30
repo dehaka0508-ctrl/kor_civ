@@ -1,15 +1,16 @@
 @echo off
 chcp 65001 >nul
-title 한반도 시군구 문명
+title 한반도의 문명
 cd /d "%~dp0"
 
 rem ---- 1. Python 찾기
 set "PY="
+set "PYW="
 py -3 --version >nul 2>&1
-if not errorlevel 1 set "PY=py -3"
+if not errorlevel 1 set "PY=py -3"& set "PYW=pyw -3"
 if defined PY goto have_python
 python --version >nul 2>&1
-if not errorlevel 1 set "PY=python"
+if not errorlevel 1 set "PY=python"& set "PYW=pythonw"
 if defined PY goto have_python
 call :find_installed
 if defined PY goto have_python
@@ -44,21 +45,18 @@ pause
 exit /b 1
 
 :run_game
-rem ---- 4. 게임 실행
-echo 게임을 시작합니다...
-%PY% -m korciv
-if errorlevel 1 goto crashed
+rem ---- 4. 게임 실행: 콘솔 없는 pythonw로 게임 창만 띄우고 이 창은 바로 닫는다
+rem      (오류가 나면 %USERPROFILE%\.korciv\error.log 에 기록)
+if defined PYW (
+  start "" %PYW% -m korciv
+) else (
+  start "" /b %PY% -m korciv
+)
 exit /b 0
-
-:crashed
-echo.
-echo [오류] 게임이 비정상 종료되었습니다. 이 창의 내용을 캡처해 보내 주세요.
-pause
-exit /b 1
 
 :find_installed
 for %%V in (314 313 312 311 310) do (
-  if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe" set PY="%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
-  if not defined PY if exist "%ProgramFiles%\Python%%V\python.exe" set PY="%ProgramFiles%\Python%%V\python.exe"
+  if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe" set PY="%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"& set PYW="%LOCALAPPDATA%\Programs\Python\Python%%V\pythonw.exe"
+  if not defined PY if exist "%ProgramFiles%\Python%%V\python.exe" set PY="%ProgramFiles%\Python%%V\python.exe"& set PYW="%ProgramFiles%\Python%%V\pythonw.exe"
 )
 exit /b 0

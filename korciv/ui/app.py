@@ -50,7 +50,7 @@ class App:
     def __init__(self, width=None, height=None, screenshot=None):
         _dpi_aware()
         pygame.init()
-        pygame.display.set_caption("한반도 시군구 문명")
+        pygame.display.set_caption("한반도의 문명")
         flags = pygame.RESIZABLE
         # 모니터 크기에 맞춰 크게 연다(최대화하면 UI 전체가 화면에 맞게 커진다)
         info = pygame.display.Info()
@@ -1070,7 +1070,7 @@ class App:
 
 def main(argv=None):
     import argparse
-    ap = argparse.ArgumentParser(description="한반도 시군구 문명")
+    ap = argparse.ArgumentParser(description="한반도의 문명")
     ap.add_argument("--width", type=int, default=None)
     ap.add_argument("--height", type=int, default=None)
     ap.add_argument("--screenshot", help="몇 프레임 뒤 스크린샷을 저장하고 종료(테스트용)")

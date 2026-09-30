@@ -1,4 +1,4 @@
-# 한반도 시군구 문명
+# 한반도의 문명
 
 한반도 시군구 424곳(남한 227, 북한 194, 남북 병합 3)을 한 칸씩 타일로 쓰는 1주 단위 턴제 전략게임입니다.
 `docs/기획서.md`(종합 기획서)와 `korciv/data/regions.csv`, `adjacency-overrides.csv`를 바탕으로 Python + pygame으로 만들었습니다.
@@ -8,7 +8,7 @@
 ## 실행
 
 **Windows: `게임실행.bat`을 더블클릭하세요.**
-Python이 없으면 자동으로 설치하고(winget), 처음 한 번 필요한 부품(pygame, numpy)을 설치한 뒤 게임을 켭니다.
+Python이 없으면 자동으로 설치하고(winget), 처음 한 번 필요한 부품(pygame, numpy)을 설치한 뒤 게임을 켭니다. 게임은 콘솔 없는 `pythonw`로 띄우고 검은 창은 바로 닫힙니다(설치가 필요한 첫 실행 때만 진행 상황을 보여 줌). 게임이 갑자기 꺼지면 `%USERPROFILE%\.korciv\error.log`를 보내 주세요.
 "Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누르세요. macOS·Linux는 `./run.sh`.
 
 직접 실행하려면:

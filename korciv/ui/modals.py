@@ -48,7 +48,7 @@ def draw_setup(app):
     r = pygame.Rect(0, 0, 1180, 760)
     r.center = (sw // 2, sh // 2)
     gui.panel(r, radius=14)
-    gui.text((r.x + 32, r.y + 24), "한반도 시군구 문명", 28, weight="bold")
+    gui.text((r.x + 32, r.y + 24), "한반도의 문명", 28, weight="bold")
     gui.text((r.x + 34, r.y + 64), "424개 시군구 · 1턴 = 1주 · 2026년 1월 1주 시작", 14, t.muted)
     # 좌측: 국가·지도자
     x, y = r.x + 32, r.y + 104
@@ -248,8 +248,7 @@ def draw_start_popup(app, rid):
         start_from_setup(app)
         return
     if gui.button((x + bw + 12, by, bw, 46), "이전", size=15):
-        app.pick_popup = None
-        app.scene = "setup"
+        app.pick_popup = None            # 팝업만 닫고 지도로 돌아가 다른 지역 고르기
         return
     for k in gui.keys:
         if k.key == pygame.K_ESCAPE:   # Esc: 팝업만 닫고 다른 지역 고르기

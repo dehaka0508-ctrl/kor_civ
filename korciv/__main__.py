@@ -31,6 +31,19 @@ def main():
         simulate(args.simulate, args.enemies, args.seed)
         return
     from .ui.app import main as ui_main
+    if sys.stderr is None:
+        # pythonw(콘솔 창 없음)로 실행: 오류를 파일로 남긴다
+        import os
+        import traceback
+        log = os.path.join(os.path.expanduser("~"), ".korciv", "error.log")
+        try:
+            ui_main(rest)
+        except Exception:
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            with open(log, "w", encoding="utf-8") as f:
+                traceback.print_exc(file=f)
+            raise
+        return
     ui_main(rest)
 
 
