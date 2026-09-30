@@ -304,6 +304,38 @@ def draw_active_modal(app):
         draw_specialty(app)
     elif name == "saveslots":
         draw_save_slots(app)
+    elif name == "pause":
+        draw_pause(app)
+
+
+def draw_pause(app):
+    """일시정지 창: 게임 메뉴 버튼 6개."""
+    g = app.game
+    gui = app.gui
+    r = modal_frame(app, 460, 330, "일시정지")
+    bw, bh = (r.w - 60) / 2, 48
+    x0, y0 = r.x + 24, r.y + 70
+    items = [
+        ("저장 F5", lambda: app.open_slots("save"), True),
+        ("저장하고 나가기", lambda: app.open_slots("save_exit"), True),
+        ("불러오기 F9", lambda: app.open_slots("load"), True),
+        ("도움말 F1", lambda: setattr(app, "modal", ("help", None)), True),
+        ("이벤트 로그", lambda: setattr(app, "modal", ("log", None)), True),
+        ("연말 랭킹", lambda: setattr(app, "modal", ("ranking", max(g.rankings) if g.rankings else None)),
+         bool(g.rankings)),
+    ]
+    for i, (label, act, ok) in enumerate(items):
+        bx = x0 + (i % 2) * (bw + 12)
+        by = y0 + (i // 2) * (bh + 10)
+        if gui.button((bx, by, bw, bh), label, size=14, enabled=ok):
+            act()
+            return
+    if gui.button((r.centerx - 80, r.bottom - 60, 160, 42), "계속하기", "primary", size=14):
+        close(app)
+        return
+    for k in gui.keys:
+        if k.key in (pygame.K_ESCAPE, pygame.K_p):
+            close(app)
 
 
 def draw_save_slots(app):
@@ -642,7 +674,7 @@ HELP = """[조작]
 좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
 Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드   F2: 개발자 안개 토글
-F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
+P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
 · 정치 지도에서 진한 색 내 영토는 생산·행동(또는 생산 집중)이 진행 중인 지역입니다.

@@ -642,23 +642,7 @@ def draw_nation_tab(app, body):
             app.open_diplomacy(o.id)
         y += 42
     # 기타
-    y = section(gui, x, y + 6, w, "게임")
-    bw = (w - 4) / 2
-    if gui.button((x, y, bw, 28), "저장 F5", size=12):
-        app.open_slots("save")
-    if gui.button((x + bw + 4, y, bw, 28), "저장하고 나가기", size=12):
-        app.open_slots("save_exit")
-    y += 34
-    if gui.button((x, y, bw, 28), "불러오기 F9", size=12):
-        app.open_slots("load")
-    if gui.button((x + bw + 4, y, bw, 28), "도움말 F1", size=12):
-        app.modal = ("help", None)
-    y += 34
-    if gui.button((x, y, (w - 4) / 2, 28), "이벤트 로그", size=12):
-        app.modal = ("log", None)
-    if gui.button((x + (w + 4) / 2, y, (w - 4) / 2, 28), "연말 랭킹", size=12, enabled=bool(g.rankings)):
-        app.modal = ("ranking", max(g.rankings))
-    y += 40
+    y += 10
     gui.end_scroll("nation", area, y - y0)
 
 

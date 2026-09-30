@@ -827,9 +827,15 @@ class App:
             elif k.key == pygame.K_ESCAPE:
                 if self.sel_army:
                     self.sel_army = None
-                else:
+                elif self.sel or self.ctx_menu:
                     self.sel = None
+                else:
+                    self.modal = ("pause", None)     # 선택한 것이 없으면 일시정지
+                    g.keys.remove(k)                 # 같은 프레임에 창이 바로 닫히지 않도록
                 self.ctx_menu = None
+            elif k.key == pygame.K_p:
+                self.modal = ("pause", None)
+                g.keys.remove(k)
             elif k.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                 self.map.zoom_at(self.map.view.center, 1.25)
             elif k.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -921,11 +927,17 @@ class App:
         sw, _ = self.lsize()
         gui.panel((0, 0, sw, TOP_H), radius=0, shadow=True, border=False)
         gui.line(self.theme.border, (0, TOP_H - 1), (sw, TOP_H - 1))
-        gui.rect(self.faction_rgb(f.id), (16, 14, 8, 28), radius=3)
+        # 좌상단 일시정지: 저장·불러오기·도움말 등 게임 메뉴
+        pb = pygame.Rect(10, 10, 36, 36)
+        if gui.button(pb, "", tooltip="일시정지 (P, 선택이 없을 때 Esc) — 저장·불러오기·도움말"):
+            self.modal = ("pause", None)
+        for dx in (-5, 5):
+            gui.rect(self.theme.text, (pb.centerx + dx - 2, pb.centery - 8, 5, 16), radius=1)
+        gui.rect(self.faction_rgb(f.id), (56, 14, 8, 28), radius=3)
         from ..leaders import GOV_BY_KEY
         gov = GOV_BY_KEY.get(f.gov, {}).get("name", "체제 미정")
-        gui.text((32, 8), f.name, 18, weight="bold")
-        gui.text((32, 32), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 12,
+        gui.text((72, 8), f.name, 18, weight="bold")
+        gui.text((72, 32), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 12,
                  self.theme.muted)
         gui.text((sw // 2 - 90, TOP_H // 2), g.date_label(), 16, weight="bold", anchor="center")
         x = sw - 16
