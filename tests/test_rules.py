@@ -87,4 +87,4 @@ def test_region_value_turn_table():
     rich = R.region_value_parts(800, 5, 2, 0, 1, 1, 0, 0, 0, 1)
     assert sum(rich.values()) > sum(base.values()) + 3
     # 편입 비용: 산출에 비례하고 보유 지역이 많을수록 비싸다
-    assert R.annex_cost(1000, 50) == pytest.approx(R.annex_cost(1000, 0) * 2)
+    assert R.annex_cost(1000, 100) == pytest.approx(R.annex_cost(1000, 0) * 2)   # 1%/지역
