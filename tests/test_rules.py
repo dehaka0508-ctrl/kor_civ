@@ -73,3 +73,18 @@ def test_surprise_chance_and_dates():
     assert R.date_label(1) == "2026년 1월 1주 · 턴 1"
     assert R.date_label(10) == "2026년 3월 2주 · 턴 10"
     assert R.date_label(49) == "2027년 1월 1주 · 턴 49"
+
+
+def test_region_value_turn_table():
+    assert [R.value_turns(v) for v in range(1, 11)] == [1, 2, 3, 4, 6, 8, 10, 13, 16, 20]
+    assert R.value_turns(10, 1.2) == 24          # 가야 수로왕 +20%
+    assert R.region_value(0.0) == 1 and R.region_value(99) == 10
+    big = sum(R.region_value_parts(7000, 100, 8, 1, 0, 0, 0, 1, 0, 1).values())
+    small = sum(R.region_value_parts(250, 2.5, 1, 0, 0, 0, 0, 0, 0, 0).values())
+    assert R.region_value(big) >= 9 and R.region_value(small) <= 2
+    # 자원·특산물도 가치를 올린다
+    base = R.region_value_parts(800, 5, 2, 0, 0, 0, 0, 0, 0, 0)
+    rich = R.region_value_parts(800, 5, 2, 0, 1, 1, 0, 0, 0, 1)
+    assert sum(rich.values()) > sum(base.values()) + 3
+    # 편입 비용: 산출에 비례하고 보유 지역이 많을수록 비싸다
+    assert R.annex_cost(1000, 50) == pytest.approx(R.annex_cost(1000, 0) * 2)

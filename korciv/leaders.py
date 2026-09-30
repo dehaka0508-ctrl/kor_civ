@@ -184,3 +184,30 @@ def gov_similar(a: str | None, b: str | None) -> bool:
     if a is None or b is None:
         return False
     return a == b or bool(GOV_FAMILIES.get(a, set()) & GOV_FAMILIES.get(b, set()))
+
+
+# ------------------------------------------------------------------ 체제 간 기본 관계 (AI 외교)
+# 우호도는 매 턴 이 기본값 쪽으로 서서히 수렴한다. 외교(선물·거래·조약·공동의 적)로 충분히 뒤집을 수 있는 크기.
+GOV_BLOC = {"absolute": "monarchy", "constitutional": "monarchy",
+            "presidential": "democracy", "parliamentary": "democracy", "socialist": "socialist"}
+# 군주제 계열 → 사회주의 → 민주주의 계열 → 군주제 계열: 앞쪽이 뒤쪽을 약간 적대한다(한쪽 방향)
+GOV_RIVAL = {"monarchy": "socialist", "socialist": "democracy", "democracy": "monarchy"}
+GOV_AFFINITY = 10      # 군주정끼리·민주정끼리(입헌군주제는 양쪽 모두)
+GOV_RIVALRY = -10
+# 체제별 호전성 보정: 의회 동의가 필요한 체제는 전쟁을 덜, 권위주의 체제는 더 쉽게 결정한다
+GOV_AGGR_ADJ = {"fascist": 1.0, "absolute": 0.5, "socialist": 0.5, "presidential": 0.0,
+                "constitutional": -0.5, "parliamentary": -1.0}
+
+
+def gov_opinion_bias(viewer_gov: str | None, target_gov: str | None) -> float:
+    """viewer 체제가 target 체제를 볼 때의 기본 우호도(시작값이자 수렴값)."""
+    if not viewer_gov or not target_gov:
+        return 0.0
+    v = 0.0
+    fa, fb = GOV_FAMILIES.get(viewer_gov, set()), GOV_FAMILIES.get(target_gov, set())
+    if fa & fb & {"군주정", "민주정"}:
+        v += GOV_AFFINITY
+    ba, bb = GOV_BLOC.get(viewer_gov), GOV_BLOC.get(target_gov)
+    if ba and bb and GOV_RIVAL.get(ba) == bb:
+        v += GOV_RIVALRY
+    return v

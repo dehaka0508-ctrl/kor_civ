@@ -164,10 +164,18 @@ NAVAL_BMB_POWER = 40
 CAPTURE_CHANCE = 0.05
 
 # 점령·편입
-OCC_MAX_TURNS = 15
+OCC_MAX_TURNS = 15         # 적 지역 점령 T(P) 상한
 INSTANT_ANNEX_H = -50
+# 중립 지역: 인구·건물·산출·자원·특산물을 합친 점수로 '지역 가치' 1~10을 매기고, 가치별로 편입·점령 턴이 정해진다.
+# 점수 = log2(산출/200) + 0.8 log2(1 + 인구/5) + 건물(단계당 0.3, 항구·공항·사관학교 0.5, 최대 3)
+#        + 자원(정유 1.5, 탄광 1.0, 자체발전 0.7, 화력발전소 소재지 0.5, 증설 단계당 0.5, 최대 3) + 특산물 0.8/종
+# 가치 = 1 + (아래 문턱을 넘은 수). 문턱은 시작 지도에서 가치 1~10이 약 10/15/17/17/13/10/7/5/3.5/2.5%가 되도록 정했다.
+VALUE_THRESHOLDS = (2.3, 3.8, 5.0, 6.0, 6.9, 7.8, 8.6, 9.6, 10.5)
+VALUE_TURNS = (1, 2, 3, 4, 6, 8, 10, 13, 16, 20)
+# 편입 비용 = (100 + 1.0 × 대상 산출) × (1 + 0.02 × 보유 지역 수) — 넓어질수록 행정 부담으로 비싸진다
 ANNEX_BASE_COST = 100
-ANNEX_COST_PER_POP = 20
+ANNEX_COST_OUTPUT = 1.0
+ANNEX_COST_PER_REGION = 0.02
 
 # ---------------------------------------------------------------- 외교 (7절)
 OPINION_DECAY = 0.99
@@ -175,8 +183,13 @@ OP_SAME_ENEMY = 0.5
 OP_SAME_FRIEND = 0.3
 OP_WAR_WITH_FRIEND = -0.5
 OP_FRIEND_OF_ENEMY = -0.3
-OP_BORDER_K = 0.2
-OP_BORDER_MAX = 2.0
+# 국경 긴장: 상대가 우리 쪽 국경에 우리보다 많은 병력을 모아 두면 매 턴 우호도 감소.
+# 비율 = 상대 국경 병력 / (우리 국경 병력 + 20), 감소 = min(MAX, K × (비율 − FREE)). 수렴값은 감소 × 약 100.
+OP_BORDER_K = 0.15
+OP_BORDER_FREE = 0.75
+OP_BORDER_MAX = 0.35
+OP_TREATY_TURN = 0.1       # 불가침·통행권을 유지하는 동안 매 턴 우호도 +0.1 (수렴 +10)
+OP_LAND_GRAB = -2          # 우리와도 맞닿은 중립 지역을 먼저 차지하면(영토 경쟁) 우리 쪽 우호도 -2
 OP_GIFT_MAX = 25
 OP_DEMAND_ACCEPT = -15
 OP_DEMAND_REJECT = -10
@@ -189,6 +202,7 @@ OP_COALITION_LEAVE = -50
 
 FRIEND_ON, FRIEND_OFF = 30, 20
 TREATY_MIN = 45
+NONAGGR_FEAR_DISCOUNT = 15  # 상대가 1/0.7배 이상 강해 보이면 불가침 문턱 -15
 TREATY_RENEW_MIN = 35
 ALLIANCE_MIN = 65
 ALLIANCE_LEAVE = 55
@@ -196,7 +210,6 @@ COALITION_MIN = 85
 COALITION_ALLIANCE_TURNS = 24
 TREATY_TURNS = 24
 PEACE_TREATY_TURNS = 24
-PEACE_WAR_TURNS = 20
 PEACE_VICTORY_TURNS = 24
 PASSAGE_FREE_OPINION = 45
 PASSAGE_VALUE = 500
@@ -223,6 +236,16 @@ HEGEMON_TREATY_DISCOUNT = 20
 # 패권 세력에 대한 선전포고 점수에서, 이미 패권 세력과 싸우는 세력의 전력을 이 비율만큼 내 전력에 더한다(공동 전선)
 HEGEMON_JOINT_FRONT = 0.5
 AI_MAX_WARS = 2
+# ---- AI 전쟁 판단 (안개 안에서 보이는 병력 기준)
+AI_WAR_OP_BASE = -85       # 선전포고 가능 우호도 상한 = -85 + 11 × 호전성 (호전성 9 → +14, 5 → -30, 2 → -63)
+AI_WAR_OP_PER_AGGR = 11
+AI_WAR_OP_HEGEMON = 25     # 패권 세력 상대로는 이만큼 더 쉽게
+AI_WAR_OP_TEMPT_MAX = 12   # 보이는 전력이 압도적이면 유혹: 문턱 + min(12, 호전성 × log2(전력비))
+AI_WAR_OP_NEED = 5         # 평화적으로 넓힐 중립 땅이 없으면(호전성 4 이상) 문턱 +5
+AI_INTEL_DECAY = 0.97      # 한 번 본 적 병력의 기억이 턴마다 줄어드는 비율
+AI_HIDDEN_GARRISON = 7     # 시야 밖 적 지역 하나당 추정 전력(보병 약 0.7개)
+AI_PEACE_SEEK = 1.0        # 강화 욕구가 이 값 이상이면 강화를 제안
+AI_PEACE_ACCEPT = 0.6      # 상대가 제안하면 이 값 이상에서 수락
 
 # ---------------------------------------------------------------- 승리 (10절)
 ECON_VICTORY_RATIO = 2.0
@@ -243,7 +266,8 @@ FOG_MODES = ["없음", "지도 공개", "미탐색"]
 # ---------------------------------------------------------------- AI
 AI_STRATEGY_PERIOD = 12
 AI_WAR_GRACE_TURNS = 12
-AI_UTILITY_HORIZON = 24
+AI_UTILITY_HORIZON = 24    # 건물: 완공 뒤 (24 - 소요 턴) 동안의 이득으로 평가
+AI_ANNEX_HORIZON = 36      # 편입: 영구 영토라 더 길게 본다. 가치가 높을수록 오래 걸려 이득 기간이 줄어든다
 
 # ---------------------------------------------------------------- 표시
 FACTION_COLORS = ["#2F6FDE", "#D9480F", "#2B8A3E", "#862E9C", "#C2255C",

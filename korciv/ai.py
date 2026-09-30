@@ -9,6 +9,7 @@ import math
 from . import config as C
 from . import diplomacy as D
 from . import rules as R
+from .leaders import GOV_AGGR_ADJ
 from .state import NEUTRAL
 
 
@@ -130,6 +131,166 @@ def _tax(g, f):
         g.set_tax(f.id, t)
 
 
+# ------------------------------------------------------------------ 정보·전력 판단 (전장의 안개 기준)
+def eff_aggression(g, f) -> float:
+    """지도자 호전성 + 정치체제 보정(0~10)."""
+    return max(0.0, min(10.0, f.aggression + GOV_AGGR_ADJ.get(f.gov, 0.0)))
+
+
+def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
+    """이 우호도 이하여야 선전포고를 검토한다. 호전적일수록 높다(호전성 9면 우호도가 조금 좋아도 가능).
+    보이는 전력이 압도적이면(유혹), 평화적으로 넓힐 땅이 없으면(필요) 조금 더 쉽게 넘는다."""
+    aggr = eff_aggression(g, f)
+    thr = C.AI_WAR_OP_BASE + C.AI_WAR_OP_PER_AGGR * aggr
+    if g.hegemon == target:
+        thr += C.AI_WAR_OP_HEGEMON
+    if ratio > 1:
+        thr += min(C.AI_WAR_OP_TEMPT_MAX, aggr * math.log2(ratio))
+    if not can_expand and aggr >= 4:
+        thr += C.AI_WAR_OP_NEED
+    return thr
+
+
+def _armies_by_loc(g):
+    out = {}
+    for a in g.armies.values():
+        out.setdefault(a.loc, []).append(a)
+    return out
+
+
+def update_intel(g, f):
+    """이번 턴 시야에 보이는 다른 세력 병력을 세고, 예전에 본 병력은 기억(서서히 잊음)."""
+    vis = g.visible(f.id)
+    seen = {}
+    for a in g.armies.values():
+        if a.owner not in (NEUTRAL, f.id) and a.loc in vis:
+            seen[a.owner] = seen.get(a.owner, 0.0) + g.army_power(a)
+    mem = f.ai.setdefault("intel", {})
+    for o in g.alive_ids():
+        if o != f.id:
+            mem[o] = max(seen.get(o, 0.0), mem.get(o, 0.0) * C.AI_INTEL_DECAY)
+    f.ai["seen"] = seen
+    f.ai["intel_turn"] = g.turn
+
+
+def perceived_power(g, fid, o) -> float:
+    """fid 가 추정하는 o 의 전력: 보이는 병력(또는 기억) + 시야 밖 지역의 추정 수비대."""
+    if g.settings.fog == 0:
+        return g.mil_power(o)
+    f = g.factions[fid]
+    if f.ai.get("intel_turn") != g.turn:
+        update_intel(g, f)
+    known = max(f.ai.get("seen", {}).get(o, 0.0), f.ai.get("intel", {}).get(o, 0.0))
+    vis = g.visible(fid)
+    hidden = sum(1 for r in g.regions_of(o) if r.id not in vis)
+    return known + hidden * C.AI_HIDDEN_GARRISON
+
+
+def front_analysis(g, fid, o, by_loc=None):
+    """fid 와 o 의 전선 분석. 구역별 국지 전력비와 돌파 가능 지점(보이는 방어가 약한 인접 적 지역)."""
+    w = g.world
+    vis = g.visible(fid)
+    by_loc = by_loc or _armies_by_loc(g)
+
+    def power(loc, owner):
+        return sum(g.army_power(a) for a in by_loc.get(loc, ()) if a.owner == owner)
+
+    sectors = []
+    enemy_border = set()
+    for r in g.regions_of(fid):
+        adj = [n for n in w.land_adj[r.id] if g.regions[n].owner == o]
+        inside = power(r.id, o)                 # 우리 땅에 들어온 적
+        if not adj and not inside:
+            continue
+        enemy_border.update(adj)
+        mine = power(r.id, fid)
+        theirs = inside + sum(power(n, o) for n in adj if n in vis)
+        sectors.append((r.id, mine, theirs))
+    targets = []
+    for n in enemy_border:
+        atk = sum(C.UNITS[k]["atk"] * c for m in w.land_adj[n] if g.regions[m].owner == fid
+                  for a in by_loc.get(m, ()) if a.owner == fid for k, c in a.units.items())
+        if n in vis:
+            dfn = sum(C.UNITS[k]["df"] * c for a in by_loc.get(n, ()) if a.owner == o for k, c in a.units.items())
+        else:
+            dfn = C.AI_HIDDEN_GARRISON * 1.2
+        dfn *= 1 + C.LINE_BONUS * max(g.regions[n].lines.values(), default=0)
+        if atk > 1.2 * dfn + 5:
+            targets.append(n)
+    superior = sum(1 for _, m, t in sectors if m >= 1.3 * t + 10 and m >= 20)
+    inferior = sum(1 for _, m, t in sectors if t >= 1.3 * m + 10)
+    return {"sectors": len(sectors), "superior": superior, "inferior": inferior,
+            "targets": sorted(targets), "border": sorted(enemy_border)}
+
+
+def war_assessment(g, fid, e):
+    """전쟁을 계속할지 판단. desire 가 클수록 강화를 원한다. reasons 는 사람이 읽는 판단 근거."""
+    f = g.factions[fid]
+    info = D.war_info(g, fid, e) or {"turns": 0, "declarer": None, "lost": 0, "gained": 0, "lost_frac": 0.0,
+                                     "score": 0.0}
+    alive = g.alive_ids()
+    my = g.mil_power(fid) + 0.5 * sum(g.mil_power(x) for x in alive
+                                      if x not in (fid, e) and D.at_war(g, x, e) and D.allied(g, x, fid))
+    their = perceived_power(g, fid, e) + 0.5 * sum(perceived_power(g, fid, x) for x in alive
+                                                   if x not in (fid, e) and D.at_war(g, x, fid) and D.allied(g, x, e))
+    ratio = my / max(10.0, their)
+    fr = front_analysis(g, fid, e)
+    aggr = eff_aggression(g, f)
+    other_wars = max(0, len(D.enemies(g, fid)) - 1)
+    avg_h = g.avg_happiness(fid)
+    d, pro, con = 0.0, [], []
+    if ratio < 1:
+        d += 0.9 * (1 - ratio)
+        pro.append(f"보이는 병력 열세({ratio:.1f}배)")
+    if info["lost_frac"] > 0:
+        d += 1.5 * info["lost_frac"]
+        pro.append(f"영토 {info['lost']}곳 상실")
+    if info["turns"] > 12:
+        d += 0.025 * (info["turns"] - 12)
+        pro.append(f"전쟁 {info['turns']}턴째")
+    if avg_h < 0:
+        d += 0.015 * -avg_h
+        if avg_h < -15:
+            pro.append("민심 악화")
+    if f.money < 0:
+        d += 0.4
+        pro.append("재정 적자")
+    if other_wars:
+        d += 0.3 * other_wars
+        pro.append("다른 전선")
+    cap = g.regions.get(f.capital)
+    if info["lost_frac"] > 0.5 or (cap and cap.occ and cap.occ["by"] == e):
+        d += 0.8
+        pro.append("수도 위협")
+    # 역전 가능성: 전선 일부라도 우세하거나 뚫을 곳이 보이면 계속 싸운다
+    turn_around = min(0.8, 0.3 * fr["superior"] + 0.15 * len(fr["targets"]))
+    if turn_around > 0:
+        d -= turn_around
+        con.append(f"전선 {fr['superior']}곳 우세·돌파 가능 {len(fr['targets'])}곳")
+    if ratio > 1:
+        d -= min(0.6, 0.4 * (ratio - 1))
+        con.append(f"병력 우세({ratio:.1f}배)")
+    net = info["gained"] - info["lost"]
+    goals = f.ai.get("war_goals", {}).get(e) or []
+    if info["declarer"] == fid and goals:
+        done = sum(1 for r in goals if g.regions[r].owner == fid) / len(goals)
+        d += 0.6 * done
+        if done >= 0.5:
+            pro.append("전쟁 목표 달성")
+    elif net > 0:
+        d += min(0.4, 0.1 * net)       # 얻을 만큼 얻었다
+    if info["declarer"] == fid and info["turns"] < 6:
+        d -= 0.3                          # 막 시작한 전쟁은 쉽게 접지 않는다
+    d -= (aggr - 5) * 0.06
+    return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
+
+
+def peace_reason(a, accept: bool) -> str:
+    if accept:
+        return "강화 수락: " + (", ".join(a["pro"][:3]) or "전쟁을 이어갈 이유가 줄었습니다")
+    return "거절: " + (", ".join(a["con"][:2]) or "아직 전쟁을 계속할 여력이 있습니다") + " — 역전할 수 있다고 봅니다"
+
+
 # ------------------------------------------------------------------ 외교
 def national_power(g, fid):
     return g.power.get(fid, 0.0)
@@ -138,21 +299,19 @@ def national_power(g, fid):
 def _diplomacy(g, f):
     fid = f.id
     alive = g.alive_ids()
-    # 강화
+    update_intel(g, f)
+    # 강화: 병력 판단·전선·피로·목표를 종합
     for e in D.enemies(g, fid):
-        w = g.dip.wars.get(D.pair(fid, e))
-        if not w:
+        a = war_assessment(g, fid, e)
+        if a["desire"] < C.AI_PEACE_SEEK:
             continue
-        losing = D.war_score(g, fid, e) < -5
-        long_war = g.turn - w["start"] > C.PEACE_WAR_TURNS
-        if losing or long_war:
-            ef = g.factions[e]
-            if ef.is_ai:
-                ok, _ = D.treaty_check(g, e, fid, "peace")
-                if ok:
-                    D.make_peace(g, fid, e)
-            else:
-                _queue_player(g, fid, "peace")
+        ef = g.factions[e]
+        if ef.is_ai:
+            b = war_assessment(g, e, fid)
+            if b["desire"] >= C.AI_PEACE_ACCEPT:
+                D.make_peace(g, fid, e)
+        else:
+            _queue_player(g, fid, "peace")
     # AI 간 조약
     for b in alive:
         if b == fid or not g.factions[b].is_ai or D.at_war(g, fid, b):
@@ -163,40 +322,75 @@ def _diplomacy(g, f):
             if ok1 and ok2:
                 D.sign_treaty(g, fid, b, kind)
                 break
-    # 선전포고
-    if g.turn <= C.AI_WAR_GRACE_TURNS or len(D.enemies(g, fid)) >= C.AI_MAX_WARS:
+    _consider_war(g, f)
+
+
+def _consider_war(g, f):
+    """선전포고: 우호도가 호전성별 문턱 아래인 이웃 중, 보이는 전력·돌파 지점·얻을 가치를 따져 결정."""
+    fid = f.id
+    my_enemies = D.enemies(g, fid)
+    if g.turn <= C.AI_WAR_GRACE_TURNS or len(my_enemies) >= C.AI_MAX_WARS:
         return
-    my_mil = g.mil_power(fid) + 1
-    my_regs = g.regions_of(fid)
-    if not my_regs:
+    regs = g.regions_of(fid)
+    if not regs or f.money < 0 or g.avg_happiness(fid) < -20:
         return
-    my_avg_y = sum(r.output for r in my_regs) / len(my_regs) + 1
-    neighbors = {}
-    for r in my_regs:
-        for n in g.world.land_adj[r.id]:
+    alive = g.alive_ids()
+    aggr = eff_aggression(g, f)
+    w = g.world
+    neighbors = set()
+    can_expand = False
+    for r in regs:
+        for n in w.land_adj[r.id]:
             o = g.regions[n].owner
-            if o not in (NEUTRAL, fid):
-                neighbors[o] = neighbors.get(o, 0.0) + g.regions[n].output
-    best, best_w = None, 1.0
-    for o, border_y in neighbors.items():
-        if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o):
+            if o == NEUTRAL:
+                can_expand = True
+            elif o != fid:
+                neighbors.add(o)
+    by_loc = _armies_by_loc(g)
+    my_total = g.mil_power(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
+    best, best_s, best_goals = None, 1.0, []
+    for o in sorted(neighbors):
+        if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o) or D.peace_left(g, fid, o) > 0:
             continue
-        their = g.mil_power(o) + sum(g.mil_power(x) for x in alive if x != o and D.allied(g, x, o)) + 1
-        value = 0.5 + min(1.0, border_y / (my_avg_y * 4))
-        mine = my_mil
+        their = perceived_power(g, fid, o) + sum(perceived_power(g, fid, x) for x in alive
+                                                 if x not in (fid, o) and D.allied(g, x, o))
+        their /= 1 + 0.5 * len(D.enemies(g, o))       # 상대도 다른 전쟁에 병력이 묶여 있다
+        mine = my_total
+        cid = D.coalition_of(g, fid)
+        if cid is not None:
+            mine += 0.5 * sum(g.mil_power(x) for x in g.dip.coalitions[cid]["members"] if x != fid)
         if g.hegemon == o:
-            # 공동 전선: 이미 패권 세력과 싸우는 세력의 전력 일부를 더한다
             mine += C.HEGEMON_JOINT_FRONT * sum(g.mil_power(x) for x in alive
                                                 if x not in (fid, o) and D.at_war(g, x, o)
                                                 and not D.at_war(g, x, fid))
-        W = (f.aggression / 10) * (mine / their) * value - D.opinion(g, fid, o) / 100
-        W -= len(D.enemies(g, fid)) * 0.5
+        ratio = mine / max(10.0, their)
+        op = D.opinion(g, fid, o)
+        thr = war_op_threshold(g, f, o, ratio, can_expand)
+        if op > thr:
+            continue                      # 아직 참을 만하다
+        need = 1.5 - 0.07 * aggr
+        if ratio < need:
+            continue
+        fr = front_analysis(g, fid, o, by_loc)
+        if not fr["targets"] and ratio < need + 0.5:
+            continue                      # 뚫을 곳이 보이지 않는다
+        prize = sum(g.region_value(n)[0] for n in fr["targets"]) + 0.3 * sum(
+            g.region_value(n)[0] for n in fr["border"] if n not in fr["targets"])
+        s = (aggr / 10) * min(2.5, ratio) * (0.5 + min(1.5, prize / 15))
+        s += (thr - op) / 40                               # 문턱보다 얼마나 더 미운가
+        if not can_expand:
+            s += 0.3                                        # 평화적으로 넓힐 땅이 없다
+        s -= 0.5 * len(my_enemies)
+        if g.avg_happiness(fid) < 0:
+            s -= 0.3
         if g.hegemon == o:
-            W += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
-        if W > best_w:
-            best, best_w = o, W
+            s += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
+        if s > best_s:
+            best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:
-        D.declare_war(g, fid, best)
+        ok, _ = D.declare_war(g, fid, best)
+        if ok:
+            f.ai.setdefault("war_goals", {})[best] = best_goals
 
 
 def _queue_player(g, fid, kind):
@@ -215,8 +409,7 @@ def propose_to_player(g):
         if not f.alive or not f.is_ai:
             continue
         if D.at_war(g, f.id, pid):
-            w = g.dip.wars.get(D.pair(f.id, pid))
-            if w and (D.war_score(g, f.id, pid) < -5 or g.turn - w["start"] > C.PEACE_WAR_TURNS):
+            if war_assessment(g, f.id, pid)["desire"] >= C.AI_PEACE_SEEK:
                 _queue_player(g, f.id, "peace")
             continue
         for kind in ("coalition", "alliance", "nonaggr"):
@@ -442,8 +635,12 @@ def _slots(g, f, threat, military=True):
         for t in g.annex_targets(fid, r.id):
             if t["busy"]:
                 continue
+            tr = g.regions[t["target"]]
             y = g.region_output_estimate(t["target"])
-            gain = y * tax * C.AI_UTILITY_HORIZON * wts.get("expansion", 1) + y * 2
+            food = R.food_output(tr.b["farm"], tr.b["fishery"])
+            per_turn = y * tax + food * C.MARKET_BUY["food"] * (1.0 if food_short else 0.15)
+            # 완공까지 슬롯이 묶이고 이득은 그 뒤부터: 가치가 높은(오래 걸리는) 지역일수록 할인
+            gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["turns"]) * wts.get("expansion", 1)
             cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):
@@ -453,10 +650,11 @@ def _slots(g, f, threat, military=True):
             cost = R.prod_building_cost(key, lv)
             turns = g.build_time(fid, key, R.prod_building_turns(lv))
             dy = _delta_output(g, r.id, key)
-            gain = dy * tax * C.AI_UTILITY_HORIZON * wts.get("economy", 1)
+            horizon = max(0, C.AI_UTILITY_HORIZON - turns)
+            gain = dy * tax * horizon * wts.get("economy", 1)
             if key in ("farm", "fishery"):
                 dfood = C.FOOD_PER_G * (R.g(lv) - R.g(lv - 1))
-                gain += dfood * C.MARKET_BUY["food"] * C.AI_UTILITY_HORIZON * (1.0 if food_short else 0.15)
+                gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory":
                 gain *= 0.8  # 연료 필요
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))

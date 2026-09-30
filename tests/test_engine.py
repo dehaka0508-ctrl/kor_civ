@@ -380,3 +380,88 @@ def test_multi_turn_route_moves_automatically():
         if army.loc == far:
             break
     assert army.loc == far and army.goto is None
+
+
+def test_neutral_turns_follow_region_value():
+    g = new_game(player_start="S002", n_enemies=1)
+    vals = [g.region_value(r)[0] for r in g.world.order]
+    assert min(vals) == 1 and max(vals) == 10
+    assert len(set(vals)) == 10
+    for t in g.annex_targets(0, "S002"):
+        assert t["turns"] == C.VALUE_TURNS[t["value"] - 1]
+        assert t["cost"] == pytest.approx(g.annex_cost(0, t["target"]))
+    tgt = min(g.world.land_adj["S002"], key=lambda r: -g.region_value(r)[0])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.begin_occupation(0, tgt)
+    assert g.regions[tgt].occ["need"] == g.neutral_turns(0, tgt)
+
+
+def test_government_opinion_baseline():
+    from korciv.leaders import gov_opinion_bias as bias
+    assert bias("absolute", "constitutional") == 10          # 군주정끼리
+    assert bias("presidential", "parliamentary") == 10       # 민주정끼리
+    assert bias("absolute", "socialist") == -10              # 군주제 → 사회주의
+    assert bias("socialist", "presidential") == -10          # 사회주의 → 민주주의
+    assert bias("presidential", "absolute") == -10           # 민주주의 → 군주제
+    assert bias("socialist", "absolute") == 0                # 한 방향만
+    g = new_game(n_enemies=2)
+    g.factions[1].gov, g.factions[2].gov = "absolute", "socialist"
+    g.dip.op[(1, 2)] = 0.0
+    for _ in range(300):
+        D.update_turn(g)
+    assert D.opinion(g, 1, 2) == pytest.approx(-10, abs=3)   # 기본값으로 수렴
+
+
+def _border_setup(aggr, gov="presidential"):
+    """플레이어(0) 수도 옆 지역들을 AI(1)에게 주고, AI 병력을 국경에 둔다."""
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    g.turn = 40
+    ai_f = g.factions[1]
+    ai_f.aggression, ai_f.gov = aggr, gov
+    g._mods.clear()
+    border = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 1, border)
+    for rid in border:
+        for a in list(g.armies_at(rid)):
+            g.remove_army(a)
+    g.new_army(1, border[0], {"inf": 12, "tank": 2})
+    g._visible = {}
+    return g, AI, border
+
+
+def test_ai_war_needs_opinion_below_aggression_threshold():
+    g, AI, _ = _border_setup(aggr=2)
+    f = g.factions[1]
+    g.dip.op[(1, 0)] = -20.0          # 싫어하지만 평화적인 지도자에게는 아직 참을 만하다
+    AI._consider_war(g, f)
+    assert not D.at_war(g, 0, 1)
+    g.dip.op[(1, 0)] = -95.0          # 참다참다 못해
+    AI._consider_war(g, f)
+    assert D.at_war(g, 0, 1)
+
+    g, AI, _ = _border_setup(aggr=9, gov="fascist")
+    g.dip.op[(1, 0)] = 0.0            # 아주 호전적인 지도자는 필요하면 바로
+    AI._consider_war(g, g.factions[1])
+    assert D.at_war(g, 0, 1)
+
+
+def test_ai_keeps_fighting_when_front_is_favorable():
+    g, AI, border = _border_setup(aggr=5)
+    D.declare_war(g, 1, 0)
+    g.turn += 8
+    # 플레이어가 AI 지역 하나를 빼앗았다
+    g.transfer_region(border[1], 0)
+    assert D.war_info(g, 1, 0)["lost"] == 1
+    ok, why = D.treaty_check(g, 1, 0, "peace")
+    assert not ok and "역전" in why            # 다른 전선에서 우세 → 계속 싸운다
+    # 병력을 잃고 영토 대부분을 빼앗기면 강화를 받아들인다
+    for a in [a for a in g.armies.values() if a.owner == 1]:
+        g.remove_army(a)
+    g.new_army(0, "S002", {"inf": 20, "tank": 5})
+    g._visible = {}
+    g.factions[1].ai.pop("intel", None)
+    g.turn += 20
+    ok, why = D.treaty_check(g, 1, 0, "peace")
+    assert ok, why

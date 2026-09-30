@@ -62,8 +62,32 @@ def enemy_occupation_turns(pop: float, happiness: float, time_mult=1.0) -> int:
     return max(1, int(math.floor(t * time_mult + 0.5)))
 
 
-def annex_cost(pop: float) -> float:
-    return (C.ANNEX_BASE_COST + C.ANNEX_COST_PER_POP * pop) * C.MONEY_SCALE
+def region_value_parts(output, pop, levels, singles, oil, coal, power_self, power_site, extract,
+                       n_specialty) -> dict:
+    """지역 가치 점수의 구성(인구·건물·산출·자원·특산물)."""
+    return {
+        "산출": max(0.0, math.log2(max(output, 1) / 200)),
+        "인구": 0.8 * math.log2(1 + max(pop, 0) / 5),
+        "건물": min(3.0, 0.3 * levels + 0.5 * singles),
+        "자원": min(3.0, 1.5 * oil + 1.0 * coal + 0.7 * power_self + 0.5 * power_site + 0.5 * extract),
+        "특산물": 0.8 * n_specialty,
+    }
+
+
+def region_value(score: float) -> int:
+    """점수 -> 가치 1~10."""
+    return 1 + sum(1 for th in C.VALUE_THRESHOLDS if score >= th)
+
+
+def value_turns(value: int, time_mult=1.0) -> int:
+    """가치 1~10 -> 편입·점령 턴 1,2,3,4,6,8,10,13,16,20."""
+    t = C.VALUE_TURNS[max(1, min(10, value)) - 1]
+    return max(1, int(math.floor(t * time_mult + 0.5)))
+
+
+def annex_cost(output: float, owned_regions: int = 0) -> float:
+    base = C.ANNEX_BASE_COST + C.ANNEX_COST_OUTPUT * output
+    return base * (1 + C.ANNEX_COST_PER_REGION * owned_regions) * C.MONEY_SCALE
 
 
 def rebellion_probability(h: float) -> float:

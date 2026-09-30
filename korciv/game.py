@@ -165,7 +165,7 @@ class Game:
         for a in self.factions:
             for b in self.factions:
                 if a.id != b.id and a.is_ai:
-                    self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion")
+                    self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
             r.output = self.calc_output(r.id, phi=1.0)
             r.food = R.food_output(r.b["farm"], r.b["fishery"])
@@ -804,6 +804,25 @@ class Game:
                 return True
         return False
 
+    def region_value(self, rid):
+        """지역 가치 1~10과 점수 구성 {항목: 점수}."""
+        rr = self.regions[rid]
+        info = self.info(rid)
+        levels = sum(rr.b[k] for k in ("farm", "fishery", "factory", "bank", "power", "liquefy",
+                                       "specialty", "extract"))
+        singles = sum(rr.b[k] for k in ("port", "airport", "academy"))
+        parts = R.region_value_parts(self.region_output_estimate(rid), rr.pop, levels, singles,
+                                     info.oil, info.coal, info.power_self, info.power_site,
+                                     rr.b["extract"], len(info.specialties))
+        return R.region_value(sum(parts.values())), parts
+
+    def neutral_turns(self, fid, rid) -> int:
+        """중립 지역 편입·무력 점령에 걸리는 턴(지역 가치 기준)."""
+        return R.value_turns(self.region_value(rid)[0], self.mods(fid).mult("occ_time"))
+
+    def annex_cost(self, fid, rid) -> float:
+        return R.annex_cost(self.region_output_estimate(rid), self.region_count(fid))
+
     def annex_targets(self, fid, rid):
         w = self.world
         cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)
@@ -825,9 +844,8 @@ class Game:
             rr = self.regions[v]
             if rr.occ:
                 continue
-            turns = max(1, int(math.floor(R.occupation_turns(rr.pop) * self.mods(fid).mult("occ_time") + 0.5)))
-            out.append({"target": v, "turns": turns, "cost": R.annex_cost(rr.pop), "busy": v in busy,
-                        "sea": v not in w.land_adj[rid]})
+            out.append({"target": v, "turns": self.neutral_turns(fid, v), "cost": self.annex_cost(fid, v),
+                        "value": self.region_value(v)[0], "busy": v in busy, "sea": v not in w.land_adj[rid]})
         return out
 
     def options(self, fid, rid):
@@ -892,7 +910,8 @@ class Game:
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
-            add("annex", t["target"], f"편입: {self.info(t['target']).name}" + (" (해로)" if t["sea"] else ""),
+            add("annex", t["target"], f"편입: {self.info(t['target']).name} (가치 {t['value']})"
+                + (" (해로)" if t["sea"] else ""),
                 t["cost"], t["turns"], not t["busy"], "이미 편입 중" if t["busy"] else "")
         if not rr.landmark:
             busy = any(r.project and r.project.kind == "landmark" and r.id == rid for r in self.regions.values())
@@ -1135,6 +1154,17 @@ class Game:
         rr.supplied = set()
         self.acq_counter = getattr(self, "acq_counter", 0) + 1
         rr.acquired_seq = self.acq_counter
+        if old != NEUTRAL and new_owner != NEUTRAL:
+            w = self.dip.wars.get(D.pair(old, new_owner))
+            if w is not None:
+                taken = w.setdefault("taken", {})
+                taken[new_owner] = taken.get(new_owner, 0) + 1
+        if old == NEUTRAL and new_owner != NEUTRAL:
+            # 영토 경쟁: 이 중립 지역과 맞닿은 다른 세력은 먼저 가져간 쪽을 못마땅하게 여긴다
+            rivals = {self.regions[n].owner for n in self.world.land_adj[rid]} - {NEUTRAL, new_owner}
+            for b in rivals:
+                if not D.allied(self, b, new_owner) and not D.at_war(self, b, new_owner):
+                    D.add_opinion(self, b, new_owner, C.OP_LAND_GRAB)
         if old != NEUTRAL:
             for army in list(self.armies_at(rid, old)):
                 self.teleport_home(army)
@@ -1196,7 +1226,7 @@ class Game:
         if rr.occ and rr.occ["by"] == fid:
             return
         if rr.owner == NEUTRAL:
-            need = max(1, int(math.floor(R.occupation_turns(rr.pop) * self.mods(fid).mult("occ_time") + 0.5)))
+            need = self.neutral_turns(fid, rid)
         else:
             thr = self.mods(fid).value("instant_annex_h", C.INSTANT_ANNEX_H)
             if rr.happy <= thr:
@@ -2092,9 +2122,9 @@ class Game:
         self.new_army(nid, rid, {"inf": n_inf})
         for other in self.factions:
             if other.id != nid:
-                self.dip.op[(nid, other.id)] = 0.0
+                self.dip.op[(nid, other.id)] = D.op_baseline(self, nid, other.id)
                 if other.is_ai:
-                    self.dip.op[(other.id, nid)] = 0.0
+                    self.dip.op[(other.id, nid)] = D.op_baseline(self, other.id, nid)
         # 같은 국가에서 독립한 세력끼리: 체제가 같거나 유사하면 우호, 다르면 적대
         for sib in siblings:
             v = C.REBEL_SIBLING_OPINION if gov_similar(f.gov, sib.gov) else -C.REBEL_SIBLING_OPINION

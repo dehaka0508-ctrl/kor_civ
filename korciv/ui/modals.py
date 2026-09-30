@@ -452,6 +452,18 @@ def draw_diplomacy(app):
              + (f" · 전쟁 점수 {D.war_score(g, pid, fid):+.1f}" if st == -1 else "")
              + (f" · 강화 불가침 {pl}턴 남음" if pl else ""), 13,
              t.bad if st == -1 else t.text)
+    # AI의 태도: 전쟁 중이면 강화 판단, 아니면 체제 기본 우호도와 전쟁 검토 문턱
+    from .. import ai as AI
+    if st == -1:
+        a = AI.war_assessment(g, fid, pid)
+        why = ", ".join((a["pro"] + a["con"])[:3])
+        hint = f"강화 의향 {a['desire']:.1f} (≥{C.AI_PEACE_ACCEPT:.1f}이면 강화 수락)" + (f" · {why}" if why else "")
+    else:
+        ratio = g.mil_power(fid) / max(10.0, AI.perceived_power(g, fid, pid))
+        thr = AI.war_op_threshold(g, other, pid, ratio)
+        hint = (f"체제 기본 우호도 {D.op_baseline(g, fid, pid):+.0f} · 호전성 {AI.eff_aggression(g, other):.1f}: "
+                f"우호도가 약 {thr:+.0f} 이하로 떨어지면 전쟁을 검토")
+    gui.text((sx, r.y + 77), hint, 11, t.muted, max_w=r.right - 24 - sx)
     # 거래
     col_w = 300
     y1 = _side_editor(app, r.x + 24, r.y + 96, col_w, ds.offer["give"], pid, fid, "내가 제공")

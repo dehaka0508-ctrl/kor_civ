@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from . import config as C
+from .leaders import gov_opinion_bias
 from .state import NEUTRAL
 
 STAGE_NAMES = {-1: "전쟁", 0: "관계 없음", 1: "우호관계", 2: "통행권·불가침", 3: "동맹", 4: "연합"}
@@ -177,7 +178,8 @@ def _clear_treaties(g, a, b):
 def _start_war(g, a, b, happiness=True):
     p = pair(a, b)
     _clear_treaties(g, a, b)
-    g.dip.wars[p] = {"start": g.turn, "declarer": a, "score": {a: 0.0, b: 0.0}}
+    g.dip.wars[p] = {"start": g.turn, "declarer": a, "score": {a: 0.0, b: 0.0},
+                     "regs0": {a: g.region_count(a), b: g.region_count(b)}, "taken": {a: 0, b: 0}}
     delay = g.mods(a).value("parliament_delay", 0)
     if delay:
         g.dip.no_attack_until[(a, b)] = g.turn + delay
@@ -223,6 +225,24 @@ def make_peace(g, a, b, _done=None):
             for c in list(g.dip.coalitions[cid]["members"]):
                 if c != side and at_war(g, c, other):
                     make_peace(g, c, other, done)
+
+
+def op_baseline(g, a, b) -> float:
+    """a 가 b 를 볼 때 우호도가 수렴하는 기본값(정치체제 관계)."""
+    return gov_opinion_bias(g.factions[a].gov, g.factions[b].gov)
+
+
+def war_info(g, a, b) -> dict:
+    """전쟁 경과: 시작 이후 턴, a 가 잃은 지역 비율, 서로 빼앗은 지역 수."""
+    w = g.dip.wars.get(pair(a, b))
+    if not w:
+        return {}
+    regs0 = w.get("regs0", {})
+    taken = w.get("taken", {})
+    n0 = max(1, regs0.get(a, g.region_count(a)))
+    lost = taken.get(b, 0)
+    return {"turns": g.turn - w["start"], "declarer": w["declarer"], "lost": lost, "gained": taken.get(a, 0),
+            "lost_frac": lost / n0, "score": war_score(g, a, b)}
 
 
 def war_score(g, a, b) -> float:
@@ -286,14 +306,19 @@ def treaty_check(g, ai, proposer, kind):
     if kind == "peace":
         if not at_war(g, ai, proposer):
             return False, "전쟁 중이 아닙니다."
-        w = g.dip.wars[p]
-        if war_score(g, ai, proposer) < 0 or g.turn - w["start"] > C.PEACE_WAR_TURNS:
-            return True, "전쟁 점수가 불리하거나 전쟁이 길어졌습니다."
-        return False, "아직 전쟁을 계속할 이유가 있습니다."
+        from . import ai as AI
+        a = AI.war_assessment(g, ai, proposer)
+        ok = a["desire"] >= C.AI_PEACE_ACCEPT
+        return ok, AI.peace_reason(a, ok)
     if at_war(g, ai, proposer):
         return False, "전쟁 중입니다."
     if kind in ("nonaggr", "passage"):
         need = threshold(g, ai, proposer, C.TREATY_MIN)
+        if kind == "nonaggr" and g.factions[ai].is_ai:
+            # 훨씬 강해 보이는 상대와는 더 낮은 우호도에서도 불가침을 받아들인다(안보)
+            from . import ai as AI
+            if g.mil_power(ai) < 0.7 * AI.perceived_power(g, ai, proposer):
+                need -= C.NONAGGR_FEAR_DISCOUNT
         if kind == "nonaggr" and p in g.dip.nonaggr:
             return False, "이미 체결되어 있습니다."
         if kind == "passage" and p in g.dip.passage:
@@ -511,13 +536,16 @@ def update_turn(g):
                     delta += C.OP_WAR_WITH_FRIEND
                 if b_friends & my_enemies:
                     delta += C.OP_FRIEND_OF_ENEMY
-            total = max(1.0, g.mil_power(a))
+            # 국경 긴장: 우리보다 많은 병력을 국경에 모아 두면 서서히 악화
             bp = border_power.get((b, a), 0.0)
-            if bp > 0:
-                pen = min(C.OP_BORDER_MAX, C.OP_BORDER_K * (bp / total * 10))
+            if bp > 0 and not at_war(g, a, b):
+                ratio = bp / (border_power.get((a, b), 0.0) + 20)
+                pen = min(C.OP_BORDER_MAX, C.OP_BORDER_K * max(0.0, ratio - C.OP_BORDER_FREE))
                 if pair(a, b) in d.friends:
                     pen *= 0.5
                 delta -= pen
+            if pair(a, b) in d.nonaggr or pair(a, b) in d.passage:
+                delta += C.OP_TREATY_TURN
             if fa.is_ai:
                 if g.hegemon == b and g.hegemon_share > 0:
                     s = g.hegemon_share
@@ -530,7 +558,8 @@ def update_turn(g):
                     delta += C.HEGEMON_BALANCE_K * min(
                         C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
                 delta += g.mods(b).add("ai_opinion_turn")
-            v = (d.op.get((a, b), 0.0) + delta) * C.OPINION_DECAY
+            base = op_baseline(g, a, b)
+            v = base + (d.op.get((a, b), base) + delta - base) * C.OPINION_DECAY
             d.op[(a, b)] = max(-100.0, min(100.0, v))
     # 우호관계 자동
     for i, a in enumerate(alive):
