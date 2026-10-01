@@ -119,6 +119,9 @@ def enemies(g, a):
 
 def threshold(g, a, b, base):
     t = base + g.mods(a).add("treaty_threshold") + g.mods(b).add("treaty_threshold")
+    if g.factions[a].is_ai and g.factions[a].ai.get("victory_goal") == "peace":
+        t -= 10                              # 평화승리를 노리는 AI는 조약에 적극적
+
     if g.hegemon is not None and g.hegemon not in (a, b):
         t -= C.HEGEMON_TREATY_DISCOUNT   # 공동 견제 대상이 있으면 뭉치기 쉽다
     return t
@@ -186,8 +189,9 @@ def _start_war(g, a, b, happiness=True):
     for f in (a, b) if happiness else ():
         base = g.mods(f).value("war_start_happy", C.WAR_START_HAPPY)
         base *= g.mods(f).value("war_start_mult", 1.0)
-        for r in g.regions_of(f):
-            r.h_delta += base
+        fac = g.factions[f]
+        # 선전포고 행복도 감소는 '전쟁 피로'로 쌓여 종전 후 턴당 0.5씩만 회복된다
+        fac.war_weary = min(C.WAR_WEARY_MAX, getattr(fac, "war_weary", 0.0) - base)
     # 통행권으로 상대 영토에 있던 병력은 가장 가까운 자국 영토로
     for army in list(g.armies.values()):
         if army.owner in (a, b) and not g.world.is_sea(army.loc):

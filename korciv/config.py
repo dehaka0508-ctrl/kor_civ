@@ -52,7 +52,9 @@ PROJECT_REFUND = 0.5
 FOCUS_POP_BONUS = 0.15     # 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출(30P) +15%
 DEBT_HAPPY = -1.0          # 보완안: 자금이 음수인 턴에는 전 지역 행복도 -1
 
-# 생산 건물: 단계 L 비용 = base * L^1.5, 소요 2L턴
+# 건물(생산·방어·단일) 건설 비용 배수. 재정이 빠듯해 원안의 50%로 낮췄다(랜드마크는 제외).
+BUILD_COST_MULT = 0.5
+# 생산 건물: 단계 L 비용 = base * L^1.5 * BUILD_COST_MULT, 소요 2L턴
 PROD_BUILDINGS = {
     "farm":      {"name": "농장", "base": 400, "max": 5},
     "fishery":   {"name": "어장", "base": 400, "max": 5},
@@ -97,6 +99,14 @@ TAX_HAPPY_K = 0.1          # 0.1 * (10 - t%)
 WAR_START_HAPPY = -10
 WAR_ONGOING_PERIOD = 5
 WAR_ONGOING_HAPPY = -1
+# 전쟁 피로: 선전포고 행복도 −10은 '전쟁 피로'로 쌓여 일반 행복도처럼 0.99로 감쇠하지 않는다.
+# 전쟁 중에는 회복되지 않고, 모든 전쟁이 끝나면 턴당 0.5씩 회복한다(전쟁을 자주 하는 세력에 불리).
+# 전쟁 지속 페널티(5턴마다 −1)는 예전처럼 일반 행복도로 들어간다.
+WAR_WEARY_RECOVERY = 0.5
+WAR_WEARY_MAX = 40
+# 불행한 지역의 산출 감소: 행복도 H < 0 이면 산출 × (1 − 0.30 × (−H/100)²). −50에서 −7.5%, −100에서 −30%.
+UNHAPPY_OUTPUT_MAX = 0.30
+UNHAPPY_OUTPUT_EXP = 2.0
 UNIT_START_HAPPY = {"light": -0.5, "heavy": -1.0}
 UNIT_DISBAND_HAPPY = {"light": 0.5, "heavy": 1.0}
 FAMINE_HAPPY = -5
@@ -143,7 +153,7 @@ LINE_BONUS = 0.25          # 방어선 돌격 방어 x(1 + 0.25L)
 BRIDGE_ATTACK_MULT = 1.0   # 연륙교는 기획서 2절대로 '육지처럼' 취급(지형 경계에 있으면 그 배수 적용)
 FLANK_BONUS = 0.1          # n개 지역 동시 공격 x(1 + 0.1(n-1))
 AMPHIBIOUS = 0.8
-SURPRISE_BASE = 0.90
+SURPRISE_BASE = 0.85       # 원안 0.90: AI가 항상 기습만 골라 5%p 낮춤
 SURPRISE_PER_LINE = 0.15   # 원안 '0%까지'는 0.18
 SURPRISE_WIN = (1.75, 0.5)     # (공격 피해, 반격)
 SURPRISE_FAIL = (0.4, 1.25)
@@ -250,6 +260,13 @@ AI_INTEL_DECAY = 0.97      # 한 번 본 적 병력의 기억이 턴마다 줄�
 AI_HIDDEN_GARRISON = 7     # 시야 밖 적 지역 하나당 추정 전력(보병 약 0.7개)
 AI_PEACE_SEEK = 1.0        # 강화 욕구가 이 값 이상이면 강화를 제안
 AI_PEACE_ACCEPT = 0.6      # 상대가 제안하면 이 값 이상에서 수락
+# ---- AI 평시 방어 건설: 우호도가 이 값 이하인 이웃과 맞닿은 지역에, 재정에 따라 확률적으로 방어 건물(같은 단계면 방어선 우선)
+AI_DEF_OP = -20
+AI_DEF_MAX_LEVEL = 3
+AI_DEF_BASE_P = 0.03       # 지역·턴당 기본 확률. 재정 여유(0~1.5)에 따라 최대 +0.09, 적대가 깊을수록 최대 ×2 (최대 0.24)
+AI_DEF_WEALTH_P = 0.06
+# ---- AI 승리 목표: 1년(48턴)마다 국내 상황·주변 정세로 추구할 승리 조건을 정한다(플레이어에게 보이지 않음)
+AI_GOAL_WEIGHT = 0.25      # 목표에 맞는 전략 가중치에 더하는 값(맹목적이지 않도록 작게)
 
 # ---------------------------------------------------------------- 승리 (10절)
 ECON_VICTORY_RATIO = 2.0

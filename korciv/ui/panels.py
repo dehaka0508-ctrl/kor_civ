@@ -670,6 +670,10 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "국력", f"{g.power.get(pid, 0):.2f}" + (" (패권)" if g.hegemon == pid else ""))
     y = kv(gui, x, y, w, "지역 / 인구", f"{len(regs)}곳 / {g.total_pop(pid):,.0f}만")
     y = kv(gui, x, y, w, "평균 행복도", f"{g.avg_happiness(pid):+.1f}")
+    ww = getattr(f, "war_weary", 0.0)
+    if ww > 0:
+        rec = "전쟁 중 회복 없음" if D.enemies(g, pid) else f"턴당 {C.WAR_WEARY_RECOVERY} 회복"
+        y = kv(gui, x, y, w, "전쟁 피로", f"−{ww:.1f} ({rec})", t.bad)
     y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
     lm = [app.world.regions[r.id].do8 for r in regs if r.landmark]
     y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")
@@ -711,7 +715,7 @@ def draw_nation_status(app, body):
         if k in spend:
             n, s_ = spend[k]
             y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s_:,.0f}")
-    y = kv(gui, x, y, w, "합계", f"−{total_spend:,.0f}", t.bad if total_spend > f.money else None)
+    y = kv(gui, x, y, w, "합계", f"−{total_spend:,.0f}" if total_spend else "0", t.bad if total_spend > f.money else None)
     stalled = sum(1 for rr in items if rr.project.stalled)
     if stalled:
         y = kv(gui, x, y, w, "자금 부족으로 정지", f"{stalled}건", t.bad)

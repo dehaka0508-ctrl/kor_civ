@@ -84,7 +84,7 @@ def test_war_and_peace():
     ok, _ = D.declare_war(g, 0, 1)
     assert ok and D.at_war(g, 0, 1)
     assert D.opinion(g, 1, 0) <= -99
-    assert g.regions[g.player.capital].h_delta <= -10
+    assert g.player.war_weary >= 10              # 선전포고 행복도 −10은 전쟁 피로로 쌓인다
     D.make_peace(g, 0, 1)
     assert not D.at_war(g, 0, 1)
     assert D.has_nonaggr(g, 0, 1)
@@ -546,3 +546,87 @@ def test_food_bought_before_projects():
     g._fund_projects()
     assert f.res["food"] >= short - 1e-6
     assert g.regions["S002"].project.stalled
+
+
+def test_war_weariness_recovers_slowly_after_peace():
+    g = new_game(n_enemies=2)
+    cap = g.regions[g.player.capital]
+    cap.happy = 0.0
+    D.declare_war(g, 0, 1)
+    g._phase_happiness()
+    assert cap.happy == pytest.approx(-10, abs=0.2)
+    for _ in range(10):                 # 전쟁 중에는 회복되지 않는다(감쇠 없음)
+        g._phase_happiness()
+    assert cap.happy <= -10
+    D.make_peace(g, 0, 1)
+    ww = g.player.war_weary
+    g._phase_happiness()
+    assert g.player.war_weary == pytest.approx(ww - C.WAR_WEARY_RECOVERY)
+    for _ in range(40):
+        g._phase_happiness()
+    assert g.player.war_weary == 0 and cap.happy > -1
+
+
+def test_unhappy_region_output_penalty():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    r.happy = 0
+    base = g.calc_output("S002", phi=1.0)
+    r.happy = -100
+    assert g.calc_output("S002", phi=1.0) == pytest.approx(base * 0.7)
+
+
+def test_ai_tax_responds_to_finance_and_happiness():
+    from korciv import ai as AI
+    g = new_game(n_enemies=1)
+    f = g.factions[1]
+    f.tax = 0.10
+    f.money = -500
+    f.last["net"] = -200
+    AI._tax(g, f)
+    assert f.tax > 0.10                     # 재정 위기: 올린다
+    f.money = 1_000_000
+    f.last["net"] = 500
+    t = f.tax
+    AI._tax(g, f)
+    assert f.tax < t                        # 넉넉하면 민심에 투자
+    for r in g.regions_of(1):
+        r.happy = -60
+    t = f.tax
+    AI._tax(g, f)
+    assert f.tax < t                        # 반란 위험: 내린다
+
+
+def test_ai_builds_defense_on_hostile_border_more_when_rich():
+    from korciv import ai as AI
+    g, AI, border = _border_setup(aggr=2)
+    f = g.factions[1]
+    g.dip.op[(1, 0)] = -80.0
+    counts = {}
+    for money in (300, 200_000):
+        n = 0
+        for i in range(60):
+            for rid in border:
+                g.regions[rid].project = None
+                g.regions[rid].lines = {}
+            f.money = money
+            AI._slots(g, f, {})
+            n += sum(1 for rid in border if g.regions[rid].project and g.regions[rid].project.key == "line")
+        counts[money] = n
+    assert counts[200_000] > counts[300] >= 0
+    assert counts[200_000] > 0
+
+
+def test_ai_victory_goal_yearly():
+    from korciv import ai as AI
+    g = new_game(n_enemies=2)
+    f = g.factions[1]
+    AI.set_strategy(g, f)
+    goal, turn = f.ai["victory_goal"], f.ai["goal_turn"]
+    assert goal in g.settings.victories
+    g.turn += 12
+    AI.set_strategy(g, f)
+    assert f.ai["goal_turn"] == turn        # 1년이 지나기 전엔 유지
+    g.turn += C.TURNS_PER_YEAR
+    AI.set_strategy(g, f)
+    assert f.ai["goal_turn"] == g.turn

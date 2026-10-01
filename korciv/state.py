@@ -137,6 +137,8 @@ class Faction:
     trade_sell: float = 0.0
     spend: dict = field(default_factory=dict)       # 이번 턴 작업 지출 {종류: 금액}
     refund: float = 0.0                             # 이번 턴 환급
+    war_weary: float = 0.0          # 전쟁 피로(행복도에서 빠지는 양). 모든 전쟁이 끝나면 턴당 0.5 회복
+    war_weary_applied: float = 0.0  # 지역 행복도에 이미 반영된 전쟁 피로
     last: dict = field(default_factory=dict)        # 지난 턴 통계
     pop_mult: float = 1.0
     income_mult: float = 1.0

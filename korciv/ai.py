@@ -14,22 +14,54 @@ from .state import NEUTRAL
 
 
 # ------------------------------------------------------------------ 대전략
+def choose_victory_goal(g, f):
+    """1년에 한 번: 국내 상황·주변 정세로 추구할 승리 조건을 고른다(플레이어에게 보이지 않음)."""
+    vt = [v for v in ("conquest", "economic", "peace", "landmark") if v in g.settings.victories]
+    if not vt:
+        return None
+    alive = g.alive_ids()
+    n = max(1, len(alive))
+    aggr = eff_aggression(g, f)
+    my_mil = g.mil_power(f.id)
+    top_mil = max((g.mil_power(x) for x in alive), default=1) or 1
+    avg_gdp = (sum(g.gdp(x) for x in alive) / n) or 1
+    gdp_rel = g.gdp(f.id) / avg_gdp
+    regs = g.regions_of(f.id)
+    neighbors = {g.regions[m].owner for r in regs for m in g.world.land_adj[r.id]} - {NEUTRAL, f.id}
+    weak_nb = sum(1 for o in neighbors if my_mil > 1.5 * perceived_power(g, f.id, o))
+    allies = sum(1 for o in alive if o != f.id and D.allied(g, f.id, o))
+    wars = len(D.enemies(g, f.id))
+    lm_do = len({g.info(r.id).do8 for r in regs if r.landmark})
+    score = {
+        "conquest": 0.1 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb),
+        "economic": 0.45 + 0.35 * min(2.5, gdp_rel),
+        "peace": 0.2 + 0.05 * (10 - aggr) + 0.2 * min(3, allies)
+                 + (0.4 if D.coalition_of(g, f.id) is not None else 0) - 0.3 * wars,
+        "landmark": 0.1 + 0.03 * (10 - aggr) + 0.15 * lm_do + (0.3 if f.money > 3 * C.LANDMARK_COST_PER_TURN else 0),
+    }
+    return max(vt, key=lambda v: score[v] + g.rng.uniform(0, 0.25))
+
+
 def set_strategy(g, f):
     a = f.aggression
     w = {"military": 0.4 + a / 10, "economy": 1.4 - a / 25, "expansion": 1.2, "defense": 0.6}
-    alive = g.alive_ids()
-    gdps = sorted(alive, key=lambda x: -g.gdp(x))
-    mils = sorted(alive, key=lambda x: -g.mil_power(x))
-    vt = g.settings.victories
-    goal = "economic" if "economic" in vt else "conquest"
-    if gdps and gdps[0] == f.id and "economic" in vt:
-        w["economy"] += 0.4
-        goal = "economic"
-    if mils and mils[0] == f.id and a >= 6 and "conquest" in vt:
-        w["military"] += 0.4
-        goal = "conquest"
-    if "landmark" in vt and g.gdp(f.id) > 300_000:
-        goal = "landmark"
+    if "victory_goal" not in f.ai or g.turn - f.ai.get("goal_turn", -999) >= C.TURNS_PER_YEAR:
+        f.ai["victory_goal"] = choose_victory_goal(g, f)
+        f.ai["goal_turn"] = g.turn
+    goal = f.ai["victory_goal"]
+    # 목표는 약한 가중치만: 맹목적으로 그 조건만 좇지 않는다
+    k = C.AI_GOAL_WEIGHT
+    if goal == "conquest":
+        w["military"] += k
+        w["expansion"] += k / 2
+    elif goal == "economic":
+        w["economy"] += k
+        w["expansion"] += k / 2
+    elif goal == "peace":
+        w["defense"] += k / 2
+        w["economy"] += k / 2
+    elif goal == "landmark":
+        w["economy"] += k
     if D.enemies(g, f.id):
         w["military"] += 0.5
         w["defense"] += 0.5
@@ -111,22 +143,37 @@ def _market(g, f):
 
 
 def _tax(g, f):
+    """행복도와 재정으로 세율을 유연하게 조절한다.
+    - 재정이 빠듯하면(적자·비축 부족) 행복도가 버티는 한 올린다.
+    - 행복도가 낮거나(산출 감소·반란) 비축이 넉넉하면 내린다(행복도 10 이상이어야 인구가 는다).
+    - 상한은 호전성·전쟁 여부·지도자 세율 상한에 따라 12~20%, 하한 5%."""
     regs = g.regions_of(f.id)
     if not regs:
         return
     avg = g.avg_happiness(f.id)
     worst = min(r.happy for r in regs)
+    last = f.last
+    net = last.get("net", 0.0)
+    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "landmark")
+    reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
+    at_war = bool(D.enemies(g, f.id))
+    hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
+    hi = min(g.tax_max(f.id), hi, 0.20)
+    lo = 0.05
     t = f.tax
-    if worst < -45 or avg < -15:
-        t -= 0.02
-    elif avg < -5:
+    if worst < -45 or avg < -20:
+        t -= 0.02                                   # 반란 위험
+    elif avg < -8:
         t -= 0.01
-    elif f.money < 0 or (avg > 5 and t < C.TAX_DEFAULT):
+    elif (net < 0 and f.money < reserve) or f.money < 0:
+        t += 0.02 if f.money < 0 else 0.01         # 재정 위기: 올린다
+    elif f.money > reserve * 4 and avg < 12:
+        t -= 0.01                                   # 넉넉하면 민심(인구 성장)에 투자
+    elif f.money < reserve * 1.5 and avg > 5:
+        t += 0.01                                   # 비축이 얇고 민심에 여유
+    elif avg > 25:
         t += 0.01
-    elif avg > 30 and f.money < 5000:
-        t += 0.01
-    target_hi = 0.15 if f.aggression >= 7 else 0.12
-    t = max(0.02, min(target_hi, t))
+    t = max(lo, min(hi, t))
     if abs(t - f.tax) > 1e-6:
         g.set_tax(f.id, t)
 
@@ -148,6 +195,11 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
         thr += min(C.AI_WAR_OP_TEMPT_MAX, aggr * math.log2(ratio))
     if not can_expand and aggr >= 4:
         thr += C.AI_WAR_OP_NEED
+    goal = f.ai.get("victory_goal")
+    if goal == "conquest":
+        thr += 5
+    elif goal == "peace":
+        thr -= 10
     return thr
 
 
@@ -686,6 +738,32 @@ def _slots(g, f, threat, military=True):
                     cands.append((th * wts.get("defense", 1) * 0.8, r.id, "build", "line", n,
                                   cost / C.DEF_TURNS[lv - 1]))
                     break
+    # 평시 방어 건설: 우호도가 낮은 이웃과 맞닿은 지역은 재정이 넉넉할수록 조금씩 더 자주 방어 건물을 올린다
+    wealth = max(0.0, min(1.5, (f.money - reserve) / (max(0.0, income) * 20 + reserve * 4 + 1)))
+    for r in idle:
+        worst_op, worst_n = None, None
+        for n in g.world.land_adj[r.id]:
+            o = g.regions[n].owner
+            if o in (NEUTRAL, fid) or D.at_war(g, fid, o):
+                continue
+            op = D.opinion(g, fid, o)
+            if op <= C.AI_DEF_OP and (worst_op is None or op < worst_op):
+                worst_op, worst_n = op, n
+        if worst_n is None:
+            continue
+        hostility = min(2.0, 1 + (C.AI_DEF_OP - worst_op) / 60)
+        p = (C.AI_DEF_BASE_P + C.AI_DEF_WEALTH_P * wealth) * hostility
+        if g.rng.random() >= p:
+            continue
+        # 같은 단계라면 방어선 우선: (단계, 우선순위)가 가장 낮은 것
+        opts = [(r.lines.get(worst_n, 0), 0, "line", worst_n), (r.b["shelter"], 1, "shelter", None),
+                (r.b["aa"], 2, "aa", None)]
+        lv, _, key, border = min(opts)
+        if lv >= C.AI_DEF_MAX_LEVEL:
+            continue
+        cost = (R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1))
+        # 확률을 통과하면 그 지역 슬롯은 방어 건설이 차지한다(예산 안에서)
+        cands.append((50 + hostility, r.id, "build", key, border, cost / C.DEF_TURNS[lv]))
     # 군 생산 후보: 위협 높은 곳 우선
     if mil_need > 0 and military:
         order = sorted(idle, key=lambda r: -threat.get(r.id, 0) - (0.2 if r.id == f.capital else 0))
@@ -699,7 +777,10 @@ def _slots(g, f, threat, military=True):
             u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1)
             cands.append((u, r.id, "unit", key, None, per))
     # 랜드마크
-    if f.is_ai and f.money > C.LANDMARK_COST_PER_TURN * 4 and income - upkeep > C.LANDMARK_COST_PER_TURN * 0.6:
+    lm_goal = f.ai.get("victory_goal") == "landmark"
+    lm_money, lm_income = (2.5, 0.4) if lm_goal else (4, 0.6)      # 랜드마크 목표면 조건을 조금 낮춘다
+    if f.is_ai and f.money > C.LANDMARK_COST_PER_TURN * lm_money and \
+            income - upkeep > C.LANDMARK_COST_PER_TURN * lm_income:
         building = any(r.project and r.project.kind == "landmark" for r in regs)
         if not building:
             owned_do = {g.info(r.id).do8 for r in regs if r.landmark}

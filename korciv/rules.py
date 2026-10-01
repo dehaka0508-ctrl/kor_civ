@@ -30,7 +30,7 @@ def food_output(farm, fishery, fish_mult=1.0) -> float:
 
 def prod_building_cost(key: str, level: int, power_site=False) -> float:
     base = C.PROD_BUILDINGS[key]["base"]
-    cost = base * level ** 1.5
+    cost = base * level ** 1.5 * C.BUILD_COST_MULT
     if key == "power" and power_site:
         cost *= C.POWER_SITE_DISCOUNT
     return cost * C.MONEY_SCALE
@@ -41,7 +41,15 @@ def prod_building_turns(level: int) -> int:
 
 
 def def_building_cost(key: str, level: int) -> float:
-    return C.DEF_BUILDINGS[key]["base"] * level ** 1.5 * C.MONEY_SCALE
+    return C.DEF_BUILDINGS[key]["base"] * level ** 1.5 * C.BUILD_COST_MULT * C.MONEY_SCALE
+
+
+def unhappy_output_mult(h: float) -> float:
+    """행복도가 음수면 산출 감소: 처음엔 완만하고 낮을수록 가파르게(−100에서 −30%)."""
+    if h >= 0:
+        return 1.0
+    x = min(1.0, -h / 100)
+    return 1 - C.UNHAPPY_OUTPUT_MAX * x ** C.UNHAPPY_OUTPUT_EXP
 
 
 def def_building_turns(level: int) -> int:

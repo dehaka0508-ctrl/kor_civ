@@ -76,6 +76,8 @@ class Game:
         for f in self.factions:
             if not hasattr(f, "spend"):
                 f.spend, f.refund = {}, 0.0
+            if not hasattr(f, "war_weary"):
+                f.war_weary = f.war_weary_applied = 0.0
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -904,7 +906,7 @@ class Game:
             ok, why = True, ""
             if key == "port" and not info.coastal:
                 ok, why = False, "해안 지역만"
-            add("build", key, spec["name"], spec["cost"] * C.MONEY_SCALE,
+            add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
                 self.build_time(fid, key, spec["turns"]), ok, why, 1)
         for key in C.UNIT_ORDER:
             u = C.UNITS[key]
@@ -1125,10 +1127,13 @@ class Game:
         owner = rr.owner if owner is None else owner
         m = self.mods(owner)
         phi = rr.phi if phi is None else phi
-        return R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
-                               rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
-                               m.mult("output_bank"), m.mult("output_factory"),
-                               1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
+        y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
+                            rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
+                            m.mult("output_bank"), m.mult("output_factory"),
+                            1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
+        if owner != NEUTRAL and owner == rr.owner:
+            y *= R.unhappy_output_mult(rr.happy)      # 불행한 지역은 산출 감소
+        return y
 
     # ---- 생산 집중
     @staticmethod
@@ -2061,13 +2066,19 @@ class Game:
             t = R.tax_happiness(f.tax * 100, m.value("tax_over10", 1.0), m.value("tax_over15", 1.0))
             t += m.add("happy_turn")
             period = m.value("war_period", C.WAR_ONGOING_PERIOD)
+            at_war = False
             for p, wv in self.dip.wars.items():
                 if f.id in p:
+                    at_war = True
                     dur = self.turn - wv["start"]
                     if dur > 0 and dur % period == 0:
                         t += C.WAR_ONGOING_HAPPY
+            if not at_war:
+                f.war_weary = max(0.0, f.war_weary - C.WAR_WEARY_RECOVERY)
+            f.war_weary = min(C.WAR_WEARY_MAX, f.war_weary)
             floor = 0.0 if f.happy_floor_until > self.turn else C.HAPPY_MIN
-            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor)
+            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor, f.war_weary_applied, f.war_weary)
+            f.war_weary_applied = f.war_weary
         for r in self.regions.values():
             r.bombed = False
             if r.owner == NEUTRAL:
@@ -2076,8 +2087,9 @@ class Game:
             if r.owner not in per_fac:
                 r.h_delta = 0.0
                 continue
-            t, cap, floor = per_fac[r.owner]
-            h = (r.happy + r.h_delta + t) * C.HAPPY_DECAY
+            t, cap, floor, ww_old, ww_new = per_fac[r.owner]
+            # 전쟁 피로는 감쇠하지 않는 별도 항: 지난번 몫을 빼고 감쇠한 뒤 새 몫을 다시 뺀다
+            h = (r.happy + ww_old + r.h_delta + t) * C.HAPPY_DECAY - ww_new
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
 

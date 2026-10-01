@@ -25,10 +25,12 @@ def test_start_outputs_match_design_doc():
 
 
 def test_building_costs():
-    costs = [round(R.prod_building_cost("farm", l), -1) for l in range(1, 6)]
+    # 기획서 원안 × BUILD_COST_MULT(0.5)
+    costs = [round(R.prod_building_cost("farm", l) / C.BUILD_COST_MULT, -1) for l in range(1, 6)]
     assert costs == [400, 1130, 2080, 3200, 4470]
-    assert round(R.prod_building_cost("factory", 5), -1) == 16770
-    assert round(R.def_building_cost("line", 3)) == 1559
+    assert C.BUILD_COST_MULT == 0.5 and R.prod_building_cost("farm", 1) == pytest.approx(200)
+    assert round(R.prod_building_cost("factory", 5) / C.BUILD_COST_MULT, -1) == 16770
+    assert round(R.def_building_cost("line", 3) / C.BUILD_COST_MULT) == 1559
     assert [R.prod_building_turns(l) for l in range(1, 6)] == [2, 4, 6, 8, 10]
 
 
@@ -68,8 +70,8 @@ def test_pop_growth_and_tax_happiness():
 
 
 def test_surprise_chance_and_dates():
-    assert R.surprise_chance(0) == pytest.approx(0.9)
-    assert R.surprise_chance(5) == pytest.approx(0.15)
+    assert R.surprise_chance(0) == pytest.approx(0.85)
+    assert R.surprise_chance(5) == pytest.approx(0.10)
     assert R.date_label(1) == "2026년 1월 1주 · 턴 1"
     assert R.date_label(10) == "2026년 3월 2주 · 턴 10"
     assert R.date_label(49) == "2027년 1월 1주 · 턴 49"
@@ -88,3 +90,11 @@ def test_region_value_turn_table():
     assert sum(rich.values()) > sum(base.values()) + 3
     # 편입 비용: 산출에 비례하고 보유 지역이 많을수록 비싸다
     assert R.annex_cost(1000, 100) == pytest.approx(R.annex_cost(1000, 0) * 2)   # 1%/지역
+
+
+def test_unhappy_output_curve():
+    assert R.unhappy_output_mult(10) == 1.0 and R.unhappy_output_mult(0) == 1.0
+    assert R.unhappy_output_mult(-50) == pytest.approx(0.925)
+    assert R.unhappy_output_mult(-100) == pytest.approx(0.70)
+    # 처음엔 완만, 낮을수록 가파르게
+    assert (1 - R.unhappy_output_mult(-25)) < (R.unhappy_output_mult(-75) - R.unhappy_output_mult(-100))
