@@ -72,6 +72,9 @@ class Game:
             for attr in ("spec_pin", "spec_block"):
                 if not hasattr(r, attr):
                     setattr(r, attr, set())
+            if "occ" in r.__dict__:            # 예전: 점령 하나만 저장
+                old = r.__dict__.pop("occ")
+                r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0)):
                 if not hasattr(r, attr):
                     setattr(r, attr, v)
@@ -871,13 +874,15 @@ class Game:
         out = []
         for v in sorted(cands):
             rr = self.regions[v]
-            if rr.occ:
-                continue
+            if fid in rr.occs:
+                continue                          # 내 군대가 이미 점령 중
             base = self.neutral_turns(fid, v)
             n = joint.get(v, 0)
             out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
                         "value": self.region_value(v)[0], "joint": n, "sea": v not in w.land_adj[rid],
-                        "eff_turns": R.joint_turns(base, n + 1)})
+                        "eff_turns": R.joint_turns(base, n + 1),
+                        # 다른 세력의 점령·편입이 끝나기까지 남은 턴(가장 빠른 것). 경쟁 판단용
+                        "rival_left": self.rival_left(fid, v)})
         return out
 
     def options(self, fid, rid):
@@ -1206,8 +1211,8 @@ class Game:
             return
         rr.owner = new_owner
         rr.project = None
-        prev_occ = rr.occ
-        rr.occ = None
+        prev_occs = dict(rr.occs)
+        rr.occs = {}
         rr.supplied = set()
         rr.resist = None
         rr.mil_hist = 0
@@ -1225,12 +1230,20 @@ class Game:
                 p = other.project
                 if p and p.kind == "annex" and p.key == rid and other.owner not in (NEUTRAL, new_owner):
                     self._cancel_hijacked(other, new_owner)
-            if prev_occ and prev_occ["by"] not in (NEUTRAL, new_owner):
-                victim = self.factions[prev_occ["by"]]
+            for by in prev_occs:
+                if by in (NEUTRAL, new_owner):
+                    continue
+                victim = self.factions[by]
                 if victim.is_ai:
                     D.add_opinion(self, victim.id, new_owner, C.OP_HIJACK)
                 self.event("info", f"{self.info(rid).name}을(를) {self.fname(new_owner)}이(가) 먼저 차지해 "
                            f"{victim.name}의 점령이 취소되었습니다.", region=rid, fids=(victim.id,))
+        # 경쟁에서 진 세력의 병력은 (전쟁 중이 아니면) 자국 영토로 돌아간다
+        if new_owner != NEUTRAL:
+            for army in list(self.armies_at(rid)):
+                if army.owner not in (NEUTRAL, new_owner, old) and not self.hostile(army.owner, new_owner) \
+                        and not D.has_passage(self, army.owner, new_owner):
+                    self.teleport_home(army)
             # 영토 경쟁: 이 중립 지역과 맞닿은 다른 세력은 먼저 가져간 쪽을 못마땅하게 여긴다
             rivals = {self.regions[n].owner for n in self.world.land_adj[rid]} - {NEUTRAL, new_owner}
             for b in rivals:
@@ -1283,8 +1296,7 @@ class Game:
             if len(self.dip.coalitions[cid]["members"]) < 2:
                 del self.dip.coalitions[cid]
         for r in self.regions.values():
-            if r.occ and r.occ["by"] == fid:
-                r.occ = None
+            r.occs.pop(fid, None)
         who = f" ({self.fname(by)}에 의해)" if by not in (None, NEUTRAL) else ""
         self.event("eliminated", f"{f.name}이(가) 멸망했습니다{who}.", fids=(fid,))
 
@@ -1294,8 +1306,8 @@ class Game:
             return
         if self.hostile_units_at(fid, rid):
             return
-        if rr.occ and rr.occ["by"] == fid:
-            return
+        if fid in rr.occs:
+            return                              # 이미 점령 중(다른 세력의 점령과 별개로 진행)
         if rr.owner == NEUTRAL:
             need = self.neutral_turns(fid, rid)
         else:
@@ -1308,7 +1320,8 @@ class Game:
                 self.complete_occupation(fid, rid)
                 return
             need = R.enemy_occupation_turns(rr.pop, h, self.mods(fid).mult("occ_time"))
-        rr.occ = {"by": fid, "progress": 0, "need": need}
+        self.occ_seq = getattr(self, "occ_seq", 0) + 1
+        rr.occs[fid] = {"by": fid, "progress": 0, "need": need, "seq": self.occ_seq}
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
@@ -1362,8 +1375,7 @@ class Game:
         self._phase_attack()
         # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
         self._fund_projects()
-        self._phase_occupation()
-        self._phase_projects(("annex",))
+        self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
         # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
         drafted = self._phase_projects(("build", "unit", "landmark", "capital"))
         self._phase_conscription(drafted)
@@ -1768,24 +1780,80 @@ class Game:
                 self.begin_occupation(fid, tgt)
 
     # ---- 6. 점령
-    def _phase_occupation(self):
+    def _advance_occupations(self):
+        """무력 점령 게이지를 올린다. 이번 턴에 다 찬 (지역, 세력) 목록을 돌려준다.
+        여러 세력이 같은 지역을 동시에 점령할 수 있고, 다른 세력 병력이 들어와도 점령은 끊기지 않는다
+        (적대 병력이 있는 동안만 멈춘다). 내 병력이 떠나거나 더는 적대 관계가 아니면 내 점령만 취소된다."""
+        done = []
         for rr in self.regions.values():
-            if not rr.occ:
-                continue
-            fid = rr.occ["by"]
-            if not self.factions[fid].alive or not self.hostile(fid, rr.owner):
-                rr.occ = None
-                continue
-            mine = [a for a in self.armies_at(rr.id, fid) if a.count(("land",)) > 0]
-            if not mine:
-                rr.occ = None
-                self.event("occupy", f"{self.info(rr.id).name} 점령이 중단되었습니다.", region=rr.id, fids=(fid,))
-                continue
-            if self.hostile_units_at(fid, rr.id):
-                continue
-            rr.occ["progress"] += 1
-            if rr.occ["progress"] >= rr.occ["need"]:
-                self.complete_occupation(fid, rr.id)
+            for fid in list(rr.occs):
+                o = rr.occs[fid]
+                if not self.factions[fid].alive or not self.hostile(fid, rr.owner):
+                    del rr.occs[fid]
+                    continue
+                if not any(a.count(("land",)) > 0 for a in self.armies_at(rr.id, fid)):
+                    del rr.occs[fid]
+                    self.event("occupy", f"{self.info(rr.id).name} 점령이 중단되었습니다.", region=rr.id, fids=(fid,))
+                    continue
+                if self.hostile_units_at(fid, rr.id):
+                    continue
+                o["progress"] += 1
+                if o["progress"] >= o["need"]:
+                    done.append((rr.id, fid))
+        return done
+
+    def rival_left(self, fid, rid) -> int | None:
+        """fid 외 다른 세력이 이 지역을 차지하기까지 남은 턴(무력 점령·편입 중 가장 빠른 것). 없으면 None."""
+        rr = self.regions[rid]
+        best = None
+        for by, o in rr.occs.items():
+            if by != fid:
+                left = max(0, o["need"] - o["progress"])
+                best = left if best is None else min(best, left)
+        for r in self.regions.values():
+            p = r.project
+            if p and p.kind == "annex" and p.key == rid and r.owner not in (fid, NEUTRAL):
+                left = self.project_left(r.id)
+                best = left if best is None else min(best, left)
+        return best
+
+    def claim_pop(self, fid, rid) -> float:
+        """동시에 완료됐을 때의 우선순위: 대상과 맞닿은(또는 해로로 편입 중인) 내 지역 중 가장 큰 인구."""
+        regs = [self.regions[n] for n in self.world.land_adj[rid] if self.regions[n].owner == fid]
+        regs += [r for r in self.regions.values() if r.owner == fid and r.project
+                 and r.project.kind == "annex" and r.project.key == rid]
+        return max((r.pop for r in regs), default=0.0)
+
+    def _phase_claims(self):
+        """6. 점령·편입: 무력 점령과 편입 게이지가 함께 차고, 먼저 다 채운 쪽이 그 지역을 차지한다.
+        같은 턴에 둘 이상이 다 채우면 대상과 맞닿은 지역의 인구가 많은 쪽이 차지한다."""
+        claims = {}
+        for rid, fid in self._advance_occupations():
+            claims.setdefault(rid, []).append(("occ", fid, None))
+        for (fid, tgt), (lead, members) in self._advance_annexes().items():
+            claims.setdefault(tgt, []).append(("annex", fid, (lead, members)))
+        for rid, cl in claims.items():
+            if len(cl) > 1:
+                cl.sort(key=lambda c: (-self.claim_pop(c[1], rid), c[1]))
+                names = ", ".join(self.fname(c[1]) for c in cl)
+                self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
+                           f"맞닿은 지역 인구가 가장 많은 {self.fname(cl[0][1])}이(가) 차지합니다.",
+                           region=rid, fids=tuple(c[1] for c in cl))
+            kind, fid, extra = cl[0]
+            if kind == "occ":
+                if fid in self.regions[rid].occs:
+                    self.complete_occupation(fid, rid)
+            else:
+                lead, members = extra
+                p = lead.project
+                if p is None or p.key != rid:
+                    continue
+                for r in members:
+                    r.project = None
+                self._complete_project(self.factions[fid], lead, p)
+                if len(members) > 1:
+                    self.event("complete", f"{self.info(rid).name}: {len(members)}개 지역 공동 편입 완료",
+                               region=rid, fids=(fid,))
 
     # ---- 6~7. 슬롯 진행
     def _fund_projects(self):
@@ -1804,9 +1872,6 @@ class Game:
                     tgt = self.regions[p.key]
                     if tgt.owner != NEUTRAL:
                         self._cancel_hijacked(rr, tgt.owner)
-                        continue
-                    if tgt.occ and tgt.occ["by"] != rr.owner:
-                        p.stalled = True          # 다른 세력이 무력 점령 중: 결과를 기다린다
                         continue
                 if f.money < p.per_turn:
                     p.stalled = True
@@ -1847,8 +1912,6 @@ class Game:
 
     def _phase_projects(self, kinds):
         """진행. 이번 턴 군 유닛 생산에 쓴 지역 ID 집합을 돌려준다."""
-        if "annex" in kinds:
-            self._phase_joint_annex()
         drafted = set()
         for rr in list(self.regions.values()):
             p = rr.project
@@ -1881,13 +1944,15 @@ class Game:
         return sum(1 for r in self.regions.values()
                    if r.owner == fid and r.project and r.project.kind == "annex" and r.project.key == target)
 
-    def _phase_joint_annex(self):
-        """편입: 같은 세력이 같은 대상을 여러 지역에서 편입하면 진행도를 함께 쌓는다."""
+    def _advance_annexes(self):
+        """편입 게이지를 올린다(같은 세력이 같은 대상을 여러 지역에서 편입하면 진행도를 함께 쌓는다).
+        이번 턴에 다 찬 것을 {(세력, 대상): (대표 지역, 참여 지역들)} 로 돌려준다."""
         groups = {}
         for rr in self.regions.values():
             p = rr.project
             if p and p.kind == "annex" and rr.owner != NEUTRAL:
                 groups.setdefault((rr.owner, p.key), []).append(rr)
+        done = {}
         for (fid, tgt), members in groups.items():
             funded = [rr for rr in members if getattr(rr.project, "funded", False)]
             if not funded:
@@ -1899,14 +1964,8 @@ class Game:
                 rr.project.funded = False
             need = max(rr.project.turns for rr in members)
             if prog >= need - 1e-9:
-                lead = max(funded, key=lambda r: r.project.paid)
-                p = lead.project
-                for rr in members:
-                    rr.project = None
-                self._complete_project(self.factions[fid], lead, p)
-                if len(members) > 1:
-                    self.event("complete", f"{self.info(tgt).name}: {len(members)}개 지역 공동 편입 완료",
-                               region=tgt, fids=(fid,))
+                done[(fid, tgt)] = (max(funded, key=lambda r: r.project.paid), members)
+        return done
 
     def _complete_project(self, f, rr, p):
         name = self.info(rr.id).name

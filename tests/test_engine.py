@@ -809,3 +809,50 @@ def test_ai_victory_goal_yearly():
     g.turn += C.TURNS_PER_YEAR
     AI.set_strategy(g, f)
     assert f.ai["goal_turn"] == g.turn
+
+
+def _contest_setup():
+    """플레이어(0) 수도 S002 옆 중립 지역 하나를, 그 옆 다른 지역을 가진 세력 1과 함께 노린다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    other = next(n for n in sorted(g.world.land_adj[tgt]) if n != "S002" and g.regions[n].owner == NEUTRAL)
+    _own(g, 1, [other])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    return g, tgt, other
+
+
+def test_occupation_not_cancelled_by_other_army():
+    g, tgt, other = _contest_setup()
+    g.new_army(0, tgt, {"inf": 2})
+    g.begin_occupation(0, tgt)
+    need = g.regions[tgt].occs[0]["need"]
+    g._phase_claims()
+    g.new_army(1, tgt, {"inf": 2})          # 다른 세력(전쟁 아님) 병력이 들어와 점령을 시작
+    g.begin_occupation(1, tgt)
+    assert set(g.regions[tgt].occs) == {0, 1}
+    assert g.regions[tgt].occs[0]["progress"] == 1     # 원래 점령은 그대로
+    for _ in range(need):
+        g._phase_claims()
+        if g.regions[tgt].owner != NEUTRAL:
+            break
+    assert g.regions[tgt].owner == 0                    # 먼저 다 채운 쪽
+    assert not g.armies_at(tgt, 1)                      # 진 쪽 병력은 귀환
+
+
+def test_annex_allowed_while_other_occupies_and_tie_goes_to_bigger_neighbor():
+    g, tgt, other = _contest_setup()
+    g.new_army(0, tgt, {"inf": 2})
+    g.begin_occupation(0, tgt)
+    assert any(t["target"] == tgt for t in g.annex_targets(1, other))   # 다른 세력이 점령 중이어도 편입 가능
+    ok, msg = g.start_project(1, other, "annex", tgt)
+    assert ok, msg
+    occ = g.regions[tgt].occs[0]
+    p = g.regions[other].project
+    occ["need"] = occ["progress"] + 1                   # 같은 턴에 둘 다 완료되게
+    p.turns = p.progress + 1
+    g.regions["S002"].pop, g.regions[other].pop = 10.0, 80.0
+    g.factions[1].money = 1e6
+    g._fund_projects()
+    g._phase_claims()
+    assert g.regions[tgt].owner == 1                    # 맞닿은 지역 인구가 많은 쪽

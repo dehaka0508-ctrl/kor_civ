@@ -256,8 +256,10 @@ def make_peace(g, a, b, _done=None):
     g.dip.no_attack_until.pop((a, b), None)
     g.dip.no_attack_until.pop((b, a), None)
     for r in g.regions.values():
-        if r.occ and ((r.occ["by"] == a and r.owner == b) or (r.occ["by"] == b and r.owner == a)):
-            r.occ = None
+        if r.owner == b:
+            r.occs.pop(a, None)
+        elif r.owner == a:
+            r.occs.pop(b, None)
     for army in list(g.armies.values()):
         if army.owner in (a, b) and not g.world.is_sea(army.loc):
             other = b if army.owner == a else a

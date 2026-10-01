@@ -177,14 +177,13 @@ def install(G, D, A):
     orig_begin = G.Game.begin_occupation
 
     def begin_occupation(self, fid, rid):
-        before = self.regions[rid].occ
+        before = fid in self.regions[rid].occs
         old_owner = self.regions[rid].owner
         r = orig_begin(self, fid, rid)
         if old_owner >= 0 and old_owner != fid and self.regions[rid].owner == fid \
                 and "instant_annex_h" in self.mods(fid)._keys:
             T.hit(fid, "instant_annex_h")          # 실제 즉시 병합
-        occ = self.regions[rid].occ
-        if occ and occ is not before and occ["by"] == fid and "occ_time" in self.mods(fid)._keys:
+        if not before and fid in self.regions[rid].occs and "occ_time" in self.mods(fid)._keys:
             T.hit(fid, "occ_time")
         return r
     G.Game.begin_occupation = begin_occupation

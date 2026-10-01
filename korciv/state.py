@@ -46,7 +46,7 @@ class Region:
     landmark: bool = False
     fuel: str = "auto"
     project: Optional[Project] = None
-    occ: Optional[dict] = None          # {"by": fid, "progress": n, "need": n}
+    occs: dict = field(default_factory=dict)   # 무력 점령 진행 {fid: {"by", "progress", "need"}} (여러 세력 동시 가능)
     supplied: set = field(default_factory=set)
     spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
     spec_block: set = field(default_factory=set)   # 수동 제외 특산물
@@ -63,6 +63,17 @@ class Region:
     resist: Optional[dict] = None   # 점령 저항 {"turn", "from", "resist", "recover"} (점령 후 36턴)
     mil_hist: int = 0               # 최근 10턴 군 생산 여부(비트, 최하위 = 이번 턴)
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
+
+    @property
+    def occ(self) -> Optional[dict]:
+        """가장 앞선 무력 점령(진행 비율이 가장 높은 것). 없으면 None."""
+        if not self.occs:
+            return None
+        return max(self.occs.values(), key=lambda o: (o["progress"] / max(1, o["need"]), -o.get("seq", 0)))
+
+    @occ.setter
+    def occ(self, v):
+        self.occs = {} if v is None else {v["by"]: v}
 
     def level_sum(self) -> int:
         return sum(self.b.get(k, 0) for k in ("farm", "fishery", "factory", "bank", "power",

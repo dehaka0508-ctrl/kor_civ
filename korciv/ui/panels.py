@@ -176,8 +176,15 @@ def draw_region_info(app, rect):
     if owner == pid and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
-    if r.occ and visible:
-        y = kv(gui, x, y, w, "점령 진행", f"{g.fname(r.occ['by'])} {r.occ['progress']}/{r.occ['need']}턴", t.warn)
+    if visible:
+        claims = [f"{g.fname(o['by'])} 점령 {o['progress']}/{o['need']}턴" for o in r.occs.values()]
+        claims += [f"{g.fname(rr2.owner)} 편입 {g.project_left(rr2.id)}턴 남음" for rr2 in g.regions.values()
+                   if rr2.project and rr2.project.kind == "annex" and rr2.project.key == node]
+        claims = list(dict.fromkeys(claims))
+        if claims:
+            y = gui.wrap((x, y), ("점령·편입 경쟁: " if len(claims) > 1 else "점령·편입: ") + " / ".join(claims)
+                         + (" — 먼저 채운 쪽이 차지(같은 턴이면 맞닿은 지역 인구가 많은 쪽)" if len(claims) > 1 else ""),
+                         w, 12, t.warn) + 4
     # 건물
     y = section(gui, x, y + 6, w, "건물 단계")
     chips = []

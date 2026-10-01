@@ -732,6 +732,8 @@ def _slots(g, f, threat, military=True):
             # 이미 편입 중인 대상은 오래 걸리는(가치 4 이상) 곳만 공동 편입으로 거든다
             if t["joint"] and (t["joint"] >= 3 or t["value"] < 4):
                 continue
+            if t.get("rival_left") is not None and t["rival_left"] < t["eff_turns"]:
+                continue                  # 다른 세력이 먼저 끝낼 곳은 경쟁하지 않는다
             tr = g.regions[t["target"]]
             y = g.region_output_estimate(t["target"])
             food = R.food_output(tr.b["farm"], tr.b["fishery"])
