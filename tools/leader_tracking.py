@@ -14,7 +14,8 @@ from collections import Counter, defaultdict
 SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_period", "avg_rebel", "happy_cap",
            "neutral_diplomacy", "start_money", "start_opinion", "treaty_threshold", "trade_m",
            "cost_air", "cost_naval", "cost_tank", "cost_mil", "inf_cost_early", "cost_line", "cost_factory",
-           "build_time_prod", "build_time_all", "build_time_factory", "landmark_turns", "occ_time"}
+           "build_time_prod", "build_time_all", "build_time_factory", "landmark_turns", "occ_time",
+           "war_start_happy", "war_start_mult", "instant_annex_h"}
 AIR = {"ftr", "bmb", "stl"}
 NAVAL = {"lst", "dd", "cv"}
 
@@ -133,11 +134,26 @@ def install(G, D, A):
         return ok, msg
     G.Game.start_project = start_project
 
+    orig_start_war = D._start_war
+
+    def _start_war(g, a, b, happiness=True):
+        if happiness:                     # 선전포고는 AI 판단 함수 안에서 일어나므로 따로 센다
+            for x in (a, b):
+                for k in ("war_start_happy", "war_start_mult"):
+                    if k in g.mods(x)._keys:
+                        T.hit(x, k)
+        return orig_start_war(g, a, b, happiness)
+    D._start_war = _start_war
+
     orig_begin = G.Game.begin_occupation
 
     def begin_occupation(self, fid, rid):
         before = self.regions[rid].occ
+        old_owner = self.regions[rid].owner
         r = orig_begin(self, fid, rid)
+        if old_owner >= 0 and old_owner != fid and self.regions[rid].owner == fid \
+                and "instant_annex_h" in self.mods(fid)._keys:
+            T.hit(fid, "instant_annex_h")          # 실제 즉시 병합
         occ = self.regions[rid].occ
         if occ and occ is not before and occ["by"] == fid and "occ_time" in self.mods(fid)._keys:
             T.hit(fid, "occ_time")
