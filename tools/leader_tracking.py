@@ -17,7 +17,7 @@ SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_weary_rate", 
            "neutral_diplomacy", "start_money", "start_opinion", "treaty_threshold", "trade_m",
            "cost_air", "cost_naval", "cost_tank", "cost_mil", "inf_cost_early", "cost_line", "cost_factory",
            "build_time_prod", "build_time_all", "build_time_factory", "landmark_turns", "occ_time",
-           "war_start_weary", "instant_annex_h"}
+           "war_start_weary"}
 AIR = {"ftr", "bmb", "stl"}
 NAVAL = {"lst", "dd", "cv"}
 
@@ -178,11 +178,7 @@ def install(G, D, A):
 
     def begin_occupation(self, fid, rid):
         before = fid in self.regions[rid].occs
-        old_owner = self.regions[rid].owner
         r = orig_begin(self, fid, rid)
-        if old_owner >= 0 and old_owner != fid and self.regions[rid].owner == fid \
-                and "instant_annex_h" in self.mods(fid)._keys:
-            T.hit(fid, "instant_annex_h")          # 실제 즉시 병합
         if not before and fid in self.regions[rid].occs and "occ_time" in self.mods(fid)._keys:
             T.hit(fid, "occ_time")
         return r

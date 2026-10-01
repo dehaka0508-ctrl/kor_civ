@@ -39,6 +39,58 @@ def modal_frame(app, w, h, title=None):
     return r
 
 
+# ------------------------------------------------------------------ 수량 고르기 (슬라이더)
+def open_qty(app, title, max_value, value, on_ok, preview=None, step=1, ok_label="확인"):
+    """0 ~ max_value 슬라이더로 수량을 고르는 작은 창. on_ok(값)을 부른다. preview(값) -> 설명 문자열."""
+    max_value = max(0, int(max_value))
+    app.qty = {"title": title, "max": max_value, "value": max(0, min(max_value, int(value))), "on_ok": on_ok,
+               "preview": preview, "step": max(1, int(step)), "ok": ok_label}
+
+
+def draw_qty(app):
+    gui = app.gui
+    t = app.theme
+    q = app.qty
+    r = modal_frame(app, 520, 250, q["title"])
+    mx, step = q["max"], q["step"]
+    v = q["value"]
+    gui.text((r.right - 24, r.y + 24), f"최대 {mx:,}", 13, t.muted, anchor="topright")
+    gui.text((r.centerx, r.y + 64), f"{v:,}", 26, weight="bold", anchor="midtop")
+    if mx > 0:
+        nv, _ = gui.slider((r.x + 40, r.y + 118, r.w - 80, 20), v, 0, mx, step, "qty_slider")
+        v = int(nv)
+    else:
+        gui.text((r.centerx, r.y + 118), "고를 수 있는 양이 없습니다.", 13, t.bad, anchor="midtop")
+    gui.text((r.x + 40, r.y + 136), "0", 11, t.muted)
+    gui.text((r.right - 40, r.y + 136), f"{mx:,}", 11, t.muted, anchor="topright")
+    bw = 56
+    for i, (lab, dv) in enumerate((("−10", -10 * step), ("−1", -step), ("+1", step), ("+10", 10 * step))):
+        if gui.button((r.x + 40 + i * (bw + 6), r.y + 160, bw, 28), lab, size=12, enabled=mx > 0):
+            v += dv
+    if gui.button((r.x + 40 + 4 * (bw + 6), r.y + 160, 70, 28), "최대", size=12, enabled=mx > 0):
+        v = mx
+    v = max(0, min(mx, v))
+    q["value"] = v
+    if q["preview"]:
+        gui.text((r.x + 24, r.bottom - 34), q["preview"](v), 12, t.muted, max_w=r.w - 230)
+    if gui.button((r.right - 200, r.bottom - 50, 84, 36), "취소"):
+        app.qty = None
+        return
+    if gui.button((r.right - 108, r.bottom - 50, 84, 36), q["ok"], "primary", enabled=v > 0 or q["ok"] == "확인"):
+        on_ok = q["on_ok"]
+        app.qty = None
+        on_ok(v)
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            app.qty = None
+            gui.keys.remove(k)
+        elif k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and app.qty:
+            on_ok = q["on_ok"]
+            app.qty = None
+            gui.keys.remove(k)
+            on_ok(v)
+
+
 # ------------------------------------------------------------------ 게임 설정
 def draw_setup(app):
     gui = app.gui
@@ -466,19 +518,20 @@ def _side_editor(app, x, y, w, side, owner, other, label):
     f = g.factions[owner]
     gui.text((x, y), label, 14, weight="bold")
     y += 26
-    money_max = max(0, int(f.money))
-    gui.text((x, y + 6), "돈", 13)
-    side["money"] = gui.stepper((x + 70, y, w - 70, 28), min(side["money"], money_max), 0, money_max, 100, 1000)
-    y += 34
-    for res in ("food", "oil", "coal", "elec"):
-        mx = int(f.res.get(res, 0))
-        gui.text((x, y + 6), C.RESOURCE_NAMES[res], 13)
-        side[res] = gui.stepper((x + 70, y, w - 70, 28), min(side[res], mx), 0, mx, 1, 10)
+    rows = [("money", "돈", max(0, int(f.money)), 100)]
+    rows += [(res, C.RESOURCE_NAMES[res], int(f.res.get(res, 0)), 1) for res in ("food", "oil", "coal", "elec")]
+    rows.append(("specialty", "특산물", int(sum(f.specialty.values())), 1))
+    for key, name, mx, step in rows:
+        side[key] = min(side[key], mx)
+        gui.text((x, y + 6), name, 13)
+        gui.text((x + 70, y + 6), f"{side[key]:,} / {mx:,}", 13, weight="semibold")
+
+        def pick(v, side=side, key=key):
+            side[key] = v
+        if gui.button((x + w - 66, y, 66, 28), "선택", size=12, enabled=mx > 0):
+            open_qty(app, f"{label} — {name}", mx, side[key], pick, step=step)
         y += 34
-    sp = int(sum(f.specialty.values()))
-    gui.text((x, y + 6), "특산물", 13)
-    side["specialty"] = gui.stepper((x + 70, y, w - 70, 28), min(side["specialty"], sp), 0, sp, 1, 10)
-    y += 36
+    y += 2
     side["passage"] = gui.checkbox((x, y, w, 24), "군사통행권", side["passage"])
     y += 30
     gui.text((x, y), "영토 (상대와 맞닿은 지역)", 12, t.muted)

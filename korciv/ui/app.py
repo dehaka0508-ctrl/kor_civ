@@ -101,6 +101,8 @@ class App:
     def reset_ui(self):
         self.sel = None              # 선택한 구역/해역 ID
         self.sel_army = None
+        self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
+        self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
         self.tab = "action"
         self.mode = "political"
@@ -266,7 +268,8 @@ class App:
         game = self.game
         sw, sh = self.lsize()
         self.set_map_view()
-        modal_open = self.scene == "government" or self.active_modal() is not None
+        qty_open = bool(getattr(self, "qty", None))
+        modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
         self.gui.input_enabled = not modal_open
         self.draw_map()
         self.draw_topbar()
@@ -287,11 +290,14 @@ class App:
         if not modal_open:
             self.map_input()
             self.keyboard()
-        self.gui.input_enabled = True
+        self.gui.input_enabled = not qty_open
         if self.scene == "government":
             modals.draw_government(self)
         else:
             modals.draw_active_modal(self)
+        self.gui.input_enabled = True
+        if qty_open:
+            modals.draw_qty(self)
 
     def active_modal(self):
         g = self.game
@@ -734,15 +740,22 @@ class App:
 
     def select(self, node):
         g = self.game
+        prev = self.sel
         self.sel = node
         self.split = {}
         if node is None:
             self.sel_army = None
             return
-        mine = [a for a in g.armies_at(node, g.player_id)]
+        mine = sorted(g.armies_at(node, g.player_id), key=lambda a: a.id)
         cur = g.armies.get(self.sel_army) if self.sel_army else None
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
+        elif prev == node and len(mine) > 1:
+            # 같은 지역을 한 번 더 누르면 그 지역의 다음 부대
+            i = next((k for k, a in enumerate(mine) if a.id == cur.id), -1)
+            self.sel_army = mine[(i + 1) % len(mine)].id
+            self.toast(f"{self.world.node_name(node)}: 부대 {(i + 1) % len(mine) + 1}/{len(mine)} 선택 "
+                       f"({g.armies[self.sel_army].label()})")
         self.left_open = True
         self.left_tab = "region"
         if mine and self.tab == "action" and g.regions.get(node) is None:

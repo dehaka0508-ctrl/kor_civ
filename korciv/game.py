@@ -1076,6 +1076,19 @@ class Game:
         regs = [r for r in self.regions.values() if r.owner == fid and r.project]
         return sorted(regs, key=lambda r: (r.project.priority, r.id))
 
+    PRIORITY_SORTS = {"annex": "중립 지역 편입 우선", "build": "건설 우선", "unit": "유닛 생산 우선",
+                      "short": "적은 턴 수 우선"}
+
+    def sort_priority(self, fid, mode):
+        """지출 우선순위 자동 정렬. 고른 종류를 앞으로(그 안에서는 기존 순서), short 는 남은 턴이 적은 순."""
+        regs = self.projects_by_priority(fid)
+        if mode == "short":
+            regs.sort(key=lambda r: self.project_left(r.id))
+        else:
+            kinds = {"annex": ("annex",), "build": ("build", "landmark", "capital"), "unit": ("unit",)}[mode]
+            regs.sort(key=lambda r: r.project.kind not in kinds)
+        self.set_priority_order(fid, [r.id for r in regs])
+
     def set_priority_order(self, fid, rids):
         for i, rid in enumerate(rids):
             r = self.regions.get(rid)
@@ -1110,6 +1123,31 @@ class Game:
 
     def sell_price(self, fid, res) -> float:
         return C.MARKET_SELL[res] * C.MONEY_SCALE * self.mods(fid).mult("market_sell")
+
+    def buy_cost(self, fid, res, qty) -> float:
+        """qty 개를 지금 살 때 드는 돈(같은 턴 추가 구매 +10% 반영)."""
+        f = self.factions[fid]
+        base = C.MARKET_BUY[res] * C.MONEY_SCALE * self.mods(fid).mult("market_buy")
+        if res == "food":
+            return base * qty
+        k = f.buy_count.get(res, 0)
+        r = 1 + C.MARKET_STEP
+        return base * r ** k * (r ** qty - 1) / (r - 1)
+
+    def max_buyable(self, fid, res) -> int:
+        f = self.factions[fid]
+        if f.money <= 0:
+            return 0
+        lo, hi = 0, 1
+        while self.buy_cost(fid, res, hi) <= f.money and hi < 10 ** 7:
+            hi *= 2
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.buy_cost(fid, res, mid) <= f.money + 1e-6:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
 
     def market_buy(self, fid, res, qty):
         f = self.factions[fid]
@@ -1308,18 +1346,11 @@ class Game:
             return
         if fid in rr.occs:
             return                              # 이미 점령 중(다른 세력의 점령과 별개로 진행)
-        if rr.owner == NEUTRAL:
-            need = self.neutral_turns(fid, rid)
-        else:
-            thr = self.mods(fid).value("instant_annex_h", C.INSTANT_ANNEX_H)
-            h = self.eff_happy(rr)              # 실질 행복도(전쟁 피로·저항 반영)
-            if self.resist_phase(rr)[0] and rr.resist.get("from") != fid:
-                # 저항은 원래 주인을 향한 충성: 제3국에게는 저항 이전 민심으로 판정
-                h = max(C.HAPPY_MIN, rr.happy - self.factions[rr.owner].war_weary - rr.conscript)
-            if h <= thr:
-                self.complete_occupation(fid, rid)
-                return
-            need = R.enemy_occupation_turns(rr.pop, h, self.mods(fid).mult("occ_time"))
+        if rr.owner != NEUTRAL:
+            # 적국 영토는 지키는 병력이 없으면 들어서는 즉시 차지하고 저항 기간이 시작된다
+            self.complete_occupation(fid, rid)
+            return
+        need = self.neutral_turns(fid, rid)
         self.occ_seq = getattr(self, "occ_seq", 0) + 1
         rr.occs[fid] = {"by": fid, "progress": 0, "need": need, "seq": self.occ_seq}
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",

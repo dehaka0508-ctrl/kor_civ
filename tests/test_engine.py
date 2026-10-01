@@ -856,3 +856,41 @@ def test_annex_allowed_while_other_occupies_and_tie_goes_to_bigger_neighbor():
     g._fund_projects()
     g._phase_claims()
     assert g.regions[tgt].owner == 1                    # 맞닿은 지역 인구가 많은 쪽
+
+
+def test_empty_enemy_region_taken_at_once():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.regions[tgt].happy = 50.0
+    D.declare_war(g, 0, 1)
+    g.new_army(0, tgt, {"inf": 1})
+    g.begin_occupation(0, tgt)
+    rr = g.regions[tgt]
+    assert rr.owner == 0 and not rr.occs and g.resisting(rr)   # 게이지 없이 즉시, 저항 시작
+
+
+def test_priority_auto_sort_and_market_max():
+    g = new_game(player_start="S002", n_enemies=1)
+    near = sorted(g.world.land_adj["S002"])[:3]
+    _own(g, 0, near)
+    g.factions[0].money = 1e6
+    assert g.start_project(0, near[0], "unit", "tank")[0]
+    assert g.start_project(0, near[1], "build", "bank")[0]
+    t = next(o for o in g.annex_targets(0, "S002"))
+    assert g.start_project(0, "S002", "annex", t["target"])[0]
+    g.sort_priority(0, "unit")
+    assert g.projects_by_priority(0)[0].project.kind == "unit"
+    g.sort_priority(0, "annex")
+    assert g.projects_by_priority(0)[0].project.kind == "annex"
+    g.sort_priority(0, "short")
+    lefts = [g.project_left(r.id) for r in g.projects_by_priority(0)]
+    assert lefts == sorted(lefts)
+    f = g.factions[0]
+    f.money = 1000.0
+    n = g.max_buyable(0, "oil")
+    assert g.buy_cost(0, "oil", n) <= 1000 < g.buy_cost(0, "oil", n + 1)
+    bought, spent = g.market_buy(0, "oil", n)
+    assert bought == n and spent == pytest.approx(g.buy_cost(0, "oil", 0) + spent)

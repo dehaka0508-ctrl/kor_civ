@@ -573,7 +573,9 @@ def draw_army_tab(app, body):
         gui.text((x, y), "부대를 선택하세요.", 13, t.muted)
         y += 26
     # 내 모든 부대
-    mine = sorted([a for a in g.armies.values() if a.owner == pid], key=lambda a: (-g.army_power(a), a.id))
+    # 위치 이름 가나다순(같은 곳이면 전력 큰 순)
+    mine = sorted([a for a in g.armies.values() if a.owner == pid],
+                  key=lambda a: (app.world.node_name(a.loc), -g.army_power(a), a.id))
     y = section(gui, x, y + 4, w, f"내 부대 {len(mine)}개 · 유지비 {g.upkeep(pid):,.0f}/턴")
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
     off = gui.begin_scroll("armies", area, len(mine) * 28)
@@ -631,19 +633,24 @@ def draw_nation_tab(app, body):
         gui.text((x + 40, y + 5), f"{f.res.get(res, 0):,.0f}", 13)
         bp, sp = g.buy_price(pid, res), g.sell_price(pid, res)
         gui.text((x + 96, y + 5), f"{bp:,.0f}/{sp:,.0f}", 11, t.muted)
-        bx = x + w - 150
-        q1, q2 = (10, 100) if res == "food" else (1, 10)   # 식량은 10·100 단위
-        bs = 9 if res == "food" else 11
-        if gui.button((bx, y, 36, 24), f"+{q1}", size=bs, tooltip=f"{q1}개 구매 ({bp * q1:,.0f})"):
-            n, s_ = g.market_buy(pid, res, q1)
-            app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
-        if gui.button((bx + 38, y, 36, 24), f"+{q2}", size=bs, tooltip=f"{q2}개 구매"):
-            n, s_ = g.market_buy(pid, res, q2)
-            app.toast(f"{C.RESOURCE_NAMES[res]} {n}개 구매 ({s_:,.0f})")
-        if gui.button((bx + 76, y, 36, 24), f"−{q1}", size=bs, tooltip=f"{q1}개 판매 ({sp * q1:,.0f})"):
-            g.market_sell(pid, res, q1)
-        if gui.button((bx + 114, y, 36, 24), f"−{q2}", size=bs, tooltip=f"{q2}개 판매"):
-            g.market_sell(pid, res, q2)
+        bx = x + w - 112
+        name = C.RESOURCE_NAMES[res]
+        from . import modals
+
+        def do_buy(n, res=res, name=name):
+            k, s_ = g.market_buy(pid, res, n)
+            app.toast(f"{name} {k}개 구매 ({s_:,.0f})")
+
+        def do_sell(n, res=res, name=name):
+            k, s_ = g.market_sell(pid, res, n)
+            app.toast(f"{name} {k}개 판매 (+{s_:,.0f})")
+        if gui.button((bx, y, 54, 24), "구매", size=11, tooltip=f"최대 {g.max_buyable(pid, res):,}개까지"):
+            modals.open_qty(app, f"{name} 구매", g.max_buyable(pid, res), 0, do_buy,
+                            preview=lambda n, res=res: f"비용 {g.buy_cost(pid, res, n):,.0f} (자금 {f.money:,.0f})",
+                            ok_label="구매")
+        if gui.button((bx + 58, y, 54, 24), "판매", size=11, tooltip=f"보유 {int(f.res.get(res, 0)):,}개"):
+            modals.open_qty(app, f"{name} 판매", int(f.res.get(res, 0)), 0, do_sell,
+                            preview=lambda n, sp=sp: f"수입 +{n * sp:,.0f}", ok_label="판매")
         y += 30
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
@@ -769,7 +776,15 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "석유 / 석탄 / 전기",
            f"{f.res.get('oil', 0):,.0f} / {f.res.get('coal', 0):,.0f} / {f.res.get('elec', 0):,.0f}")
     # 지출 우선순위 (드래그)
-    y = section(gui, x, y + 6, w, "지출 우선순위 (드래그로 순서 변경)")
+    y = section(gui, x, y + 6, w, "지출 우선순위 (드래그, 또는 클릭 후 ↑↓)")
+    bw2 = (w - 4) / 2
+    for i, (mode, lab) in enumerate(g.PRIORITY_SORTS.items()):
+        if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, enabled=bool(items),
+                      tooltip=f"{lab}으로 자동 정렬"):
+            g.sort_priority(pid, mode)
+            items = g.projects_by_priority(pid)
+            app.toast(f"지출 우선순위: {lab}")
+    y += 68
     gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted)
     y += 20
     y = draw_priority_list(app, x, y, w, items)
@@ -850,11 +865,31 @@ def draw_priority_list(app, x, y, w, items):
         gui.text((row.x + 8, row.y + 21), f"턴당 {p.per_turn:,.0f} · {state}", 11,
                  (t.bad if p.stalled and not dragged else sub))
         gui.text((row.right - 8, row.centery), "≡", 16, sub, anchor="midright")
-    # 놓기
+    # 놓기: 움직였으면 순서 변경, 제자리면 그 행을 고른다(↑↓로 이동)
     if drag is not None and not gui.down:
         app.prio_drag = None
         if order != ids:
             g.set_priority_order(g.player_id, order)
             gui.clicked = False
             app.toast(f"우선순위 변경: {app.world.regions[drag].short} → {order.index(drag) + 1}번")
+        else:
+            app.prio_sel = None if app.prio_sel == drag else drag
+    sel = getattr(app, "prio_sel", None)
+    if sel in ids and drag is None:
+        i = ids.index(sel)
+        gui.rect(t.accent, pygame.Rect(x, top + i * row_h, w, row_h - 4), 2, radius=8)
+        for k in list(gui.keys):
+            if k.key in (pygame.K_UP, pygame.K_DOWN) and not gui.focus:
+                gui.keys.remove(k)                 # 지도 이동 대신 순서 이동
+                j = i + (-1 if k.key == pygame.K_UP else 1)
+                if 0 <= j < n:
+                    new = ids[:]
+                    new[i], new[j] = new[j], new[i]
+                    g.set_priority_order(g.player_id, new)
+                    ids, i = new, j
+            elif k.key == pygame.K_ESCAPE:
+                gui.keys.remove(k)
+                app.prio_sel = None
+    elif sel is not None and sel not in ids:
+        app.prio_sel = None
     return top + n * row_h + 4
