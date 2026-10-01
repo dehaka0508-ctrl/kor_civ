@@ -48,10 +48,10 @@ def run_game(job):
     wars = {}
     orig_declare = D.declare_war
 
-    def declare(g, a, b, reason="선전포고", _joined=None):
+    def declare(g, a, b, reason="선전포고", _joined=None, _role="declare"):
         if _joined is None and not D.at_war(g, a, b) and not D.has_nonaggr(g, a, b):
             wars[a] = wars.get(a, 0) + 1
-        return orig_declare(g, a, b, reason, _joined)
+        return orig_declare(g, a, b, reason, _joined, _role)
     D.declare_war = declare
     t0 = time.time()
     g = G.Game(Settings(n_enemies=FACTIONS_PER_GAME - 1, seed=seed, all_ai=True,
@@ -92,6 +92,7 @@ def run_game(job):
             "win": win, "first": first, "wars_declared": wars.get(f.id, 0), "rebel_states": rebels,
             "eliminated": f.eliminated_turn, "happy": g.avg_happiness(f.id) if f.alive else None,
             "victory_type": g.winner[1] if f.id in winners else None,
+            "landmarks": sum(1 for r in g.regions.values() if r.owner == f.id and r.landmark),
             **LT.summary(tracker, f.id),
         })
     return {"seed": seed, "turns": g.turn, "victory": g.winner[1] if g.winner else None,

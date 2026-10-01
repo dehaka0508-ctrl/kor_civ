@@ -4,18 +4,20 @@
   쓰이면 (세력, 키) 별로 '발동한 턴'과 횟수를 센다. AI 가 선택지를 평가하는 계산(선택지 목록·교전 예측·
   전력 추정 등)은 발동으로 치지 않는다. 비용·건설 시간 효과는 실제로 착공한 작업으로, 세율·전쟁 기간처럼
   매 턴 조회만 되는 효과는 실제 조건(세율 구간, 전쟁 중 등)으로 따로 센다.
-- 행동: 착공(종류별)·유닛 생산·공격 방식·선전포고·강화·조약·반란·세율·전쟁 피로·승리 목표.
+- 행동: 착공(종류별)·유닛 생산·공격 방식·선전포고·강화·조약·반란·세율·전쟁 피로·승리 목표,
+  기습 성공/실패·돌격 방어선 파괴·폭격 건물 파괴·점령 저항·탈환·전쟁광 평판·사기 저하·징집 피로.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 
 # 실제 조건으로 따로 세는 효과(일반 조회 카운트는 무시)
-SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_period", "avg_rebel", "happy_cap",
+SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_weary_rate", "avg_rebel", "happy_cap",
            "neutral_diplomacy", "start_money", "start_opinion", "treaty_threshold", "trade_m",
            "cost_air", "cost_naval", "cost_tank", "cost_mil", "inf_cost_early", "cost_line", "cost_factory",
            "build_time_prod", "build_time_all", "build_time_factory", "landmark_turns", "occ_time",
-           "war_start_happy", "war_start_mult", "instant_annex_h"}
+           "war_start_weary", "instant_annex_h"}
 AIR = {"ftr", "bmb", "stl"}
 NAVAL = {"lst", "dd", "cv"}
 
@@ -29,6 +31,7 @@ class Tracker:
         self.goals = defaultdict(Counter)      # fid -> 승리 목표(연 1회 표본)
         self.taxes = defaultdict(list)
         self.weary = defaultdict(list)
+        self.eff = defaultdict(list)           # 실질 평균 행복도
         self.alive_turns = Counter()
         self.g = None
 
@@ -136,14 +139,40 @@ def install(G, D, A):
 
     orig_start_war = D._start_war
 
-    def _start_war(g, a, b, happiness=True):
+    def _start_war(g, a, b, happiness=True, aggressor=None):
         if happiness:                     # 선전포고는 AI 판단 함수 안에서 일어나므로 따로 센다
             for x in (a, b):
-                for k in ("war_start_happy", "war_start_mult"):
-                    if k in g.mods(x)._keys:
-                        T.hit(x, k)
-        return orig_start_war(g, a, b, happiness)
+                if "war_start_weary" in g.mods(x)._keys:
+                    T.hit(x, "war_start_weary")
+        return orig_start_war(g, a, b, happiness, aggressor)
     D._start_war = _start_war
+
+    orig_complete = G.Game.complete_occupation
+
+    def complete_occupation(self, fid, rid):
+        rr = self.regions[rid]
+        old = rr.owner
+        if old >= 0 and rr.resist and self.resisting(rr) and rr.resist.get("from") == fid:
+            T.beh[fid]["retake"] += 1                  # 저항 중인 옛 영토 탈환
+        r = orig_complete(self, fid, rid)
+        if old >= 0 and fid >= 0:
+            T.beh[fid]["resist_start"] += 1
+        return r
+    G.Game.complete_occupation = complete_occupation
+
+    orig_bombard = G.Game._bombard
+
+    def _bombard(self, a, tgt, units):
+        n0 = sum(self.regions[tgt].b.get(k, 0) for k in self.regions[tgt].b) + sum(self.regions[tgt].lines.values())
+        owner = a.owner
+        kinds = ("gun" if units.get("art") or units.get("dd") else "") + ("air" if units.get("bmb") or units.get("stl") else "")
+        r = orig_bombard(self, a, tgt, units)
+        n1 = sum(self.regions[tgt].b.get(k, 0) for k in self.regions[tgt].b) + sum(self.regions[tgt].lines.values())
+        T.beh[owner][f"bomb_{kinds or 'none'}"] += 1
+        if n1 < n0:
+            T.beh[owner]["bomb_hit"] += 1
+        return r
+    G.Game._bombard = _bombard
 
     orig_begin = G.Game.begin_occupation
 
@@ -195,6 +224,21 @@ def install(G, D, A):
     def event(self, kind, text, region=None, fids=()):
         if kind in ("rebel", "captured", "famine", "occupy") and fids:
             T.beh[fids[0]][f"ev_{kind}"] += 1
+        if kind == "battle" and fids:
+            if "기습 성공" in text:
+                T.beh[fids[0]]["surprise_win"] += 1
+            elif "기습 실패" in text:
+                T.beh[fids[0]]["surprise_fail"] += 1
+            elif "방어선" in text and "단계" in text:
+                T.beh[fids[0]]["line_break"] += 1
+            if text.startswith("돌격"):
+                T.beh[fids[0]]["assault_battle"] += 1
+        if kind == "war" and fids:
+            m = re.search(r"우호도 (-\d+)", text)
+            if m:
+                T.beh[fids[0]]["warmonger_pen"] += -int(m.group(1))
+                if int(m.group(1)) < -10:
+                    T.beh[fids[0]]["warmonger_repeat"] += 1
         return orig_event(self, kind, text, region, fids)
     G.Game.event = event
 
@@ -214,6 +258,12 @@ def after_turn(T, g):
         keys = g.mods(fid)._keys
         T.taxes[fid].append(f.tax)
         T.weary[fid].append(getattr(f, "war_weary", 0.0))
+        T.eff[fid].append(g.avg_happiness(fid))
+        if g.morale(fid) < 1:
+            T.beh[fid]["low_morale_turns"] += 1
+        regs = g.regions_of(fid)
+        T.beh[fid]["conscript_region_turns"] += sum(1 for r in regs if r.conscript > 0)
+        T.beh[fid]["resist_region_turns"] += sum(1 for r in regs if g.resisting(r))
         if g.turn % C.TURNS_PER_YEAR == 2 and f.ai.get("victory_goal"):
             T.goals[fid][f.ai["victory_goal"]] += 1
         at_war = bool(D.enemies(g, fid))
@@ -224,7 +274,7 @@ def after_turn(T, g):
             "tax_over15": f.tax > 0.15 + 1e-9,
             "tax_max": f.tax >= g.tax_max(fid) - 1e-9,
             "tax_lock": f.tax_locked_until > g.turn,
-            "war_period": at_war,
+            "war_weary_rate": at_war,
             "avg_rebel": g.avg_happiness(fid) <= -30,
             "happy_cap": any(r.happy >= g.mods(fid).value("happy_cap", C.HAPPY_MAX) - 0.5 for r in g.regions_of(fid)),
             "start_money": g.turn == 2,
@@ -248,5 +298,7 @@ def summary(T, fid):
               "count": T.counts[(fid, k)]} for k in keys}
     tx = T.taxes[fid] or [0]
     ww = T.weary[fid] or [0]
+    eh = T.eff[fid] or [0]
     return {"fx": fx, "beh": dict(T.beh[fid]), "goals": dict(T.goals[fid]), "alive_turns": alive,
-            "tax_avg": sum(tx) / len(tx), "weary_avg": sum(ww) / len(ww)}
+            "tax_avg": sum(tx) / len(tx), "weary_avg": sum(ww) / len(ww), "weary_max": max(ww),
+            "eff_happy_avg": sum(eh) / len(eh)}

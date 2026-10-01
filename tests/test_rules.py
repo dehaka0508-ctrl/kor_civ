@@ -70,8 +70,13 @@ def test_pop_growth_and_tax_happiness():
 
 
 def test_surprise_chance_and_dates():
-    assert R.surprise_chance(0) == pytest.approx(0.85)
-    assert R.surprise_chance(5) == pytest.approx(0.10)
+    assert R.surprise_chance(0) == pytest.approx(0.75)
+    assert R.surprise_chance(5) == pytest.approx(0.0)
+    # 방어선이 없으면 기습 피해 기대값 = 돌격의 1.05배
+    win, fail = R.surprise_mults(0)
+    assert 0.75 * win[0] + 0.25 * fail[0] == pytest.approx(1.05)
+    # 방어선이 높을수록 실패 벌칙이 커진다
+    assert R.surprise_mults(2)[1][0] < fail[0] and R.surprise_mults(2)[1][1] > fail[1]
     assert R.date_label(1) == "2026년 1월 1주 · 턴 1"
     assert R.date_label(10) == "2026년 3월 2주 · 턴 10"
     assert R.date_label(49) == "2027년 1월 1주 · 턴 49"
@@ -98,3 +103,14 @@ def test_unhappy_output_curve():
     assert R.unhappy_output_mult(-100) == pytest.approx(0.70)
     # 처음엔 완만, 낮을수록 가파르게
     assert (1 - R.unhappy_output_mult(-25)) < (R.unhappy_output_mult(-75) - R.unhappy_output_mult(-100))
+
+
+def test_new_curves():
+    assert R.unhappy_combat_mult(-9) == 1.0
+    assert R.unhappy_combat_mult(-50) == pytest.approx(R.unhappy_output_mult(-50))
+    assert [R.conscript_penalty(n) for n in range(4, 11)] == [0, 0, 1, 2, 4, 6, 10]
+    assert R.landmark_cost_mult(7) == pytest.approx(1.3 ** 7)
+    assert R.bomb_building_chance(True, False) == pytest.approx(0.3)
+    assert R.bomb_building_chance(False, True) == pytest.approx(0.6)
+    assert R.bomb_building_chance(True, True) == pytest.approx(0.9)
+    assert R.bomb_building_chance(False, False) == 0

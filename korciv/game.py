@@ -52,6 +52,7 @@ class Game:
         self.game_over = False
         self.player_id = 0
         self._mods: dict[int, Mods] = {}
+        self._morale: dict[int, float] = {}
         self._visible: dict[int, set] = {}
         self.setup_done = False
         self._init_world()
@@ -61,6 +62,7 @@ class Game:
         s = dict(self.__dict__)
         s.pop("world", None)
         s["_mods"] = {}
+        s["_morale"] = {}
         return s
 
     def __setstate__(self, s):
@@ -70,6 +72,9 @@ class Game:
             for attr in ("spec_pin", "spec_block"):
                 if not hasattr(r, attr):
                     setattr(r, attr, set())
+            for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0)):
+                if not hasattr(r, attr):
+                    setattr(r, attr, v)
         for a in self.armies.values():
             if not hasattr(a, "goto"):
                 a.goto = None
@@ -77,7 +82,16 @@ class Game:
             if not hasattr(f, "spend"):
                 f.spend, f.refund = {}, 0.0
             if not hasattr(f, "war_weary"):
-                f.war_weary = f.war_weary_applied = 0.0
+                f.war_weary = 0.0
+            if hasattr(f, "war_weary_applied"):     # 예전 방식: 피로가 행복도에 섞여 있었다
+                for r in self.regions.values():
+                    if r.owner == f.id:
+                        r.happy = min(C.HAPPY_MAX, r.happy + f.war_weary_applied)
+                del f.war_weary_applied
+            for attr, v in (("last_declare", -999), ("last_aggr_end", -999), ("warmonger", 0)):
+                if not hasattr(f, attr):
+                    setattr(f, attr, v)
+        self._morale = {}
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -660,6 +674,9 @@ class Game:
         w = self.world
         m = self.mods(fid)
         tgt_owner = self.regions[target].owner
+        mult = self.morale(fid)                  # 사기: 실질 평균 행복도 −10 이하면 감소
+        if self.retake_bonus(fid, target):
+            mult *= 1 + C.RESIST_RETAKE_ATK      # 저항 중인 옛 영토를 되찾는 공격
         total = 0.0
         contrib = {}
         sources = set()
@@ -690,6 +707,7 @@ class Game:
                     val *= m.mult("ally_war_atk")
                 elif mode == "assault":
                     val *= m.mult("no_ally_assault")
+            val *= mult
             total += val
             src = "coast" if amph else a.loc
             contrib[src] = contrib.get(src, 0) + val
@@ -700,7 +718,7 @@ class Game:
     def defense_strength(self, fid_att, target, main_src, mode):
         defenders = self.hostile_units_at(fid_att, target)
         rr = self.regions[target]
-        dsum = sum(C.UNITS[k]["df"] * n for a in defenders for k, n in a.units.items())
+        dsum = sum(C.UNITS[k]["df"] * n * self.morale(a.owner) for a in defenders for k, n in a.units.items())
         line_level = rr.lines.get(main_src, 0) if main_src else 0
         if rr.owner != NEUTRAL and mode == "assault":
             k = self.mods(rr.owner).value("line_k", C.LINE_BONUS)
@@ -724,12 +742,14 @@ class Game:
             res["terrain"] = self.world.terrain_between(army.loc, target)
         if mode == "surprise":
             rr = self.regions[target]
-            p = R.surprise_chance(rr.lines.get(main, 0), self.mods(army.owner).add("surprise"))
+            lv = rr.lines.get(main, 0)
+            p = R.surprise_chance(lv, self.mods(army.owner).add("surprise"))
+            win, fail = R.surprise_mults(lv)
             res["surprise_p"] = p
-            res["def_dmg_win"] = dd * C.SURPRISE_WIN[0]
-            res["att_dmg_win"] = ad * C.SURPRISE_WIN[1]
-            res["def_dmg_fail"] = dd * C.SURPRISE_FAIL[0]
-            res["att_dmg_fail"] = ad * C.SURPRISE_FAIL[1]
+            res["def_dmg_win"] = dd * win[0]
+            res["att_dmg_win"] = ad * win[1]
+            res["def_dmg_fail"] = dd * fail[0]
+            res["att_dmg_fail"] = ad * fail[1]
         def_hp = sum(C.UNITS[k]["hp"] * n for a in defenders for k, n in a.units.items())
         res["def_hp"] = def_hp
         return res
@@ -864,9 +884,12 @@ class Game:
         info = self.info(rid)
         m = self.mods(fid)
         opts = []
+        resisting = self.resisting(rr)
 
         def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0):
             turns = max(1, turns)
+            if resisting:
+                ok, why = False, "점령 저항 중"
             opts.append({"kind": kind, "key": key, "name": name, "cost": cost, "turns": turns,
                          "per_turn": cost / turns, "ok": ok, "why": why, "level": level,
                          "border": border, "oil": oil})
@@ -928,12 +951,23 @@ class Game:
         if not rr.landmark:
             busy = any(r.project and r.project.kind == "landmark" and r.id == rid for r in self.regions.values())
             turns = m.value("landmark_turns", C.LANDMARK_TURNS)
-            add("landmark", "landmark", "랜드마크", C.LANDMARK_COST_PER_TURN * C.MONEY_SCALE * turns, turns,
+            lm_mult = self.landmark_cost_mult(fid)
+            name = "랜드마크" + (f" (비용 ×{lm_mult:.2f})" if lm_mult > 1 else "")
+            add("landmark", "landmark", name, C.LANDMARK_COST_PER_TURN * C.MONEY_SCALE * lm_mult * turns, turns,
                 not busy)
         if self.factions[fid].capital != rid:
             y = max(rr.output, self.region_output_estimate(rid))
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
         return opts
+
+    def landmark_count(self, fid) -> int:
+        """보유한 랜드마크 + 짓고 있는 랜드마크 수."""
+        return sum(1 for r in self.regions.values() if r.owner == fid
+                   and (r.landmark or (r.project and r.project.kind == "landmark")))
+
+    def landmark_cost_mult(self, fid) -> float:
+        """다음 랜드마크 비용 배수: 랜드마크 1개마다 ×1.3."""
+        return R.landmark_cost_mult(self.landmark_count(fid))
 
     def building_effect(self, fid, rid, opt) -> str:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
@@ -964,7 +998,9 @@ class Game:
             return f"{what} 턴당 +1 (합계 {(info.oil or info.coal) + lv}개)"
         if key == "line":
             k = m.value("line_k", C.LINE_BONUS)
-            return f"이 경계 돌격 방어 x{1 + k * lv:.2f}, 기습 성공률 {max(0, 90 - 15 * lv)}%"
+            fail = R.surprise_mults(lv)[1][0]
+            return (f"이 경계 돌격 방어 x{1 + k * lv:.2f}, 적 기습 성공률 {R.surprise_chance(lv) * 100:.0f}%"
+                    f"(실패 시 공격 x{fail:.2f})")
         if key == "shelter":
             return f"폭격 피해 ÷{1 + C.SHELTER_K * lv:.1f}"
         if key == "aa":
@@ -985,6 +1021,8 @@ class Game:
             return False, "이 지역 슬롯은 이미 사용 중입니다."
         if rr.occ:
             return False, "점령당하는 중인 지역입니다."
+        if self.resisting(rr):
+            return False, "점령 저항 중인 지역은 생산할 수 없습니다."
         opt = next((o for o in self.options(fid, rid) if o["kind"] == kind and o["key"] == key
                     and (border is None or o["border"] == border)), None)
         if not opt:
@@ -1132,7 +1170,7 @@ class Game:
                             m.mult("output_bank"), m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
         if owner != NEUTRAL and owner == rr.owner:
-            y *= R.unhappy_output_mult(rr.happy)      # 불행한 지역은 산출 감소
+            y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
         return y
 
     # ---- 생산 집중
@@ -1168,6 +1206,9 @@ class Game:
         prev_occ = rr.occ
         rr.occ = None
         rr.supplied = set()
+        rr.resist = None
+        rr.mil_hist = 0
+        rr.conscript = 0.0
         self.acq_counter = getattr(self, "acq_counter", 0) + 1
         rr.acquired_seq = self.acq_counter
         if old != NEUTRAL and new_owner != NEUTRAL:
@@ -1256,32 +1297,37 @@ class Game:
             need = self.neutral_turns(fid, rid)
         else:
             thr = self.mods(fid).value("instant_annex_h", C.INSTANT_ANNEX_H)
-            if rr.happy <= thr:
+            h = self.eff_happy(rr)              # 실질 행복도(전쟁 피로·저항 반영)
+            if self.resist_phase(rr)[0] and rr.resist.get("from") != fid:
+                # 저항은 원래 주인을 향한 충성: 제3국에게는 저항 이전 민심으로 판정
+                h = max(C.HAPPY_MIN, rr.happy - self.factions[rr.owner].war_weary - rr.conscript)
+            if h <= thr:
                 self.complete_occupation(fid, rid)
                 return
-            need = R.enemy_occupation_turns(rr.pop, rr.happy, self.mods(fid).mult("occ_time"))
+            need = R.enemy_occupation_turns(rr.pop, h, self.mods(fid).mult("occ_time"))
         rr.occ = {"by": fid, "progress": 0, "need": need}
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
     def complete_occupation(self, fid, rid):
+        """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(6턴 산출·생산 없음·행복도 −100,
+        이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음)."""
         rr = self.regions[rid]
         old = rr.owner
-        h = rr.happy
         m = self.mods(fid)
-        if old == NEUTRAL:
-            new_h = 0.0
-        elif m.value("wanggeon_occupy"):
-            new_h = 10.0 if h < 0 else -h / 2
-        else:
-            new_h = 0.0 if h < 0 else -h
+        new_h = 0.0 if old == NEUTRAL else rr.happy + m.add("occupied_happy_extra")
         if old != NEUTRAL:
-            new_h += m.add("occupied_happy_extra")
             D.add_war_score(self, fid, old, rr.pop)
         self.transfer_region(rid, fid)
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
+        if old != NEUTRAL:
+            half = bool(m.value("wanggeon_occupy"))         # 왕건: 저항·회복 기간 절반
+            rr.resist = {"turn": self.turn, "from": old,
+                         "resist": C.RESIST_TURNS // 2 if half else C.RESIST_TURNS,
+                         "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
         self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
-                   + (f" ({self.fname(old)}에게서)." if old != NEUTRAL else "."), region=rid, fids=(fid, old))
+                   + (f" ({self.fname(old)}에게서, 저항 {rr.resist['resist']}턴)." if old != NEUTRAL else "."),
+                   region=rid, fids=(fid, old))
 
     # ------------------------------------------------------------------ 턴 종료
     def end_turn(self):
@@ -1291,6 +1337,7 @@ class Game:
         self.events = []
         self.battle_regions = []
         self.new_ranking = None
+        self._morale = {}
         # 대응하지 않은 플레이어 반란은 AI 규칙으로 처리
         for rid in list(self.pending_rebellions):
             rr = self.regions[rid]
@@ -1314,8 +1361,9 @@ class Game:
         self._fund_projects()
         self._phase_occupation()
         self._phase_projects(("annex",))
-        # 7. 건설·생산
-        self._phase_projects(("build", "unit", "landmark", "capital"))
+        # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
+        drafted = self._phase_projects(("build", "unit", "landmark", "capital"))
+        self._phase_conscription(drafted)
         # 8~9. 자원, 세수·유지비
         for f in self.factions:
             if f.alive:
@@ -1453,7 +1501,7 @@ class Game:
                 + C.NAVAL_BMB_POWER * (a.units.get("bmb", 0) + a.units.get("stl", 0)) for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
-        return p
+        return p * self.morale(fid)
 
     def _naval_battle(self, sid, x, fx, y, fy):
         px, py = self._naval_power(x, fx, sid), self._naval_power(y, fy, sid)
@@ -1558,18 +1606,25 @@ class Game:
         dmg += bombers.get("bmb", 0) * C.UNITS["bmb"]["bomb"] * (1 - C.AA_DMG_K * aa)
         dmg += bombers.get("stl", 0) * C.UNITS["stl"]["bomb"] * (C.STEALTH_AA_DMG if aa >= 5 else 1.0)
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
+        dmg *= self.morale(a.owner)
         defenders = self.hostile_units_at(a.owner, tgt)
         lost = self.apply_damage(defenders, dmg) if defenders else {}
         self._score_units(a.owner, rr.owner, lost)
-        p = min(C.BUILDING_HIT_MAX, C.BUILDING_HIT_ART * (units.get("art", 0) + units.get("dd", 0))
-                + C.BUILDING_HIT_BMB * sum(bombers.values()))
-        if self.rng.random() < p:
-            built = [k for k, v in rr.b.items()
-                     if v > 0 and not (k == "port" and self.info(tgt).start_port)]
-            if built:
-                k = self.rng.choice(built)
-                rr.b[k] -= 1
-                notes.append(f"{BUILDING_NAMES.get(k, k)} 1단계 파괴")
+        # 건물 피해: 포병·함포 30%, 폭격기 60%, 둘 다 90%로 생산·방어 건물(방어선 포함) 하나 −1단계
+        guns = units.get("art", 0) + units.get("dd", 0) > 0
+        p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
+        if p and self.rng.random() < p:
+            hit = self.bomb_targets(tgt)
+            if hit:
+                k = self.rng.choice(hit)
+                if k.startswith("line:"):
+                    border = k[5:]
+                    rr.lines[border] -= 1
+                    nm = "해안선" if border == "coast" else self.info(border).name
+                    notes.append(f"방어선({nm}) 1단계 파괴")
+                else:
+                    rr.b[k] -= 1
+                    notes.append(f"{BUILDING_NAMES.get(k, k)} 1단계 파괴")
         if not rr.bombed:
             rr.h_delta += C.BOMBED_HAPPY
             rr.bombed = True
@@ -1581,6 +1636,13 @@ class Game:
                    region=tgt, fids=(a.owner, rr.owner))
 
     # ---- 5. 지상 공격
+    def bomb_targets(self, rid):
+        """폭격으로 부술 수 있는 건물: 생산 건물·방공호·대공포 키와 'line:경계' 방어선."""
+        rr = self.regions[rid]
+        out = [k for k in list(C.PROD_BUILDINGS) + ["shelter", "aa"] if rr.b.get(k, 0) > 0]
+        out += [f"line:{b}" for b, lv in sorted(rr.lines.items()) if lv > 0]
+        return out
+
     def _phase_attack(self):
         orders = [a for a in self.armies.values() if a.order and a.order["type"] == "attack"]
         by_target = {}
@@ -1650,15 +1712,19 @@ class Game:
         dd, ad = R.battle_damage(A, Dv, r)
         note = ""
         if mode == "surprise":
-            p = R.surprise_chance(rr.lines.get(main, 0), self.mods(fid).add("surprise"))
-            if self.rng.random() < p:
-                dd *= C.SURPRISE_WIN[0]
-                ad *= C.SURPRISE_WIN[1]
+            lv = rr.lines.get(main, 0)
+            win, fail = R.surprise_mults(lv)
+            if self.rng.random() < R.surprise_chance(lv, self.mods(fid).add("surprise")):
+                dd *= win[0]
+                ad *= win[1]
                 note = "기습 성공"
             else:
-                dd *= C.SURPRISE_FAIL[0]
-                ad *= C.SURPRISE_FAIL[1]
+                dd *= fail[0]
+                ad *= fail[1]
                 note = "기습 실패"
+        elif line > 0 and dd > ad and rr.owner != NEUTRAL and self.rng.random() < C.ASSAULT_LINE_BREAK:
+            rr.lines[main] = line - 1          # 돌격에 밀린 방어선이 무너진다
+            note = f"방어선 {line} → {line - 1}단계"
         filt = C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS
         def_owner = defenders[0].owner if defenders else rr.owner
         lost_d = self.apply_damage(defenders, dd)
@@ -1751,8 +1817,8 @@ class Game:
     def expected_food_balance(self, f) -> float:
         """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
         regs = self.regions_of(f.id)
-        prod = sum(0.0 if r.occ else R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id))
-                   for r in regs)
+        prod = sum(0.0 if r.occ or self.resisting(r) else
+                   R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id)) for r in regs)
         cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
         return f.res.get("food", 0) + prod - cons
 
@@ -1777,8 +1843,10 @@ class Game:
                        region=p.key, fids=(f.id,))
 
     def _phase_projects(self, kinds):
+        """진행. 이번 턴 군 유닛 생산에 쓴 지역 ID 집합을 돌려준다."""
         if "annex" in kinds:
             self._phase_joint_annex()
+        drafted = set()
         for rr in list(self.regions.values()):
             p = rr.project
             if not p or p.kind not in kinds or p.kind == "annex" or rr.owner == NEUTRAL \
@@ -1787,9 +1855,12 @@ class Game:
             f = self.factions[rr.owner]
             p.funded = False
             p.progress += 1
+            if p.kind == "unit":
+                drafted.add(rr.id)
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
+        return drafted
 
     def project_left(self, rid) -> int:
         """남은 턴. 공동 편입은 함께하는 지역 수에 따른 속도로 계산."""
@@ -1877,7 +1948,7 @@ class Game:
     # ---- 8. 자원
     def _phase_resources(self, f: Faction):
         regs = self.regions_of(f.id)
-        active = [r for r in regs if not r.occ]
+        active = [r for r in regs if not r.occ and not self.resisting(r)]   # 점령당하는 중·저항 지역은 생산 없음
         res = f.res
         for r in active:
             info = self.info(r.id)
@@ -1923,9 +1994,10 @@ class Game:
                     res[fuel] -= 1
                     r.phi = C.FUEL_PHI[fuel]
                     break
+        live = {r.id for r in active}
         for r in regs:
-            r.output = 0.0 if r.occ else self.calc_output(r.id)
-            r.food = 0.0 if r.occ else R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id))
+            r.output = self.calc_output(r.id) if r.id in live else 0.0
+            r.food = R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id)) if r.id in live else 0.0
         prod = sum(r.food for r in regs)
         cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
         res["food"] += prod - cons
@@ -2048,11 +2120,11 @@ class Game:
             if r.famine > 0:
                 r.pop *= 1 + C.FAMINE_POP * r.famine
             else:
-                g = R.pop_growth_rate(r.happy) * f.pop_mult
+                g = R.pop_growth_rate(self.eff_happy(r)) * f.pop_mult
                 cap = info.pop0 * C.POP_CAP_START_MULT + C.POP_CAP_PER_LEVEL * r.level_sum()
                 if g > 0 and r.pop < cap:
                     r.pop += r.pop * g * (1 - r.pop / cap)
-            if r.happy <= C.MIGRATION_H:
+            if self.eff_happy(r) <= C.MIGRATION_H:
                 r.pop *= 1 + C.MIGRATION_POP
             r.pop = max(0.1, r.pop)
 
@@ -2065,37 +2137,103 @@ class Game:
             m = self.mods(f.id)
             t = R.tax_happiness(f.tax * 100, m.value("tax_over10", 1.0), m.value("tax_over15", 1.0))
             t += m.add("happy_turn")
-            period = m.value("war_period", C.WAR_ONGOING_PERIOD)
-            at_war = False
-            for p, wv in self.dip.wars.items():
-                if f.id in p:
-                    at_war = True
-                    dur = self.turn - wv["start"]
-                    if dur > 0 and dur % period == 0:
-                        t += C.WAR_ONGOING_HAPPY
-            if not at_war:
-                f.war_weary = max(0.0, f.war_weary - C.WAR_WEARY_RECOVERY)
-            f.war_weary = min(C.WAR_WEARY_MAX, f.war_weary)
+            # 전쟁 피로도: 전쟁 중이면 쌓이고(선포한 쪽 1, 당한 쪽 0.5/턴), 평시엔 턴당 1 회복
+            rate = D.war_weary_rate(self, f.id)
+            D.add_war_weary(self, f.id, rate if rate else -C.WAR_WEARY_RECOVERY)
             floor = 0.0 if f.happy_floor_until > self.turn else C.HAPPY_MIN
-            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor, f.war_weary_applied, f.war_weary)
-            f.war_weary_applied = f.war_weary
+            per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor)
         for r in self.regions.values():
             r.bombed = False
-            if r.owner == NEUTRAL:
+            if r.owner == NEUTRAL or r.owner not in per_fac:
                 r.h_delta = 0.0
                 continue
-            if r.owner not in per_fac:
-                r.h_delta = 0.0
-                continue
-            t, cap, floor, ww_old, ww_new = per_fac[r.owner]
-            # 전쟁 피로는 감쇠하지 않는 별도 항: 지난번 몫을 빼고 감쇠한 뒤 새 몫을 다시 뺀다
-            h = (r.happy + ww_old + r.h_delta + t) * C.HAPPY_DECAY - ww_new
+            t, cap, floor = per_fac[r.owner]
+            h = (r.happy + r.h_delta + t) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
+            if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
+                r.resist = None
+        self._morale = {}
 
-    def avg_happiness(self, fid) -> float:
+    def _phase_conscription(self, drafted):
+        """징집 피로: 최근 10턴 중 군 생산 턴 수 n. n ≥ 6이면 감소량을 올리고, n ≤ 3이면 빠르게 회복."""
+        mask = (1 << C.CONSCRIPT_WINDOW) - 1
+        for r in self.regions.values():
+            if r.owner == NEUTRAL:
+                continue
+            r.mil_hist = ((r.mil_hist << 1) | (1 if r.id in drafted else 0)) & mask
+            n = bin(r.mil_hist).count("1")
+            pen = R.conscript_penalty(n)
+            if pen > r.conscript:
+                r.conscript = pen
+            elif n <= C.CONSCRIPT_RECOVER_N:
+                r.conscript = max(0.0, r.conscript - C.CONSCRIPT_RECOVERY)
+
+    def drafted_turns(self, rid) -> int:
+        return bin(self.regions[rid].mil_hist).count("1")
+
+    # ---- 실질 행복도·저항·사기
+    def resist_phase(self, rr):
+        """점령 저항 단계와 경과 턴: ('resist' 산출 0·행복도 −100 | 'recover' 회복 중 | 'calm' 반란만 없음 | None)."""
+        rs = rr.resist
+        if not rs or rr.owner == NEUTRAL:
+            return None, 0
+        k = self.turn - rs["turn"]
+        if k < rs["resist"]:
+            return "resist", k
+        if k < rs["resist"] + rs["recover"]:
+            return "recover", k
+        if k < C.RESIST_NO_REBEL_TURNS:
+            return "calm", k
+        return None, k
+
+    def resisting(self, rr) -> bool:
+        return self.resist_phase(rr)[0] == "resist"
+
+    def base_happy(self, rr) -> float:
+        """저항을 반영한 행복도(전쟁 피로·징집 피로 제외)."""
+        phase, k = self.resist_phase(rr)
+        if phase == "resist":
+            return C.RESIST_HAPPY
+        if phase == "recover":
+            rs = rr.resist
+            frac = (k - rs["resist"] + 1) / rs["recover"]
+            return C.RESIST_HAPPY + (rr.happy - C.RESIST_HAPPY) * frac
+        return rr.happy
+
+    def eff_happy(self, rr) -> float:
+        """실질 행복도 = 행복도(저항 반영) − 전쟁 피로도 − 징집 피로. 산출·반란·인구·사기 판정에 쓴다."""
+        if rr.owner == NEUTRAL:
+            return rr.happy
+        f = self.factions[rr.owner]
+        h = self.base_happy(rr) - f.war_weary - rr.conscript
+        if f.happy_floor_until > self.turn:
+            h = max(0.0, h)
+        return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
+
+    def avg_happiness(self, fid, effective=True) -> float:
+        """평균 행복도. effective=False 면 전쟁 피로·징집 피로·저항을 빼기 전 행복도."""
         regs = self.regions_of(fid)
-        return sum(r.happy for r in regs) / len(regs) if regs else 0.0
+        if not regs:
+            return 0.0
+        if effective:
+            return sum(self.eff_happy(r) for r in regs) / len(regs)
+        return sum(r.happy for r in regs) / len(regs)
+
+    def morale(self, fid) -> float:
+        """사기(전투력 배수): 실질 평균 행복도 −10 이하부터 산출 감소와 같은 곡선."""
+        if fid == NEUTRAL:
+            return 1.0
+        v = self._morale.get(fid)
+        if v is None:
+            v = R.unhappy_combat_mult(self.avg_happiness(fid))
+            self._morale[fid] = v
+        return v
+
+    def retake_bonus(self, fid, rid) -> bool:
+        """저항 중인 지역을 원래 주인이 공격하면 공격력 +20%."""
+        rr = self.regions[rid]
+        return bool(rr.resist) and rr.resist.get("from") == fid and self.resisting(rr)
 
     def total_pop(self, fid) -> float:
         return sum(r.pop for r in self.regions_of(fid))
@@ -2103,7 +2241,9 @@ class Game:
     # ---- 12. 반란
     def rebellion_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
-        p = R.rebellion_probability(rr.happy) * self.mods(fid).mult("rebel_prob")
+        if self.resist_phase(rr)[0]:
+            return 0.0                        # 점령 후 36턴은 반란 없음
+        p = R.rebellion_probability(self.eff_happy(rr)) * self.mods(fid).mult("rebel_prob")
         if self.mods(fid).value("avg_rebel") and self.avg_happiness(fid) <= -30:
             p *= self.mods(fid).value("avg_rebel")
         return min(1.0, p)
@@ -2114,7 +2254,7 @@ class Game:
             if not f.alive:
                 continue
             for r in list(self.regions_of(f.id)):
-                if r.happy > C.REBEL_THRESHOLD:
+                if self.eff_happy(r) > C.REBEL_THRESHOLD:
                     continue
                 if self.rng.random() < self.rebellion_chance(f.id, r.id):
                     r.rebellions += 1
@@ -2127,7 +2267,7 @@ class Game:
     def suppress_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
         S = sum(C.UNITS[k]["df"] * n for a in self.armies_at(rid, fid) for k, n in a.units.items())
-        Rv = rr.pop * 2 * max(0.0, -rr.happy / 50)
+        Rv = rr.pop * 2 * max(0.0, -self.eff_happy(rr) / 50)
         p = S / (S + Rv) if S + Rv > 0 else 0.0
         return max(0.0, min(1.0, p + self.mods(fid).add("suppress")))
 
@@ -2160,7 +2300,7 @@ class Game:
             self.event("rebel", msg, region=rid, fids=(fid,))
             return msg
         p = self.suppress_chance(fid, rid)
-        Rv = rr.pop * 2 * max(0.0, -rr.happy / 50)
+        Rv = rr.pop * 2 * max(0.0, -self.eff_happy(rr) / 50)
         if self.rng.random() < p:
             rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_SUPPRESS_HAPPY)
             for a in self.armies_at(rid, fid):
@@ -2313,12 +2453,6 @@ class Game:
                     f.econ_streak = 0
                 if f.econ_streak >= C.ECON_VICTORY_TURNS:
                     self._win((fid,), "economic")
-                    return
-        if "peace" in st.victories and len(alive) >= 2:
-            cid = D.coalition_of(self, alive[0])
-            if cid is not None and set(alive) <= self.dip.coalitions[cid]["members"]:
-                if self.turn - self.dip.coalitions[cid]["since"] >= C.PEACE_VICTORY_TURNS:
-                    self._win(tuple(alive), "peace")
                     return
         if "landmark" in st.victories:
             for fid in alive:

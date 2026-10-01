@@ -60,6 +60,9 @@ class Region:
     food: float = 0.0
     bombed: bool = False
     rebellions: int = 0
+    resist: Optional[dict] = None   # 점령 저항 {"turn", "from", "resist", "recover"} (점령 후 36턴)
+    mil_hist: int = 0               # 최근 10턴 군 생산 여부(비트, 최하위 = 이번 턴)
+    conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
 
     def level_sum(self) -> int:
         return sum(self.b.get(k, 0) for k in ("farm", "fishery", "factory", "bank", "power",
@@ -137,8 +140,10 @@ class Faction:
     trade_sell: float = 0.0
     spend: dict = field(default_factory=dict)       # 이번 턴 작업 지출 {종류: 금액}
     refund: float = 0.0                             # 이번 턴 환급
-    war_weary: float = 0.0          # 전쟁 피로(행복도에서 빠지는 양). 모든 전쟁이 끝나면 턴당 0.5 회복
-    war_weary_applied: float = 0.0  # 지역 행복도에 이미 반영된 전쟁 피로
+    war_weary: float = 0.0          # 전쟁 피로도 0~200 (실질 행복도 = 행복도 − 전쟁 피로도)
+    last_declare: int = -999        # 마지막으로 선전포고한 턴(전쟁광 평판)
+    last_aggr_end: int = -999       # 스스로 선포한 전쟁이 마지막으로 끝난 턴
+    warmonger: int = 0              # 1년 안에 잇따라 선포한 횟수
     last: dict = field(default_factory=dict)        # 지난 턴 통계
     pop_mult: float = 1.0
     income_mult: float = 1.0
@@ -158,7 +163,7 @@ class Settings:
     n_enemies: int = 3
     difficulty: int = 2
     fog: int = 1
-    victories: tuple = ("conquest", "economic", "peace", "landmark")
+    victories: tuple = ("conquest", "economic", "landmark")
     player_leader: str = "sejong"
     player_leader_name: str = ""
     player_name: str = "대한"

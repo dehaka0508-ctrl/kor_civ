@@ -119,9 +119,6 @@ def enemies(g, a):
 
 def threshold(g, a, b, base):
     t = base + g.mods(a).add("treaty_threshold") + g.mods(b).add("treaty_threshold")
-    if g.factions[a].is_ai and g.factions[a].ai.get("victory_goal") == "peace":
-        t -= 10                              # 평화승리를 노리는 AI는 조약에 적극적
-
     if g.hegemon is not None and g.hegemon not in (a, b):
         t -= C.HEGEMON_TREATY_DISCOUNT   # 공동 견제 대상이 있으면 뭉치기 쉽다
     return t
@@ -138,20 +135,32 @@ def trade_m(g, ai, proposer) -> float:
 
 
 # ------------------------------------------------------------------ 전쟁·강화
-def declare_war(g, a, b, reason="선전포고", _joined=None):
-    """a 가 b 에게 선전포고. 동맹 자동 참전, 연합 공동 결정."""
+def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare"):
+    """a 가 b 에게 선전포고. 동맹 자동 참전, 연합 공동 결정.
+    _role: declare(직접 선포) / coalition(연합 공동 선포) / ally(방어 동맹 참전: 전쟁 피로는 당한 쪽 기준)."""
     if a == b or at_war(g, a, b) or not g.factions[a].alive or not g.factions[b].alive:
         return False, "이미 전쟁 중이거나 대상이 없습니다."
     if has_nonaggr(g, a, b):
         return False, "불가침조약·동맹 중에는 먼저 조약을 파기해야 합니다."
     joined = _joined if _joined is not None else set()
-    _start_war(g, a, b)
+    pen = warmonger_penalty(g, a) if _role == "declare" else 0.0
+    _start_war(g, a, b, aggressor=b if _role == "ally" else a)
     add_opinion(g, b, a, C.OP_WAR_DECLARED)
     for c in g.alive_ids():
         if c not in (a, b) and is_friend(g, c, b):
             if not g.mods(c).value("neutral_diplomacy"):
                 add_opinion(g, c, a, C.OP_FRIEND_ATTACKED)
-    g.event("war", f"{g.fname(a)}이(가) {g.fname(b)}에 {reason}했습니다.", fids=(a, b))
+    note = ""
+    if _role == "declare":
+        # 전쟁광 평판: 대상 외 모든 세력이 선포국을 꺼린다(1년 안에 잇따라 선포하면 더 크게)
+        fa = g.factions[a]
+        fa.warmonger = fa.warmonger + 1 if pen < C.OP_WARMONGER else 0
+        fa.last_declare = g.turn
+        for c in g.alive_ids():
+            if c not in (a, b):
+                add_opinion(g, c, a, pen)
+        note = f" (전쟁광 평판: 다른 세력 우호도 {pen:+.0f})"
+    g.event("war", f"{g.fname(a)}이(가) {g.fname(b)}에 {reason}했습니다.{note}", fids=(a, b))
     joined.add((a, b))
     # 수비측 동맹·연합 자동 참전
     for c in list(g.alive_ids()):
@@ -159,15 +168,25 @@ def declare_war(g, a, b, reason="선전포고", _joined=None):
             continue
         if allied(g, c, b) and not at_war(g, c, a) and (c, a) not in joined:
             _clear_treaties(g, c, a)
-            declare_war(g, c, a, reason="동맹 참전으로 선전포고", _joined=joined)
+            declare_war(g, c, a, reason="동맹 참전으로 선전포고", _joined=joined, _role="ally")
     # 공격측 연합 회원 공동 참전
     cid = coalition_of(g, a)
     if cid is not None:
         for c in list(g.dip.coalitions[cid]["members"]):
             if c not in (a, b) and not at_war(g, c, b) and (c, b) not in joined and g.factions[c].alive:
                 _clear_treaties(g, c, b)
-                declare_war(g, c, b, reason="연합 공동 선전포고", _joined=joined)
+                declare_war(g, c, b, reason="연합 공동 선전포고", _joined=joined, _role="coalition")
     return True, ""
+
+
+def warmonger_penalty(g, a) -> float:
+    """a 가 지금 선전포고하면 다른 세력들이 깎는 우호도: −10, 직전 전쟁 1년 안이면 5씩 더."""
+    fa = g.factions[a]
+    recent = (g.turn - fa.last_declare <= C.WARMONGER_WINDOW
+              or g.turn - fa.last_aggr_end <= C.WARMONGER_WINDOW
+              or any(w.get("aggressor") == a for p, w in g.dip.wars.items() if a in p))
+    streak = fa.warmonger + 1 if recent else 0
+    return C.OP_WARMONGER + C.OP_WARMONGER_STEP * streak
 
 
 def _clear_treaties(g, a, b):
@@ -178,20 +197,20 @@ def _clear_treaties(g, a, b):
     g.dip.friends.discard(p)
 
 
-def _start_war(g, a, b, happiness=True):
+def _start_war(g, a, b, happiness=True, aggressor=None):
+    """전쟁 시작. aggressor(선포한 쪽)는 전쟁 피로 +20·턴당 +1, 상대는 +10·턴당 +0.5. 독립 전쟁은 피로 증가 없음."""
     p = pair(a, b)
     _clear_treaties(g, a, b)
-    g.dip.wars[p] = {"start": g.turn, "declarer": a, "score": {a: 0.0, b: 0.0},
+    g.dip.wars[p] = {"start": g.turn, "declarer": a, "aggressor": aggressor if happiness else None,
+                     "score": {a: 0.0, b: 0.0},
                      "regs0": {a: g.region_count(a), b: g.region_count(b)}, "taken": {a: 0, b: 0}}
     delay = g.mods(a).value("parliament_delay", 0)
     if delay:
         g.dip.no_attack_until[(a, b)] = g.turn + delay
     for f in (a, b) if happiness else ():
-        base = g.mods(f).value("war_start_happy", C.WAR_START_HAPPY)
-        base *= g.mods(f).value("war_start_mult", 1.0)
-        fac = g.factions[f]
-        # 선전포고 행복도 감소는 '전쟁 피로'로 쌓여 종전 후 턴당 0.5씩만 회복된다
-        fac.war_weary = min(C.WAR_WEARY_MAX, getattr(fac, "war_weary", 0.0) - base)
+        # 직접 선포한 쪽만 +20. 방어 동맹 참전(aggressor = 상대)은 양쪽 모두 +10
+        role = "aggressor" if f == a and aggressor in (None, a) else "defender"
+        add_war_weary(g, f, C.WAR_WEARY_START[role] * g.mods(f).mult("war_start_weary"))
     # 통행권으로 상대 영토에 있던 병력은 가장 가까운 자국 영토로
     for army in list(g.armies.values()):
         if army.owner in (a, b) and not g.world.is_sea(army.loc):
@@ -201,12 +220,34 @@ def _start_war(g, a, b, happiness=True):
                 g.teleport_home(army)
 
 
+def add_war_weary(g, fid, v):
+    f = g.factions[fid]
+    f.war_weary = max(0.0, min(C.WAR_WEARY_MAX, f.war_weary + v))
+
+
+def war_weary_rate(g, fid) -> float:
+    """이번 턴 전쟁 피로 증가량: 스스로 선포한 전쟁이 하나라도 있으면 1, 당한 전쟁뿐이면 0.5, 평시 0."""
+    rate = 0.0
+    for p, w in g.dip.wars.items():
+        if fid not in p:
+            continue
+        aggr = w.get("aggressor", w.get("declarer"))
+        if aggr is None:                     # 독립 전쟁: 양쪽 모두 당한 쪽 기준
+            rate = max(rate, C.WAR_WEARY_TURN["defender"])
+        else:
+            rate = max(rate, C.WAR_WEARY_TURN["aggressor" if aggr == fid else "defender"])
+    return rate * g.mods(fid).mult("war_weary_rate") if rate else 0.0
+
+
 def make_peace(g, a, b, _done=None):
     done = _done if _done is not None else set()
     p = pair(a, b)
     if p not in g.dip.wars or p in done:
         return
     done.add(p)
+    aggr = g.dip.wars[p].get("aggressor")
+    if aggr in (a, b):
+        g.factions[aggr].last_aggr_end = g.turn
     del g.dip.wars[p]
     g.dip.nonaggr[p] = max(g.dip.nonaggr.get(p, 0), g.turn + C.PEACE_TREATY_TURNS)
     if not hasattr(g.dip, "peace_until"):
@@ -386,7 +427,6 @@ def sign_treaty(g, a, b, kind):
         elif ca != cb:
             g.dip.coalitions[ca]["members"] |= g.dip.coalitions[cb]["members"]
             del g.dip.coalitions[cb]
-        # 연합 가입 시점 기준으로 평화승리 카운트가 다시 시작된다
         cid = coalition_of(g, a)
         g.dip.coalitions[cid]["since"] = g.turn
     g.event("diplo", f"{g.fname(a)}와(과) {g.fname(b)}이(가) {TREATY_NAMES[kind]}을(를) 맺었습니다.", fids=(a, b))

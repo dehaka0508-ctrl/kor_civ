@@ -44,6 +44,7 @@ SPECIALTY_HAPPY = 3
 
 LANDMARK_COST_PER_TURN = 100_000
 LANDMARK_TURNS = 15
+LANDMARK_COST_GROWTH = 1.3     # 보유·건설 중인 랜드마크 1개마다 다음 랜드마크 비용 ×1.3 (8번째는 1.3^7 ≈ 6.3배)
 CAPITAL_MOVE_TURNS = 4
 CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
@@ -96,17 +97,24 @@ MIGRATION_POP = -0.001
 HAPPY_MIN, HAPPY_MAX = -100, 100
 HAPPY_DECAY = 0.99
 TAX_HAPPY_K = 0.1          # 0.1 * (10 - t%)
-WAR_START_HAPPY = -10
-WAR_ONGOING_PERIOD = 5
-WAR_ONGOING_HAPPY = -1
-# 전쟁 피로: 선전포고 행복도 −10은 '전쟁 피로'로 쌓여 일반 행복도처럼 0.99로 감쇠하지 않는다.
-# 전쟁 중에는 회복되지 않고, 모든 전쟁이 끝나면 턴당 0.5씩 회복한다(전쟁을 자주 하는 세력에 불리).
-# 전쟁 지속 페널티(5턴마다 −1)는 예전처럼 일반 행복도로 들어간다.
-WAR_WEARY_RECOVERY = 0.5
-WAR_WEARY_MAX = 40
+# 전쟁 피로: 전쟁은 행복도를 직접 깎지 않고, 국가 단위 '전쟁 피로도'(0~200)를 쌓는다.
+# 실질 행복도 = 행복도 − 전쟁 피로도 (모든 지역에 고르게). 산출·반란·인구·전투력은 실질 행복도로 판정한다.
+# 선전포고: 선포한 쪽 +20, 당한 쪽 +10. 전쟁 중 매 턴 선포한 쪽 +1, 당한 쪽 +0.5. 전쟁이 없으면 턴당 1 회복.
+WAR_WEARY_START = {"aggressor": 20.0, "defender": 10.0}
+WAR_WEARY_TURN = {"aggressor": 1.0, "defender": 0.5}
+WAR_WEARY_RECOVERY = 1.0
+WAR_WEARY_MAX = 200.0
 # 불행한 지역의 산출 감소: 행복도 H < 0 이면 산출 × (1 − 0.30 × (−H/100)²). −50에서 −7.5%, −100에서 −30%.
 UNHAPPY_OUTPUT_MAX = 0.30
 UNHAPPY_OUTPUT_EXP = 2.0
+# 사기: 실질 평균 행복도가 −10 이하이면 군 전투력(공격·방어·폭격·해전)도 산출 감소와 같은 곡선으로 줄어든다.
+MORALE_H = -10
+# 징집 피로: 지역마다 최근 10턴 중 군 유닛 생산에 쓴 턴 수 n. n ≥ 6이면 그 지역 행복도 −(1, 2, 4, 6, 10).
+# 감소분은 n이 3 이하로 내려가면 턴당 3씩 빠르게 회복(4~5턴이면 유지).
+CONSCRIPT_WINDOW = 10
+CONSCRIPT_PENALTY = {6: 1.0, 7: 2.0, 8: 4.0, 9: 6.0, 10: 10.0}
+CONSCRIPT_RECOVER_N = 3
+CONSCRIPT_RECOVERY = 3.0
 UNIT_START_HAPPY = {"light": -0.5, "heavy": -1.0}
 UNIT_DISBAND_HAPPY = {"light": 0.5, "heavy": 1.0}
 FAMINE_HAPPY = -5
@@ -153,10 +161,15 @@ LINE_BONUS = 0.25          # 방어선 돌격 방어 x(1 + 0.25L)
 BRIDGE_ATTACK_MULT = 1.0   # 연륙교는 기획서 2절대로 '육지처럼' 취급(지형 경계에 있으면 그 배수 적용)
 FLANK_BONUS = 0.1          # n개 지역 동시 공격 x(1 + 0.1(n-1))
 AMPHIBIOUS = 0.8
-SURPRISE_BASE = 0.85       # 원안 0.90: AI가 항상 기습만 골라 5%p 낮춤
-SURPRISE_PER_LINE = 0.15   # 원안 '0%까지'는 0.18
-SURPRISE_WIN = (1.75, 0.5)     # (공격 피해, 반격)
-SURPRISE_FAIL = (0.4, 1.25)
+# 기습: 방어선이 없으면 성공 75%(공격 피해 ×1.2, 반격 ×0.9) / 실패 25%(×0.6, 반격 ×1.2) → 피해 기대값 돌격의 1.05배.
+# 방어선 단계 L마다 성공률 −15%p, 실패 시 공격 피해 −5%p·반격 +5%p (돌격은 방어선이 방어력 ×(1 + 0.25L)).
+SURPRISE_BASE = 0.75
+SURPRISE_PER_LINE = 0.15
+SURPRISE_WIN = (1.2, 0.9)      # (공격 피해, 반격)
+SURPRISE_FAIL = (0.6, 1.2)
+SURPRISE_FAIL_PER_LINE = 0.05
+# 돌격에서 방어측이 입은 피해가 공격측보다 크면 25% 확률로 그 경계 방어선 −1단계
+ASSAULT_LINE_BREAK = 0.25
 DAMAGE_K = 0.5
 RAND_LO, RAND_HI = 0.85, 1.15
 SHELTER_K = 0.2
@@ -166,9 +179,11 @@ STEALTH_AA_SHOOT = 0.10
 STEALTH_AA_DMG = 0.8
 INTERCEPT_PER_FIGHTER = 0.3
 FIGHTER_LOSS = 0.2
-BUILDING_HIT_ART = 0.01
-BUILDING_HIT_BMB = 0.03
-BUILDING_HIT_MAX = 0.25
+# 폭격의 건물 피해: 포병(구축함 함포 포함)이 참여하면 30%, 폭격기·스텔스폭격기 60%, 둘 다 90% 확률로
+# 대상 지역의 생산·방어 건물(방어선 포함) 중 무작위 하나를 1단계 낮춘다.
+BOMB_HIT_GUN = 0.30
+BOMB_HIT_AIR = 0.60
+BOMB_HIT_BOTH = 0.90
 NAVAL_DD_POWER = 30
 NAVAL_BMB_POWER = 40
 CAPTURE_CHANCE = 0.05
@@ -176,6 +191,14 @@ CAPTURE_CHANCE = 0.05
 # 점령·편입
 OCC_MAX_TURNS = 15         # 적 지역 점령 T(P) 상한
 INSTANT_ANNEX_H = -50
+# 점령 저항: 다른 세력에게서 빼앗은 지역은 첫 6턴 '저항'(산출 0·생산 불가·행복도 −100 고정),
+# 이어서 24턴 동안 점령 직전 행복도로 점차 회복. 점령 후 36턴 동안은 반란이 일어나지 않는다.
+# 저항 중에는 그 지역의 원래 주인이 그 지역을 공격할 때 공격력 +20%.
+RESIST_TURNS = 6
+RESIST_RECOVER_TURNS = 24
+RESIST_NO_REBEL_TURNS = 36
+RESIST_HAPPY = -100.0
+RESIST_RETAKE_ATK = 0.20
 # 중립 지역: 인구·건물·산출·자원·특산물을 합친 점수로 '지역 가치' 1~10을 매기고, 가치별로 편입·점령 턴이 정해진다.
 # 점수 = log2(산출/200) + 0.8 log2(1 + 인구/5) + 건물(단계당 0.3, 항구·공항·사관학교 0.5, 최대 3)
 #        + 자원(정유 1.5, 탄광 1.0, 자체발전 0.7, 화력발전소 소재지 0.5, 증설 단계당 0.5, 최대 3) + 특산물 0.8/종
@@ -202,8 +225,13 @@ OP_BORDER_K = 0.15
 OP_BORDER_FREE = 0.75
 OP_BORDER_MAX = 0.35
 OP_TREATY_TURN = 0.1       # 불가침·통행권을 유지하는 동안 매 턴 우호도 +0.1 (수렴 +10)
-OP_LAND_GRAB = -2
-OP_HIJACK = -15            # 편입·점령하던 중립 지역을 다른 세력이 가로채면 빼앗긴 AI의 우호도 -15          # 우리와도 맞닿은 중립 지역을 먼저 차지하면(영토 경쟁) 우리 쪽 우호도 -2
+OP_LAND_GRAB = -2          # 우리와도 맞닿은 중립 지역을 먼저 차지하면(영토 경쟁) 우리 쪽 우호도 -2
+OP_HIJACK = -15            # 편입·점령하던 중립 지역을 다른 세력이 가로채면 빼앗긴 AI의 우호도 -15
+# 전쟁광 평판: 선전포고하면 대상 외 모든 세력의 우호도 −10. 직전 전쟁(선포했거나, 그 전쟁이 끝난 지)
+# 1년 안에 또 선포할 때마다 5씩 더 깎인다(−15, −20, ...).
+OP_WARMONGER = -10
+OP_WARMONGER_STEP = -5
+WARMONGER_WINDOW = 48
 OP_GIFT_MAX = 25
 OP_DEMAND_ACCEPT = -15
 OP_DEMAND_REJECT = -10
@@ -224,7 +252,6 @@ COALITION_MIN = 85
 COALITION_ALLIANCE_TURNS = 24
 TREATY_TURNS = 24
 PEACE_TREATY_TURNS = 24
-PEACE_VICTORY_TURNS = 24
 PASSAGE_FREE_OPINION = 45
 PASSAGE_VALUE = 500
 TERRITORY_TURNS = 40
@@ -271,7 +298,7 @@ AI_GOAL_WEIGHT = 0.25      # 목표에 맞는 전략 가중치에 더하는 값(
 # ---------------------------------------------------------------- 승리 (10절)
 ECON_VICTORY_RATIO = 2.0
 ECON_VICTORY_TURNS = 10
-VICTORY_TYPES = {"conquest": "정복승리", "economic": "경제승리", "peace": "평화승리", "landmark": "랜드마크승리"}
+VICTORY_TYPES = {"conquest": "정복승리", "economic": "경제승리", "landmark": "랜드마크승리"}
 
 # ---------------------------------------------------------------- 난이도 (11절, AI에만 적용)
 DIFFICULTIES = [

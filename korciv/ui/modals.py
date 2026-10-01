@@ -390,7 +390,8 @@ def draw_rebellion(app):
     rr = g.regions[rid]
     r = modal_frame(app, 560, 380, "반란 발생!")
     info = app.world.regions[rid]
-    gui.text((r.x + 24, r.y + 56), f"{info.name} · 행복도 {rr.happy:+.1f} · 인구 {rr.pop:.1f}만", 15, weight="semibold")
+    gui.text((r.x + 24, r.y + 56), f"{info.name} · 실질 행복도 {g.eff_happy(rr):+.1f} · 인구 {rr.pop:.1f}만", 15,
+             weight="semibold")
     gui.wrap((r.x + 24, r.y + 84), "다른 행동보다 먼저 대응해야 합니다. 진압에 실패하면 이 지역이 수도가 되어 새 국가로 분리독립합니다(건물·인구 계승, 첫 24턴 행복도 0 이상).",
              r.w - 48, 13, t.muted)
     cost = g.rebellion_accept_cost(pid, rid)
@@ -606,8 +607,10 @@ def draw_diplomacy(app):
                 D.leave_alliance(g, pid, fid)
             i += 1
         can_war = not D.has_nonaggr(g, pid, fid)
-        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war,
-                      tooltip="전 지역 행복도 -10, 상대 우호도 -100" if can_war else "불가침·동맹 중에는 먼저 파기"):
+        tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:.0f}), "
+               f"상대 우호도 -100,\n전쟁광 평판: 다른 모든 세력 우호도 {D.warmonger_penalty(g, pid):+.0f}"
+               if can_war else "불가침·동맹 중에는 먼저 파기")
+        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war, tooltip=tip):
             ok, msg = D.declare_war(g, pid, fid)
             app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
             app.changed()
@@ -687,9 +690,11 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 자국 영토 안에서는 2칸, 그 밖은 1칸 이동. 해군은 항구↔해역↔해역↔상륙 턴당 2단계.
 · 산출 Y = 30P + 150g(농장) + 150g(어장) + 1000g(공장)φ + 600g(은행) + 9000(랜드마크)
 · 세수 = Y × 세율. 세율 10%보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
-· 행복도 10 이상·식량 충분일 때 인구 증가, -50 이하부터 반란 확률 상승.
+· 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. 10 이상·식량 충분일 때 인구 증가, -50 이하부터 반란.
+· 전쟁 피로도(0~200): 선전포고 +20(당하면 +10), 전쟁 중 턴당 +1(당하면 +0.5), 평시 턴당 1 회복.
+· 점령한 적 지역은 6턴 저항(산출·생산 없음, 행복도 −100) 뒤 24턴에 걸쳐 회복, 36턴 동안 반란 없음.
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 방어선은 돌격 방어를 높입니다.
-· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 평화(전원 연합 24턴) / 랜드마크(8도 + 수도)"""
+· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 랜드마크(8도 + 수도, 하나 지을 때마다 다음 비용 ×1.3)"""
 
 
 def draw_help(app):
@@ -805,7 +810,8 @@ def draw_specialty(app):
         gui.text((x, y + 30), f"보유 특산물 {len(kinds)}종 · 재고 {sum(stock.values())}개", 13)
     else:
         rr = g.regions[rid]
-        gui.text((x, y), f"{app.world.regions[rid].name}  (행복도 {rr.happy:+.1f})", 16, weight="bold")
+        gui.text((x, y), f"{app.world.regions[rid].name}  (행복도 {rr.happy:+.1f}, 실질 {g.eff_happy(rr):+.1f})", 16,
+                 weight="bold")
         y += 30
         gui.text((x, y), "종류", 12, t.muted)
         gui.text((x + 170, y), "재고/생산", 12, t.muted)

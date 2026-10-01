@@ -137,20 +137,41 @@ def draw_region_info(app, rect):
             y = kv(gui, x, y, w, "공장 연료", f"{fuel} (φ {r.phi:.2f})")
     # 행복도 막대
     if owner != NEUTRAL and visible:
-        gui.text((x, y), "행복도", 13, t.muted)
-        gui.text((x + w, y), f"{r.happy:+.1f}", 13, t.good if r.happy >= 0 else t.bad, "semibold", anchor="topright")
+        eh = g.eff_happy(r)
+        gui.text((x, y), "실질 행복도", 13, t.muted)
+        gui.text((x + w, y), f"{eh:+.1f}", 13, t.good if eh >= 0 else t.bad, "semibold", anchor="topright")
         y += 20
         bar = pygame.Rect(x, y, w, 8)
         gui.rect(t.panel_alt, bar, radius=4)
         mid = bar.centerx
-        hw = int(abs(r.happy) / 100 * w / 2)
-        if r.happy >= 0:
+        hw = int(abs(eh) / 100 * w / 2)
+        if eh >= 0:
             gui.rect(t.happy_pos, (mid, bar.y, hw, 8), radius=4)
         else:
             gui.rect(t.happy_neg, (mid - hw, bar.y, hw, 8), radius=4)
         gui.line(t.muted, (mid, bar.y - 2), (mid, bar.bottom + 1))
         y += 16
-        if r.happy <= C.REBEL_THRESHOLD and owner == pid:
+        parts = [f"행복도 {r.happy:+.1f}"]
+        ww = g.factions[owner].war_weary
+        if ww >= 0.05:
+            parts.append(f"전쟁 피로 −{ww:.1f}")
+        if r.conscript > 0:
+            parts.append(f"징집 피로 −{r.conscript:.0f} (최근 10턴 중 {g.drafted_turns(node)}턴 징집)")
+        elif owner == pid and g.drafted_turns(node) >= 4:
+            parts.append(f"최근 10턴 중 {g.drafted_turns(node)}턴 징집(6턴부터 징집 피로)")
+        y = gui.wrap((x, y - 2), " · ".join(parts), w, 11, t.muted) + 2
+        phase, k = g.resist_phase(r)
+        if phase:
+            rs = r.resist
+            if phase == "resist":
+                txt = f"저항 {rs['resist'] - k}턴 남음: 산출·생산 없음, 행복도 −100"
+            elif phase == "recover":
+                txt = f"저항 후 회복 중 ({k - rs['resist'] + 1}/{rs['recover']}턴)"
+            else:
+                txt = "점령 직후 안정기"
+            txt += f" · 반란 없음 {C.RESIST_NO_REBEL_TURNS - k}턴"
+            y = gui.wrap((x, y), "점령 저항: " + txt, w, 12, t.warn if phase == "resist" else t.muted) + 4
+        if eh <= C.REBEL_THRESHOLD and owner == pid and not phase:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(pid, node)*100:.1f}%/턴", t.bad)
     if owner == pid and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
@@ -384,6 +405,11 @@ def draw_action_tab(app, body):
     if r.occ:
         gui.text((x, y), "점령당하는 중이라 슬롯을 쓸 수 없습니다.", 13, t.bad)
         return
+    phase, k = g.resist_phase(r)
+    if phase == "resist":
+        gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음): 산출이 없고 아무것도 생산할 수 없습니다.",
+                 w, 13, t.bad)
+        return
     if r.b["factory"]:
         gui.text((x, y + 6), "공장 연료", 12, t.muted)
         opts = ["auto", "coal", "oil", "elec"]
@@ -396,7 +422,8 @@ def draw_action_tab(app, body):
     opts = g.options(pid, rid)
     groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
               ("생산 건물", [o for o in opts if o["kind"] == "build" and o["key"] in C.PROD_BUILDINGS]),
-              ("유닛 생산", [o for o in opts if o["kind"] == "unit"]),
+              (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 (6턴부터 징집 피로)",
+               [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
               ("특수", [o for o in opts if o["kind"] in ("landmark", "capital")])]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
@@ -669,11 +696,17 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "GDP", f"{last.get('gdp', 0):,.0f} /턴")
     y = kv(gui, x, y, w, "국력", f"{g.power.get(pid, 0):.2f}" + (" (패권)" if g.hegemon == pid else ""))
     y = kv(gui, x, y, w, "지역 / 인구", f"{len(regs)}곳 / {g.total_pop(pid):,.0f}만")
-    y = kv(gui, x, y, w, "평균 행복도", f"{g.avg_happiness(pid):+.1f}")
-    ww = getattr(f, "war_weary", 0.0)
-    if ww > 0:
-        rec = "전쟁 중 회복 없음" if D.enemies(g, pid) else f"턴당 {C.WAR_WEARY_RECOVERY} 회복"
-        y = kv(gui, x, y, w, "전쟁 피로", f"−{ww:.1f} ({rec})", t.bad)
+    y = kv(gui, x, y, w, "평균 행복도", f"{g.avg_happiness(pid, effective=False):+.1f} "
+                                        f"(실질 {g.avg_happiness(pid):+.1f})")
+    ww = f.war_weary
+    if D.enemies(g, pid):
+        rec = f"전쟁 중 턴당 +{D.war_weary_rate(g, pid):.1f}"
+    else:
+        rec = f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복" if ww > 0 else "평시"
+    y = kv(gui, x, y, w, "전쟁 피로도", f"{ww:.1f} / {C.WAR_WEARY_MAX:.0f} ({rec})", t.bad if ww >= 1 else None)
+    morale = g.morale(pid)
+    if morale < 1:
+        y = kv(gui, x, y, w, "군 사기", f"전투력 ×{morale:.2f} (실질 평균 행복도 −10 이하)", t.bad)
     y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
     lm = [app.world.regions[r.id].do8 for r in regs if r.landmark]
     y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")

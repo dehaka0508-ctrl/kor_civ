@@ -52,6 +52,23 @@ def unhappy_output_mult(h: float) -> float:
     return 1 - C.UNHAPPY_OUTPUT_MAX * x ** C.UNHAPPY_OUTPUT_EXP
 
 
+def unhappy_combat_mult(h: float) -> float:
+    """사기: 실질 평균 행복도가 −10 이하이면 산출 감소와 같은 곡선으로 전투력 감소."""
+    if h > C.MORALE_H:
+        return 1.0
+    return unhappy_output_mult(h)
+
+
+def conscript_penalty(n: int) -> float:
+    """최근 10턴 중 군 생산에 쓴 턴 수 -> 행복도 감소량(6턴 1, 7턴 2, 8턴 4, 9턴 6, 10턴 10)."""
+    return C.CONSCRIPT_PENALTY.get(min(n, C.CONSCRIPT_WINDOW), 0.0)
+
+
+def landmark_cost_mult(n_landmarks: int) -> float:
+    """이미 가진(또는 짓는 중인) 랜드마크 수 -> 다음 랜드마크 비용 배수 1.3^n."""
+    return C.LANDMARK_COST_GROWTH ** max(0, n_landmarks)
+
+
 def def_building_turns(level: int) -> int:
     return C.DEF_TURNS[level - 1]
 
@@ -144,6 +161,21 @@ def battle_damage(a: float, d: float, r: float) -> tuple[float, float]:
 
 def surprise_chance(line_level: int, bonus: float = 0.0) -> float:
     return max(0.0, min(1.0, C.SURPRISE_BASE - C.SURPRISE_PER_LINE * line_level + bonus))
+
+
+def surprise_mults(line_level: int) -> tuple[tuple[float, float], tuple[float, float]]:
+    """기습 (성공 시 (공격 피해, 반격), 실패 시 (공격 피해, 반격)). 방어선이 높을수록 실패 벌칙이 커진다."""
+    k = C.SURPRISE_FAIL_PER_LINE * max(0, line_level)
+    return C.SURPRISE_WIN, (max(0.1, C.SURPRISE_FAIL[0] - k), C.SURPRISE_FAIL[1] + k)
+
+
+def bomb_building_chance(guns: bool, air: bool) -> float:
+    """폭격으로 건물 1단계를 부술 확률: 포병·함포 30%, 폭격기 60%, 둘 다 90%."""
+    if guns and air:
+        return C.BOMB_HIT_BOTH
+    if air:
+        return C.BOMB_HIT_AIR
+    return C.BOMB_HIT_GUN if guns else 0.0
 
 
 def date_of_turn(turn: int) -> tuple[int, int, int]:

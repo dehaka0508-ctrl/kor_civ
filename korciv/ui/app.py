@@ -358,7 +358,7 @@ class App:
         if m == "happy":
             if owner == NEUTRAL:
                 return t.neutral
-            h = r.happy
+            h = g.eff_happy(r)                     # 실질 행복도(전쟁 피로·저항 반영)
             return mix(t.happy_mid, t.happy_pos, h / 100) if h >= 0 else mix(t.happy_mid, t.happy_neg, -h / 100)
         if m == "pop":
             x = min(1.0, math.log10(max(1.0, r.pop)) / 2.1)
@@ -886,7 +886,8 @@ class App:
     def snapshot(self):
         f = self.game.player
         return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "oil": f.res["oil"],
-                "coal": f.res["coal"], "elec": f.res["elec"], "happy": round(self.game.avg_happiness(f.id))}
+                "coal": f.res["coal"], "elec": f.res["elec"], "happy": round(self.game.avg_happiness(f.id)),
+                "weary": round(f.war_weary)}
 
     def end_turn(self):
         g = self.game
@@ -946,7 +947,14 @@ class App:
         last = f.last
         items = [
             ("happy", "행복도", f"{snap['happy']:+d}", None,
-             f"평균 행복도 {g.avg_happiness(f.id):+.1f}\n세율 효과 {0.1*(10-f.tax*100):+.1f}/턴"),
+             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f}\n(전쟁 피로·징집 피로·점령 저항 반영 전 "
+             f"{g.avg_happiness(f.id, effective=False):+.1f})\n세율 효과 {0.1*(10-f.tax*100):+.1f}/턴"),
+            ("weary", "전쟁 피로", f"{snap['weary']:d}", self.theme.bad if f.war_weary >= 1 else None,
+             f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
+             + (f"전쟁 중 턴당 +{D.war_weary_rate(g, f.id):.1f}" if D.enemies(g, f.id)
+                else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
+             + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:.0f}, "
+             f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']}"),
             ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소·자체 발전으로 생산, 공장 연료(φ 1.25)"),
             ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전·액화"),
             ("oil", "석유", f"{snap['oil']:.0f}", None, "석유: 정유 생산, 공장 연료·군 생산"),

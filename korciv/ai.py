@@ -16,7 +16,7 @@ from .state import NEUTRAL
 # ------------------------------------------------------------------ 대전략
 def choose_victory_goal(g, f):
     """1년에 한 번: 국내 상황·주변 정세로 추구할 승리 조건을 고른다(플레이어에게 보이지 않음)."""
-    vt = [v for v in ("conquest", "economic", "peace", "landmark") if v in g.settings.victories]
+    vt = [v for v in ("conquest", "economic", "landmark") if v in g.settings.victories]
     if not vt:
         return None
     alive = g.alive_ids()
@@ -32,12 +32,14 @@ def choose_victory_goal(g, f):
     allies = sum(1 for o in alive if o != f.id and D.allied(g, f.id, o))
     wars = len(D.enemies(g, f.id))
     lm_do = len({g.info(r.id).do8 for r in regs if r.landmark})
+    lm_cost = C.LANDMARK_COST_PER_TURN * g.landmark_cost_mult(f.id)
     score = {
-        "conquest": 0.1 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb),
+        # 전쟁 피로가 쌓였으면 정복을 덜 노린다
+        "conquest": 0.1 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb)
+                    - 0.004 * f.war_weary - 0.05 * wars * (allies == 0),
         "economic": 0.45 + 0.35 * min(2.5, gdp_rel),
-        "peace": 0.2 + 0.05 * (10 - aggr) + 0.2 * min(3, allies)
-                 + (0.4 if D.coalition_of(g, f.id) is not None else 0) - 0.3 * wars,
-        "landmark": 0.1 + 0.03 * (10 - aggr) + 0.15 * lm_do + (0.3 if f.money > 3 * C.LANDMARK_COST_PER_TURN else 0),
+        # 랜드마크는 지을수록 비싸진다(×1.3): 다음 랜드마크를 감당할 재정이 있어야 노린다
+        "landmark": 0.1 + 0.03 * (10 - aggr) + 0.15 * lm_do + (0.3 if f.money > 3 * lm_cost else 0),
     }
     return max(vt, key=lambda v: score[v] + g.rng.uniform(0, 0.25))
 
@@ -57,9 +59,6 @@ def set_strategy(g, f):
     elif goal == "economic":
         w["economy"] += k
         w["expansion"] += k / 2
-    elif goal == "peace":
-        w["defense"] += k / 2
-        w["economy"] += k / 2
     elif goal == "landmark":
         w["economy"] += k
     if D.enemies(g, f.id):
@@ -150,8 +149,11 @@ def _tax(g, f):
     regs = g.regions_of(f.id)
     if not regs:
         return
-    avg = g.avg_happiness(f.id)
-    worst = min(r.happy for r in regs)
+    # 실질 행복도(전쟁 피로·징집 피로 반영). 점령 직후 지역(저항·회복, 36턴 반란 없음)은 세율로 달라지지 않으니 뺀다
+    calm = [r for r in regs if not g.resist_phase(r)[0]] or regs
+    hs = [g.eff_happy(r) for r in calm]
+    avg = sum(hs) / len(hs)
+    worst = min(hs)
     last = f.last
     net = last.get("net", 0.0)
     spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "landmark")
@@ -159,7 +161,8 @@ def _tax(g, f):
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
     hi = min(g.tax_max(f.id), hi, 0.20)
-    lo = 0.05
+    # 비축이 아주 넉넉한데 실질 행복도가 낮으면(전쟁 피로 등) 세율을 0%까지 내려 민심을 산다
+    lo = 0.0 if f.money > reserve * 20 and avg < 0 else 0.05
     t = f.tax
     if worst < -45 or avg < -20:
         t -= 0.02                                   # 반란 위험
@@ -195,11 +198,8 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
         thr += min(C.AI_WAR_OP_TEMPT_MAX, aggr * math.log2(ratio))
     if not can_expand and aggr >= 4:
         thr += C.AI_WAR_OP_NEED
-    goal = f.ai.get("victory_goal")
-    if goal == "conquest":
+    if f.ai.get("victory_goal") == "conquest":
         thr += 5
-    elif goal == "peace":
-        thr -= 10
     return thr
 
 
@@ -281,10 +281,11 @@ def war_assessment(g, fid, e):
     info = D.war_info(g, fid, e) or {"turns": 0, "declarer": None, "lost": 0, "gained": 0, "lost_frac": 0.0,
                                      "score": 0.0}
     alive = g.alive_ids()
-    my = g.mil_power(fid) + 0.5 * sum(g.mil_power(x) for x in alive
-                                      if x not in (fid, e) and D.at_war(g, x, e) and D.allied(g, x, fid))
-    their = perceived_power(g, fid, e) + 0.5 * sum(perceived_power(g, fid, x) for x in alive
-                                                   if x not in (fid, e) and D.at_war(g, x, fid) and D.allied(g, x, e))
+    # 사기(실질 평균 행복도 −10 이하면 전투력 감소)까지 반영한 전력
+    my = g.mil_power(fid) * g.morale(fid) + 0.5 * sum(
+        g.mil_power(x) * g.morale(x) for x in alive if x not in (fid, e) and D.at_war(g, x, e) and D.allied(g, x, fid))
+    their = perceived_power(g, fid, e) * g.morale(e) + 0.5 * sum(
+        perceived_power(g, fid, x) for x in alive if x not in (fid, e) and D.at_war(g, x, fid) and D.allied(g, x, e))
     ratio = my / max(10.0, their)
     fr = front_analysis(g, fid, e)
     aggr = eff_aggression(g, f)
@@ -304,6 +305,13 @@ def war_assessment(g, fid, e):
         d += 0.015 * -avg_h
         if avg_h < -15:
             pro.append("민심 악화")
+    if f.war_weary > 20:
+        d += 0.006 * (f.war_weary - 20)        # 전쟁 피로도는 평화가 와야 줄어든다
+        if f.war_weary > 50:
+            pro.append(f"전쟁 피로 {f.war_weary:.0f}")
+    if avg_h < -40:
+        d += 0.4                               # 반란이 코앞
+        pro.append("반란 위기")
     if f.money < 0:
         d += 0.4
         pro.append("재정 적자")
@@ -384,10 +392,18 @@ def _consider_war(g, f):
     if g.turn <= C.AI_WAR_GRACE_TURNS or len(my_enemies) >= C.AI_MAX_WARS:
         return
     regs = g.regions_of(fid)
-    if not regs or f.money < 0 or g.avg_happiness(fid) < -20:
+    avg_h = g.avg_happiness(fid)              # 실질 행복도(전쟁 피로 반영)
+    if not regs or f.money < 0 or avg_h < -20 or f.war_weary > 45:
         return
     alive = g.alive_ids()
     aggr = eff_aggression(g, f)
+    # 선포하면 전쟁 피로 +20, 전쟁 중 턴당 +1: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
+    start_w = C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
+    already = D.war_weary_rate(g, fid) >= C.WAR_WEARY_TURN["aggressor"]     # 이미 선포국으로 턴당 +1 중
+    proj_h = avg_h - start_w - (0 if already else 20 * C.WAR_WEARY_TURN["aggressor"])
+    # 전쟁광 평판: 다른 세력 우호도가 깎인다(1년 안에 잇따라 선포하면 더). 조약·우호 관계가 많을수록 아깝다
+    rep_pen = -D.warmonger_penalty(g, fid)
+    ties = sum(1 for x in alive if x != fid and (D.is_friend(g, fid, x) or D.has_nonaggr(g, fid, x)))
     w = g.world
     neighbors = set()
     can_expand = False
@@ -399,13 +415,13 @@ def _consider_war(g, f):
             elif o != fid:
                 neighbors.add(o)
     by_loc = _armies_by_loc(g)
-    my_total = g.mil_power(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
+    my_total = g.mil_power(fid) * g.morale(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
     best, best_s, best_goals = None, 1.0, []
     for o in sorted(neighbors):
         if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o) or D.peace_left(g, fid, o) > 0:
             continue
-        their = perceived_power(g, fid, o) + sum(perceived_power(g, fid, x) for x in alive
-                                                 if x not in (fid, o) and D.allied(g, x, o))
+        their = perceived_power(g, fid, o) * g.morale(o) + sum(perceived_power(g, fid, x) for x in alive
+                                                               if x not in (fid, o) and D.allied(g, x, o))
         their /= 1 + 0.5 * len(D.enemies(g, o))       # 상대도 다른 전쟁에 병력이 묶여 있다
         mine = my_total
         cid = D.coalition_of(g, fid)
@@ -426,15 +442,19 @@ def _consider_war(g, f):
         fr = front_analysis(g, fid, o, by_loc)
         if not fr["targets"] and ratio < need + 0.5:
             continue                      # 뚫을 곳이 보이지 않는다
-        prize = sum(g.region_value(n)[0] for n in fr["targets"]) + 0.3 * sum(
-            g.region_value(n)[0] for n in fr["border"] if n not in fr["targets"])
+        # 빼앗은 땅은 6턴 저항(산출 없음) 뒤 24턴에 걸쳐 회복하므로 값어치를 깎아 본다
+        prize = 0.75 * (sum(g.region_value(n)[0] for n in fr["targets"]) + 0.3 * sum(
+            g.region_value(n)[0] for n in fr["border"] if n not in fr["targets"]))
         s = (aggr / 10) * min(2.5, ratio) * (0.5 + min(1.5, prize / 15))
         s += (thr - op) / 40                               # 문턱보다 얼마나 더 미운가
         if not can_expand:
             s += 0.3                                        # 평화적으로 넓힐 땅이 없다
         s -= 0.5 * len(my_enemies)
-        if g.avg_happiness(fid) < 0:
+        if avg_h < 0:
             s -= 0.3
+        if proj_h < -15:
+            s -= min(1.2, (-15 - proj_h) / 40)              # 전쟁 피로로 민심이 무너질 전망
+        s -= (rep_pen - 10) / 25 + 0.03 * ties * rep_pen / 10   # 전쟁광 평판
         if g.hegemon == o:
             s += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
         if s > best_s:
@@ -532,6 +552,12 @@ def _army_orders(g, f, threat):
         # 점령 중이면 자리를 지킨다
         if rr.occ and rr.occ["by"] == fid:
             continue
+        # 저항 중인 점령지: 옛 주인이 맞닿아 있고 아직 전쟁 중이면 작은 부대는 남아 지킨다(비우면 바로 탈환된다)
+        if rr.owner == fid and g.resisting(rr) and a.count() <= 3:
+            old = rr.resist.get("from")
+            if old is not None and D.at_war(g, fid, old) and any(
+                    g.regions[n].owner == old for n in w.land_adj[a.loc]):
+                continue
         reach = g.reachable(a)
         best, best_u, best_mode = None, 0.0, "assault"
         for node, opt in reach.items():
@@ -556,8 +582,12 @@ def _army_orders(g, f, threat):
                 kill = dd >= pv["def_hp"] * 0.95
                 enemy_val = dd * 35
                 own_val = ad * 35
-                cap_val = g.region_output_estimate(node) * tax * 24 if kill else 0
+                # 적 지역은 빼앗아도 6턴 저항·24턴 회복이라 이득이 늦다(중립 지역은 바로)
+                horizon = 24 if tgt.owner == NEUTRAL else 14
+                cap_val = g.region_output_estimate(node) * tax * horizon if kill else 0
                 u = enemy_val - own_val + cap_val
+                if mode == "assault" and pv["line"] > 0 and dd > ad:
+                    u += C.ASSAULT_LINE_BREAK * 400 * pv["line"]   # 방어선을 무너뜨릴 수 있다
                 if tgt.owner == NEUTRAL and not kill:
                     u = -1
                 if u > best_u:
@@ -573,13 +603,15 @@ def _army_orders(g, f, threat):
                 break
         if a.order:
             continue
-        # 포병 폭격
+        # 포병 폭격: 적 병력을 우선, 없으면 건물이 많은 적 지역(30% 확률로 생산·방어 건물 −1단계)
         if a.units.get("art") and at_war:
             tgts = [n for n, o in reach.items() if o["action"] in ("bombard", "attack")
-                    and g.regions[n].owner != NEUTRAL and g.hostile_units_at(fid, n)]
+                    and g.regions[n].owner != NEUTRAL and g.hostile(fid, g.regions[n].owner)]
             if tgts:
-                g.order_army(a.id, tgts[0], force_bombard=True)
-                continue
+                tgts.sort(key=lambda n: (-bool(g.hostile_units_at(fid, n)), -_building_levels(g, n)))
+                if g.hostile_units_at(fid, tgts[0]) or _building_levels(g, tgts[0]) > 0:
+                    g.order_army(a.id, tgts[0], force_bombard=True)
+                    continue
         # 전선으로 이동: 1개짜리 수비대는 전쟁 중 후방일 때만 움직인다
         if a.count() <= 1 and (not at_war or a.loc in front):
             continue
@@ -597,11 +629,17 @@ def _army_orders(g, f, threat):
         if a.owner != fid or a.domain() != "air" or not at_war:
             continue
         reach = g.reachable(a)
-        tg = [(visible_hostile_power(g, fid, n), n) for n, o in reach.items() if o["action"] == "bombard"
-              and g.regions[n].owner != NEUTRAL]
+        tg = [(visible_hostile_power(g, fid, n) + 2 * _building_levels(g, n), n) for n, o in reach.items()
+              if o["action"] == "bombard" and g.regions[n].owner != NEUTRAL]
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def _building_levels(g, rid):
+    """폭격으로 부술 수 있는 건물 단계 합(생산·방어 건물·방어선)."""
+    rr = g.regions[rid]
+    return sum(rr.b.get(k, 0) for k in list(C.PROD_BUILDINGS) + ["shelter", "aa"]) + sum(rr.lines.values())
 
 
 def _nearest_front(g, fid, start, front, threat):
@@ -671,7 +709,7 @@ def _slots(g, f, threat, military=True):
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     at_war = bool(D.enemies(g, fid))
-    idle = [r for r in regs if not r.project and not r.occ and (f.is_ai or not r.focus)]
+    idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not r.focus)]
     cands = []
     # 군 생산 수요
     mil_units = sum(a.count() for a in g.armies.values() if a.owner == fid)
@@ -766,7 +804,10 @@ def _slots(g, f, threat, military=True):
         cands.append((50 + hostility, r.id, "build", key, border, cost / C.DEF_TURNS[lv]))
     # 군 생산 후보: 위협 높은 곳 우선
     if mil_need > 0 and military:
-        order = sorted(idle, key=lambda r: -threat.get(r.id, 0) - (0.2 if r.id == f.capital else 0))
+        # 징집 피로: 최근 10턴 중 5턴 이상 징집한 지역은 위급할 때(위협 1 이상)만 더 뽑는다
+        pool = [r for r in idle if g.drafted_turns(r.id) < C.CONSCRIPT_WINDOW // 2 or threat.get(r.id, 0) >= 1.0]
+        order = sorted(pool, key=lambda r: -threat.get(r.id, 0) - (0.2 if r.id == f.capital else 0)
+                       + 0.05 * g.drafted_turns(r.id))
         for r in order[:mil_need]:
             key = "inf"
             if f.res.get("oil", 0) >= 2 and f.money > 8000 and g.rng.random() < 0.35:
@@ -779,8 +820,11 @@ def _slots(g, f, threat, military=True):
     # 랜드마크
     lm_goal = f.ai.get("victory_goal") == "landmark"
     lm_money, lm_income = (2.5, 0.4) if lm_goal else (4, 0.6)      # 랜드마크 목표면 조건을 조금 낮춘다
-    if f.is_ai and f.money > C.LANDMARK_COST_PER_TURN * lm_money and \
-            income - upkeep > C.LANDMARK_COST_PER_TURN * lm_income:
+    lm_cost = C.LANDMARK_COST_PER_TURN * g.landmark_cost_mult(fid)   # 하나 지을 때마다 ×1.3
+    lm_total = lm_cost * g.mods(fid).value("landmark_turns", C.LANDMARK_TURNS)
+    # 수입으로 감당하거나, 모아 둔 돈으로 전액을 치를 수 있으면 짓는다
+    if f.is_ai and ((f.money > lm_cost * lm_money and income - upkeep > lm_cost * lm_income)
+                    or f.money > lm_total * (1.2 if lm_goal else 1.6)):
         building = any(r.project and r.project.kind == "landmark" for r in regs)
         if not building:
             owned_do = {g.info(r.id).do8 for r in regs if r.landmark}

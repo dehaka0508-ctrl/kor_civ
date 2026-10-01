@@ -5,6 +5,7 @@ import pytest
 
 from korciv import config as C
 from korciv import diplomacy as D
+from korciv import rules as R
 from korciv.game import Game
 from korciv.state import NEUTRAL, Settings
 
@@ -84,7 +85,8 @@ def test_war_and_peace():
     ok, _ = D.declare_war(g, 0, 1)
     assert ok and D.at_war(g, 0, 1)
     assert D.opinion(g, 1, 0) <= -99
-    assert g.player.war_weary >= 10              # 선전포고 행복도 −10은 전쟁 피로로 쌓인다
+    assert g.player.war_weary == pytest.approx(20)        # 선포한 쪽 전쟁 피로 +20
+    assert g.factions[1].war_weary == pytest.approx(10)   # 당한 쪽 +10
     D.make_peace(g, 0, 1)
     assert not D.at_war(g, 0, 1)
     assert D.has_nonaggr(g, 0, 1)
@@ -439,6 +441,10 @@ def test_ai_war_needs_opinion_below_aggression_threshold():
     assert not D.at_war(g, 0, 1)
     g.dip.op[(1, 0)] = -95.0          # 참다참다 못해
     AI._consider_war(g, f)
+    assert not D.at_war(g, 0, 1)      # 하지만 민심(실질 행복도 0)이 전쟁 피로를 견디지 못할 전망이면 참는다
+    for r in g.regions_of(1):
+        r.happy = 40.0                # 민심에 여유가 있으면
+    AI._consider_war(g, f)
     assert D.at_war(g, 0, 1)
 
     g, AI, _ = _border_setup(aggr=9, gov="fascist")
@@ -548,23 +554,178 @@ def test_food_bought_before_projects():
     assert g.regions["S002"].project.stalled
 
 
-def test_war_weariness_recovers_slowly_after_peace():
+def test_war_weariness_separate_from_happiness():
     g = new_game(n_enemies=2)
     cap = g.regions[g.player.capital]
     cap.happy = 0.0
+    g.player.tax = 0.10
     D.declare_war(g, 0, 1)
     g._phase_happiness()
-    assert cap.happy == pytest.approx(-10, abs=0.2)
-    for _ in range(10):                 # 전쟁 중에는 회복되지 않는다(감쇠 없음)
+    assert cap.happy == pytest.approx(0, abs=0.01)         # 전쟁이 행복도를 직접 깎지 않는다
+    assert g.player.war_weary == pytest.approx(21)         # 선포 +20, 전쟁 중 턴당 +1
+    assert g.factions[1].war_weary == pytest.approx(10.5)  # 당한 쪽 +10, 턴당 +0.5
+    assert g.eff_happy(cap) == pytest.approx(-21)          # 실질 행복도 = 행복도 − 전쟁 피로도
+    assert g.avg_happiness(0) == pytest.approx(-21) and g.avg_happiness(0, effective=False) == pytest.approx(0)
+    for _ in range(300):
         g._phase_happiness()
-    assert cap.happy <= -10
+    assert g.player.war_weary == C.WAR_WEARY_MAX
     D.make_peace(g, 0, 1)
-    ww = g.player.war_weary
     g._phase_happiness()
-    assert g.player.war_weary == pytest.approx(ww - C.WAR_WEARY_RECOVERY)
-    for _ in range(40):
-        g._phase_happiness()
-    assert g.player.war_weary == 0 and cap.happy > -1
+    assert g.player.war_weary == pytest.approx(C.WAR_WEARY_MAX - 1)   # 평시 턴당 1 회복
+
+
+def test_warmonger_reputation():
+    g = new_game(n_enemies=3)
+    before = {c: D.opinion(g, c, 0) for c in (2, 3)}
+    D.declare_war(g, 0, 1)
+    for c in (2, 3):
+        assert D.opinion(g, c, 0) == pytest.approx(before[c] - 10)
+    D.make_peace(g, 0, 1)
+    g.turn += 30                                   # 직전 전쟁이 끝난 지 1년이 안 됐다
+    before = D.opinion(g, 3, 0)
+    D.declare_war(g, 0, 2)
+    assert D.opinion(g, 3, 0) == pytest.approx(before - 15)
+    assert D.warmonger_penalty(g, 0) == -20        # 또 선포하면 −20
+    D.make_peace(g, 0, 2)
+    g.turn += C.WARMONGER_WINDOW + 1
+    assert D.warmonger_penalty(g, 0) == -10        # 1년이 지나면 처음처럼
+
+
+def test_allied_defense_counts_as_defender_weariness():
+    g = new_game(n_enemies=3)
+    for f in g.factions:
+        f.gov = "philosopher"
+    g._mods.clear()
+    g.dip.nonaggr[D.pair(1, 2)] = g.turn + 24
+    g.dip.alliance[D.pair(1, 2)] = g.turn
+    D.declare_war(g, 0, 1)
+    assert D.at_war(g, 2, 0)
+    assert g.factions[2].war_weary == pytest.approx(10)       # 방어 동맹 참전은 당한 쪽 기준
+    assert D.war_weary_rate(g, 2) == pytest.approx(0.5)
+    assert D.war_weary_rate(g, 0) == pytest.approx(1.0)
+    assert g.player.war_weary == pytest.approx(30)            # 선포 20 + 동맹 참전 상대 10
+
+
+def _captured(g, rid, by=0, frm=1):
+    _own(g, frm, [rid])
+    g.regions[rid].happy = 30.0
+    for a in list(g.armies_at(rid)):
+        g.remove_army(a)
+    D.declare_war(g, by, frm)
+    g.new_army(by, rid, {"inf": 3})
+    g.complete_occupation(by, rid)
+    return g.regions[rid]
+
+
+def test_captured_region_resists_then_recovers():
+    g = new_game(player_start="S002", n_enemies=1)
+    rid = sorted(g.world.land_adj["S002"])[0]
+    rr = _captured(g, rid)
+    g.player.war_weary = 0.0
+    assert rr.owner == 0 and g.resisting(rr)
+    assert g.eff_happy(rr) == C.RESIST_HAPPY
+    assert g.rebellion_chance(0, rid) == 0
+    ok, why = g.start_project(0, rid, "unit", "inf")
+    assert not ok and "저항" in why
+    g._phase_resources(g.player)
+    assert rr.output == 0 and rr.food == 0
+    assert g.retake_bonus(1, rid) and not g.retake_bonus(0, rid)
+    A0, _, _ = g.combat_strength(1, [g.new_army(1, sorted(g.world.land_adj[rid])[0], {"inf": 5})], rid)
+    g.regions[rid].resist = None
+    A1, _, _ = g.combat_strength(1, [g.new_army(1, sorted(g.world.land_adj[rid])[0], {"inf": 5})], rid)
+    assert A0 == pytest.approx(A1 * 1.2)
+    g2 = new_game(player_start="S002", n_enemies=1)
+    rr = _captured(g2, rid)
+    g2.player.war_weary = 0.0
+    g2.turn += C.RESIST_TURNS                       # 회복 시작: −100에서 점령 직전 행복도(30)로
+    h1 = g2.eff_happy(rr)
+    assert -100 < h1 < 30 and not g2.resisting(rr)
+    g2.turn += C.RESIST_RECOVER_TURNS // 2
+    assert h1 < g2.eff_happy(rr) < 30
+    g2.turn = rr.resist["turn"] + C.RESIST_TURNS + C.RESIST_RECOVER_TURNS
+    assert g2.eff_happy(rr) == pytest.approx(rr.happy)
+    assert g2.rebellion_chance(0, rid) == 0          # 36턴 동안 반란 없음
+    g2.turn = rr.resist["turn"] + C.RESIST_NO_REBEL_TURNS
+    assert g2.resist_phase(rr)[0] is None
+
+
+def test_unhappy_army_fights_worse():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    a = g.new_army(0, "S002", {"inf": 5})
+    A0, _, _ = g.combat_strength(0, [a], tgt)
+    g.player.war_weary = 60.0                     # 실질 평균 행복도 −60
+    g._morale = {}
+    A1, _, _ = g.combat_strength(0, [a], tgt)
+    assert A1 == pytest.approx(A0 * R.unhappy_output_mult(-60 + g.avg_happiness(0, effective=False)), rel=1e-3)
+    assert A1 < A0
+
+
+def test_conscription_fatigue():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    for _ in range(6):
+        g._phase_conscription({"S002"})
+    assert r.conscript == 1
+    for _ in range(4):
+        g._phase_conscription({"S002"})
+    assert r.conscript == 10                        # 10턴 내내 징집
+    base = g.eff_happy(r)
+    for _ in range(6):                              # 10 → 4턴: 아직 회복 없음
+        g._phase_conscription(set())
+    assert r.conscript == 10
+    g._phase_conscription(set())                    # 3턴 이하: 빠르게 회복
+    assert r.conscript == pytest.approx(10 - C.CONSCRIPT_RECOVERY)
+    assert g.eff_happy(r) > base
+
+
+def test_landmark_cost_grows():
+    g = new_game(player_start="S002", n_enemies=1)
+    opt = next(o for o in g.options(0, "S002") if o["kind"] == "landmark")
+    base = opt["per_turn"]
+    assert base == pytest.approx(C.LANDMARK_COST_PER_TURN)
+    others = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:7]
+    _own(g, 0, others)
+    for rid in others:
+        g.regions[rid].landmark = True
+    opt = next(o for o in g.options(0, "S002") if o["kind"] == "landmark")
+    assert opt["per_turn"] == pytest.approx(base * 1.3 ** 7)   # 8번째 랜드마크 ≈ 6.3배
+
+
+def test_no_peace_victory():
+    assert "peace" not in C.VICTORY_TYPES and "peace" not in Settings().victories
+
+
+def test_bombard_breaks_buildings():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    D.declare_war(g, 0, 1)
+    rr = g.regions[tgt]
+    rr.b.update(farm=0, fishery=0, factory=2, bank=0, specialty=0, shelter=0, aa=0, port=1)
+    rr.lines = {}
+    a = g.new_army(0, "S002", {"art": 2})
+    g.rng.random = lambda: 0.29                    # 포병 30% 판정 통과
+    g._bombard(a, tgt, {"art": 2})
+    assert rr.b["factory"] == 1 and rr.b["port"] == 1   # 생산·방어 건물만
+    g.rng.random = lambda: 0.31
+    g._bombard(a, tgt, {"art": 2})
+    assert rr.b["factory"] == 1
+
+
+def test_assault_can_break_line():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.new_army(1, tgt, {"inf": 2})
+    g.regions[tgt].lines = {"S002": 2}
+    D.declare_war(g, 0, 1)
+    att = g.new_army(0, "S002", {"inf": 20})
+    g.rng.random = lambda: 0.1                      # 25% 판정 통과
+    g._ground_battle(0, [att], tgt, "assault", [att])
+    assert g.regions[tgt].lines["S002"] == 1
 
 
 def test_unhappy_region_output_penalty():
