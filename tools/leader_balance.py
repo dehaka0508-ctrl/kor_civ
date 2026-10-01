@@ -41,6 +41,10 @@ def run_game(job):
     from korciv import rules as R
     from korciv.state import Settings
     G.ai_pick_government = lambda *a, **k: "philosopher"      # 반란 세력 포함 전원 철인통치
+    from korciv import ai as A
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import leader_tracking as LT
+    tracker = LT.install(G, D, A)
     wars = {}
     orig_declare = D.declare_war
 
@@ -53,6 +57,7 @@ def run_game(job):
     g = G.Game(Settings(n_enemies=FACTIONS_PER_GAME - 1, seed=seed, all_ai=True,
                         player_leader=lineup[0], ai_leaders=list(lineup[1:])))
     assert all(f.gov == "philosopher" for f in g.factions)
+    tracker.g = g
     starts = {}
     for f in g.factions:
         info = g.world.regions[f.capital]
@@ -63,6 +68,7 @@ def run_game(job):
     peak = {f.id: 1 for f in g.factions}
     for _ in range(turns):
         g.end_turn()
+        LT.after_turn(tracker, g)
         for f in g.factions[:FACTIONS_PER_GAME]:
             peak[f.id] = max(peak[f.id], g.region_count(f.id))
         if g.turn == 121:
@@ -85,6 +91,8 @@ def run_game(job):
             "gdp_share": g.gdp(f.id) / total_gdp, "mid_share": mid.get(f.id),
             "win": win, "first": first, "wars_declared": wars.get(f.id, 0), "rebel_states": rebels,
             "eliminated": f.eliminated_turn, "happy": g.avg_happiness(f.id) if f.alive else None,
+            "victory_type": g.winner[1] if f.id in winners else None,
+            **LT.summary(tracker, f.id),
         })
     return {"seed": seed, "turns": g.turn, "victory": g.winner[1] if g.winner else None,
             "secs": round(time.time() - t0, 1), "factions": rows}
