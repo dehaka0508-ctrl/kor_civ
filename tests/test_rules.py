@@ -108,8 +108,8 @@ def test_unhappy_output_curve():
 def test_new_curves():
     assert R.unhappy_combat_mult(-9) == 1.0
     assert R.unhappy_combat_mult(-50) == pytest.approx(R.unhappy_output_mult(-50))
-    assert [R.conscript_penalty(n) for n in range(4, 11)] == [0, 0, 1, 2, 4, 6, 10]
-    assert R.landmark_cost_mult(7) == pytest.approx(1.3 ** 7)
+    assert [R.conscript_penalty(n) for n in range(4, 11)] == [0, 0, 0, 1, 2, 4, 8]
+    assert R.landmark_cost_mult(7) == pytest.approx(1.2 ** 7)
     assert R.bomb_building_chance(True, False) == pytest.approx(0.3)
     assert R.bomb_building_chance(False, True) == pytest.approx(0.6)
     assert R.bomb_building_chance(True, True) == pytest.approx(0.9)

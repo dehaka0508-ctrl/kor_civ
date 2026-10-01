@@ -157,8 +157,8 @@ def draw_region_info(app, rect):
             parts.append(f"전쟁 피로 −{ww:.1f}")
         if r.conscript > 0:
             parts.append(f"징집 피로 −{r.conscript:.0f} (최근 10턴 중 {g.drafted_turns(node)}턴 징집)")
-        elif owner == pid and g.drafted_turns(node) >= 4:
-            parts.append(f"최근 10턴 중 {g.drafted_turns(node)}턴 징집(6턴부터 징집 피로)")
+        elif owner == pid and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
+            parts.append(f"최근 10턴 중 {g.drafted_turns(node)}턴 징집({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)")
         y = gui.wrap((x, y - 2), " · ".join(parts), w, 11, t.muted) + 2
         phase, k = g.resist_phase(r)
         if phase:
@@ -422,7 +422,7 @@ def draw_action_tab(app, body):
     opts = g.options(pid, rid)
     groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
               ("생산 건물", [o for o in opts if o["kind"] == "build" and o["key"] in C.PROD_BUILDINGS]),
-              (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 (6턴부터 징집 피로)",
+              (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 ({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
               ("특수", [o for o in opts if o["kind"] in ("landmark", "capital")])]

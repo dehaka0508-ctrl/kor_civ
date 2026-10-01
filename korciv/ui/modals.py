@@ -7,7 +7,7 @@ import pygame
 
 from .. import config as C
 from .. import diplomacy as D
-from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY
+from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES
 from ..state import NEUTRAL, Settings
 from .theme import hex2rgb, measure, mix
 
@@ -57,14 +57,23 @@ def draw_setup(app):
     y += 70
     gui.text((x, y), "내 지도자", 13, t.muted, "semibold")
     y += 24
+    # 분류 탭(4개) + 직접 입력
+    cats = [c[1] for c in LEADER_CATEGORIES]
+    cur_cat = getattr(s, "leader_cat", None)
+    if cur_cat is None:
+        cur_cat = next((i for i, c in enumerate(LEADER_CATEGORIES) if s.leader in c[2]), 0)
+    s.leader_cat = gui.segmented((x, y, 618, 32), cats, cur_cat, size=11)
+    y += 40
+    shown = [LEADER_BY_KEY[k] for k in LEADER_CATEGORIES[s.leader_cat][2]] + [LEADER_BY_KEY["custom"]]
     cols, bw, bh = 4, 150, 34
-    for i, l in enumerate(LEADERS):
+    for i, l in enumerate(shown):
         cx = x + (i % cols) * (bw + 6)
         cy = y + (i // cols) * (bh + 6)
         tip = f"{l['name']} (호전성 {l['aggr']})\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
-        if gui.button((cx, cy, bw, bh), l["name"], selected=s.leader == l["key"], size=13, tooltip=tip):
+        if gui.button((cx, cy, bw, bh), l["name"], selected=s.leader == l["key"], size=13 if len(l["name"]) <= 7 else 11,
+                      tooltip=tip):
             s.leader = l["key"]
-    y += 6 * (bh + 6) + 8
+    y += 4 * (bh + 6) + 8
     lead = LEADER_BY_KEY[s.leader]
     if s.leader == "custom":
         gui.text((x, y + 8), "지도자 이름", 13, t.muted)
@@ -607,7 +616,7 @@ def draw_diplomacy(app):
                 D.leave_alliance(g, pid, fid)
             i += 1
         can_war = not D.has_nonaggr(g, pid, fid)
-        tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:.0f}), "
+        tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
                f"상대 우호도 -100,\n전쟁광 평판: 다른 모든 세력 우호도 {D.warmonger_penalty(g, pid):+.0f}"
                if can_war else "불가침·동맹 중에는 먼저 파기")
         if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war, tooltip=tip):
@@ -691,10 +700,10 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 산출 Y = 30P + 150g(농장) + 150g(어장) + 1000g(공장)φ + 600g(은행) + 9000(랜드마크)
 · 세수 = Y × 세율. 세율 10%보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
 · 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. 10 이상·식량 충분일 때 인구 증가, -50 이하부터 반란.
-· 전쟁 피로도(0~200): 선전포고 +20(당하면 +10), 전쟁 중 턴당 +1(당하면 +0.5), 평시 턴당 1 회복.
-· 점령한 적 지역은 6턴 저항(산출·생산 없음, 행복도 −100) 뒤 24턴에 걸쳐 회복, 36턴 동안 반란 없음.
+· 전쟁 피로도(0~200): 선전포고 +15(당하면 +10), 전쟁 중 턴당 +0.75(당하면 +0.5), 평시 턴당 1 회복.
+· 점령한 적 지역은 4턴 저항(산출·생산 없음, 행복도 −100) 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 방어선은 돌격 방어를 높입니다.
-· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 랜드마크(8도 + 수도, 하나 지을 때마다 다음 비용 ×1.3)"""
+· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 랜드마크(8도 + 수도, 하나 지을 때마다 다음 비용 ×1.2)"""
 
 
 def draw_help(app):

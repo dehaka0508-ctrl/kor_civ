@@ -44,7 +44,7 @@ SPECIALTY_HAPPY = 3
 
 LANDMARK_COST_PER_TURN = 100_000
 LANDMARK_TURNS = 15
-LANDMARK_COST_GROWTH = 1.3     # 보유·건설 중인 랜드마크 1개마다 다음 랜드마크 비용 ×1.3 (8번째는 1.3^7 ≈ 6.3배)
+LANDMARK_COST_GROWTH = 1.2     # 보유·건설 중인 랜드마크 1개마다 다음 랜드마크 비용 ×1.2 (8번째는 1.2^7 ≈ 3.6배)
 CAPITAL_MOVE_TURNS = 4
 CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
@@ -99,9 +99,9 @@ HAPPY_DECAY = 0.99
 TAX_HAPPY_K = 0.1          # 0.1 * (10 - t%)
 # 전쟁 피로: 전쟁은 행복도를 직접 깎지 않고, 국가 단위 '전쟁 피로도'(0~200)를 쌓는다.
 # 실질 행복도 = 행복도 − 전쟁 피로도 (모든 지역에 고르게). 산출·반란·인구·전투력은 실질 행복도로 판정한다.
-# 선전포고: 선포한 쪽 +20, 당한 쪽 +10. 전쟁 중 매 턴 선포한 쪽 +1, 당한 쪽 +0.5. 전쟁이 없으면 턴당 1 회복.
-WAR_WEARY_START = {"aggressor": 20.0, "defender": 10.0}
-WAR_WEARY_TURN = {"aggressor": 1.0, "defender": 0.5}
+# 선전포고: 선포한 쪽 +15, 당한 쪽 +10. 전쟁 중 매 턴 선포한 쪽 +0.75, 당한 쪽 +0.5. 전쟁이 없으면 턴당 1 회복.
+WAR_WEARY_START = {"aggressor": 15.0, "defender": 10.0}
+WAR_WEARY_TURN = {"aggressor": 0.75, "defender": 0.5}
 WAR_WEARY_RECOVERY = 1.0
 WAR_WEARY_MAX = 200.0
 # 불행한 지역의 산출 감소: 행복도 H < 0 이면 산출 × (1 − 0.30 × (−H/100)²). −50에서 −7.5%, −100에서 −30%.
@@ -109,10 +109,10 @@ UNHAPPY_OUTPUT_MAX = 0.30
 UNHAPPY_OUTPUT_EXP = 2.0
 # 사기: 실질 평균 행복도가 −10 이하이면 군 전투력(공격·방어·폭격·해전)도 산출 감소와 같은 곡선으로 줄어든다.
 MORALE_H = -10
-# 징집 피로: 지역마다 최근 10턴 중 군 유닛 생산에 쓴 턴 수 n. n ≥ 6이면 그 지역 행복도 −(1, 2, 4, 6, 10).
-# 감소분은 n이 3 이하로 내려가면 턴당 3씩 빠르게 회복(4~5턴이면 유지).
+# 징집 피로: 지역마다 최근 10턴 중 군 유닛 생산에 쓴 턴 수 n. n = 7·8·9·10이면 그 지역 행복도 −(1, 2, 4, 8)
+# (6턴 이하는 감소 없음). 감소분은 n이 3 이하로 내려가면 턴당 3씩 빠르게 회복(4~6턴이면 유지).
 CONSCRIPT_WINDOW = 10
-CONSCRIPT_PENALTY = {6: 1.0, 7: 2.0, 8: 4.0, 9: 6.0, 10: 10.0}
+CONSCRIPT_PENALTY = {7: 1.0, 8: 2.0, 9: 4.0, 10: 8.0}
 CONSCRIPT_RECOVER_N = 3
 CONSCRIPT_RECOVERY = 3.0
 UNIT_START_HAPPY = {"light": -0.5, "heavy": -1.0}
@@ -156,18 +156,19 @@ AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 2
 LAND_STEPS_OWN = 2
 
-LINE_BONUS = 0.25          # 방어선 돌격 방어 x(1 + 0.25L)
+LINE_BONUS = 0.30          # 방어선 돌격 방어 x(1 + 0.30L) (단계별 성능 원안 0.25의 1.2배)
 # 지형 경계(도하·산악 돌파) 공격 배수는 data/terrain-borders.csv 의 공격배수 열(기본 0.9)을 쓴다.
 BRIDGE_ATTACK_MULT = 1.0   # 연륙교는 기획서 2절대로 '육지처럼' 취급(지형 경계에 있으면 그 배수 적용)
 FLANK_BONUS = 0.1          # n개 지역 동시 공격 x(1 + 0.1(n-1))
 AMPHIBIOUS = 0.8
 # 기습: 방어선이 없으면 성공 75%(공격 피해 ×1.2, 반격 ×0.9) / 실패 25%(×0.6, 반격 ×1.2) → 피해 기대값 돌격의 1.05배.
-# 방어선 단계 L마다 성공률 −15%p, 실패 시 공격 피해 −5%p·반격 +5%p (돌격은 방어선이 방어력 ×(1 + 0.25L)).
+# 방어선 단계 L마다 성공률 −18%p, 실패 시 공격 피해 −6%p·반격 +6%p (돌격은 방어선이 방어력 ×(1 + 0.30L)).
+# 방어선 단계별 성능은 3차(−15%p, ±5%p, 0.25L)의 1.2배.
 SURPRISE_BASE = 0.75
-SURPRISE_PER_LINE = 0.15
+SURPRISE_PER_LINE = 0.18
 SURPRISE_WIN = (1.2, 0.9)      # (공격 피해, 반격)
 SURPRISE_FAIL = (0.6, 1.2)
-SURPRISE_FAIL_PER_LINE = 0.05
+SURPRISE_FAIL_PER_LINE = 0.06
 # 돌격에서 방어측이 입은 피해가 공격측보다 크면 25% 확률로 그 경계 방어선 −1단계
 ASSAULT_LINE_BREAK = 0.25
 DAMAGE_K = 0.5
@@ -191,14 +192,14 @@ CAPTURE_CHANCE = 0.05
 # 점령·편입
 OCC_MAX_TURNS = 15         # 적 지역 점령 T(P) 상한
 INSTANT_ANNEX_H = -50
-# 점령 저항: 다른 세력에게서 빼앗은 지역은 첫 6턴 '저항'(산출 0·생산 불가·행복도 −100 고정),
-# 이어서 24턴 동안 점령 직전 행복도로 점차 회복. 점령 후 36턴 동안은 반란이 일어나지 않는다.
-# 저항 중에는 그 지역의 원래 주인이 그 지역을 공격할 때 공격력 +20%.
-RESIST_TURNS = 6
-RESIST_RECOVER_TURNS = 24
+# 점령 저항: 다른 세력에게서 빼앗은 지역은 첫 4턴 '저항'(산출 0·생산 불가·행복도 −100 고정),
+# 이어서 20턴 동안 점령 직전 행복도로 점차 회복. 점령 후 36턴 동안은 반란이 일어나지 않는다.
+# 저항 중에는 그 지역의 원래 주인이 그 지역을 공격할 때 공격력 +10%(비어 있으면 들어서는 즉시 되찾는다).
+RESIST_TURNS = 4
+RESIST_RECOVER_TURNS = 20
 RESIST_NO_REBEL_TURNS = 36
 RESIST_HAPPY = -100.0
-RESIST_RETAKE_ATK = 0.20
+RESIST_RETAKE_ATK = 0.10
 # 중립 지역: 인구·건물·산출·자원·특산물을 합친 점수로 '지역 가치' 1~10을 매기고, 가치별로 편입·점령 턴이 정해진다.
 # 점수 = log2(산출/200) + 0.8 log2(1 + 인구/5) + 건물(단계당 0.3, 항구·공항·사관학교 0.5, 최대 3)
 #        + 자원(정유 1.5, 탄광 1.0, 자체발전 0.7, 화력발전소 소재지 0.5, 증설 단계당 0.5, 최대 3) + 특산물 0.8/종

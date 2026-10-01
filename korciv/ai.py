@@ -397,10 +397,11 @@ def _consider_war(g, f):
         return
     alive = g.alive_ids()
     aggr = eff_aggression(g, f)
-    # 선포하면 전쟁 피로 +20, 전쟁 중 턴당 +1: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
+    # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.75: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
     start_w = C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
-    already = D.war_weary_rate(g, fid) >= C.WAR_WEARY_TURN["aggressor"]     # 이미 선포국으로 턴당 +1 중
-    proj_h = avg_h - start_w - (0 if already else 20 * C.WAR_WEARY_TURN["aggressor"])
+    already = any(w.get("aggressor") == fid for p, w in g.dip.wars.items() if fid in p)   # 이미 선포국 증가율
+    proj_h = avg_h - start_w - (0 if already else 20 * C.WAR_WEARY_TURN["aggressor"]
+                                * g.mods(fid).mult("war_weary_rate"))
     # 전쟁광 평판: 다른 세력 우호도가 깎인다(1년 안에 잇따라 선포하면 더). 조약·우호 관계가 많을수록 아깝다
     rep_pen = -D.warmonger_penalty(g, fid)
     ties = sum(1 for x in alive if x != fid and (D.is_friend(g, fid, x) or D.has_nonaggr(g, fid, x)))
@@ -442,8 +443,8 @@ def _consider_war(g, f):
         fr = front_analysis(g, fid, o, by_loc)
         if not fr["targets"] and ratio < need + 0.5:
             continue                      # 뚫을 곳이 보이지 않는다
-        # 빼앗은 땅은 6턴 저항(산출 없음) 뒤 24턴에 걸쳐 회복하므로 값어치를 깎아 본다
-        prize = 0.75 * (sum(g.region_value(n)[0] for n in fr["targets"]) + 0.3 * sum(
+        # 빼앗은 땅은 저항(산출 없음) 뒤 회복 기간을 거치므로 값어치를 깎아 본다
+        prize = _resist_discount() * (sum(g.region_value(n)[0] for n in fr["targets"]) + 0.3 * sum(
             g.region_value(n)[0] for n in fr["border"] if n not in fr["targets"]))
         s = (aggr / 10) * min(2.5, ratio) * (0.5 + min(1.5, prize / 15))
         s += (thr - op) / 40                               # 문턱보다 얼마나 더 미운가
@@ -582,8 +583,8 @@ def _army_orders(g, f, threat):
                 kill = dd >= pv["def_hp"] * 0.95
                 enemy_val = dd * 35
                 own_val = ad * 35
-                # 적 지역은 빼앗아도 6턴 저항·24턴 회복이라 이득이 늦다(중립 지역은 바로)
-                horizon = 24 if tgt.owner == NEUTRAL else 14
+                # 적 지역은 빼앗아도 저항·회복을 거쳐 이득이 늦다(중립 지역은 바로)
+                horizon = 24 if tgt.owner == NEUTRAL else 24 - C.RESIST_TURNS - 0.2 * C.RESIST_RECOVER_TURNS
                 cap_val = g.region_output_estimate(node) * tax * horizon if kill else 0
                 u = enemy_val - own_val + cap_val
                 if mode == "assault" and pv["line"] > 0 and dd > ad:
@@ -634,6 +635,11 @@ def _army_orders(g, f, threat):
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def _resist_discount():
+    """빼앗은 적 지역의 값어치 배수: 저항 턴 + 회복 턴의 절반만큼 산출을 잃는다고 보고 72턴(편입 이득 기간의 2배) 기준으로 할인."""
+    return 1 - (C.RESIST_TURNS + C.RESIST_RECOVER_TURNS / 2) / (2 * C.AI_ANNEX_HORIZON)
 
 
 def _building_levels(g, rid):
@@ -804,8 +810,9 @@ def _slots(g, f, threat, military=True):
         cands.append((50 + hostility, r.id, "build", key, border, cost / C.DEF_TURNS[lv]))
     # 군 생산 후보: 위협 높은 곳 우선
     if mil_need > 0 and military:
-        # 징집 피로: 최근 10턴 중 5턴 이상 징집한 지역은 위급할 때(위협 1 이상)만 더 뽑는다
-        pool = [r for r in idle if g.drafted_turns(r.id) < C.CONSCRIPT_WINDOW // 2 or threat.get(r.id, 0) >= 1.0]
+        # 징집 피로: 더 뽑으면 징집 피로가 생길 수 있는 지역(최근 10턴 중 6턴 이상)은 위급할 때(위협 1 이상)만
+        safe = min(C.CONSCRIPT_PENALTY) - 1
+        pool = [r for r in idle if g.drafted_turns(r.id) < safe or threat.get(r.id, 0) >= 1.0]
         order = sorted(pool, key=lambda r: -threat.get(r.id, 0) - (0.2 if r.id == f.capital else 0)
                        + 0.05 * g.drafted_turns(r.id))
         for r in order[:mil_need]:

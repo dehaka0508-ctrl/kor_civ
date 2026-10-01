@@ -85,7 +85,7 @@ def test_war_and_peace():
     ok, _ = D.declare_war(g, 0, 1)
     assert ok and D.at_war(g, 0, 1)
     assert D.opinion(g, 1, 0) <= -99
-    assert g.player.war_weary == pytest.approx(20)        # 선포한 쪽 전쟁 피로 +20
+    assert g.player.war_weary == pytest.approx(15)        # 선포한 쪽 전쟁 피로 +15
     assert g.factions[1].war_weary == pytest.approx(10)   # 당한 쪽 +10
     D.make_peace(g, 0, 1)
     assert not D.at_war(g, 0, 1)
@@ -407,7 +407,7 @@ def test_government_opinion_baseline():
     assert bias("socialist", "presidential") == -10          # 사회주의 → 민주주의
     assert bias("presidential", "absolute") == -10           # 민주주의 → 군주제
     assert bias("socialist", "absolute") == 0                # 한 방향만
-    g = new_game(n_enemies=2)
+    g = new_game(n_enemies=2, ai_leaders=["sejong", "jeongjo"])   # 우호도 효과가 없는 지도자
     g.factions[1].gov, g.factions[2].gov = "absolute", "socialist"
     g.dip.op[(1, 2)] = 0.0
     for _ in range(300):
@@ -440,8 +440,10 @@ def test_ai_war_needs_opinion_below_aggression_threshold():
     AI._consider_war(g, f)
     assert not D.at_war(g, 0, 1)
     g.dip.op[(1, 0)] = -95.0          # 참다참다 못해
+    for r in g.regions_of(1):
+        r.happy = -10.0
     AI._consider_war(g, f)
-    assert not D.at_war(g, 0, 1)      # 하지만 민심(실질 행복도 0)이 전쟁 피로를 견디지 못할 전망이면 참는다
+    assert not D.at_war(g, 0, 1)      # 하지만 민심(실질 행복도 −10)이 전쟁 피로를 견디지 못할 전망이면 참는다
     for r in g.regions_of(1):
         r.happy = 40.0                # 민심에 여유가 있으면
     AI._consider_war(g, f)
@@ -562,10 +564,10 @@ def test_war_weariness_separate_from_happiness():
     D.declare_war(g, 0, 1)
     g._phase_happiness()
     assert cap.happy == pytest.approx(0, abs=0.01)         # 전쟁이 행복도를 직접 깎지 않는다
-    assert g.player.war_weary == pytest.approx(21)         # 선포 +20, 전쟁 중 턴당 +1
+    assert g.player.war_weary == pytest.approx(15.75)      # 선포 +15, 전쟁 중 턴당 +0.75
     assert g.factions[1].war_weary == pytest.approx(10.5)  # 당한 쪽 +10, 턴당 +0.5
-    assert g.eff_happy(cap) == pytest.approx(-21)          # 실질 행복도 = 행복도 − 전쟁 피로도
-    assert g.avg_happiness(0) == pytest.approx(-21) and g.avg_happiness(0, effective=False) == pytest.approx(0)
+    assert g.eff_happy(cap) == pytest.approx(-15.75)       # 실질 행복도 = 행복도 − 전쟁 피로도
+    assert g.avg_happiness(0) == pytest.approx(-15.75) and g.avg_happiness(0, effective=False) == pytest.approx(0)
     for _ in range(300):
         g._phase_happiness()
     assert g.player.war_weary == C.WAR_WEARY_MAX
@@ -602,8 +604,8 @@ def test_allied_defense_counts_as_defender_weariness():
     assert D.at_war(g, 2, 0)
     assert g.factions[2].war_weary == pytest.approx(10)       # 방어 동맹 참전은 당한 쪽 기준
     assert D.war_weary_rate(g, 2) == pytest.approx(0.5)
-    assert D.war_weary_rate(g, 0) == pytest.approx(1.0)
-    assert g.player.war_weary == pytest.approx(30)            # 선포 20 + 동맹 참전 상대 10
+    assert D.war_weary_rate(g, 0) == pytest.approx(0.75)
+    assert g.player.war_weary == pytest.approx(25)            # 선포 15 + 동맹 참전 상대 10
 
 
 def _captured(g, rid, by=0, frm=1):
@@ -633,7 +635,7 @@ def test_captured_region_resists_then_recovers():
     A0, _, _ = g.combat_strength(1, [g.new_army(1, sorted(g.world.land_adj[rid])[0], {"inf": 5})], rid)
     g.regions[rid].resist = None
     A1, _, _ = g.combat_strength(1, [g.new_army(1, sorted(g.world.land_adj[rid])[0], {"inf": 5})], rid)
-    assert A0 == pytest.approx(A1 * 1.2)
+    assert A0 == pytest.approx(A1 * (1 + C.RESIST_RETAKE_ATK))
     g2 = new_game(player_start="S002", n_enemies=1)
     rr = _captured(g2, rid)
     g2.player.war_weary = 0.0
@@ -666,17 +668,33 @@ def test_conscription_fatigue():
     r = g.regions["S002"]
     for _ in range(6):
         g._phase_conscription({"S002"})
-    assert r.conscript == 1
-    for _ in range(4):
+    assert r.conscript == 0                         # 6턴까지는 감소 없음
+    g._phase_conscription({"S002"})
+    assert r.conscript == 1                         # 7턴 1
+    for _ in range(3):
         g._phase_conscription({"S002"})
-    assert r.conscript == 10                        # 10턴 내내 징집
+    assert r.conscript == 8                         # 10턴 내내 징집
     base = g.eff_happy(r)
     for _ in range(6):                              # 10 → 4턴: 아직 회복 없음
         g._phase_conscription(set())
-    assert r.conscript == 10
+    assert r.conscript == 8
     g._phase_conscription(set())                    # 3턴 이하: 빠르게 회복
-    assert r.conscript == pytest.approx(10 - C.CONSCRIPT_RECOVERY)
+    assert r.conscript == pytest.approx(8 - C.CONSCRIPT_RECOVERY)
     assert g.eff_happy(r) > base
+
+
+def test_leader_roster_and_categories():
+    from korciv.leaders import LEADERS, LEADER_CATEGORIES, LEADER_BY_KEY, MULT_KEYS, ADD_KEYS
+    keys = [k for _, _, ks in LEADER_CATEGORIES for k in ks]
+    assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 38
+    assert LEADER_BY_KEY["jumong"]["name"] == "동명성왕" and LEADER_BY_KEY["sejong"]["name"] == "세종대왕"
+    for l in LEADERS:
+        assert len(l["fx"]) >= (0 if l["key"] == "custom" else 2)
+    # 새 지도자로 게임을 시작해도 효과가 적용된다
+    g = new_game(player_start="S002", n_enemies=5, player_leader="yisunsin",
+                 ai_leaders=["yangdi", "kublai", "hideyoshi", "hongtaiji", "terauchi"])
+    assert g.mods(0).mult("def_coast") == pytest.approx(1.2)
+    assert {f.leader for f in g.factions} == {"yisunsin", "yangdi", "kublai", "hideyoshi", "hongtaiji", "terauchi"}
 
 
 def test_landmark_cost_grows():
@@ -689,7 +707,7 @@ def test_landmark_cost_grows():
     for rid in others:
         g.regions[rid].landmark = True
     opt = next(o for o in g.options(0, "S002") if o["kind"] == "landmark")
-    assert opt["per_turn"] == pytest.approx(base * 1.3 ** 7)   # 8번째 랜드마크 ≈ 6.3배
+    assert opt["per_turn"] == pytest.approx(base * 1.2 ** 7)   # 8번째 랜드마크 ≈ 3.6배
 
 
 def test_no_peace_victory():

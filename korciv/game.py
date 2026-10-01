@@ -725,6 +725,8 @@ class Game:
             dsum *= 1 + k * line_level
         if rr.owner != NEUTRAL and self.region_count(rr.owner) <= 3:
             dsum *= self.mods(rr.owner).mult("defense_small")
+        if rr.owner != NEUTRAL and self.info(target).coastal:
+            dsum *= self.mods(rr.owner).mult("def_coast")      # 이순신: 해안 지역 방어
         return dsum, defenders, line_level
 
     def preview_attack(self, army, target, mode="assault"):
@@ -1086,7 +1088,8 @@ class Game:
         if abs(t - f.tax) < 1e-9:
             return True, ""
         if f.tax_locked_until > self.turn:
-            return False, f"벽파 견제: 턴 {f.tax_locked_until}까지 세율을 바꿀 수 없습니다."
+            name = LEADER_BY_KEY.get(f.leader, {}).get("debuff", ("세율 잠금",))[0]
+            return False, f"{name}: 턴 {f.tax_locked_until}까지 세율을 바꿀 수 없습니다."
         f.tax = t
         lock = self.mods(fid).value("tax_lock", 0)
         if lock:
