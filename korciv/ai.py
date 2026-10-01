@@ -546,12 +546,16 @@ def _army_orders(g, f, threat):
     armies = [a for a in g.armies.values() if a.owner == fid and a.domain() == "land"
               and not w.is_sea(a.loc)]
     front = set(threat)
+    crisis = _war_crisis(g, fid, threat)
     for a in armies:
         if a.id not in g.armies:
             continue
         rr = g.regions[a.loc]
-        # 점령 중이면 자리를 지킨다
-        if rr.occ and rr.occ["by"] == fid:
+        # 중립 땅 점령은 평시이거나, 전쟁 중이라도 위기가 아니고 작은 부대(2개 이하)일 때만.
+        # 나라가 위태로운데 큰 부대가 중립 땅에 묶여 있지 않도록 한다.
+        neutral_ok = not crisis and (not at_war or a.count() <= 2)
+        # 점령 중이면 자리를 지킨다(중립 땅인데 지금은 그럴 때가 아니면 점령을 버리고 전선으로)
+        if fid in rr.occs and (rr.owner != NEUTRAL or neutral_ok):
             continue
         # 저항 중인 점령지: 옛 주인이 맞닿아 있고 아직 전쟁 중이면 작은 부대는 남아 지킨다(비우면 바로 탈환된다)
         if rr.owner == fid and g.resisting(rr) and a.count() <= 3:
@@ -566,7 +570,7 @@ def _army_orders(g, f, threat):
                 continue
             tgt = g.regions[node]
             if tgt.owner == NEUTRAL:
-                if node in annexing:
+                if node in annexing or not neutral_ok:
                     continue
                 if wts.get("military", 1) < 0.9 and a.count() < 3:
                     continue
@@ -599,7 +603,7 @@ def _army_orders(g, f, threat):
         # 빈 적지·중립지 점령
         for node, opt in reach.items():
             if opt["action"] == "move" and not w.is_sea(node) and g.hostile(fid, g.regions[node].owner) \
-                    and node not in annexing:
+                    and node not in annexing and (neutral_ok or g.regions[node].owner != NEUTRAL):
                 g.order_army(a.id, node)
                 break
         if a.order:
@@ -625,6 +629,14 @@ def _army_orders(g, f, threat):
             step = _step_toward(g, fid, a.loc, dest, reach)
             if step:
                 g.order_army(a.id, step)
+        if not a.order and rr.owner == NEUTRAL and not neutral_ok:
+            # 전선이 안 보여도 중립 땅에 머물지 말고 수도 쪽 내 영토로 돌아온다
+            home = [n for n, o in reach.items() if o["action"] == "move" and g.regions.get(n)
+                    and g.regions[n].owner == fid]
+            if home:
+                cap = f.capital
+                home.sort(key=lambda n: (w.distances_from(n, 30).get(cap, 99), n))
+                g.order_army(a.id, home[0])
     # 폭격기
     for a in g.armies.values():
         if a.owner != fid or a.domain() != "air" or not at_war:
@@ -646,6 +658,18 @@ def _building_levels(g, rid):
     """폭격으로 부술 수 있는 건물 단계 합(생산·방어 건물·방어선)."""
     rr = g.regions[rid]
     return sum(rr.b.get(k, 0) for k in list(C.PROD_BUILDINGS) + ["shelter", "aa"]) + sum(rr.lines.values())
+
+
+def _war_crisis(g, fid, threat) -> bool:
+    """전쟁 중 위기: 적이 내 땅을 점령 중이거나, 이번 전쟁에서 땅을 잃었거나, 위협도 1 이상인 지역이 있다."""
+    enemies = D.enemies(g, fid)
+    if not enemies:
+        return False
+    if any(by != fid for r in g.regions_of(fid) for by in r.occs):
+        return True
+    if any(D.war_info(g, fid, e).get("lost", 0) > 0 for e in enemies):
+        return True
+    return any(v >= 1.0 for v in threat.values())
 
 
 def _nearest_front(g, fid, start, front, threat):

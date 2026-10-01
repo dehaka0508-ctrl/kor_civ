@@ -894,3 +894,24 @@ def test_priority_auto_sort_and_market_max():
     assert g.buy_cost(0, "oil", n) <= 1000 < g.buy_cost(0, "oil", n + 1)
     bought, spent = g.market_buy(0, "oil", n)
     assert bought == n and spent == pytest.approx(g.buy_cost(0, "oil", 0) + spent)
+
+
+def test_ai_army_leaves_neutral_occupation_when_country_in_crisis():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    f = g.factions[1]
+    cap = f.capital
+    neutral = next(n for n in sorted(g.world.land_adj[cap]) if g.regions[n].owner == NEUTRAL)
+    for a in list(g.armies_at(neutral)):
+        g.remove_army(a)
+    army = g.new_army(1, neutral, {"inf": 11})
+    g.begin_occupation(1, neutral)
+    assert 1 in g.regions[neutral].occs
+    # 평시: 점령을 계속한다
+    AI._army_orders(g, f, AI.threat_map(g, 1))
+    assert army.order is None
+    # 전쟁에서 땅을 잃는 중: 중립 땅 점령을 버리고 움직인다
+    D.declare_war(g, 0, 1)
+    g.dip.wars[D.pair(0, 1)]["taken"][0] = 1
+    AI._army_orders(g, f, AI.threat_map(g, 1))
+    assert army.order is not None and army.order.get("target", army.order.get("path", [None])[-1]) != neutral
