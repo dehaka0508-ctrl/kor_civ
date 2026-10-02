@@ -30,8 +30,11 @@ def _leader_keys():
 
 
 def run_game(job):
-    """job = (seed, [지도자 6명], turns, flat) -> 판 결과 dict. flat 이면 모든 지도자 호전성 5(효과만 비교)."""
-    seed, lineup, turns, flat = job
+    """job = (seed, [지도자 n명], turns, flat[, govs]) -> 판 결과 dict.
+    flat 이면 모든 지도자 호전성 5(효과만 비교). govs 이면 AI가 정치체제를 직접 고른다(아니면 전원 철인통치)."""
+    seed, lineup, turns, flat = job[:4]
+    govs = job[4] if len(job) > 4 else False
+    n_fac = len(lineup)
     import korciv.game as G
     if flat:
         from korciv.leaders import LEADERS
@@ -40,7 +43,8 @@ def run_game(job):
     from korciv import diplomacy as D
     from korciv import rules as R
     from korciv.state import Settings
-    G.ai_pick_government = lambda *a, **k: "philosopher"      # 반란 세력 포함 전원 철인통치
+    if not govs:
+        G.ai_pick_government = lambda *a, **k: "philosopher"      # 반란 세력 포함 전원 철인통치
     from korciv import ai as A
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import leader_tracking as LT
@@ -54,9 +58,9 @@ def run_game(job):
         return orig_declare(g, a, b, reason, _joined, _role)
     D.declare_war = declare
     t0 = time.time()
-    g = G.Game(Settings(n_enemies=FACTIONS_PER_GAME - 1, seed=seed, all_ai=True,
+    g = G.Game(Settings(n_enemies=n_fac - 1, seed=seed, all_ai=True,
                         player_leader=lineup[0], ai_leaders=list(lineup[1:])))
-    assert all(f.gov == "philosopher" for f in g.factions)
+    assert govs or all(f.gov == "philosopher" for f in g.factions)
     tracker.g = g
     starts = {}
     for f in g.factions:
@@ -69,19 +73,19 @@ def run_game(job):
     for _ in range(turns):
         g.end_turn()
         LT.after_turn(tracker, g)
-        for f in g.factions[:FACTIONS_PER_GAME]:
+        for f in g.factions[:n_fac]:
             peak[f.id] = max(peak[f.id], g.region_count(f.id))
         if g.turn == 121:
             tot = sum(g.gdp(x) for x in g.alive_ids()) or 1
-            mid = {f.id: g.gdp(f.id) / tot for f in g.factions[:FACTIONS_PER_GAME]}
+            mid = {f.id: g.gdp(f.id) / tot for f in g.factions[:n_fac]}
         if g.game_over:
             break
     total_gdp = sum(g.gdp(x) for x in g.alive_ids()) or 1.0
-    alive = [f for f in g.factions[:FACTIONS_PER_GAME] if f.alive]
+    alive = [f for f in g.factions[:n_fac] if f.alive]
     top = max(alive, key=lambda f: g.gdp(f.id)).id if alive else None
     winners = list(g.winner[0]) if g.winner else []
     rows = []
-    for f in g.factions[:FACTIONS_PER_GAME]:
+    for f in g.factions[:n_fac]:
         rebels = sum(1 for x in g.factions if x.rebel_of == f.id)
         win = (1 / len(winners)) if f.id in winners else 0.0
         first = win if winners else (1.0 if f.id == top else 0.0)
@@ -92,27 +96,30 @@ def run_game(job):
             "win": win, "first": first, "wars_declared": wars.get(f.id, 0), "rebel_states": rebels,
             "eliminated": f.eliminated_turn, "happy": g.avg_happiness(f.id) if f.alive else None,
             "victory_type": g.winner[1] if f.id in winners else None,
+            "gov": f.gov, "victory_turn": g.turn if f.id in winners else None,
+            "rank": sorted((x for x in g.factions[:n_fac]), key=lambda x: -g.gdp(x.id)).index(f) + 1,
             "landmarks": sum(1 for r in g.regions.values() if r.owner == f.id and r.landmark),
             **LT.summary(tracker, f.id),
         })
     return {"seed": seed, "turns": g.turn, "victory": g.winner[1] if g.winner else None,
-            "secs": round(time.time() - t0, 1), "factions": rows}
+            "secs": round(time.time() - t0, 1), "factions": rows, "n_factions": n_fac,
+            "alive_end": sum(1 for f in g.factions if f.alive), "rebel_states": sum(1 for f in g.factions if f.rebel_of is not None)}
 
 
-def jobs(rounds, turns, base_seed, flat=False):
+def jobs(rounds, turns, base_seed, flat=False, n_fac=FACTIONS_PER_GAME, govs=False):
     keys = _leader_keys()
     out = []
     for r in range(rounds):
         order = keys[:]
         random.Random(base_seed + r).shuffle(order)
-        for gi in range(len(order) // FACTIONS_PER_GAME):
-            lineup = order[gi * FACTIONS_PER_GAME:(gi + 1) * FACTIONS_PER_GAME]
-            out.append((base_seed * 100 + r * 10 + gi, lineup, turns, flat))
+        for gi in range(len(order) // n_fac):
+            lineup = order[gi * n_fac:(gi + 1) * n_fac]
+            out.append((base_seed * 100 + r * 10 + gi, lineup, turns, flat, govs))
     return out
 
 
 def simulate(args):
-    todo = jobs(args.rounds, args.turns, args.seed, args.flat_aggr)
+    todo = jobs(args.rounds, args.turns, args.seed, args.flat_aggr, args.factions, args.govs)
     done = set()
     if os.path.exists(args.out):
         with open(args.out, encoding="utf-8") as f:
@@ -188,6 +195,8 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", default="leader_runs.jsonl")
     ap.add_argument("--flat-aggr", action="store_true", help="모든 지도자 호전성 5: AI 성향을 빼고 버프·디버프만 비교")
+    ap.add_argument("--factions", type=int, default=FACTIONS_PER_GAME, help="판당 세력 수")
+    ap.add_argument("--govs", action="store_true", help="AI가 정치체제를 직접 고른다(기본: 전원 철인통치)")
     ap.add_argument("--report")
     args = ap.parse_args()
     if args.report:

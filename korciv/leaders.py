@@ -218,8 +218,16 @@ class Mods:
         return any(key in fx for fx in self.fx)
 
 
+AI_GOV_AGGR_JITTER = 2.0      # 체제를 고를 때 호전성을 ±2 범위에서 흔든다(같은 지도자도 다른 체제를 고를 수 있게)
+AI_PHILOSOPHER_P = 0.10       # 10% 확률로 철인통치(효과 없음)
+
+
 def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int) -> str:
-    """9절: 1 - |호전성 - 목표| / 10 + U(0, 0.1), 공장 >= 은행이면 사회주의 +0.2."""
+    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 >= 은행이면 사회주의 +0.2.
+    호전성' = 호전성 + U(−2, +2). 전체의 10%는 철인통치."""
+    if rng.random() < AI_PHILOSOPHER_P:
+        return "philosopher"
+    aggression = aggression + rng.uniform(-AI_GOV_AGGR_JITTER, AI_GOV_AGGR_JITTER)
     best, best_score = None, -1e9
     for g in GOVERNMENTS:
         if g["target"] is None:
