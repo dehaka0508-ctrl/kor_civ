@@ -91,6 +91,15 @@ def draw_qty(app):
             on_ok(v)
 
 
+VICTORY_TIPS = {
+    "conquest": "정복승리: 다른 모든 세력(반란으로 생긴 나라 포함)을 멸망시키면 승리",
+    "economic": f"경제승리: 내 GDP가 나머지 모든 세력 GDP 합의 {C.ECON_VICTORY_RATIO:g}배를 넘는 상태로 "
+                f"{C.ECON_VICTORY_TURNS}턴 유지하면 승리",
+    "landmark": "랜드마크승리: 조선 8도 모두와 수도에 랜드마크를 보유하면 승리\n"
+                f"(랜드마크 하나를 지을 때마다 다음 비용 ×{C.LANDMARK_COST_GROWTH:g})",
+}
+
+
 # ------------------------------------------------------------------ 게임 설정
 def draw_setup(app):
     gui = app.gui
@@ -150,7 +159,10 @@ def draw_setup(app):
     gui.text((x2, y), "승리 조건", 13, t.muted, "semibold")
     y += 22
     for i, (k, nm) in enumerate(C.VICTORY_TYPES.items()):
-        s.victories[k] = gui.checkbox((x2 + (i % 2) * 230, y + (i // 2) * 28, 220, 24), nm, s.victories[k])
+        cb = (x2 + (i % 2) * 230, y + (i // 2) * 28, 220, 24)
+        s.victories[k] = gui.checkbox(cb, nm, s.victories[k])
+        if gui.hover(pygame.Rect(cb)):
+            gui.tooltip = VICTORY_TIPS.get(k, nm)
     y += 64
     gui.text((x2, y), "시작 구역", 13, t.muted, "semibold")
     st_name = app.world.regions[s.start].name if s.start else "무작위"
@@ -367,6 +379,89 @@ def draw_active_modal(app):
         draw_save_slots(app)
     elif name == "pause":
         draw_pause(app)
+    elif name == "battle":
+        draw_battle(app)
+
+
+def _units_text(units):
+    return ", ".join(f"{C.UNITS[k]['name']} {n}" for k in C.UNIT_ORDER for n in [units.get(k, 0)] if n) or "없음"
+
+
+def draw_battle(app):
+    """전투 확인: 양측 병력, 적용되는 버프·디버프, 예상 결과 → [전투] / [취소]."""
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    st = app.modal[1]
+    army = g.armies.get(st["army"])
+    node = st["node"]
+    if not army or not g.hostile_units_at(army.owner, node):
+        close(app)
+        return
+    can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS)
+    if not can_surprise:
+        st["mode"] = "assault"
+    bd = g.battle_breakdown(army, node, st["mode"])
+    if bd is None:
+        close(app)
+        return
+    r = modal_frame(app, 780, 600, f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
+    pv = bd["preview"]
+    if can_surprise:
+        idx = gui.segmented((r.right - 244, r.y + 18, 220, 30), ["돌격", "기습"], 0 if st["mode"] == "assault" else 1,
+                            size=12)
+        st["mode"] = "assault" if idx == 0 else "surprise"
+    colw = (r.w - 72) / 2
+    for i, (title, units_txt, val, factors, color) in enumerate((
+            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.0f}",
+             bd["att_factors"], t.accent),
+            ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
+             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.0f}",
+             bd["def_factors"], t.bad))):
+        x = r.x + 24 + i * (colw + 24)
+        y = r.y + 64
+        gui.rect(t.panel_alt, (x, y, colw, 250), radius=10)
+        gui.text((x + 14, y + 10), title, 14, color, "bold", max_w=colw - 28)
+        y = gui.wrap((x + 14, y + 36), units_txt, colw - 28, 13)
+        gui.text((x + 14, y + 4), val, 16, weight="bold")
+        y += 34
+        gui.text((x + 14, y), "적용 보정", 12, t.muted, "semibold")
+        y += 20
+        if not factors:
+            gui.text((x + 14, y), "없음", 12, t.muted)
+        for label, mult in factors[:6]:
+            good = mult > 1
+            gui.text((x + 14, y), label, 12, max_w=colw - 100)
+            gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if good else t.bad, "semibold", anchor="topright")
+            y += 20
+    # 예상 결과
+    y = r.y + 330
+    gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
+    y += 26
+    for oc in bd["outcomes"]:
+        row = pygame.Rect(r.x + 24, y, r.w - 48, 56)
+        gui.rect(t.panel_alt, row, radius=8)
+        gui.text((row.x + 12, row.y + 8), oc["label"], 13, weight="semibold")
+        res = "적 병력 전멸 → 진입·점령" if oc["capture"] else "적 병력이 남음 → 진입 못 함"
+        gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "semibold",
+                 anchor="topright")
+        gui.text((row.x + 12, row.y + 32),
+                 f"적 피해 {oc['def_dmg']:,.0f} (예상 손실 {_units_text(oc['def_lost'])}) · "
+                 f"아군 피해 {oc['att_dmg']:,.0f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
+                 max_w=row.w - 24)
+        y += 64
+    if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
+        close(app)
+        return
+    if gui.button((r.right - 144, r.bottom - 60, 120, 42), "전투", "danger", size=15, weight="bold"):
+        ok, msg = g.order_army(army.id, node, st["mode"])
+        app.attack_mode = st["mode"]
+        close(app)
+        app.toast(msg if isinstance(msg, str) else str(msg), None if ok else t.bad)
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            gui.keys.remove(k)
+            close(app)
 
 
 def draw_pause(app):
@@ -434,6 +529,14 @@ def draw_save_slots(app):
                     app.scene = "setup"
                 return
         y += 76
+    if mode == "save_exit":
+        # 저장하지 않고 시작 화면으로
+        if gui.button((r.x + 24, r.bottom - 56, 140, 40), "저장 안 함", "danger"):
+            close(app)
+            app.game = None
+            app.reset_ui()
+            app.scene = "setup"
+            return
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "취소"):
         close(app)
 

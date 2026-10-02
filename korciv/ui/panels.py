@@ -122,19 +122,17 @@ def draw_region_info(app, rect):
     y = kv(gui, x, y, w, "인구", f"{r.pop:,.1f}만 명 (시작 {info.pop0:.1f})")
     y_out = r.output if r.owner != NEUTRAL else g.calc_output(node, phi=1.0)
     y = kv(gui, x, y, w, "산출(GDP)", f"{y_out:,.0f} /턴")
-    val, parts = g.region_value(node)
+    val, _ = g.region_value(node)
     vtxt = f"{val} / 10"
     if r.owner == NEUTRAL:
         vtxt += f" · 편입·점령 {g.neutral_turns(pid, node)}턴"
     y = kv(gui, x, y, w, "지역 가치", vtxt, t.accent)
-    gui.text((x, y - 3), "  ".join(f"{k} {v:.1f}" for k, v in parts.items()), 11, t.muted, max_w=w)
-    y += 16
     if r.owner == pid:
         y = kv(gui, x, y, w, "세수", f"{y_out * g.player.tax:,.0f} /턴")
         y = kv(gui, x, y, w, "식량 생산", f"{r.food:,.1f} (소비 {r.pop:,.1f})")
         if r.b["factory"]:
             fuel = {1.0: "석탄", 1.1: "석유", 1.25: "전기", 0.25: "연료 없음"}.get(round(r.phi, 2), "-")
-            y = kv(gui, x, y, w, "공장 연료", f"{fuel} (φ {r.phi:.2f})")
+            y = kv(gui, x, y, w, "공장 연료", fuel)
     # 행복도 막대
     if owner != NEUTRAL and visible:
         eh = g.eff_happy(r)

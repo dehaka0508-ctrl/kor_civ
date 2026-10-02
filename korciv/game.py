@@ -732,6 +732,105 @@ class Game:
             dsum *= self.mods(rr.owner).mult("def_coast")      # 이순신: 해안 지역 방어
         return dsum, defenders, line_level
 
+    def fx_source(self, fid, key) -> str:
+        """효과 key 를 주는 지도자 버프/디버프 또는 정치체제 이름."""
+        f = self.factions[fid]
+        lead = LEADER_BY_KEY.get(f.leader, {})
+        fx = lead.get("fx", {})
+        if key in fx:
+            nm = lead["buff"][0] if list(fx).index(key) == 0 else lead["debuff"][0]
+            return f"{lead['name']} '{nm}'"
+        gov = GOV_BY_KEY.get(f.gov or "", {})
+        if key in gov.get("fx", {}):
+            return gov["name"]
+        return "효과"
+
+    def battle_breakdown(self, army, target, mode="assault"):
+        """전투 확인 창용: 양측 병력, 적용되는 보정(이름, 배수), 예상 결과."""
+        w = self.world
+        fid = army.owner
+        m = self.mods(fid)
+        rr = self.regions[target]
+        pv = self.preview_attack(army, target, mode)
+        if pv is None:
+            return None
+        allowed = C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS
+        att_units = {k: n for k, n in army.units.items() if k in allowed and n > 0}
+        defenders = self.hostile_units_at(fid, target)
+        def_units = {}
+        for a in defenders:
+            d = def_units.setdefault(a.owner, {})
+            for k, n in a.units.items():
+                d[k] = d.get(k, 0) + n
+        af, df = [], []
+
+        def add(lst, label, mult):
+            if abs(mult - 1.0) >= 0.005:
+                lst.append((label, mult))
+        amph = w.is_sea(army.loc)
+        if not amph:
+            terr = w.terrain_between(army.loc, target)
+            if terr:
+                add(af, f"{terr['kind']}({terr['name']})", terr["mult"])
+        if att_units.get("inf"):
+            add(af, self.fx_source(fid, "atk_inf") + " — 보병", m.mult("atk_inf"))
+        if mode == "assault":
+            add(af, self.fx_source(fid, "atk_assault"), m.mult("atk_assault"))
+            if amph:
+                add(af, "상륙 돌격", C.AMPHIBIOUS * m.value("amphib_extra", 1.0))
+        if rr.owner != NEUTRAL and D.at_war(self, fid, rr.owner):
+            allies_in = any(D.allied(self, fid, x) and D.at_war(self, x, rr.owner)
+                            for x in self.alive_ids() if x != fid)
+            if allies_in:
+                add(af, self.fx_source(fid, "ally_war_atk"), m.mult("ally_war_atk"))
+            elif mode == "assault":
+                add(af, self.fx_source(fid, "no_ally_assault"), m.mult("no_ally_assault"))
+        add(af, "사기(실질 행복도 낮음)", self.morale(fid))
+        if self.retake_bonus(fid, target):
+            add(af, "저항 중인 옛 영토 탈환", 1 + C.RESIST_RETAKE_ATK)
+        line = pv["line"]
+        if rr.owner != NEUTRAL:
+            om = self.mods(rr.owner)
+            if mode == "assault" and line:
+                k = om.value("line_k", C.LINE_BONUS)
+                add(df, f"방어선 {line}단계", 1 + k * line)
+            if self.region_count(rr.owner) <= 3:
+                add(df, self.fx_source(rr.owner, "defense_small"), om.mult("defense_small"))
+            if self.info(target).coastal:
+                add(df, self.fx_source(rr.owner, "def_coast"), om.mult("def_coast"))
+        for o in def_units:
+            add(df, f"{self.fname(o)} 사기", self.morale(o))
+
+        def losses(units_by_army, dmg):
+            pool = [(k, n) for k, n in units_by_army.items() if n > 0]
+            total = sum(C.UNITS[k]["hp"] * n for k, n in pool)
+            out = {}
+            if total <= 0:
+                return out
+            for k, n in pool:
+                share = dmg * C.UNITS[k]["hp"] * n / total
+                dead = min(n, int(share // C.UNITS[k]["hp"]))
+                if dead:
+                    out[k] = dead
+            return out
+        all_def = {}
+        for d in def_units.values():
+            for k, n in d.items():
+                all_def[k] = all_def.get(k, 0) + n
+        outcomes = []
+        if mode == "surprise":
+            p = pv["surprise_p"]
+            outcomes.append((f"기습 성공({p * 100:.0f}%)", pv["def_dmg_win"], pv["att_dmg_win"]))
+            outcomes.append((f"기습 실패({(1 - p) * 100:.0f}%)", pv["def_dmg_fail"], pv["att_dmg_fail"]))
+        else:
+            outcomes.append(("예상", pv["def_dmg"], pv["att_dmg"]))
+        res = []
+        for label, dd, ad in outcomes:
+            res.append({"label": label, "def_dmg": dd, "att_dmg": ad, "def_lost": losses(all_def, dd),
+                        "att_lost": losses(att_units, ad), "capture": dd >= pv["def_hp"] * 0.95})
+        return {"preview": pv, "att_units": att_units, "def_units": def_units, "att_factors": af,
+                "def_factors": df, "outcomes": res, "target_owner": rr.owner}
+
     def preview_attack(self, army, target, mode="assault"):
         """예상 교전 결과(r=1). 반환 dict: A, D, 기대 피해, 기습 성공률."""
         if self.world.is_sea(target):

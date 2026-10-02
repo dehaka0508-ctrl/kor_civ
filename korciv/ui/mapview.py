@@ -12,6 +12,10 @@ from .theme import mix, render_text, ui_scale
 COS = math.cos(math.radians(38.0))
 LON0, LAT1 = 124.0, 43.1
 BASE_W, BASE_H = 560.0, 1000.0
+# 독도: 서도·동도 (경도, 위도, 반지름°). 지역이 아닌 지도 표시용
+DOKDO = ((131.8648, 37.2422, 0.0012), (131.8697, 37.2408, 0.0010))
+DOKDO_LABEL = (131.8697, 37.2415)
+DOKDO_NEAR = "S209"      # 울릉군
 
 
 def proj(lon, lat):
@@ -238,6 +242,17 @@ class MapView:
                     else:
                         pygame.draw.lines(surf, (255, 255, 255), False, pts, tw + 2)
                         pygame.draw.lines(surf, col, False, pts, tw)
+        # 독도(동도·서도): 지역은 아니지만 지도에 그린다. 실제 크기로는 보이지 않아 최소 크기로 키운다
+        land = colors.get(DOKDO_NEAR, (theme.neutral,))[0]   # 울릉군과 같은 색
+        for lon, lat, r_deg in DOKDO:
+            bx, by = proj(lon, lat)
+            c = (int(bx * s + ox), int(by * s + oy))
+            rad = max(int(r_deg * 100 * s), int(3.5 * ui_scale() * min(2.0, max(1.0, self.z / 3))))
+            pygame.draw.circle(surf, land, c, rad)
+            pygame.draw.circle(surf, theme.province_line, c, rad, 1)
+        bx, by = proj(*DOKDO_LABEL)
+        t = render_text("독도", 11 if self.z < 3 else 13, mix(theme.sea_line, theme.text, 0.6), "bold")
+        surf.blit(t, t.get_rect(midleft=(bx * s + ox + 8, by * s + oy)))
         # 해역 이름
         for sid in self.sea_polys:
             x, y = self.label[sid]

@@ -915,3 +915,20 @@ def test_ai_army_leaves_neutral_occupation_when_country_in_crisis():
     g.dip.wars[D.pair(0, 1)]["taken"][0] = 1
     AI._army_orders(g, f, AI.threat_map(g, 1))
     assert army.order is not None and army.order.get("target", army.order.get("path", [None])[-1]) != neutral
+
+
+def test_battle_breakdown_lists_sides_and_factors():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="seonggye")
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.new_army(1, tgt, {"inf": 4})
+    g.regions[tgt].lines = {"S002": 2}
+    D.declare_war(g, 0, 1)
+    a = g.new_army(0, "S002", {"inf": 8})
+    bd = g.battle_breakdown(a, tgt, "assault")
+    assert bd["att_units"] == {"inf": 8} and bd["def_units"] == {1: {"inf": 4}}
+    labels = [l for l, _ in bd["att_factors"]] + [l for l, _ in bd["def_factors"]]
+    assert any("백전백승" in l for l in labels) and any("방어선 2단계" in l for l in labels)
+    assert len(g.battle_breakdown(a, tgt, "surprise")["outcomes"]) == 2

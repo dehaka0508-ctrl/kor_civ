@@ -767,6 +767,12 @@ class App:
             return
         army = g.armies.get(self.sel_army) if self.sel_army else None
         if army and army.owner == g.player_id:
+            # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
+            if not self.bombard_mode and node in g.regions:
+                opt = g.reachable(army).get(node)
+                if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
+                    self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
+                    return
             ok, msg = g.order_army(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             return
