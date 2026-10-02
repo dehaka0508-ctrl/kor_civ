@@ -192,7 +192,8 @@ class MapView:
         if self.cache is not None and self.cache_key == full_key:
             return self.cache
         surf = pygame.Surface(self.view.size)
-        surf.fill(theme.paper)
+        # 바다색으로 채운다: 해역 다각형과 해안 사이에 틈이 있어도 바다로 보이게
+        surf.fill(theme.sea)
         s = self.scale
         ox, oy = self.offset()
         ox -= self.view.x

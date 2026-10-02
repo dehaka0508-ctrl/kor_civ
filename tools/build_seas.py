@@ -16,6 +16,10 @@ sys.path.insert(0, ROOT)
 from korciv.data import ISLAND_SEAS, SEA_POLYS  # noqa: E402
 
 GEO = os.path.join(ROOT, "korciv", "data", "map_geometry.json")
+# 해안선에 붙도록: 육지는 지역 사이 미세한 틈만 메울 만큼(약 30m)만 넓히고, 해역 경계도 약 50m 이내로만 단순화한다.
+# (예전 0.001 버퍼·0.002 단순화는 해안과 해역 사이에 빈 띠가 보였다)
+LAND_PAD = 0.0003
+SIMPLIFY = 0.0005
 
 
 def rings(geom, min_part=0.004, min_hole=0.0015):
@@ -24,7 +28,7 @@ def rings(geom, min_part=0.004, min_hole=0.0015):
     for p in sorted(parts, key=lambda p: -p.area):
         if p.area < min_part:
             continue
-        p = p.simplify(0.002, preserve_topology=True)
+        p = p.simplify(SIMPLIFY, preserve_topology=True)
         holes = [[[round(x, 4), round(y, 4)] for x, y in h.coords]
                  for h in p.interiors if Polygon(h).area >= min_hole]
         out.append({"ext": [[round(x, 4), round(y, 4)] for x, y in p.exterior.coords], "holes": holes})
@@ -35,7 +39,7 @@ def main():
     with open(GEO, encoding="utf-8") as f:
         geo = json.load(f)
     land = unary_union([Polygon(r).buffer(0) for g in geo["regions"].values() for r in g["polys"]
-                        if len(r) >= 3]).buffer(0.001)
+                        if len(r) >= 3]).buffer(LAND_PAD, join_style="mitre")
     island = {sid: Polygon(SEA_POLYS[sid]).buffer(0) for sid in ISLAND_SEAS}
     cut = unary_union(list(island.values()))
     seas = {}

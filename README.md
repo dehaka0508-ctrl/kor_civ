@@ -97,6 +97,7 @@ python -m pytest                      # 테스트 (pytest 필요)
 - 북한: [geoBoundaries](https://www.geoboundaries.org) PRK ADM2 (CC BY 4.0)를 원명칭에 맞춰 매칭했습니다.
 - 병합: 강원 고성·철원은 남북 폴리곤, 황남 옹진은 옛 인천 옹진군 섬들을 합쳤습니다.
 - 인접: 경계 공유(남북 경계는 DMZ 폭을 감안한 허용치)로 계산하고 연륙교·방조제 17곳을 더했습니다. 울릉·제주·서귀포는 육상 인접이 없습니다. 인접 1,083쌍 + 연륙교.
+- 해역 다각형은 `tools/build_seas.py`가 해안선에 바짝 붙도록 다시 잘랐고(육지 여유 약 30m, 단순화 약 50m), 지도 바탕을 바다색으로 칠해 해안과 해역 사이에 빈 틈이 보이지 않습니다.
 - 광역·조선 8도 경계선은 `tools/build_outlines.py`가 게임이 그리는 지역 다각형을 합쳐 만듭니다(휴전선에서 경계선이 지역 경계와 어긋나 두 줄로 보이던 문제 수정). 독도(동도·서도)는 지역이 아닌 지도 표시로 그립니다.
 - 글꼴: [Pretendard](https://github.com/orioncactus/pretendard) (SIL OFL 1.1, `korciv/assets/fonts`).
 
