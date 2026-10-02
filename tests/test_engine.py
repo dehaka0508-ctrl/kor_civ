@@ -932,3 +932,13 @@ def test_battle_breakdown_lists_sides_and_factors():
     labels = [l for l, _ in bd["att_factors"]] + [l for l, _ in bd["def_factors"]]
     assert any("백전백승" in l for l in labels) and any("방어선 2단계" in l for l in labels)
     assert len(g.battle_breakdown(a, tgt, "surprise")["outcomes"]) == 2
+
+
+def test_coalition_not_resigned_when_already_together():
+    g = new_game(n_enemies=2)
+    g.dip.alliance[D.pair(1, 2)] = g.turn - 30
+    g.dip.op[(1, 2)] = g.dip.op[(2, 1)] = 100.0
+    D.sign_treaty(g, 1, 2, "coalition")
+    assert D.same_coalition(g, 1, 2)
+    ok, why = D.treaty_check(g, 1, 2, "coalition")
+    assert not ok and "이미" in why

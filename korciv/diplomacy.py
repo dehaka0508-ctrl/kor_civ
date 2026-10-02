@@ -385,6 +385,8 @@ def treaty_check(g, ai, proposer, kind):
             return False, "공동의 적이나 견제 대상이 없습니다."
         return True, "공동의 적/견제 대상"
     if kind == "coalition":
+        if same_coalition(g, ai, proposer):
+            return False, "이미 같은 연합입니다."
         if p not in g.dip.alliance:
             return False, "한 단계를 건너뛴 제안입니다(먼저 동맹)."
         if g.turn - g.dip.alliance[p] < C.COALITION_ALLIANCE_TURNS:
