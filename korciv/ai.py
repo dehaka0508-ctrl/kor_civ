@@ -9,8 +9,66 @@ import math
 from . import config as C
 from . import diplomacy as D
 from . import rules as R
-from .leaders import GOV_AGGR_ADJ
+from .leaders import GOV_AGGR_ADJ, LEADER_BY_KEY
 from .state import NEUTRAL
+
+
+# ------------------------------------------------------------------ 지도자 성향
+# 행동마다 관련된 지도자 효과 (키, 방향). 방향 +1 은 값이 클수록 유리, −1 은 작을수록 유리.
+# 특수 키는 _bias_term 에서 기준값과의 차이로 바꾼다.
+LEADER_BIAS_KEYS = {
+    "inf": [("atk_inf", 1), ("cost_mil", -1), ("inf_cost_early", -1)],
+    "tank": [("cost_tank", -1), ("cost_mil", -1)],
+    "art": [("bomb_art", 1), ("cost_mil", -1)],
+    "naval": [("cost_naval", -1), ("naval_power", 1), ("naval_bomb", 1), ("amphib_extra", 1), ("cut_supply", -1)],
+    "air": [("cost_air", -1)],
+    "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
+    "fishery": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
+    "factory": [("output_factory", 1), ("output_prod", 1), ("cost_factory", -1), ("build_time_factory", -1),
+                ("build_time_prod", -1), ("build_time_all", -1)],
+    "bank": [("output_bank", 1), ("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
+    "line": [("line_k", 1), ("cost_line", -1), ("ambushed_def", 1)],
+    "annex": [("occ_time", -1)],
+    "landmark": [("landmark_turns", 1), ("cost_landmark", -1)],
+    "assault": [("atk_assault", 1), ("no_ally_assault", 1), ("atk_vs_line", 1)],
+    "surprise": [("surprise", 1)],
+    "war": [("war_weary_rate", -1), ("war_start_weary", -1), ("resist_time", -1), ("guerrilla", -1),
+            ("capital_fall_rebel", -1)],
+    "ally": [("ally_war_atk", 1), ("treaty_threshold", -1), ("no_ally_assault", -1)],
+}
+LEADER_BIAS_K = 0.6        # 효과 크기 → 확률·효용 배수
+LEADER_BIAS_MAX = 0.15     # 소폭: 최대 ±15%
+
+
+def _bias_term(key, v) -> float:
+    """효과 값을 '기준 대비 비율'로."""
+    if key == "amphib_extra":
+        return v - 1.0
+    if key == "line_k":
+        return (v - C.LINE_BONUS) / C.LINE_BONUS
+    if key == "landmark_turns":
+        return (C.LANDMARK_TURNS - v) / C.LANDMARK_TURNS
+    if key == "surprise":
+        return v * 2
+    if key == "treaty_threshold":
+        return v / 50
+    if key in ("guerrilla",):
+        return 0.1 * v
+    if key == "capital_fall_rebel":
+        return 0.1 * (v - 1)
+    if isinstance(v, bool):
+        return 0.0
+    return float(v)
+
+
+def leader_bias(g, fid, action) -> float:
+    """AI 지도자의 버프·디버프에 따라 유리한 행동은 조금 더, 불리한 행동은 조금 덜(×0.85~1.15)."""
+    fx = LEADER_BY_KEY.get(g.factions[fid].leader, {}).get("fx", {})
+    s = 0.0
+    for key, sign in LEADER_BIAS_KEYS.get(action, ()):
+        if key in fx:
+            s += sign * _bias_term(key, fx[key])
+    return 1 + max(-LEADER_BIAS_MAX, min(LEADER_BIAS_MAX, LEADER_BIAS_K * s))
 
 
 # ------------------------------------------------------------------ 대전략
@@ -43,6 +101,8 @@ def choose_victory_goal(g, f):
         # 랜드마크는 지을수록 비싸진다(×1.3): 다음 랜드마크를 감당할 재정이 있어야 노린다
         "landmark": 0.1 + 0.03 * (10 - aggr) + 0.15 * lm_do + (0.3 if f.money > 3 * lm_cost else 0),
     }
+    score["conquest"] *= leader_bias(g, f.id, "war")
+    score["landmark"] *= leader_bias(g, f.id, "landmark")
     return max(vt, key=lambda v: score[v] + g.rng.uniform(0, 0.25))
 
 
@@ -206,6 +266,7 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
         thr += C.AI_WAR_OP_NEED
     if f.ai.get("victory_goal") == "conquest":
         thr += 5
+    thr += 30 * (leader_bias(g, f.id, "war") - 1)        # 지도자 성향: 전쟁에 유리하면 ±4.5까지
     return thr
 
 
@@ -388,7 +449,56 @@ def _diplomacy(g, f):
             if ok1 and ok2:
                 D.sign_treaty(g, fid, b, kind)
                 break
+    _social(g, f)
     _consider_war(g, f)
+
+
+def _social(g, f):
+    """우호 선언·비난. 온건할수록 우호 선언을, 호전적일수록 비난을 자주 쓴다."""
+    fid = f.id
+    aggr = eff_aggression(g, f)
+    alive = [x for x in g.alive_ids() if x != fid]
+    # 우호 선언: 나를 좋게 보는(또는 적의 적인) 세력과 가까워진다
+    p_friend = C.AI_FRIEND_DECL_P * (10 - aggr) / 10 * leader_bias(g, fid, "ally")
+    if alive and g.rng.random() < p_friend:
+        my_enemies = set(D.enemies(g, fid))
+        cands = []
+        for x in alive:
+            ok, _ = D.friendship_check(g, fid, x)
+            if not ok or D.opinion(g, fid, x) < 0:
+                continue
+            # 선언하면 x 와 적대하는 세력이 나를 싫어하게 된다(−5): 그 손실을 따진다
+            cost = sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x)
+                       and not D.at_war(g, fid, y))
+            score = D.opinion(g, fid, x) / 20 + len(my_enemies & set(D.enemies(g, x))) - 0.3 * cost
+            if D.allied(g, fid, x):
+                score -= 0.5                 # 이미 동맹이면 덜 급하다
+            cands.append((score, x))
+        if cands:
+            score, x = max(cands)
+            if score > 0:
+                if g.factions[x].is_ai:
+                    D.declare_friendship(g, fid, x)
+                else:
+                    _queue_player(g, fid, "friendship")
+    # 비난: 전쟁 중이거나 몹시 미운 세력. 남발(24턴 안 3번째)은 손해라 2번까지만
+    if D.recent_denounces(g, fid) >= C.DENOUNCE_SPAM_N - 1:
+        return
+    p_den = C.AI_DENOUNCE_P * aggr / 10
+    if not alive or g.rng.random() >= p_den:
+        return
+    cands = []
+    for x in alive:
+        if not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
+            continue
+        if not g.factions[x].is_ai and g.rng.random() >= C.AI_DENOUNCE_PLAYER:
+            continue                         # 플레이어는 낮은 확률로만
+        score = -D.opinion(g, fid, x) / 30 + (1.0 if D.at_war(g, fid, x) else 0) + (0.8 if g.hegemon == x else 0)
+        # 비난에 동조할(대상과 적대하는) 세력이 많을수록 이득
+        score += 0.3 * sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x))
+        cands.append((score, x))
+    if cands:
+        D.denounce(g, fid, max(cands)[1])
 
 
 def _consider_war(g, f):
@@ -616,6 +726,8 @@ def _army_orders(g, f, threat):
                     u += C.ASSAULT_LINE_BREAK * 400 * pv["line"]   # 방어선을 무너뜨릴 수 있다
                 if tgt.owner == NEUTRAL and not kill:
                     u = -1
+                elif u > 0:
+                    u *= leader_bias(g, fid, mode)          # 지도자 성향: 돌격/기습
                 if u > best_u:
                     best, best_u, best_mode = node, u, mode
         if best:
@@ -899,6 +1011,10 @@ def _slots(g, f, threat, military=True):
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not r.focus)]
     cands = []
+    bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
+    annex_bias = bias("annex")
+    if g.mods(fid).value("minority_rule") and len(regs) >= C.MINORITY_REGIONS:
+        annex_bias *= 0.85                    # 홍타이지 '소수민족': 넓힐수록 민심이 깎인다
     # 군 생산 수요
     mil_units = sum(a.count() for a in g.armies.values() if a.owner == fid)
     desired = max(2, int(len(regs) * (0.8 if at_war else 0.35) * wts.get("military", 1)))
@@ -924,6 +1040,7 @@ def _slots(g, f, threat, military=True):
             gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["eff_turns"]) * wts.get("expansion", 1)
             if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
                 gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
+            gain *= annex_bias
             cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):
@@ -940,6 +1057,7 @@ def _slots(g, f, threat, military=True):
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory":
                 gain *= 0.8  # 연료 필요
+            gain *= bias(key)
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             lv = r.b["extract"] + 1
@@ -963,7 +1081,7 @@ def _slots(g, f, threat, military=True):
                 if o not in (NEUTRAL, fid) and D.at_war(g, fid, o) and r.lines.get(n, 0) < 3:
                     lv = r.lines.get(n, 0) + 1
                     cost = R.def_building_cost("line", lv)
-                    cands.append((th * wts.get("defense", 1) * 0.8, r.id, "build", "line", n,
+                    cands.append((th * wts.get("defense", 1) * 0.8 * bias("line"), r.id, "build", "line", n,
                                   cost / C.DEF_TURNS[lv - 1]))
                     break
     # 평시 방어 건설: 우호도가 낮은 이웃과 맞닿은 지역은 재정이 넉넉할수록 조금씩 더 자주 방어 건물을 올린다
@@ -980,7 +1098,7 @@ def _slots(g, f, threat, military=True):
         if worst_n is None:
             continue
         hostility = min(2.0, 1 + (C.AI_DEF_OP - worst_op) / 60)
-        p = (C.AI_DEF_BASE_P + C.AI_DEF_WEALTH_P * wealth) * hostility
+        p = (C.AI_DEF_BASE_P + C.AI_DEF_WEALTH_P * wealth) * hostility * bias("line")
         if g.rng.random() >= p:
             continue
         # 같은 단계라면 방어선 우선: (단계, 우선순위)가 가장 낮은 것
@@ -1024,15 +1142,16 @@ def _slots(g, f, threat, military=True):
             site = pool_ap[0] if pool_ap else None
         if site is not None:
             cost = C.SINGLE_BUILDINGS["airport"]["cost"] * C.BUILD_COST_MULT
-            cands.append((2.0, site.id, "build", "airport", None, cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
+            cands.append((2.0 * bias("air"), site.id, "build", "airport", None,
+                          cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
     if military and at_war and airports:
         ap_idle = [r for r in airports if r.id in idle_ids]
         if ap_idle and f.res.get("oil", 0) >= 2 and f.money > 8000 and n_ftr < 2 + len(regs) // 25:
             r0 = ap_idle[0]
-            cands.append((2.2, r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
+            cands.append((2.2 * bias("air"), r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
         elif ap_idle and f.res.get("oil", 0) >= 4 and f.money > 15000 and n_bmb < 1 + len(regs) // 40:
             r0 = ap_idle[0]
-            cands.append((1.8, r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
+            cands.append((1.8 * bias("air"), r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
     # 해군: 육로로 불리하거나 닿지 않는 적 해안을 노린다(상륙함), 적 항구가 있으면 구축함
     if military and at_war:
         sea_t, enemy_ports, land_contact = _sea_targets(g, fid)
@@ -1040,21 +1159,23 @@ def _slots(g, f, threat, military=True):
         n_lst = sum(a.units.get("lst", 0) for a in g.armies.values() if a.owner == fid)
         n_dd = sum(a.units.get("dd", 0) for a in g.armies.values() if a.owner == fid)
         unfavorable = threat and max(threat.values()) >= 1.0
-        want_navy = sea_t and (not land_contact or unfavorable or f.aggression >= 6)
+        want_navy = sea_t and (not land_contact or unfavorable or f.aggression >= 6
+                               or g.rng.random() < 0.5 * max(0.0, bias("naval") - 1))
         has_port = any(r.b["port"] for r in regs)
         if want_navy and not has_port and f.money > 6000:
             coast = sorted([r for r in idle if g.world.regions[r.id].coastal],
                            key=lambda r: -threat.get(r.id, 0) - r.pop / 100)
             if coast:
                 cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
-                cands.append((2.3, coast[0].id, "build", "port", None, cost / C.SINGLE_BUILDINGS["port"]["turns"]))
+                cands.append((2.3 * bias("naval"), coast[0].id, "build", "port", None,
+                              cost / C.SINGLE_BUILDINGS["port"]["turns"]))
         if sea_t and ports_idle and f.res.get("oil", 0) >= 3 and f.money > 6000:
             if n_lst < 1 + len(regs) // 40 and (not land_contact or unfavorable or g.rng.random() < 0.15):
                 r0 = ports_idle[0]
-                cands.append((2.4, r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
+                cands.append((2.4 * bias("naval"), r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
             elif enemy_ports and n_dd < n_lst + 1 and f.res.get("oil", 0) >= 4 and f.money > 10000:
                 r0 = ports_idle[-1]
-                cands.append((2.0, r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
+                cands.append((2.0 * bias("naval"), r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
     # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
     if military and at_war:
         for fl in g.armies.values():
@@ -1070,16 +1191,18 @@ def _slots(g, f, threat, military=True):
                        + 0.05 * g.drafted_turns(r.id))
         for r in order[:mil_need]:
             key = "inf"
-            if f.res.get("oil", 0) >= 2 and f.money > 8000 and g.rng.random() < 0.35:
+            # 지도자 성향: 유리한 병종은 조금 더 자주(보병 대비 상대 배수)
+            if f.res.get("oil", 0) >= 2 and f.money > 8000 and g.rng.random() < 0.35 * bias("tank") / bias("inf"):
                 key = "tank"
-            elif g.rng.random() < (0.28 if at_war else 0.15) and f.money > 3000:
+            elif g.rng.random() < (0.28 if at_war else 0.15) * bias("art") / bias("inf") and f.money > 3000:
                 key = "art"                    # 전쟁 중엔 선제 폭격용 포병을 더
             per = g.unit_cost(fid, r.id, key)
-            u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1)
+            u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1) * bias(key)
             cands.append((u, r.id, "unit", key, None, per))
     # 랜드마크
     lm_goal = f.ai.get("victory_goal") == "landmark"
     lm_money, lm_income = (2.5, 0.4) if lm_goal else (4, 0.6)      # 랜드마크 목표면 조건을 조금 낮춘다
+    lm_money, lm_income = lm_money / bias("landmark"), lm_income / bias("landmark")
     lm_cost = C.LANDMARK_COST_PER_TURN * g.landmark_cost_mult(fid)   # 하나 지을 때마다 ×1.3
     lm_total = lm_cost * g.mods(fid).value("landmark_turns", C.LANDMARK_TURNS)
     # 수입으로 감당하거나, 모아 둔 돈으로 전액을 치를 수 있으면 짓는다

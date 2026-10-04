@@ -762,6 +762,26 @@ def draw_diplomacy(app):
     y = r.bottom - 110
     gui.line(t.border, (r.x + 24, y - 10), (r.right - 24, y - 10))
     gui.text((r.x + 24, y), "조약·전쟁", 14, weight="bold")
+    # 우호 선언·비난: 마우스를 올리면 세력별 우호도 변화 미리보기
+    sw_ = 150
+    ok_f, why_f = D.friendship_check(g, pid, fid)
+    tip_f = (("수락 예상: " if ok_f else "불가: ") + why_f + "\n" +
+             D.effects_text(g, D.friendship_effects(g, pid, fid)) + f"\n쿨타임 {C.DECL_COOLDOWN}턴")
+    if gui.button((r.right - 24 - 2 * sw_ - 8, y - 4, sw_, 28), "우호 선언", "primary" if ok_f else "default",
+                  size=12, enabled=ok_f, tooltip=tip_f):
+        ok2, msg = D.declare_friendship(g, pid, fid)
+        app.toast(msg, None if ok2 else t.bad)
+        app.changed()
+    ok_d, why_d = D.denounce_check(g, pid, fid)
+    n_rec = D.recent_denounces(g, pid)
+    tip_d = ((why_d + "\n" if why_d else "") + D.effects_text(g, D.denounce_effects(g, pid, fid))
+             + f"\n최근 {C.DENOUNCE_WINDOW}턴 비난 {n_rec}회"
+             + (f" — {C.DENOUNCE_SPAM_N}번째부터 모든 세력 우호도 {C.DENOUNCE_SPAM}" if n_rec + 1 >= C.DENOUNCE_SPAM_N else "")
+             + f"\n쿨타임 {C.DECL_COOLDOWN}턴")
+    if gui.button((r.right - 24 - sw_, y - 4, sw_, 28), "비난", "danger", size=12, enabled=ok_d, tooltip=tip_d):
+        ok2, msg = D.denounce(g, pid, fid)
+        app.toast(msg, t.warn if ok2 else t.bad)
+        app.changed()
     y += 26
     bw = (r.w - 48 - 5 * 8) / 6
     buttons = []

@@ -320,12 +320,28 @@ class Game:
         take = {k: min(v, a.units.get(k, 0)) for k, v in units.items() if v > 0}
         if not take or sum(take.values()) >= a.count():
             return None, "분리할 유닛을 고르세요(전부는 불가)."
+        moved_dmg = {}
         for k, v in take.items():
+            moved_dmg[k] = self._split_dmg(a, k, v)
             a.units[k] -= v
         a.units = {k: v for k, v in a.units.items() if v > 0}
+        a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
         b = self.new_army(a.owner, a.loc, take)
+        b.dmg = {k: d for k, d in moved_dmg.items() if d > 0}
         self._validate_capacity(a)
         return b, ""
+
+    @staticmethod
+    def _split_dmg(a, k, v) -> float:
+        """유닛 k 를 v 개 떼어 낼 때 남은 체력을 수에 비례해 정수로 나눈다(떼어 내는 쪽 내림).
+        예: 3개 체력 16/30 에서 1개 → 5/10, 남는 2개 11/20. 떼어 내는 쪽이 가져갈 누적 피해를 반환."""
+        n = a.units.get(k, 0)
+        hp = C.UNITS[k]["hp"]
+        left = int(round(a.hp_left(k)))
+        part = left * v // n if n else 0
+        rest = left - part
+        a.dmg[k] = (n - v) * hp - rest
+        return v * hp - part
 
     def merge_armies(self, a_id, b_id):
         a, b = self.armies.get(a_id), self.armies.get(b_id)
@@ -363,10 +379,12 @@ class Game:
             v = min(v, a.units.get(k, 0))
             if v <= 0:
                 continue
+            self._split_dmg(a, k, v)
             a.units[k] -= v
             if in_own:
                 self.regions[a.loc].h_delta += C.UNIT_DISBAND_HAPPY[C.UNITS[k]["weight"]] * v
         a.units = {k: v for k, v in a.units.items() if v > 0}
+        a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
         if a.empty():
             self.remove_army(a)
         return True, ""
@@ -903,14 +921,16 @@ class Game:
             res["def_dmg_fail"] = dd * fail[0]
             res["att_dmg_fail"] = ad * fail[1]
         def_hp = sum(C.UNITS[k]["hp"] * n for a in defenders for k, n in a.units.items())
-        res["def_hp"] = def_hp
+        res["def_hp"] = sum(a.hp_left(k) for a in defenders for k in a.units)
         return res
 
     # ------------------------------------------------------------------ 피해 적용
     def apply_damage(self, armies, dmg, unit_filter=None, rng_round=True):
         """피해를 (수 x 체력) 비율로 나눠 적용. 잃은 유닛 {키: 수} 반환."""
         pool = []
+        acted = self.__dict__.setdefault("_acted", set())
         for a in armies:
+            acted.add(a.id)                  # 전투·폭격에 휘말린 부대는 이번 턴 회복하지 않는다
             for k, n in a.units.items():
                 if n > 0 and (unit_filter is None or k in unit_filter):
                     pool.append((a, k, n))
@@ -1571,6 +1591,7 @@ class Game:
         self.battle_regions = []
         self.new_ranking = None
         self._morale = {}
+        self._acted = set()
         # 대응하지 않은 플레이어 반란은 AI 규칙으로 처리
         for rid in list(self.pending_rebellions):
             rr = self.regions[rid]
@@ -1585,7 +1606,8 @@ class Game:
             if f.alive and f.is_ai:
                 ai.plan_turn(self, f.id)
         # 1. 외교: 제안·선전포고는 즉시 처리된다. 여기서는 턴 단위 갱신만.
-        # 2~5. 이동 → 해전 → 폭격 → 지상 공격
+        # 2~5. 이동 → 해전 → 폭격 → 지상 공격 (명령을 받은 부대는 이번 턴 회복하지 않는다)
+        self._acted.update(a.id for a in self.armies.values() if a.order)
         self._phase_move()
         self._phase_naval()
         self._phase_bombard()
@@ -1617,6 +1639,7 @@ class Game:
             f.trade_sell = 0.0
             f.spend = {}
             f.refund = 0.0
+        self._phase_heal()
         for a in self.armies.values():
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
                 a.order = None
@@ -1769,11 +1792,16 @@ class Game:
 
     def _ship_damage(self, fleets, dmg, enemy, sid):
         lost = {}
+        self.__dict__.setdefault("_acted", set()).update(a.id for a in fleets)
         for key in ("dd", "cv", "lst"):
             for a in fleets:
                 if a.id not in self.armies:
                     continue
                 hp = C.UNITS[key]["hp"]
+                while a.units.get(key, 0) > 0 and a.dmg.get(key, 0.0) >= hp:
+                    a.units[key] -= 1                # 합칠 때 합산된 누적 피해가 한 척 체력을 넘으면
+                    a.dmg[key] -= hp
+                    lost[key] = lost.get(key, 0) + 1
                 while dmg > 0 and a.units.get(key, 0) > 0:
                     need = hp - a.dmg.get(key, 0.0)
                     if dmg >= need:
@@ -2015,6 +2043,22 @@ class Game:
                         self.merge_armies(fleet.id, x.id)
                     else:
                         self.remove_army(x)
+
+    def _phase_heal(self):
+        """이번 턴에 이동·공격·폭격·점령을 하지 않고 전투에도 휘말리지 않은 부대는 체력 10% 회복."""
+        acted = self.__dict__.get("_acted", set())
+        for a in self.armies.values():
+            if not a.dmg or a.id in acted or a.order or a.owner == NEUTRAL:
+                continue
+            rr = self.regions.get(a.loc)
+            if rr is not None and a.owner in rr.occs:
+                continue                     # 점령 중
+            for k in list(a.dmg):
+                d = a.dmg[k] - C.HEAL_RATE * a.hp_max(k)
+                if d > 1e-9:
+                    a.dmg[k] = d
+                else:
+                    del a.dmg[k]
 
     def _phase_guerrilla(self):
         """이토 히로부미 '정미의병': 저항 중인 점령지의 주둔 부대가 보병 2개와 (보정 없이) 싸운 만큼 피해."""

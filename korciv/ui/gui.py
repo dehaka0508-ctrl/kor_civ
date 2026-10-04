@@ -232,7 +232,7 @@ class Gui:
         if kind == "default" and not selected:
             pygame.draw.rect(self.screen, t.border, self.R(r), 1, border_radius=int(radius * self.u))
         self.text(r.center, label, size, fg, weight, anchor="center", max_w=r.w - 6)
-        if hov and tooltip:
+        if tooltip and self.hover(r):          # 비활성 버튼도 이유·미리보기를 보여 준다
             self.tooltip = tooltip
         if hov and self.clicked:
             self.clicked = False

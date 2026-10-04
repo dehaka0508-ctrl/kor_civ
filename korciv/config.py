@@ -247,6 +247,23 @@ OP_NONAGGR_BROKEN = -30
 OP_HEGEMON_FIGHTER = 0.3
 OP_COALITION_LEAVE = -50
 
+# 우호 선언·비난
+DECL_COOLDOWN = 24          # 같은 상대에게 다시 쓰려면 24턴
+DECL_FRIEND_MIN = -30       # 상대 우호도가 이 이상이면 우호 선언을 받아들인다
+DECL_FRIEND_BONUS = 15      # 우호 선언: 서로 24턴 동안 우호도 +15
+DECL_FRIEND_TURNS = 24
+DECL_FRIEND_ENEMY = -5      # 선언 대상과 적대하는 세력의 선언국에 대한 우호도
+DENOUNCE_TARGET = -15       # 비난: 대상의 비난국에 대한 우호도
+DENOUNCE_OTHERS = -2        # 비난: 다른 모든 세력의 대상에 대한 우호도
+DENOUNCE_WINDOW = 24        # 최근 24턴 안의 비난 횟수
+DENOUNCE_SPAM_N = 3         # 그 안에서 3번째부터는 남발: 모든 세력의 비난국에 대한 우호도 −3
+DENOUNCE_SPAM = -3
+DENOUNCE_ALLY_BONUS = 5     # 2번째까지는 대상과 적대하던 세력의 비난국에 대한 우호도 +5
+HOSTILE_OP = -30            # '적대': 전쟁 중이거나 우호도가 이 이하
+AI_FRIEND_DECL_P = 0.05     # AI 우호 선언 기본 확률(호전성 0 기준, 호전성 10이면 0)
+AI_DENOUNCE_P = 0.04        # AI 비난 기본 확률(호전성 10 기준)
+AI_DENOUNCE_PLAYER = 0.5    # 플레이어를 비난할 때는 이 배율(낮은 확률)
+
 FRIEND_ON, FRIEND_OFF = 30, 20
 TREATY_MIN = 45
 NONAGGR_FEAR_DISCOUNT = 15  # 상대가 1/0.7배 이상 강해 보이면 불가침 문턱 -15
@@ -335,5 +352,6 @@ REBEL_COLORS = ["#7C5E10", "#5F3DC4", "#1864AB", "#087F5B", "#9C36B5", "#E8590C"
 
 # 지도자 고유 디버프
 AMBUSH_TURNS = 4            # 선덕여왕 '대야성 함락': 선전포고를 당한 뒤 방어력 감소 턴
-CAPITAL_FALL_TURNS = 12     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
-MINORITY_REGIONS = 30       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
+CAPITAL_FALL_TURNS = 8     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
+MINORITY_REGIONS = 40       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
+HEAL_RATE = 0.10           # 한 턴 동안 아무것도 하지 않은 부대의 체력 회복(최대 체력 대비)

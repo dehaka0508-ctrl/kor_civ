@@ -512,9 +512,9 @@ def draw_army_tab(app, body):
             gui.icon(k, (x + 8, y + 11), t.text)
             u = C.UNITS[k]
             gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
-            dmg = army.dmg.get(k, 0)
-            gui.text((x + 22, y + 20), f"공{u['atk'] or u.get('naval', 0) or u.get('air', 0)} 방{u['df']} 체{u['hp']}"
-                     + (f" · 누적피해 {dmg:.1f}" if dmg else ""), 11, t.muted)
+            left, full = army.hp_left(k), army.hp_max(k)
+            gui.text((x + 22, y + 20), f"공{u['atk'] or u.get('naval', 0) or u.get('air', 0)} 방{u['df']} "
+                     f"체 {left:.0f}/{full}", 11, t.bad if left < full * 0.5 else t.muted)
             app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)
             y += 40
         if army.domain() == "naval":
@@ -523,7 +523,9 @@ def draw_army_tab(app, body):
             y += 20
         bw = (w - 8) / 3
         sel_n = sum(app.split.values())
-        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0, tooltip="선택한 수량을 새 부대로"):
+        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0,
+                      tooltip="선택한 수량을 새 부대로(남은 체력은 수에 비례해 정수로 나눔)\n"
+                              "한 턴 동안 아무것도 하지 않은 부대는 다음 턴 체력 10% 회복"):
             b, msg = g.split_army(army.id, app.split)
             if b:
                 app.sel_army = b.id
@@ -531,7 +533,8 @@ def draw_army_tab(app, body):
             else:
                 app.toast(msg, t.bad)
         others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id]
-        if gui.button((x + bw + 4, y, bw, 28), "합치기", enabled=bool(others), tooltip="같은 위치의 내 부대를 모두 합침"):
+        if gui.button((x + bw + 4, y, bw, 28), "합치기", enabled=bool(others),
+                      tooltip="같은 위치의 내 부대를 모두 합침(같은 유닛끼리 남은 체력 합산)"):
             for o in others:
                 ok, msg = g.merge_armies(army.id, o.id)
                 if not ok:

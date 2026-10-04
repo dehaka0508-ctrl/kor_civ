@@ -9,7 +9,7 @@ from .state import NEUTRAL
 
 STAGE_NAMES = {-1: "전쟁", 0: "관계 없음", 1: "우호관계", 2: "통행권·불가침", 3: "동맹", 4: "연합"}
 TREATY_NAMES = {"nonaggr": "불가침조약", "passage": "군사통행권", "alliance": "동맹",
-                "coalition": "연합", "peace": "강화"}
+                "coalition": "연합", "peace": "강화", "friendship": "우호 선언"}
 
 
 def pair(a, b):
@@ -30,11 +30,28 @@ class DiploState:
         self.peace_streak = 0
         self.next_cid = 1
         self.peace_until: dict = {}    # pair -> 강화 불가침 만료 턴
+        self.op_temp: dict = {}        # (a, b) -> [[값, 만료 턴], ...] 기한부 우호도(우호 선언)
+        self.decl_cd: dict = {}        # (종류, 사용국, 상대) -> 마지막 사용 턴
+        self.denounce_log: dict = {}   # 사용국 -> [비난한 턴, ...]
 
 
 # ------------------------------------------------------------------ 조회
+def _dip_attr(g, name):
+    """예전 세이브 호환: 나중에 추가된 외교 상태."""
+    d = g.dip.__dict__
+    if name not in d:
+        d[name] = {}
+    return d[name]
+
+
 def opinion(g, a, b) -> float:
-    return g.dip.op.get((a, b), 0.0)
+    v = g.dip.op.get((a, b), 0.0)
+    temps = g.dip.__dict__.get("op_temp")
+    if temps:
+        for val, until in temps.get((a, b), ()):
+            if until > g.turn:
+                v += val
+    return max(-100.0, min(100.0, v))
 
 
 def add_opinion(g, a, b, delta):
@@ -343,6 +360,128 @@ def leave_coalition(g, a):
     g.event("diplo", f"{g.fname(a)}이(가) 연합에서 탈퇴했습니다.", fids=(a,))
 
 
+# ------------------------------------------------------------------ 우호 선언·비난
+def hostile_to(g, x, t) -> bool:
+    """x 가 t 와 적대 중인가: 전쟁 중이거나 (AI 라면) 우호도 −30 이하."""
+    if at_war(g, x, t):
+        return True
+    return g.factions[x].is_ai and opinion(g, x, t) <= C.HOSTILE_OP
+
+
+def decl_cooldown(g, kind, a, b) -> int:
+    last = _dip_attr(g, "decl_cd").get((kind, a, b))
+    return 0 if last is None else max(0, C.DECL_COOLDOWN - (g.turn - last))
+
+
+def recent_denounces(g, a) -> int:
+    log = _dip_attr(g, "denounce_log").get(a, [])
+    return sum(1 for t in log if g.turn - t < C.DENOUNCE_WINDOW)
+
+
+def friendship_check(g, a, b):
+    """a 가 b 에게 우호 선언. (가능 여부, 이유). b 가 AI 면 수락 여부까지 판정한다."""
+    if a == b or not g.factions[b].alive:
+        return False, "대상이 없습니다."
+    cd = decl_cooldown(g, "friend", a, b)
+    if cd:
+        return False, f"쿨타임 {cd}턴"
+    if (a, b) in g.dip.rejected:
+        return False, "이번 턴에는 다시 제안할 수 없습니다."
+    if at_war(g, a, b):
+        return False, "전쟁 중입니다."
+    if peace_left(g, a, b):
+        return False, f"휴전 불가침 중({peace_left(g, a, b)}턴)"
+    if g.factions[b].is_ai:
+        op = opinion(g, b, a)
+        if op < C.DECL_FRIEND_MIN:
+            return False, f"상대 우호도 {op:.0f} / 필요 {C.DECL_FRIEND_MIN}"
+        return True, f"상대 우호도 {op:.0f} ≥ {C.DECL_FRIEND_MIN}"
+    return True, "상대가 결정"
+
+
+def friendship_effects(g, a, b) -> list:
+    """우호 선언이 받아들여지면 생기는 우호도 변화 [(보는 세력, 대상, 변화, 기한부 여부)]."""
+    out = []
+    for x, y in ((b, a), (a, b)):
+        if g.factions[x].is_ai:
+            out.append((x, y, C.DECL_FRIEND_BONUS, True))
+    for x in g.alive_ids():
+        if x not in (a, b) and g.factions[x].is_ai and hostile_to(g, x, b):
+            out.append((x, a, C.DECL_FRIEND_ENEMY, False))
+    return out
+
+
+def declare_friendship(g, a, b, force=False):
+    """a 의 우호 선언. 상대가 AI 면 수락 조건을 보고, force 면(플레이어가 AI 제안을 수락) 바로 성립."""
+    ok, why = friendship_check(g, a, b)
+    if not ok and not force:
+        g.dip.rejected.add((a, b))
+        return False, f"거절: {why}"
+    temps = _dip_attr(g, "op_temp")
+    for x, y, v, temp in friendship_effects(g, a, b):
+        if temp:
+            temps.setdefault((x, y), []).append([v, g.turn + C.DECL_FRIEND_TURNS])
+        else:
+            add_opinion(g, x, y, v)
+    _dip_attr(g, "decl_cd")[("friend", a, b)] = g.turn
+    g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
+    return True, f"우호 선언 성립: {C.DECL_FRIEND_TURNS}턴 동안 우호도 +{C.DECL_FRIEND_BONUS}"
+
+
+def denounce_check(g, a, b):
+    if a == b or not g.factions[b].alive:
+        return False, "대상이 없습니다."
+    cd = decl_cooldown(g, "denounce", a, b)
+    if cd:
+        return False, f"쿨타임 {cd}턴"
+    return True, ""
+
+
+def denounce_effects(g, a, b) -> list:
+    """a 가 b 를 비난할 때의 우호도 변화 [(보는 세력, 대상, 변화, False)]."""
+    out = []
+    if g.factions[b].is_ai:
+        out.append((b, a, C.DENOUNCE_TARGET, False))
+    ais = [x for x in g.alive_ids() if g.factions[x].is_ai]
+    for x in ais:
+        if x not in (a, b):
+            out.append((x, b, C.DENOUNCE_OTHERS, False))
+    n = recent_denounces(g, a) + 1            # 이번 비난이 최근 24턴 안의 몇 번째인가
+    if n >= C.DENOUNCE_SPAM_N:
+        for x in ais:
+            if x != a:
+                out.append((x, a, C.DENOUNCE_SPAM, False))
+    else:
+        for x in ais:
+            if x not in (a, b) and hostile_to(g, x, b):
+                out.append((x, a, C.DENOUNCE_ALLY_BONUS, False))
+    return out
+
+
+def denounce(g, a, b):
+    ok, why = denounce_check(g, a, b)
+    if not ok:
+        return False, why
+    for x, y, v, _ in denounce_effects(g, a, b):
+        add_opinion(g, x, y, v)
+    _dip_attr(g, "decl_cd")[("denounce", a, b)] = g.turn
+    log = _dip_attr(g, "denounce_log").setdefault(a, [])
+    log.append(g.turn)
+    del log[:-8]
+    g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}을(를) 공개적으로 비난했습니다.", fids=(a, b))
+    return True, "비난했습니다."
+
+
+def effects_text(g, effects, viewer=None) -> str:
+    """미리보기용: 세력별 우호도 변화 요약(한 줄에 한 세력)."""
+    rows = {}
+    for x, y, v, temp in effects:
+        rows.setdefault(x, []).append(f"{g.fname(y)}에 {v:+g}" + (f"({C.DECL_FRIEND_TURNS}턴)" if temp else ""))
+    if not rows:
+        return "우호도 변화 없음"
+    return "\n".join(f"{g.fname(x)}: " + ", ".join(v) for x, v in rows.items())
+
+
 # ------------------------------------------------------------------ 조약
 def treaty_check(g, ai, proposer, kind):
     """AI 가 조약 제안을 받을지. (수락 여부, 이유)"""
@@ -413,6 +552,9 @@ def treaty_check(g, ai, proposer, kind):
 
 def sign_treaty(g, a, b, kind):
     p = pair(a, b)
+    if kind == "friendship":
+        declare_friendship(g, a, b, force=True)
+        return
     if kind == "peace":
         make_peace(g, a, b)
         return
@@ -642,3 +784,9 @@ def update_turn(g):
             if g.factions[x].is_ai and opinion(g, x, y) < C.ALLIANCE_LEAVE and p in d.alliance:
                 leave_alliance(g, x, y)
     d.rejected.clear()
+    temps = d.__dict__.get("op_temp")
+    if temps:
+        for k in list(temps):
+            temps[k] = [x for x in temps[k] if x[1] > g.turn]
+            if not temps[k]:
+                del temps[k]

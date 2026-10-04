@@ -1088,9 +1088,9 @@ def test_unique_debuffs_setup_and_economy():
     g.turn = 49
     assert any(o["ok"] for o in g.options(0, "S002") if o["kind"] == "build")
     _lead(g, 0, "hongtaiji")                                                               # 소수민족
-    others = [x for x in g.world.order if g.regions[x].owner == NEUTRAL][:34]
+    others = [x for x in g.world.order if g.regions[x].owner == NEUTRAL][:44]
     _own(g, 0, others)
-    assert g.minority_penalty(0) == pytest.approx(0.3 * (35 - 30))
+    assert g.minority_penalty(0) == pytest.approx(0.3 * (45 - 40))
 
 
 def test_unique_debuffs_diplomacy_and_rebels():
@@ -1118,7 +1118,7 @@ def test_unique_debuffs_diplomacy_and_rebels():
     p0 = g.rebellion_chance(0, near[0])
     g.transfer_region("S002", 1)
     assert g.player.capital_fall_turn == g.turn
-    assert g.rebellion_chance(0, near[0]) == pytest.approx(min(1.0, p0 * 3))
+    assert g.rebellion_chance(0, near[0]) == pytest.approx(min(1.0, p0 * 2))
     g.turn += C.CAPITAL_FALL_TURNS
     assert g.rebellion_chance(0, near[0]) == pytest.approx(p0)
 
@@ -1186,3 +1186,85 @@ def test_unique_debuffs_occupation_upkeep_naval():
     _lead(g, 0, "kublai")
     assert g.mods(0).value("amphib_extra") == 0.75 and g.mods(0).mult("naval_power") == pytest.approx(0.85)
     assert "일본 원정 실패" in g.fx_source(0, "naval_power")
+
+
+def test_friendship_declaration():
+    g = new_game(player_start="S002", n_enemies=3)
+    p, a, b, c = 0, 1, 2, 3
+    g.dip.op[(a, p)] = -20
+    g.dip.op[(c, a)] = -50                       # c 는 a 와 적대
+    ok, why = D.friendship_check(g, p, a)
+    assert ok
+    eff = D.friendship_effects(g, p, a)
+    assert (a, p, C.DECL_FRIEND_BONUS, True) in eff and (c, p, C.DECL_FRIEND_ENEMY, False) in eff
+    before_c = D.opinion(g, c, p)
+    assert D.declare_friendship(g, p, a)[0]
+    assert D.opinion(g, a, p) == pytest.approx(-20 + 15)
+    assert D.opinion(g, c, p) == pytest.approx(before_c - 5)
+    assert not D.friendship_check(g, p, a)[0]    # 쿨타임
+    g.turn += C.DECL_FRIEND_TURNS
+    assert D.opinion(g, a, p) == pytest.approx(-20)     # 기한부 +15 만료
+    assert D.friendship_check(g, p, a)[0]
+    g.dip.op[(b, p)] = -40
+    assert not D.friendship_check(g, p, b)[0]    # 우호도 −30 미만은 거절
+    D.declare_war(g, p, c)
+    assert not D.friendship_check(g, p, c)[0]
+
+
+def test_denounce_rules():
+    g = new_game(player_start="S002", n_enemies=4)
+    p, a, b, c, d = 0, 1, 2, 3, 4
+    for x in (a, b, c, d):
+        for y in (a, b, c, d, p):
+            if x != y:
+                g.dip.op[(x, y)] = 0.0
+    g.dip.op[(c, a)] = -60                       # c 는 a 를 적대
+    assert D.denounce(g, p, a)[0]
+    assert D.opinion(g, a, p) == pytest.approx(-15)
+    assert D.opinion(g, b, a) == pytest.approx(-2) and D.opinion(g, d, a) == pytest.approx(-2)
+    assert D.opinion(g, c, p) == pytest.approx(5)       # 적의 적: +5
+    assert not D.denounce_check(g, p, a)[0]      # 같은 대상 쿨타임
+    D.denounce(g, p, b)
+    assert D.opinion(g, d, p) == pytest.approx(0)
+    D.denounce(g, p, d)                          # 24턴 안 3번째: 모든 세력 −3
+    assert D.opinion(g, c, p) == pytest.approx(5 - 3)
+    assert D.opinion(g, a, p) == pytest.approx(-15 - 3)
+
+
+def test_hp_pool_split_merge_heal():
+    g = new_game(player_start="S002", n_enemies=1)
+    for x in list(g.armies.values()):
+        if x.owner == 0:
+            g.remove_army(x)
+    a = g.new_army(0, "S002", {"inf": 3})
+    hp = C.UNITS["inf"]["hp"]
+    a.dmg["inf"] = 3 * hp - 16                   # 남은 체력 16/30
+    b, _ = g.split_army(a.id, {"inf": 1})
+    assert b.hp_left("inf") == 5 and a.hp_left("inf") == 11      # 5/10, 11/20
+    ok, _ = g.merge_armies(a.id, b.id)
+    assert ok and a.units["inf"] == 3 and a.hp_left("inf") == 16
+    # 한 턴 아무것도 하지 않으면 10% 회복
+    g.end_turn()
+    assert a.hp_left("inf") == pytest.approx(16 + 0.1 * 3 * hp)
+    # 명령을 받은 턴은 회복하지 않는다
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [tgt])
+    for x in g.armies_at(tgt):
+        g.remove_army(x)
+    left = a.hp_left("inf")
+    g.order_army(a.id, tgt)
+    g.end_turn()
+    assert a.hp_left("inf") == pytest.approx(left)
+
+
+def test_ai_leader_bias():
+    from korciv import ai
+    g = new_game(player_start="S002", n_enemies=2, player_leader="custom", ai_leaders=["yisunsin", "sejong"])
+    assert ai.leader_bias(g, 1, "naval") > 1.0 and ai.leader_bias(g, 1, "naval") <= 1.15
+    assert ai.leader_bias(g, 2, "bank") > 1.0
+    _lead(g, 1, "gungye")
+    assert ai.leader_bias(g, 1, "assault") > 1.0
+    _lead(g, 1, "taizong")
+    assert ai.leader_bias(g, 1, "assault") < 1.0           # 안시성: 방어선 공격 불리
+    _lead(g, 1, "custom")
+    assert ai.leader_bias(g, 1, "naval") == 1.0

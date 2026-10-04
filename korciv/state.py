@@ -98,6 +98,13 @@ class Army:
     def empty(self) -> bool:
         return sum(self.units.values()) <= 0
 
+    def hp_max(self, k) -> int:
+        return C.UNITS[k]["hp"] * self.units.get(k, 0)
+
+    def hp_left(self, k) -> float:
+        """같은 유닛끼리 합산한 남은 체력."""
+        return max(0.0, self.hp_max(k) - self.dmg.get(k, 0.0))
+
     def kinds(self) -> set:
         return {C.UNITS[k]["kind"] for k, n in self.units.items() if n > 0}
 

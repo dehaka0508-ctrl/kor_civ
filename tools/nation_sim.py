@@ -50,8 +50,15 @@ def run_game(job):
 
     def snap(t):
         snaps[t] = {f.id: (g.region_count(f.id), g.gdp(f.id) if f.alive else 0.0) for f in g.factions[:N_FAC]}
+    social = Counter()                         # (세력, 종류) -> 횟수: 우호 선언·비난
     while not g.game_over and g.turn <= turns:
         g.end_turn()
+        for e in g.events:
+            if e["kind"] == "diplo" and e["fids"]:
+                if "우호를 선언" in e["text"]:
+                    social[(e["fids"][0], "friend")] += 1
+                elif "비난했습니다" in e["text"]:
+                    social[(e["fids"][0], "denounce")] += 1
         done = g.turn - 1                      # 처리한 턴 수
         if done in SNAPS:
             snap(done)
@@ -64,7 +71,8 @@ def run_game(job):
         rows.append({"leader": f.leader, "gov": f.gov, "alive": f.alive, "eliminated": f.eliminated_turn,
                      "win": (1 / len(winners)) if f.id in winners else 0.0,
                      "regions": {t: snaps[t][f.id][0] for t in SNAPS},
-                     "gdp": {t: round(snaps[t][f.id][1], 1) for t in SNAPS}})
+                     "gdp": {t: round(snaps[t][f.id][1], 1) for t in SNAPS},
+                     "friend": social[(f.id, "friend")], "denounce": social[(f.id, "denounce")]})
     return {"seed": seed, "turns": g.turn - 1, "victory": g.winner[1] if g.winner else None,
             "winner_rebel": bool(winners) and all(w >= N_FAC for w in winners),
             "secs": round(time.time() - t0, 1), "factions": rows}
@@ -107,6 +115,10 @@ def report(path):
           f"평균 {sum(g['secs'] for g in games) / len(games):.0f}초/판")
     print("승리 유형:", {VNAME.get(k, k or "없음"): v for k, v in vc.most_common()},
           "반란 세력 승리", sum(g["winner_rebel"] for g in games))
+    rs_all = [r for gm in games for r in gm["factions"]]
+    if rs_all and "friend" in rs_all[0]:
+        print(f"판당 세력별 우호 선언 {sum(r['friend'] for r in rs_all) / len(rs_all):.2f}회, "
+              f"비난 {sum(r['denounce'] for r in rs_all) / len(rs_all):.2f}회")
     rows = []
     for k, rs in by.items():
         n = len(rs)
