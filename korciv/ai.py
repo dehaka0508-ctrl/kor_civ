@@ -87,6 +87,8 @@ def plan_turn(g, fid):
     _merge_idle(g, fid)
     _austerity(g, f, threat)
     _army_orders(g, f, threat)
+    _naval_orders(g, f, threat)
+    _air_orders(g, f, threat)
     _slots(g, f, threat)
     for r in g.regions_of(fid):   # 슬롯이 비는 지역은 생산 집중(건설·생산 중엔 효과 없음)
         r.focus = True
@@ -131,6 +133,8 @@ def threat_map(g, fid):
 # ------------------------------------------------------------------ 시장·세율
 def _market(g, f):
     need_oil = 4 if f.ai.get("weights", {}).get("military", 0) > 1.0 else 2
+    if D.enemies(g, f.id) and f.money > 10000:
+        need_oil = 8                      # 전쟁 중: 함선·항공기 생산용 석유
     if f.res.get("oil", 0) < need_oil and f.money > 4000:
         g.market_buy(f.id, "oil", need_oil - int(f.res["oil"]))
     for res, keep in (("coal", 40), ("elec", 30)):
@@ -549,10 +553,25 @@ def _army_orders(g, f, threat):
               and not w.is_sea(a.loc)]
     front = set(threat)
     crisis = _war_crisis(g, fid, threat)
+    cap_min = capital_min_garrison(g, f, threat)
     for a in armies:
         if a.id not in g.armies:
             continue
         rr = g.regions[a.loc]
+        # 수도 방위군: 최소 병력은 수도에 남긴다(넘는 병력만 움직인다)
+        if a.loc == f.capital:
+            others = sum(x.count(("land",)) for x in g.armies_at(a.loc, fid)
+                         if x.id != a.id and x.domain() == "land")
+            keep = max(0, cap_min - others)
+            if keep >= a.count():
+                continue
+            if keep > 0:
+                stay = {}
+                for k in ("inf", "art", "tank"):
+                    t = min(a.units.get(k, 0), keep - sum(stay.values()))
+                    if t > 0:
+                        stay[k] = t
+                g.split_army(a.id, stay)
         # 중립 땅 점령은 평시이거나, 전쟁 중이라도 위기가 아니고 작은 부대(2개 이하)일 때만.
         # 나라가 위태로운데 큰 부대가 중립 땅에 묶여 있지 않도록 한다.
         neutral_ok = not crisis and (not at_war or a.count() <= 2)
@@ -602,6 +621,14 @@ def _army_orders(g, f, threat):
         if best:
             g.order_army(a.id, best, best_mode)
             continue
+        # 육군 공격이 불리하면 들이받지 않고 포병으로 먼저 깎는다(선제 폭격)
+        if a.units.get("art") and at_war:
+            strong = [n for n, o in reach.items() if o["action"] == "attack" and not w.is_sea(n)
+                      and g.regions[n].owner != NEUTRAL and g.hostile_units_at(fid, n)]
+            if strong and g._can_bombard(a, strong[0]):
+                strong.sort(key=lambda n: -visible_hostile_power(g, fid, n))
+                g.order_army(a.id, strong[0], force_bombard=True)
+                continue
         # 빈 적지·중립지 점령
         for node, opt in reach.items():
             if opt["action"] == "move" and not w.is_sea(node) and g.hostile(fid, g.regions[node].owner) \
@@ -660,6 +687,135 @@ def _building_levels(g, rid):
     """폭격으로 부술 수 있는 건물 단계 합(생산·방어 건물·방어선)."""
     rr = g.regions[rid]
     return sum(rr.b.get(k, 0) for k in list(C.PROD_BUILDINGS) + ["shelter", "aa"]) + sum(rr.lines.values())
+
+
+def capital_min_garrison(g, f, threat) -> int:
+    """수도에 늘 남겨 둘 최소 육군 수: 2 + 영토 20곳당 1, 적대 이웃과 맞닿았으면 +2, 위협이 크면 +2."""
+    cap = f.capital
+    if cap not in g.regions or g.regions[cap].owner != f.id:
+        return 0
+    n = 2 + g.region_count(f.id) // 20
+    for m in g.world.land_adj[cap]:
+        o = g.regions[m].owner
+        if o not in (NEUTRAL, f.id) and (D.at_war(g, f.id, o) or D.opinion(g, f.id, o) <= C.AI_DEF_OP):
+            n += 2
+            break
+    if threat.get(cap, 0) >= 1.0:
+        n += 2
+    return n
+
+
+def _sea_targets(g, fid):
+    """우리 해안이 닿은 해역(과 그 옆 해역)의 적(전쟁 중) 해안 지역, 그중 항구가 있는 곳, 적과 육로로 맞닿았는지."""
+    w = g.world
+    enemies = set(D.enemies(g, fid))
+    seas = {s for r in g.regions_of(fid) if w.regions[r.id].coastal for s in w.regions[r.id].seas}
+    seas |= {s2 for s in list(seas) for s2 in w.seas[s].adj}
+    tgts = sorted({v for s in seas for v in w.seas[s].coast if g.regions[v].owner in enemies})
+    ports = [v for v in tgts if g.regions[v].b["port"]]
+    contact = any(g.regions[n].owner in enemies for r in g.regions_of(fid) for n in w.land_adj[r.id])
+    return tgts, ports, contact
+
+
+def _naval_orders(g, f, threat):
+    """함대: 상륙함은 항구에서 병력을 태워 적 해안(항구 우선)에 상륙, 구축함은 적 항구를 먼저 포격, 빈 상륙함은 귀항."""
+    fid = f.id
+    w = g.world
+    if not D.enemies(g, fid):
+        return
+    cap_min = capital_min_garrison(g, f, threat)
+    for fl in [a for a in list(g.armies.values()) if a.owner == fid and a.domain() == "naval"]:
+        if fl.id not in g.armies or fl.order:
+            continue
+        at_port = not w.is_sea(fl.loc)
+        if fl.units.get("lst") and at_port:
+            # 태우기: 같은 항구의 육군(수도 방위군은 남김)
+            for la in [a for a in g.armies_at(fl.loc, fid) if a.domain() == "land" and not a.order]:
+                room = fl.cargo_cap() - fl.cargo_used()
+                if room <= 0:
+                    break
+                keep = cap_min if fl.loc == f.capital else 0
+                take = {}
+                for k in ("tank", "inf", "art"):
+                    per = C.UNITS[k].get("cargo", 1)
+                    n = min(la.units.get(k, 0) - (keep if k == "inf" else 0), (room - sum(
+                        C.UNITS[x]["cargo"] * v for x, v in take.items())) // per)
+                    if n > 0:
+                        take[k] = n
+                if not take:
+                    continue
+                if sum(take.values()) >= la.count():
+                    g.merge_armies(fl.id, la.id)
+                else:
+                    b, _ = g.split_army(la.id, take)
+                    if b:
+                        g.merge_armies(fl.id, b.id)
+        reach = g.reachable(fl)
+        cargo = fl.count(("land",))
+        if fl.units.get("lst") and at_port and cargo < 3:
+            # 태울 병력 부르기: 근처(이번 턴에 올 수 있는) 대기 육군 하나를 항구로
+            for la in sorted([a for a in g.armies.values() if a.owner == fid and a.domain() == "land"
+                              and not w.is_sea(a.loc) and a.loc != fl.loc and a.count() >= 2
+                              and a.loc != f.capital and a.loc not in threat], key=lambda a: -a.count()):
+                if la.order and la.order.get("type") == "attack":
+                    continue
+                if g.reachable(la).get(fl.loc, {}).get("action") == "move":
+                    g.order_army(la.id, fl.loc)
+                    break
+            continue
+        if fl.units.get("lst") and cargo >= 3:
+            best, best_s = None, 0.0
+            for v, o in reach.items():
+                if o["action"] != "attack" or w.is_sea(v):
+                    continue
+                rr = g.regions[v]
+                s_ = g.region_value(v)[0] + (4 if rr.b["port"] else 0)        # 항구가 있는 곳을 우선
+                defs = g.hostile_units_at(fid, v)
+                if defs:
+                    pv = g.preview_attack(fl, v, "assault")
+                    if not pv or pv["def_dmg"] < pv["def_hp"] * 0.95 or pv["att_dmg"] > pv["def_dmg"]:
+                        continue
+                    s_ -= 2
+                if s_ > best_s:
+                    best, best_s = v, s_
+            if best:
+                g.order_army(fl.id, best, "assault")
+                continue
+        if fl.units.get("dd") and not at_port:
+            bt = [v for v, o in reach.items() if o["action"] == "bombard"]
+            if bt:
+                bt.sort(key=lambda v: (-g.regions[v].b["port"], -visible_hostile_power(g, fid, v)))
+                g.order_army(fl.id, bt[0], force_bombard=True)
+                continue
+        if fl.units.get("dd") and at_port:
+            _, ports, _ = _sea_targets(g, fid)
+            seas = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)
+                    and any(p in w.seas[v].coast for p in ports)]
+            if seas:
+                g.order_army(fl.id, seas[0])
+                continue
+        if not at_port and (cargo == 0 or not fl.units.get("lst")):
+            home = [v for v, o in reach.items() if o["action"] == "move" and not w.is_sea(v)]
+            if home:
+                g.order_army(fl.id, home[0])
+
+
+def _air_orders(g, f, threat):
+    """전투기: 위협이 가장 큰 곳에서 가까운 자국 공항으로 옮겨 지상전을 지원한다."""
+    fid = f.id
+    if not threat:
+        return
+    hot = max(threat, key=threat.get)
+    for a in [a for a in g.armies.values() if a.owner == fid and a.domain() == "air" and not a.order
+              and a.units.get("ftr") and not (a.units.get("bmb") or a.units.get("stl"))]:
+        reach = g.reachable(a)
+        bases = [v for v, o in reach.items() if o["action"] == "move"]
+        if not bases:
+            continue
+        d_now = g.world.distances_from(hot, 6).get(a.loc, 99)
+        best = min(bases, key=lambda v: g.world.distances_from(hot, 6).get(v, 99))
+        if g.world.distances_from(hot, 6).get(best, 99) < d_now:
+            g.order_army(a.id, best)
 
 
 def _war_crisis(g, fid, threat) -> bool:
@@ -836,6 +992,75 @@ def _slots(g, f, threat, military=True):
         cost = (R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1))
         # 확률을 통과하면 그 지역 슬롯은 방어 건설이 차지한다(예산 안에서)
         cands.append((50 + hostility, r.id, "build", key, border, cost / C.DEF_TURNS[lv]))
+    # 수도 방위: 최소 방위군과 방어 건물
+    idle_ids = {r.id for r in idle}
+    cap = g.regions.get(f.capital)
+    if cap is not None and cap.owner == fid and f.capital in idle_ids:
+        cap_min = capital_min_garrison(g, f, threat)
+        garrison = sum(a.count(("land",)) for a in g.armies_at(f.capital, fid) if a.domain() == "land")
+        if military and garrison < cap_min:
+            cands.append((3.0 + threat.get(f.capital, 0), f.capital, "unit", "inf", None,
+                          g.unit_cost(fid, f.capital, "inf")))
+        else:
+            for n in sorted(g.world.land_adj[f.capital]):
+                o = g.regions[n].owner
+                if o in (NEUTRAL, fid):
+                    continue
+                war = D.at_war(g, fid, o)
+                lv = cap.lines.get(n, 0)
+                top = 4 if war else (3 if D.opinion(g, fid, o) <= C.AI_DEF_OP else 1)
+                if lv < top and (war or f.money > reserve * 2):
+                    cost = R.def_building_cost("line", lv + 1) * g.mods(fid).mult("cost_line")
+                    cands.append((55 if war else 51, f.capital, "build", "line", n, cost / C.DEF_TURNS[lv]))
+                    break
+    # 공군: 전쟁 중이거나 호전적이고 넉넉하면 공항 → 전투기(지상전 지원)·폭격기
+    airports = [r for r in regs if r.b["airport"]]
+    n_ftr = sum(a.units.get("ftr", 0) for a in g.armies.values() if a.owner == fid)
+    n_bmb = sum(a.units.get("bmb", 0) for a in g.armies.values() if a.owner == fid)
+    if military and (at_war or f.aggression >= 6) and f.money > 15000 and not airports and g.turn > 24:
+        site = cap if (cap is not None and cap.owner == fid and f.capital in idle_ids) else None
+        if site is None:
+            pool_ap = sorted(idle, key=lambda r: -threat.get(r.id, 0) - r.pop / 100)
+            site = pool_ap[0] if pool_ap else None
+        if site is not None:
+            cost = C.SINGLE_BUILDINGS["airport"]["cost"] * C.BUILD_COST_MULT
+            cands.append((2.0, site.id, "build", "airport", None, cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
+    if military and at_war and airports:
+        ap_idle = [r for r in airports if r.id in idle_ids]
+        if ap_idle and f.res.get("oil", 0) >= 2 and f.money > 8000 and n_ftr < 2 + len(regs) // 25:
+            r0 = ap_idle[0]
+            cands.append((2.2, r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
+        elif ap_idle and f.res.get("oil", 0) >= 4 and f.money > 15000 and n_bmb < 1 + len(regs) // 40:
+            r0 = ap_idle[0]
+            cands.append((1.8, r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
+    # 해군: 육로로 불리하거나 닿지 않는 적 해안을 노린다(상륙함), 적 항구가 있으면 구축함
+    if military and at_war:
+        sea_t, enemy_ports, land_contact = _sea_targets(g, fid)
+        ports_idle = [r for r in regs if r.b["port"] and r.id in idle_ids]
+        n_lst = sum(a.units.get("lst", 0) for a in g.armies.values() if a.owner == fid)
+        n_dd = sum(a.units.get("dd", 0) for a in g.armies.values() if a.owner == fid)
+        unfavorable = threat and max(threat.values()) >= 1.0
+        want_navy = sea_t and (not land_contact or unfavorable or f.aggression >= 6)
+        has_port = any(r.b["port"] for r in regs)
+        if want_navy and not has_port and f.money > 6000:
+            coast = sorted([r for r in idle if g.world.regions[r.id].coastal],
+                           key=lambda r: -threat.get(r.id, 0) - r.pop / 100)
+            if coast:
+                cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
+                cands.append((2.3, coast[0].id, "build", "port", None, cost / C.SINGLE_BUILDINGS["port"]["turns"]))
+        if sea_t and ports_idle and f.res.get("oil", 0) >= 3 and f.money > 6000:
+            if n_lst < 1 + len(regs) // 40 and (not land_contact or unfavorable or g.rng.random() < 0.15):
+                r0 = ports_idle[0]
+                cands.append((2.4, r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
+            elif enemy_ports and n_dd < n_lst + 1 and f.res.get("oil", 0) >= 4 and f.money > 10000:
+                r0 = ports_idle[-1]
+                cands.append((2.0, r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
+    # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
+    if military and at_war:
+        for fl in g.armies.values():
+            if fl.owner == fid and fl.units.get("lst") and fl.loc in idle_ids and fl.count(("land",)) < 3:
+                cands.append((2.5, fl.loc, "unit", "inf", None, g.unit_cost(fid, fl.loc, "inf")))
+                break
     # 군 생산 후보: 위협 높은 곳 우선
     if mil_need > 0 and military:
         # 징집 피로: 더 뽑으면 징집 피로가 생길 수 있는 지역(최근 10턴 중 6턴 이상)은 위급할 때(위협 1 이상)만
@@ -847,8 +1072,8 @@ def _slots(g, f, threat, military=True):
             key = "inf"
             if f.res.get("oil", 0) >= 2 and f.money > 8000 and g.rng.random() < 0.35:
                 key = "tank"
-            elif g.rng.random() < 0.15 and f.money > 3000:
-                key = "art"
+            elif g.rng.random() < (0.28 if at_war else 0.15) and f.money > 3000:
+                key = "art"                    # 전쟁 중엔 선제 폭격용 포병을 더
             per = g.unit_cost(fid, r.id, key)
             u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1)
             cands.append((u, r.id, "unit", key, None, per))

@@ -672,6 +672,23 @@ class Game:
         return out
 
     # ------------------------------------------------------------------ 전투 예측
+    def air_support(self, fid, target, attack=True):
+        """전투기 지상전 지원: target 에서 육상 2칸 이내 fid 소유 공항에 주둔한 전투기(target 자체 제외).
+        (지원 전력, 전투기 부대 목록)"""
+        if fid == NEUTRAL:
+            return 0.0, []
+        w = self.world
+        near = {target}
+        frontier = {target}
+        for _ in range(C.FTR_SUPPORT_RANGE):
+            frontier = {v for u in frontier for v in w.land_adj[u]} - near
+            near |= frontier
+        near.discard(target)
+        arms = [a for a in self.armies.values() if a.owner == fid and a.units.get("ftr") and a.loc in near
+                and not w.is_sea(a.loc) and self.regions[a.loc].owner == fid and self.regions[a.loc].b["airport"]]
+        per = C.FTR_SUPPORT_ATK if attack else C.FTR_SUPPORT_DEF
+        return per * sum(a.units["ftr"] for a in arms), arms
+
     def combat_strength(self, fid, armies, target, mode="assault"):
         """공격력 A 와 주 공격 경로를 계산."""
         w = self.world
@@ -716,12 +733,16 @@ class Game:
             contrib[src] = contrib.get(src, 0) + val
             sources.add(a.loc)
         main_src = max(contrib, key=contrib.get) if contrib else None
+        if armies:
+            total += self.air_support(fid, target, True)[0] * mult      # 근처 공항 전투기 지원
         return total, sources, main_src
 
     def defense_strength(self, fid_att, target, main_src, mode):
         defenders = self.hostile_units_at(fid_att, target)
         rr = self.regions[target]
         dsum = sum(C.UNITS[k]["df"] * n * self.morale(a.owner) for a in defenders for k, n in a.units.items())
+        if rr.owner != NEUTRAL and defenders and self.hostile(fid_att, rr.owner):
+            dsum += self.air_support(rr.owner, target, False)[0] * self.morale(rr.owner)   # 근처 공항 전투기 방어 지원
         line_level = rr.lines.get(main_src, 0) if main_src else 0
         if rr.owner != NEUTRAL and mode == "assault":
             k = self.mods(rr.owner).value("line_k", C.LINE_BONUS)
@@ -786,6 +807,9 @@ class Game:
             elif mode == "assault":
                 add(af, self.fx_source(fid, "no_ally_assault"), m.mult("no_ally_assault"))
         add(af, "사기(실질 행복도 낮음)", self.morale(fid))
+        ap, aa = self.air_support(fid, target, True)
+        if ap:
+            af.append((f"전투기 {sum(x.units['ftr'] for x in aa)}대 지원 (+{ap:.0f})", 1 + ap / max(1.0, pv["A"] - ap)))
         if self.retake_bonus(fid, target):
             add(af, "저항 중인 옛 영토 탈환", 1 + C.RESIST_RETAKE_ATK)
         line = pv["line"]
@@ -800,6 +824,10 @@ class Game:
                 add(df, self.fx_source(rr.owner, "def_coast"), om.mult("def_coast"))
         for o in def_units:
             add(df, f"{self.fname(o)} 사기", self.morale(o))
+        if rr.owner != NEUTRAL:
+            dp, da = self.air_support(rr.owner, target, False)
+            if dp:
+                df.append((f"전투기 {sum(x.units['ftr'] for x in da)}대 지원 (+{dp:.0f})", 1 + dp / max(1.0, pv["D"] - dp)))
 
         def losses(units_by_army, dmg):
             pool = [(k, n) for k, n in units_by_army.items() if n > 0]
@@ -1461,14 +1489,23 @@ class Game:
         rr = self.regions[rid]
         old = rr.owner
         m = self.mods(fid)
+        # 원래 주인이 저항·회복 중인 옛 땅을 되찾으면: 새 저항 없이 빼앗기기 전 행복도로 복구
+        phase = self.resist_phase(rr)[0]
+        retake = old != NEUTRAL and rr.resist and rr.resist.get("from") == fid and phase in ("resist", "recover")
+        h_before = rr.resist.get("h0", rr.happy) if retake else rr.happy
         new_h = 0.0 if old == NEUTRAL else rr.happy + m.add("occupied_happy_extra")
         if old != NEUTRAL:
             D.add_war_score(self, fid, old, rr.pop)
         self.transfer_region(rid, fid)
+        if retake:
+            rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, h_before))
+            self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
+                       f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=(fid, old))
+            return
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
         if old != NEUTRAL:
             half = bool(m.value("wanggeon_occupy"))         # 왕건: 저항·회복 기간 절반
-            rr.resist = {"turn": self.turn, "from": old,
+            rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": C.RESIST_TURNS // 2 if half else C.RESIST_TURNS,
                          "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
         self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
@@ -1760,6 +1797,8 @@ class Game:
         p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
             hit = self.bomb_targets(tgt)
+            if units.get("dd", 0) and rr.b.get("port"):
+                hit = ["port"]                    # 함포 사격은 항구를 먼저 노린다(상륙·해군 기지 무력화)
             if hit:
                 k = self.rng.choice(hit)
                 if k.startswith("line:"):
@@ -1872,8 +1911,22 @@ class Game:
             note = f"방어선 {line} → {line - 1}단계"
         filt = C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS
         def_owner = defenders[0].owner if defenders else rr.owner
-        lost_d = self.apply_damage(defenders, dd)
-        lost_a = self.apply_damage([x for x in attackers if x.id in self.armies], ad, unit_filter=filt)
+        # 지원 전투기는 기여한 전력 비율만큼 피해를 나눠 입는다
+        a_air, a_air_arms = self.air_support(fid, tgt, True)
+        a_air *= self.morale(fid)
+        d_air, d_air_arms = (self.air_support(rr.owner, tgt, False) if rr.owner != NEUTRAL else (0.0, []))
+        d_air *= self.morale(rr.owner) if rr.owner != NEUTRAL else 1.0
+        base_a = A / (1 + C.FLANK_BONUS * (n - 1)) if mode == "assault" else A
+        fa = min(0.9, a_air / base_a) if base_a > 0 and a_air_arms else 0.0
+        fd = min(0.9, d_air / Dv) if Dv > 0 and d_air_arms else 0.0
+        lost_d = self.apply_damage(defenders, dd * (1 - fd))
+        if fd:
+            for k, v in self.apply_damage(d_air_arms, dd * fd, unit_filter=("ftr",)).items():
+                lost_d[k] = lost_d.get(k, 0) + v
+        lost_a = self.apply_damage([x for x in attackers if x.id in self.armies], ad * (1 - fa), unit_filter=filt)
+        if fa:
+            for k, v in self.apply_damage(a_air_arms, ad * fa, unit_filter=("ftr",)).items():
+                lost_a[k] = lost_a.get(k, 0) + v
         self._score_units(fid, def_owner, lost_d)
         self._score_units(def_owner, fid, lost_a)
         self.battle_regions.append(tgt)

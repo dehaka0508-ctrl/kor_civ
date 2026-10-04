@@ -962,3 +962,72 @@ def test_time_victory_and_socialist_rule():
     rng = _r.Random(3)
     picks_f = [ai_pick_government(rng, 6.0, 2, 0) for _ in range(2000)]
     assert picks.count("socialist") < picks_f.count("socialist")
+
+
+def _war_pair():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    D.declare_war(g, 0, 1)
+    return g, tgt
+
+
+def test_fighters_support_attack_and_defense():
+    g, tgt = _war_pair()
+    g.new_army(1, tgt, {"inf": 3})
+    att = g.new_army(0, "S002", {"inf": 5})
+    A0, _, _ = g.combat_strength(0, [att], tgt)
+    g.regions["S002"].b["airport"] = 1
+    g.new_army(0, "S002", {"ftr": 2})                  # 공격 측 공항 전투기(대상에서 1칸)
+    A1, _, _ = g.combat_strength(0, [att], tgt)
+    assert A1 == pytest.approx(A0 + 2 * C.FTR_SUPPORT_ATK * g.morale(0))
+    D0, _, _ = g.defense_strength(0, tgt, "S002", "assault")
+    far = next(n for n in sorted(g.world.land_adj[tgt]) if n != "S002")
+    _own(g, 1, [far])
+    g.regions[far].b["airport"] = 1
+    g.new_army(1, far, {"ftr": 3})
+    D1, _, _ = g.defense_strength(0, tgt, "S002", "assault")
+    assert D1 > D0
+    g._ground_battle(0, [att], tgt, "assault", [att])   # 지원 전투기도 피해를 나눠 입을 수 있다(오류 없이)
+
+
+def test_retake_during_resistance_restores_without_new_resistance():
+    g, tgt = _war_pair()
+    rr = g.regions[tgt]
+    rr.happy = 35.0
+    g.new_army(0, tgt, {"inf": 1})
+    g.complete_occupation(0, tgt)                       # 0이 빼앗음 → 저항
+    assert g.resisting(rr) and rr.resist["h0"] == 35.0
+    g.complete_occupation(1, tgt)                       # 원래 주인 1이 저항 중에 되찾음
+    assert rr.owner == 1 and rr.resist is None and rr.happy == pytest.approx(35.0)
+
+
+def test_destroyer_bombard_hits_port_first():
+    g, tgt = _war_pair()
+    rr = g.regions[tgt]
+    rr.b["port"] = 1
+    rr.b["factory"] = 3
+    sea = g.world.regions[tgt].seas[0] if g.world.regions[tgt].seas else None
+    if sea is None:
+        return
+    fl = g.new_army(0, sea, {"dd": 1})
+    g.rng.random = lambda: 0.1
+    g._bombard(fl, tgt, {"dd": 1})
+    assert rr.b["port"] == 0 and rr.b["factory"] == 3
+
+
+def test_ai_keeps_capital_garrison():
+    from korciv import ai as AI
+    g, tgt = _war_pair()
+    f = g.factions[0]
+    f.is_ai = True
+    cap = f.capital
+    for a in list(g.armies_at(cap)):
+        g.remove_army(a)
+    g.new_army(0, cap, {"inf": 10})
+    need = AI.capital_min_garrison(g, f, AI.threat_map(g, 0))
+    AI._army_orders(g, f, AI.threat_map(g, 0))
+    stay = sum(a.count() for a in g.armies_at(cap, 0) if not a.order or a.order.get("type") == "bombard")
+    assert need >= 2 and stay >= need
