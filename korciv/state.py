@@ -174,7 +174,8 @@ class Settings:
     n_enemies: int = 3
     difficulty: int = 2
     fog: int = 1
-    victories: tuple = ("conquest", "economic", "landmark")
+    victories: tuple = ("conquest", "economic", "landmark", "time")
+    max_turns: int = C.TIME_VICTORY_TURNS   # 시간 종료 승리 턴
     player_leader: str = "sejong"
     player_leader_name: str = ""
     player_name: str = "대한"

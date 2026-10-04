@@ -17,6 +17,8 @@ from .state import NEUTRAL
 def choose_victory_goal(g, f):
     """1년에 한 번: 국내 상황·주변 정세로 추구할 승리 조건을 고른다(플레이어에게 보이지 않음)."""
     vt = [v for v in ("conquest", "economic", "landmark") if v in g.settings.victories]
+    if not vt and "time" in g.settings.victories:
+        vt = ["economic"]                    # 시간 종료만 켜져 있으면 GDP·영토를 키우는 쪽으로
     if not vt:
         return None
     alive = g.alive_ids()

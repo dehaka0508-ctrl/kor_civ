@@ -233,7 +233,7 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
         if g["target"] is None:
             continue
         s = 1 - abs(aggression - g["target"]) / 10 + rng.random() * 0.1
-        if g["key"] == "socialist" and factory_level >= bank_level:
+        if g["key"] == "socialist" and factory_level > bank_level:   # 공장이 은행보다 많을 때만
             s += 0.2
         if s > best_score:
             best, best_score = g["key"], s

@@ -942,3 +942,23 @@ def test_coalition_not_resigned_when_already_together():
     assert D.same_coalition(g, 1, 2)
     ok, why = D.treaty_check(g, 1, 2, "coalition")
     assert not ok and "이미" in why
+
+
+def test_time_victory_and_socialist_rule():
+    import random as _r
+    from korciv.leaders import ai_pick_government
+    g = new_game(n_enemies=2, max_turns=5)
+    assert "time" in g.settings.victories
+    sc = g.time_scores()
+    assert abs(sum(sc.values()) - 100) < 1e-6
+    for _ in range(6):
+        g.end_turn()
+        if g.game_over:
+            break
+    assert g.game_over and g.winner[1] == "time"
+    # 공장·은행이 모두 0이면 사회주의 가산 없음
+    rng = _r.Random(3)
+    picks = [ai_pick_government(rng, 6.0, 0, 0) for _ in range(2000)]
+    rng = _r.Random(3)
+    picks_f = [ai_pick_government(rng, 6.0, 2, 0) for _ in range(2000)]
+    assert picks.count("socialist") < picks_f.count("socialist")

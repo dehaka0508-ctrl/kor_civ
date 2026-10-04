@@ -24,6 +24,7 @@ class SetupState:
         self.start = None
         self.ai_leaders = []          # 빈 칸은 무작위
         self.seed = ""
+        self.max_turns = C.TIME_VICTORY_TURNS
 
 
 def modal_frame(app, w, h, title=None):
@@ -95,6 +96,8 @@ VICTORY_TIPS = {
     "conquest": "정복승리: 다른 모든 세력(반란으로 생긴 나라 포함)을 멸망시키면 승리",
     "economic": f"경제승리: 내 GDP가 나머지 모든 세력 GDP 합의 {C.ECON_VICTORY_RATIO:g}배를 넘는 상태로 "
                 f"{C.ECON_VICTORY_TURNS}턴 유지하면 승리",
+    "time": "시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 480턴=10년)이 되면\n"
+            "점수(점유 지역·GDP·인구 비율의 평균)가 가장 높은 세력이 승리",
     "landmark": "랜드마크승리: 조선 8도 모두와 수도에 랜드마크를 보유하면 승리\n"
                 f"(랜드마크 하나를 지을 때마다 다음 비용 ×{C.LANDMARK_COST_GROWTH:g})",
 }
@@ -163,7 +166,14 @@ def draw_setup(app):
         s.victories[k] = gui.checkbox(cb, nm, s.victories[k])
         if gui.hover(pygame.Rect(cb)):
             gui.tooltip = VICTORY_TIPS.get(k, nm)
-    y += 64
+    y += 58
+    on = s.victories.get("time", False)
+    gui.text((x2, y + 2), f"시간 종료: {s.max_turns}턴 ({s.max_turns / C.TURNS_PER_YEAR:g}년)", 12,
+             t.text if on else t.muted, "semibold")
+    v, _ = gui.slider((x2 + 200, y + 4, 260, 16), s.max_turns, C.TIME_VICTORY_MIN, C.TIME_VICTORY_MAX,
+                      C.TIME_VICTORY_STEP, "max_turns", enabled=on)
+    s.max_turns = int(v)
+    y += 34
     gui.text((x2, y), "시작 구역", 13, t.muted, "semibold")
     st_name = app.world.regions[s.start].name if s.start else "무작위"
     gui.text((x2 + 80, y), st_name, 14, weight="semibold")
@@ -211,7 +221,7 @@ def start_from_setup(app):
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
         player_leader_name=s.custom_name.strip() if s.leader == "custom" else "",
         player_name=s.name.strip() or "대한", player_start=s.start,
-        ai_leaders=[k for k in (s.ai_leaders or [])[: s.n_enemies] if k], seed=seed)
+        ai_leaders=[k for k in (s.ai_leaders or [])[: s.n_enemies] if k], seed=seed, max_turns=s.max_turns)
     app.start_game(settings)
 
 
@@ -859,7 +869,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 전쟁 피로도(0~200): 선전포고 +15(당하면 +10), 전쟁 중 턴당 +0.75(당하면 +0.5), 평시 턴당 1 회복.
 · 점령한 적 지역은 4턴 저항(산출·생산 없음, 행복도 −100) 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 방어선은 돌격 방어를 높입니다.
-· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 랜드마크(8도 + 수도, 하나 지을 때마다 다음 비용 ×1.2)"""
+· 승리: 정복 / 경제(GDP > 나머지 합 ×2, 10턴) / 랜드마크(8도 + 수도, 하나 지을 때마다 다음 비용 ×1.2) / 시간 종료(기본 480턴, 지역·GDP·인구 점수 1위)"""
 
 
 def draw_help(app):

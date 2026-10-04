@@ -298,7 +298,11 @@ AI_GOAL_WEIGHT = 0.25      # 목표에 맞는 전략 가중치에 더하는 값(
 # ---------------------------------------------------------------- 승리 (10절)
 ECON_VICTORY_RATIO = 2.0
 ECON_VICTORY_TURNS = 10
-VICTORY_TYPES = {"conquest": "정복승리", "economic": "경제승리", "landmark": "랜드마크승리"}
+VICTORY_TYPES = {"conquest": "정복승리", "economic": "경제승리", "landmark": "랜드마크승리", "time": "시간 종료 승리"}
+# 시간 종료 승리: 정해진 턴(기본 480턴 = 10년, 시작 설정에서 최대 1200턴)이 되면 점수 1위가 승리.
+# 점수 = (점유 지역 비율 + GDP 비율 + 인구 비율) / 3 × 100 (살아 있는 세력 전체 대비)
+TIME_VICTORY_TURNS = 480
+TIME_VICTORY_MIN, TIME_VICTORY_MAX, TIME_VICTORY_STEP = 120, 1200, 24
 
 # ---------------------------------------------------------------- 난이도 (11절, AI에만 적용)
 DIFFICULTIES = [

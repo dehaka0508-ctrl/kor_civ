@@ -2646,6 +2646,11 @@ class Game:
                 if f.econ_streak >= C.ECON_VICTORY_TURNS:
                     self._win((fid,), "economic")
                     return
+        if "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
+            sc = self.time_scores()
+            best = max(alive, key=lambda f: (sc[f], self.gdp(f)))
+            self._win((best,), "time")
+            return
         if "landmark" in st.victories:
             for fid in alive:
                 lm = [r for r in self.regions_of(fid) if r.landmark]
@@ -2654,6 +2659,15 @@ class Game:
                 if all(d in dos for d in DO8) and cap.landmark and cap.owner == fid:
                     self._win((fid,), "landmark")
                     return
+
+    def time_scores(self) -> dict:
+        """시간 종료 승리 점수: (지역 비율 + GDP 비율 + 인구 비율) / 3 × 100."""
+        alive = self.alive_ids()
+        regs = {f: self.region_count(f) for f in alive}
+        gdp = {f: self.gdp(f) for f in alive}
+        pop = {f: self.total_pop(f) for f in alive}
+        tr, tg, tp = (sum(d.values()) or 1 for d in (regs, gdp, pop))
+        return {f: (regs[f] / tr + gdp[f] / tg + pop[f] / tp) / 3 * 100 for f in alive}
 
     def _win(self, fids, kind):
         self.winner = (tuple(fids), kind)

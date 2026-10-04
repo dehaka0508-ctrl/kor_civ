@@ -722,6 +722,11 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
     lm = [app.world.regions[r.id].do8 for r in regs if r.landmark]
     y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")
+    if "time" in g.settings.victories:
+        sc = g.time_scores()
+        rank = sorted(sc, key=lambda k: -sc[k]).index(pid) + 1 if pid in sc else "-"
+        left = max(0, getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS) - g.turn)
+        y = kv(gui, x, y, w, "시간 종료 점수", f"{sc.get(pid, 0):.1f}점 · {rank}위 · {left}턴 남음")
     lead = LEADER_BY_KEY[f.leader]
     gov = GOV_BY_KEY.get(f.gov, {})
     y = gui.wrap((x, y + 2), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
