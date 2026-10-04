@@ -27,6 +27,8 @@ class Gui:
         self.keys: list = []
         self.text_events: list = []
         self.focus = None
+        self._inputs_drawn: set = set()   # 지난 프레임에 그린 입력칸
+        self.released = False             # 이번 프레임에 왼쪽 버튼을 뗐는지(버튼이 소비해도 유지)
         self.drag_id = None
         self.scroll: dict = {}
         self._clip_stack: list = []
@@ -67,6 +69,12 @@ class Gui:
         self.tooltip = None
         self.ui_rects = []
         self.released_id = None
+        self.released = False
+        # 포커스된 입력칸이 더는 그려지지 않으면(화면 전환·창 닫힘) 포커스를 푼다.
+        # 남아 있으면 Enter 등 모든 단축키가 입력칸으로 간 것으로 처리돼 무시된다.
+        if self.focus is not None and self.focus not in self._inputs_drawn:
+            self.blur()
+        self._inputs_drawn = set()
         self.time = pygame.time.get_ticks()
         mx, my = pygame.mouse.get_pos()
         self.mouse_phys = (mx, my)
@@ -75,6 +83,7 @@ class Gui:
         for e in events:
             if e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                 self.clicked = True
+                self.released = True
                 self.down = False
                 self.released_id = self.drag_id   # 방금 놓은 슬라이더는 이번 프레임에 값을 확정
                 self.drag_id = None
@@ -298,9 +307,20 @@ class Gui:
             w = max(r.h, int(r.w * min(1.0, frac)))
             self.rect(color or self.t.accent, (r.x, r.y, w, r.h), radius=r.h // 2)
 
+    def blur(self):
+        """입력칸 포커스 해제. IME 입력도 꺼서 한글 입력기가 단축키를 가로채지 않게 한다."""
+        self.focus = None
+        try:
+            pygame.key.stop_text_input()
+        except pygame.error:
+            pass
+
     def text_input(self, rect, tid, value, size=14, max_len=20):
         r = pygame.Rect(rect)
         t = self.t
+        self._inputs_drawn.add(tid)
+        if self.focus == tid and self.released and not r.collidepoint(self.mouse):
+            self.blur()                   # 입력칸 밖을 클릭하면 포커스 해제
         focused = self.focus == tid
         self.rect(t.panel, r, radius=6)
         pygame.draw.rect(self.screen, t.accent if focused else t.border, self.R(r), self.W(2 if focused else 1),
@@ -316,9 +336,9 @@ class Gui:
             for k in self.keys:
                 if k.key == pygame.K_BACKSPACE:
                     value = value[:-1]
-                elif k.key in (pygame.K_RETURN, pygame.K_ESCAPE, pygame.K_TAB):
-                    self.focus = None
-            self.keys = [k for k in self.keys if k.key not in (pygame.K_BACKSPACE, pygame.K_RETURN)]
+                elif k.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE, pygame.K_TAB):
+                    self.blur()
+            self.keys = [k for k in self.keys if k.key not in (pygame.K_BACKSPACE, pygame.K_RETURN, pygame.K_KP_ENTER)]
         caret = "|" if focused and (self.time // 500) % 2 == 0 else ""
         self.text((r.x + 10, r.centery), value + caret, size, t.text, anchor="midleft", max_w=r.w - 16)
         return value

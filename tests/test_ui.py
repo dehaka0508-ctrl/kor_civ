@@ -101,3 +101,27 @@ def test_tax_slider_release_commits(app):
         assert app.game.player.tax == pytest.approx(0.30, abs=0.02)
     finally:
         pygame.mouse.get_pos = orig
+
+
+def test_enter_ends_turn_after_setup_text_focus(app):
+    """시작 화면 입력칸에 포커스가 남은 채 게임을 시작해도 Enter로 턴이 넘어간다."""
+    enter = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r", scancode=40)
+    app.game = None
+    app.scene = "setup"
+    frame(app)
+    app.gui.focus = "name"
+    frame(app)
+    assert app.gui.focus == "name"               # 그려지는 동안은 유지
+    app.start_game(Settings(seed=4, n_enemies=3))
+    frame(app)
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    t0 = app.game.turn
+    for _ in range(6):
+        app.game.pending_proposals.clear()
+        app.game.pending_rebellions.clear()
+        app.modal = None
+        app.gui.begin([enter])
+        app.frame()
+    assert app.gui.focus is None
+    assert app.game.turn > t0

@@ -67,6 +67,7 @@ class App:
         self.clock = pygame.time.Clock()
         self.theme = Theme()
         self.gui = Gui(self.screen, self.theme)
+        self.gui.blur()               # pygame 2는 텍스트 입력(IME)이 기본으로 켜져 있다: 입력칸을 누를 때만 켠다
         self.world = load_world()
         self.map = MapView(self.world)
         self.game: Game | None = None

@@ -925,13 +925,13 @@ def draw_landmark_name(app):
     app.lm_name = gui.text_input((r.x + 24, r.y + 114, r.w - 48, 38), "lm_name", app.lm_name, size=15, max_len=16)
     gui.text((r.x + 24, r.y + 160), f"비워 두면 「{g.default_landmark_name(rid)}」로 짓습니다.", 12, t.muted)
     if gui.button((r.x + 24, r.bottom - 64, 220, 44), "착공", "primary"):
-        gui.focus = None
+        gui.blur()
         ok, msg = g.start_project(g.player_id, rid, "landmark", "landmark", name=app.lm_name)
         app.toast(msg, None if ok else t.bad)
         close(app)
         app.changed()
     if gui.button((r.right - 244, r.bottom - 64, 220, 44), "취소"):
-        gui.focus = None
+        gui.blur()
         close(app)
 
 
