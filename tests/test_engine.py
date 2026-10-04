@@ -692,9 +692,9 @@ def test_leader_roster_and_categories():
         assert len(l["fx"]) >= (0 if l["key"] == "custom" else 2)
     # 새 지도자로 게임을 시작해도 효과가 적용된다
     g = new_game(player_start="S002", n_enemies=5, player_leader="yisunsin",
-                 ai_leaders=["yangdi", "kublai", "hideyoshi", "hongtaiji", "terauchi"])
-    assert g.mods(0).mult("def_coast") == pytest.approx(1.2)
-    assert {f.leader for f in g.factions} == {"yisunsin", "yangdi", "kublai", "hideyoshi", "hongtaiji", "terauchi"}
+                 ai_leaders=["yangdi", "kublai", "hideyoshi", "hongtaiji", "ito"])
+    assert g.mods(0).mult("naval_power") == pytest.approx(1.3)
+    assert {f.leader for f in g.factions} == {"yisunsin", "yangdi", "kublai", "hideyoshi", "hongtaiji", "ito"}
 
 
 def test_landmark_cost_grows():

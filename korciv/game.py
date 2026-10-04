@@ -1683,7 +1683,7 @@ class Game:
                 + C.NAVAL_BMB_POWER * (a.units.get("bmb", 0) + a.units.get("stl", 0)) for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
-        return p * self.morale(fid)
+        return p * self.morale(fid) * self.mods(fid).mult("naval_power")   # 이순신: 해전 +30%
 
     def _naval_battle(self, sid, x, fx, y, fy):
         px, py = self._naval_power(x, fx, sid), self._naval_power(y, fy, sid)
@@ -1784,7 +1784,7 @@ class Game:
                 notes.append(f"폭격기 {shot}대 격추")
             a.units = {k: v for k, v in a.units.items() if v > 0}
         dmg = units.get("art", 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
-        dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"]
+        dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * m.mult("naval_bomb")
         dmg += bombers.get("bmb", 0) * C.UNITS["bmb"]["bomb"] * (1 - C.AA_DMG_K * aa)
         dmg += bombers.get("stl", 0) * C.UNITS["stl"]["bomb"] * (C.STEALTH_AA_DMG if aa >= 5 else 1.0)
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
