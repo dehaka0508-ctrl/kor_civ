@@ -125,3 +125,27 @@ def test_enter_ends_turn_after_setup_text_focus(app):
         app.frame()
     assert app.gui.focus is None
     assert app.game.turn > t0
+
+
+def test_priority_arrow_keys_reorder(app):
+    """지출 우선순위에서 고른 행을 ↓로 옮긴다(시작 화면 입력칸 포커스가 남아 있어도)."""
+    down = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN, mod=0, unicode="", scancode=81)
+    app.start_game(Settings(seed=4, n_enemies=3))
+    frame(app)
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    pid = g.player_id
+    near = sorted(g.world.land_adj[g.player.capital])[:2]
+    for r in near:
+        g.transfer_region(r, pid)
+    for r in [g.player.capital] + near:
+        assert g.start_project(pid, r, "build", "farm")[0]
+    app.left_open, app.left_tab = True, "nation"
+    frame(app)
+    ids = [r.id for r in g.projects_by_priority(pid)]
+    app.prio_sel = ids[0]
+    app.gui.focus = "name"                       # 시작 화면에서 남은 포커스
+    app.gui.begin([down])
+    app.frame()
+    assert [r.id for r in g.projects_by_priority(pid)] == [ids[1], ids[0]] + ids[2:]
