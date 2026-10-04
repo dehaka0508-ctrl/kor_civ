@@ -12,7 +12,7 @@ LEADERS = [
          buff=("홍익인간", "전 지역 행복도 +0.1/턴"), debuff=("신화 시대", "공군 생산비 +20%"),
          fx={"happy_turn": 0.1, "cost_air": 0.20}),
     dict(key="jumong", name="동명성왕", aggr=6,
-         buff=("명궁", "포병 폭격 피해 +15%"), debuff=("내륙 건국", "해군 생산비 +15%"),
+         buff=("신궁", "포병 폭격 피해 +15%"), debuff=("내륙 건국", "해군 생산비 +15%"),
          fx={"bomb_art": 0.15, "cost_naval": 0.15}),
     dict(key="gwanggaeto", name="광개토대왕", aggr=9,
          buff=("정복군주", "돌격 공격력 +15%"), debuff=("원정 피로", "전쟁 중 전쟁 피로 증가 +25%"),
@@ -42,8 +42,8 @@ LEADERS = [
          buff=("기습의 명수", "기습 성공률 +10%p"), debuff=("금산사 유폐", "반란 확률 x1.3"),
          fx={"surprise": 0.10, "rebel_prob": 0.3}),
     dict(key="wanggeon", name="태조 왕건", aggr=5,
-         buff=("호족 포용", "점령지 저항 4 → 2턴, 행복도 회복 20 → 10턴"), debuff=("호족 연합", "세율 상한 50% → 40%"),
-         fx={"wanggeon_occupy": True, "tax_max": 0.40}),
+         buff=("호족 포용", "점령지 저항 4 → 2턴, 행복도 회복 20 → 10턴"), debuff=("호족 연합", "수도에서 2칸보다 먼 지역 산출 -5%"),
+         fx={"wanggeon_occupy": True, "far_output": 0.05}),
     dict(key="gongmin", name="공민왕", aggr=5,
          buff=("반원 개혁", "개전 전쟁 피로 절반(선포 +15 → +7.5, 피선포 +10 → +5)"), debuff=("개혁 반발", "반란 진압 성공률 -15%p"),
          fx={"war_start_weary": -0.5, "suppress": -0.15}),
@@ -60,7 +60,7 @@ LEADERS = [
          buff=("신해통공", "은행 산출 +15%"), debuff=("벽파 견제", "세율 변경 후 4턴간 재변경 불가"),
          fx={"output_bank": 0.15, "tax_lock": 4}),
     dict(key="honggyeongrae", name="홍경래", aggr=8,
-         buff=("민란의 불꽃", "점령지 행복도(회복 목표) +10"), debuff=("반란군 출신", "모든 AI 시작 우호도 -15"),
+         buff=("민란의 불꽃", "점령지 행복도(회복 목표) +10"), debuff=("반란", "모든 AI 시작 우호도 -15"),
          fx={"occupied_happy_extra": 10, "start_opinion": -15}),
     dict(key="kimgu", name="김구", aggr=4,
          buff=("임시정부", "영토 3칸 이하일 때 방어력 +30%"), debuff=("무장 열세", "전차·공군 생산비 +15%"),
@@ -88,13 +88,13 @@ LEADERS = [
          buff=("화랑도", "보병 공격력 +10%"), debuff=("나제동맹 파기", "조약·동맹·연합 체결 우호도 문턱 +10"),
          fx={"atk_inf": 0.10, "treaty_threshold": 10}),
     dict(key="gungye", name="궁예", aggr=8,
-         buff=("후고구려 건국", "돌격 공격력 +10%"), debuff=("관심법 폭정", "반란 확률 x1.3"),
+         buff=("태봉 건국", "돌격 공격력 +10%"), debuff=("관심법", "반란 확률 x1.3"),
          fx={"atk_assault": 0.10, "rebel_prob": 0.30}),
     dict(key="jangbogo", name="장보고", aggr=4,
-         buff=("청해진 대사", "해군 생산비 -25%, 시장 판매가 +10%"), debuff=("염장의 배신", "반란 진압 성공률 -10%p"),
+         buff=("청해진", "해군 생산비 -25%, 시장 판매가 +10%"), debuff=("염장의 배신", "반란 진압 성공률 -10%p"),
          fx={"cost_naval": -0.25, "market_sell": 0.10, "suppress": -0.10}),
     dict(key="jungbu", name="정중부", aggr=8,
-         buff=("무신정변", "군 생산비 -15%"), debuff=("문신 탄압", "세율 10% 초과분 행복도 감소 x1.3"),
+         buff=("무신정권", "군 생산비 -15%"), debuff=("문신 탄압", "세율 10% 초과분 행복도 감소 x1.3"),
          fx={"cost_mil": -0.15, "tax_over10": 1.3}),
     dict(key="choiyoung", name="최영", aggr=7,
          buff=("황금 보기를 돌같이", "육군 유지비 -15%"), debuff=("요동 정벌 반대", "개전 전쟁 피로 x1.3"),
@@ -102,6 +102,9 @@ LEADERS = [
     dict(key="yisunsin", name="이순신", aggr=4,
          buff=("23전 23승", "해전 전투력 +30%, 함포 사격 피해 +25%"), debuff=("백의종군", "세율 변경 후 3턴간 재변경 불가"),
          fx={"naval_power": 0.30, "naval_bomb": 0.25, "tax_lock": 3}),
+    dict(key="honggildong", name="홍길동", aggr=6,
+         buff=("신출귀몰", "기습 성공률 +5%p"), debuff=("적서차별", "군주제 계열 정치체제(전제군주제·입헌군주제) 선택 불가"),
+         fx={"surprise": 0.05, "no_monarchy": True}),
     dict(key="dosan", name="안창호", aggr=1,
          buff=("무실역행", "생산 건물 건설 시간 -15%"), debuff=("실력 양성 우선", "군 생산비 +15%"),
          fx={"build_time_prod": -0.15, "cost_mil": 0.15}),
@@ -121,7 +124,7 @@ LEADERS = [
          buff=("팔기군", "점령·편입 소요 턴 -20%"), debuff=("교역 단절", "시장 구매가 +20%"),
          fx={"occ_time": -0.20, "market_buy": 0.20}),
     dict(key="ito", name="이토 히로부미", aggr=6,
-         buff=("통감부 설치", "점령·편입 소요 턴 -15%"), debuff=("하얼빈 의거", "모든 AI 시작 우호도 -10"),
+         buff=("한국통감", "점령·편입 소요 턴 -15%"), debuff=("하얼빈 의거", "모든 AI 시작 우호도 -10"),
          fx={"occ_time": -0.15, "start_opinion": -10}),
     dict(key="custom", name="직접 입력", aggr=5,
          buff=("없음", "효과 없음"), debuff=("없음", "효과 없음"), fx={}),
@@ -135,7 +138,7 @@ LEADER_CATEGORIES = [
      ["gwanggaeto", "geunchogo", "jinheung", "muryeong", "seondeok", "muyeol", "gongmin", "sejong", "gwanghae",
       "jeongjo", "parkcj", "kimdj"]),
     ("uncrowned", "왕관 없는 지도자들",
-     ["yeon", "jangbogo", "jungbu", "choiyoung", "yisunsin", "honggyeongrae", "dosan", "kimgu"]),
+     ["yeon", "jangbogo", "jungbu", "choiyoung", "yisunsin", "honggyeongrae", "honggildong", "dosan", "kimgu"]),
     ("invaders", "한반도를 넘본 외적들",
      ["yangdi", "taizong", "kublai", "hideyoshi", "hongtaiji", "ito"]),
 ]
@@ -222,15 +225,23 @@ AI_GOV_AGGR_JITTER = 2.0      # 체제를 고를 때 호전성을 ±2 범위에�
 AI_PHILOSOPHER_P = 0.10       # 10% 확률로 철인통치(효과 없음)
 
 
-def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int) -> str:
-    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 >= 은행이면 사회주의 +0.2.
-    호전성' = 호전성 + U(−2, +2). 전체의 10%는 철인통치."""
+def banned_govs(leader_key: str) -> set:
+    """지도자가 고를 수 없는 정치체제(홍길동 '적서차별': 군주제 계열)."""
+    fx = LEADER_BY_KEY.get(leader_key, {}).get("fx", {})
+    if fx.get("no_monarchy"):
+        return {k for k, fam in GOV_FAMILIES.items() if "군주정" in fam}
+    return set()
+
+
+def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=()) -> str:
+    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 > 은행이면 사회주의 +0.2.
+    호전성' = 호전성 + U(−2, +2). 전체의 10%는 철인통치. banned 체제는 고르지 않는다."""
     if rng.random() < AI_PHILOSOPHER_P:
         return "philosopher"
     aggression = aggression + rng.uniform(-AI_GOV_AGGR_JITTER, AI_GOV_AGGR_JITTER)
     best, best_score = None, -1e9
     for g in GOVERNMENTS:
-        if g["target"] is None:
+        if g["target"] is None or g["key"] in banned:
             continue
         s = 1 - abs(aggression - g["target"]) / 10 + rng.random() * 0.1
         if g["key"] == "socialist" and factory_level > bank_level:   # 공장이 은행보다 많을 때만

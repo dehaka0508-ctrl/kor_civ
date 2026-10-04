@@ -686,7 +686,7 @@ def test_conscription_fatigue():
 def test_leader_roster_and_categories():
     from korciv.leaders import LEADERS, LEADER_CATEGORIES, LEADER_BY_KEY, MULT_KEYS, ADD_KEYS
     keys = [k for _, _, ks in LEADER_CATEGORIES for k in ks]
-    assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 38
+    assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 39
     assert LEADER_BY_KEY["jumong"]["name"] == "동명성왕" and LEADER_BY_KEY["sejong"]["name"] == "세종대왕"
     for l in LEADERS:
         assert len(l["fx"]) >= (0 if l["key"] == "custom" else 2)
@@ -696,6 +696,35 @@ def test_leader_roster_and_categories():
     assert g.mods(0).mult("naval_power") == pytest.approx(1.3)
     assert {f.leader for f in g.factions} == {"yisunsin", "yangdi", "kublai", "hideyoshi", "hongtaiji", "ito"}
 
+
+
+def test_honggildong_no_monarchy():
+    import random
+    from korciv.leaders import ai_pick_government, banned_govs
+    assert banned_govs("honggildong") == {"absolute", "constitutional"}
+    assert banned_govs("sejong") == set()
+    rng = random.Random(1)
+    picks = {ai_pick_government(rng, a, 0, 0, banned=banned_govs("honggildong"))
+             for a in range(11) for _ in range(30)}
+    assert not picks & {"absolute", "constitutional"}
+    g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="honggildong"))
+    g.set_player_government("absolute")
+    assert g.player.gov == "philosopher"
+    assert g.mods(0).add("surprise") == pytest.approx(0.05)
+
+
+def test_wanggeon_far_output():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="wanggeon")
+    near = g.near_capital(0)
+    assert "S002" in near and g.world.land_adj["S002"] <= near
+    far = next(r for r in g.world.order if r not in near and g.world.land_adj[r])
+    _own(g, 0, [far])
+    m = g.mods(0)
+    base = g.calc_output(far)
+    g.factions[0].leader = "custom"
+    g._mods.pop(0, None)
+    assert base == pytest.approx(g.calc_output(far) * 0.95)
+    assert m.value("far_output") == 0.05
 
 def test_landmark_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)

@@ -345,8 +345,17 @@ def draw_government(app):
     r = modal_frame(app, 760, 600, "정치체제를 고르세요")
     gui.text((r.x + 24, r.y + 52), "지도자 효과와 곱으로 합산됩니다. 한 번 정하면 바꿀 수 없습니다.", 13, t.muted)
     y = r.y + 84
+    from ..leaders import banned_govs
+    banned = banned_govs(app.game.player.leader)
     for gdef in GOVERNMENTS:
         row = pygame.Rect(r.x + 24, y, r.w - 48, 64)
+        if gdef["key"] in banned:
+            gui.rect(t.panel_alt, row, radius=8)
+            gui.text((row.x + 16, row.y + 10), gdef["name"], 16, t.muted, weight="bold")
+            lead = LEADER_BY_KEY[app.game.player.leader]
+            gui.text((row.x + 16, row.y + 36), f"선택 불가 — {lead['debuff'][0]}", 12, t.bad)
+            y += 70
+            continue
         hov = gui.hover(row)
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)

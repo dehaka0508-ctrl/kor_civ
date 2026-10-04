@@ -9,7 +9,7 @@ from . import config as C
 from . import diplomacy as D
 from . import rules as R
 from .data import DO8, load_world
-from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, gov_similar
+from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
 from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES
 
 SUFFIXES = ("구역", "지구", "시", "군", "구")
@@ -139,7 +139,8 @@ class Game:
         for f in self.factions:
             if f.is_ai:
                 rr = self.regions[f.capital]
-                f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"])
+                f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"],
+                                           banned=banned_govs(f.leader))
         if st.all_ai:
             self.finalize_setup()
 
@@ -201,6 +202,8 @@ class Game:
         self.setup_done = True
 
     def set_player_government(self, gov_key: str):
+        if gov_key in banned_govs(self.player.leader):
+            gov_key = "philosopher"              # 고를 수 없는 체제(홍길동 '적서차별')
         self.factions[self.player_id].gov = gov_key
         self._mods.pop(self.player_id, None)
         self.finalize_setup()
@@ -1344,7 +1347,24 @@ class Game:
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
         if owner != NEUTRAL and owner == rr.owner:
             y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
+            far = m.value("far_output", 0)
+            if far and rid not in self.near_capital(owner):
+                y *= 1 - far                                  # 왕건 '호족 연합': 수도에서 먼 지역
         return y
+
+    def near_capital(self, fid, dist=2) -> set:
+        """수도에서 육상 dist칸 이내 지역."""
+        cap = self.factions[fid].capital
+        cache = self.__dict__.setdefault("_near_cap", {})
+        key = (cap, dist)
+        if key not in cache:
+            near = {cap}
+            frontier = {cap}
+            for _ in range(dist):
+                frontier = {v for u in frontier for v in self.world.land_adj[u]} - near
+                near |= frontier
+            cache[key] = near
+        return cache[key]
 
     # ---- 생산 집중
     @staticmethod
@@ -2607,7 +2627,7 @@ class Game:
             name = name[:-1] + " 공화국"
         f = Faction(id=nid, name=name, color=color, leader=lk, leader_name=leader["name"], gov=None,
                     is_ai=True, capital=rid, aggression=leader["aggr"], rebel_of=fid)
-        f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"])
+        f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"], banned=banned_govs(lk))
         diff = C.DIFFICULTIES[self.settings.difficulty]
         f.pop_mult, f.income_mult = diff[1], diff[2]
         f.res = {"food": rr.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
