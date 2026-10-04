@@ -167,6 +167,8 @@ class Faction:
     eliminated_turn: Optional[int] = None
     founded_turn: int = 1
     happy_floor_until: int = 0      # 신생 독립국: 이 턴까지 행복도 하한 0
+    capital_fall_turn: int = -999   # 마지막으로 수도가 함락된 턴
+    naval_off_until: int = 0        # 이순신 '백의종군': 이 턴까지 해군 버프 비활성
 
 
 @dataclass

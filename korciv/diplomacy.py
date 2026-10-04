@@ -359,6 +359,10 @@ def treaty_check(g, ai, proposer, kind):
         return ok, AI.peace_reason(a, ok)
     if at_war(g, ai, proposer):
         return False, "전쟁 중입니다."
+    if kind in ("alliance", "coalition"):
+        for x in (ai, proposer):
+            if g.mods(x).value("no_alliance"):          # 장보고 '골품의 벽'
+                return False, f"{g.fx_source(x, 'no_alliance')}: 동맹·연합을 맺을 수 없습니다."
     if kind in ("nonaggr", "passage"):
         need = threshold(g, ai, proposer, C.TREATY_MIN)
         if kind == "nonaggr" and g.factions[ai].is_ai:

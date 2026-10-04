@@ -1060,3 +1060,129 @@ def test_ai_keeps_capital_garrison():
     AI._army_orders(g, f, AI.threat_map(g, 0))
     stay = sum(a.count() for a in g.armies_at(cap, 0) if not a.order or a.order.get("type") == "bombard")
     assert need >= 2 and stay >= need
+
+
+def _lead(g, fid, key):
+    g.factions[fid].leader = key
+    g._mods.pop(fid, None)
+
+
+def test_unique_debuffs_setup_and_economy():
+    base = new_game(player_start="S002", n_enemies=1, player_leader="custom")
+    onjo = new_game(player_start="S002", n_enemies=1, player_leader="onjo")
+    assert onjo.regions["S002"].pop == pytest.approx(base.regions["S002"].pop * 0.9)      # 십제
+    g = new_game(player_start="S002", n_enemies=1, player_leader="custom")
+    r = g.regions["S002"]
+    r.b["bank"], r.b["factory"], r.b["farm"] = 2, 2, 2
+    y0 = g.calc_output("S002")
+    _lead(g, 0, "sejong")
+    y1 = g.calc_output("S002")
+    pop_part = C.POP_OUTPUT * r.pop
+    assert y1 - pop_part == pytest.approx((y0 - pop_part) * 0.92)                          # 부민고소금지법
+    _lead(g, 0, "gongmin")
+    assert g.landmark_cost_mult(0) == pytest.approx(1.25)                                  # 영전 공사
+    _lead(g, 0, "hyeokgeose")                                                              # 교대 계승
+    g.turn = 48
+    opts = g.options(0, "S002")
+    assert all(not o["ok"] for o in opts if o["kind"] in ("build", "unit", "landmark"))
+    g.turn = 49
+    assert any(o["ok"] for o in g.options(0, "S002") if o["kind"] == "build")
+    _lead(g, 0, "hongtaiji")                                                               # 소수민족
+    others = [x for x in g.world.order if g.regions[x].owner == NEUTRAL][:34]
+    _own(g, 0, others)
+    assert g.minority_penalty(0) == pytest.approx(0.3 * (35 - 30))
+
+
+def test_unique_debuffs_diplomacy_and_rebels():
+    g = new_game(player_start="S002", n_enemies=2, player_leader="jangbogo")
+    g.dip.nonaggr[D.pair(0, 1)] = g.turn + 99
+    g.dip.op[(1, 0)] = 100
+    ok, why = D.treaty_check(g, 1, 0, "alliance")
+    assert not ok and "골품의 벽" in why
+    # 궁예: 반란군 보병 +2, 견훤: 반란 세력이 가장 강한 적국과 동맹
+    res = {}
+    for lk in ("custom", "gungye", "gyeonhwon"):
+        g = new_game(player_start="S002", n_enemies=2, player_leader=lk)
+        near = sorted(g.world.land_adj["S002"])[:2]
+        _own(g, 0, near)
+        D.declare_war(g, 1, 0)
+        nf, _ = g._spawn_rebel(0, near[0], 24)
+        res[lk] = (sum(a.units.get("inf", 0) for a in g.armies_at(near[0], nf.id)), D.allied(g, nf.id, 1))
+    assert res["gungye"][0] == res["custom"][0] + 2
+    assert res["gyeonhwon"][1] and not res["custom"][1]
+    # 연개소문: 수도 함락 후 12턴 반란 확률 ×3
+    g = new_game(player_start="S002", n_enemies=1, player_leader="yeon")
+    near = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, near)
+    g.regions[near[0]].happy = -80
+    p0 = g.rebellion_chance(0, near[0])
+    g.transfer_region("S002", 1)
+    assert g.player.capital_fall_turn == g.turn
+    assert g.rebellion_chance(0, near[0]) == pytest.approx(min(1.0, p0 * 3))
+    g.turn += C.CAPITAL_FALL_TURNS
+    assert g.rebellion_chance(0, near[0]) == pytest.approx(p0)
+
+
+def test_unique_debuffs_combat():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="seondeok")
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    g.new_army(1, tgt, {"inf": 5})
+    D.declare_war(g, 1, 0)
+    d1 = g.defense_strength(1, "S002", tgt, "assault")[0]
+    _lead(g, 0, "custom")
+    d0 = g.defense_strength(1, "S002", tgt, "assault")[0]
+    assert d1 == pytest.approx(d0 * 0.85) and d0 > 0                                      # 대야성 함락
+    _lead(g, 0, "seondeok")
+    g.turn += C.AMBUSH_TURNS
+    assert g.defense_strength(1, "S002", tgt, "assault")[0] == pytest.approx(d0)
+    # 당 태종: 방어선이 있는 지역 공격 −15%
+    _lead(g, 1, "taizong")
+    a = g.armies_at(tgt, 1)
+    s0 = g.combat_strength(1, a, "S002")[0]
+    g.regions["S002"].lines[tgt] = 1
+    assert g.combat_strength(1, a, "S002")[0] == pytest.approx(s0 * 0.85)
+    # 광개토대왕: 저항 기간 +50%
+    _lead(g, 1, "gwanggaeto")
+    g.complete_occupation(1, "S002")
+    assert g.regions["S002"].resist["resist"] == 6
+
+
+def test_unique_debuffs_occupation_upkeep_naval():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="ito")
+    D.declare_war(g, 0, 1)
+    rid = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [rid])
+    g.complete_occupation(0, rid)
+    rr = g.regions[rid]
+    a = g.new_army(0, rr.id, {"inf": 5})
+    assert g.resisting(rr)
+    g._phase_guerrilla()                                                                    # 정미의병
+    assert a.id not in g.armies or a.units.get("inf", 0) < 5 or a.dmg.get("inf", 0) > 0
+    assert any("의병 습격" in e["text"] for e in g.events) or a.dmg.get("inf", 0) > 0
+    # 히데요시: 수도와 육로로 이어지지 않은 곳의 부대 유지비 2배
+    g = new_game(player_start="S002", n_enemies=1, player_leader="hideyoshi")
+    far = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL
+               and r not in g.supply_linked(0) and g.world.land_adj[r])
+    for x in list(g.armies.values()):
+        if x.owner == 0:
+            g.remove_army(x)
+    g.new_army(0, "S002", {"inf": 2})
+    u0 = g.upkeep(0)
+    g.new_army(0, far, {"inf": 2})
+    assert g.upkeep(0) == pytest.approx(u0 * 3)
+    # 이순신: 해전에서 지면 12턴 해군 버프 비활성
+    g = new_game(player_start="S002", n_enemies=1, player_leader="yisunsin")
+    assert g.lead_mult(0, "naval_power") == pytest.approx(1.3)
+    sid = next(iter(g.world.seas))
+    D.declare_war(g, 0, 1)
+    f0 = g.new_army(0, sid, {"dd": 1})
+    f1 = g.new_army(1, sid, {"dd": 6})
+    g._naval_battle(sid, 0, [f0], 1, [f1])
+    assert g.naval_buff_off(0) and g.lead_mult(0, "naval_power") == pytest.approx(1.0)
+    g.turn += 12
+    assert not g.naval_buff_off(0)
+    # 쿠빌라이: 상륙 돌격 ×0.75, 해전 −15%
+    _lead(g, 0, "kublai")
+    assert g.mods(0).value("amphib_extra") == 0.75 and g.mods(0).mult("naval_power") == pytest.approx(0.85)
+    assert "일본 원정 실패" in g.fx_source(0, "naval_power")

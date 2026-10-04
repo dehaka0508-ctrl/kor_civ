@@ -185,6 +185,7 @@ class Game:
         self._mods.clear()
         for f in self.factions:
             f.money = C.START_MONEY * C.MONEY_SCALE * self.mods(f.id).mult("start_money")
+            self.regions[f.capital].pop *= self.mods(f.id).mult("start_pop")     # 온조왕 '십제'
         for a in self.factions:
             for b in self.factions:
                 if a.id != b.id and a.is_ai:
@@ -698,6 +699,8 @@ class Game:
         m = self.mods(fid)
         tgt_owner = self.regions[target].owner
         mult = self.morale(fid)                  # 사기: 실질 평균 행복도 −10 이하면 감소
+        if tgt_owner != NEUTRAL and any(self.regions[target].lines.values()):
+            mult *= m.mult("atk_vs_line")        # 당 태종 '안시성': 방어선이 있는 지역
         if self.retake_bonus(fid, target):
             mult *= 1 + C.RESIST_RETAKE_ATK      # 저항 중인 옛 영토를 되찾는 공격
         total = 0.0
@@ -754,7 +757,16 @@ class Game:
             dsum *= self.mods(rr.owner).mult("defense_small")
         if rr.owner != NEUTRAL and self.info(target).coastal:
             dsum *= self.mods(rr.owner).mult("def_coast")      # 이순신: 해안 지역 방어
+        if self.ambushed(rr.owner, fid_att):
+            dsum *= 1 - self.mods(rr.owner).value("ambushed_def")   # 선덕여왕 '대야성 함락'
         return dsum, defenders, line_level
+
+    def ambushed(self, fid, attacker) -> bool:
+        """선덕여왕 '대야성 함락': attacker 의 선전포고를 받은 지 4턴이 안 됐다."""
+        if fid == NEUTRAL or not self.mods(fid).value("ambushed_def"):
+            return False
+        w = self.dip.wars.get(D.pair(fid, attacker))
+        return bool(w) and w.get("aggressor") == attacker and self.turn - w["start"] < C.AMBUSH_TURNS
 
     def fx_source(self, fid, key) -> str:
         """효과 key 를 주는 지도자 버프/디버프 또는 정치체제 이름."""
@@ -762,7 +774,8 @@ class Game:
         lead = LEADER_BY_KEY.get(f.leader, {})
         fx = lead.get("fx", {})
         if key in fx:
-            nm = lead["buff"][0] if list(fx).index(key) == 0 else lead["debuff"][0]
+            dkeys = lead.get("dkeys") or [list(fx)[-1]]
+            nm = lead["debuff"][0] if key in dkeys else lead["buff"][0]
             return f"{lead['name']} '{nm}'"
         gov = GOV_BY_KEY.get(f.gov or "", {})
         if key in gov.get("fx", {}):
@@ -810,6 +823,8 @@ class Game:
             elif mode == "assault":
                 add(af, self.fx_source(fid, "no_ally_assault"), m.mult("no_ally_assault"))
         add(af, "사기(실질 행복도 낮음)", self.morale(fid))
+        if rr.owner != NEUTRAL and any(rr.lines.values()):
+            add(af, self.fx_source(fid, "atk_vs_line"), m.mult("atk_vs_line"))
         ap, aa = self.air_support(fid, target, True)
         if ap:
             af.append((f"전투기 {sum(x.units['ftr'] for x in aa)}대 지원 (+{ap:.0f})", 1 + ap / max(1.0, pv["A"] - ap)))
@@ -825,6 +840,8 @@ class Game:
                 add(df, self.fx_source(rr.owner, "defense_small"), om.mult("defense_small"))
             if self.info(target).coastal:
                 add(df, self.fx_source(rr.owner, "def_coast"), om.mult("def_coast"))
+            if self.ambushed(rr.owner, fid):
+                add(df, self.fx_source(rr.owner, "ambushed_def"), 1 - om.value("ambushed_def"))
         for o in def_units:
             add(df, f"{self.fname(o)} 사기", self.morale(o))
         if rr.owner != NEUTRAL:
@@ -1022,11 +1039,14 @@ class Game:
         m = self.mods(fid)
         opts = []
         resisting = self.resisting(rr)
+        frozen = self.order_frozen(fid)
 
         def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0):
             turns = max(1, turns)
             if resisting:
                 ok, why = False, "점령 저항 중"
+            elif frozen and kind != "annex":
+                ok, why = False, frozen
             opts.append({"kind": kind, "key": key, "name": name, "cost": cost, "turns": turns,
                          "per_turn": cost / turns, "ok": ok, "why": why, "level": level,
                          "border": border, "oil": oil})
@@ -1089,7 +1109,7 @@ class Game:
             busy = any(r.project and r.project.kind == "landmark" and r.id == rid for r in self.regions.values())
             turns = m.value("landmark_turns", C.LANDMARK_TURNS)
             lm_mult = self.landmark_cost_mult(fid)
-            name = "랜드마크" + (f" (비용 ×{lm_mult:.2f})" if lm_mult > 1 else "")
+            name = "랜드마크" + (f" (비용 ×{lm_mult:.2f})" if abs(lm_mult - 1) > 0.005 else "")
             add("landmark", "landmark", name, C.LANDMARK_COST_PER_TURN * C.MONEY_SCALE * lm_mult * turns, turns,
                 not busy)
         if self.factions[fid].capital != rid:
@@ -1104,7 +1124,13 @@ class Game:
 
     def landmark_cost_mult(self, fid) -> float:
         """다음 랜드마크 비용 배수: 랜드마크 1개마다 ×1.3."""
-        return R.landmark_cost_mult(self.landmark_count(fid))
+        return R.landmark_cost_mult(self.landmark_count(fid)) * self.mods(fid).mult("cost_landmark")
+
+    def order_frozen(self, fid) -> str:
+        """박혁거세 '교대 계승': 매년 12월 4주차에는 건설·생산 명령 불가. 막힌 이유(없으면 빈 문자열)."""
+        if self.mods(fid).value("dec_freeze") and R.date_of_turn(self.turn)[1:] == (12, 4):
+            return "교대 계승(12월 4주)"
+        return ""
 
     def building_effect(self, fid, rid, opt) -> str:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
@@ -1114,15 +1140,15 @@ class Game:
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
         if key == "farm":
-            return f"완공 시 턴당 식량 +{C.FOOD_PER_G * dg:.0f}, 산출 +{C.FARM_OUTPUT * dg:.0f}"
+            return f"완공 시 턴당 식량 +{C.FOOD_PER_G * dg:.0f}, 산출 +{C.FARM_OUTPUT * dg * m.mult('output_prod'):.0f}"
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * dg * fm:.1f}, 산출 +{C.FISH_OUTPUT * dg * fm:.0f}")
+            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * dg * fm:.1f}, 산출 +{C.FISH_OUTPUT * dg * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
-            return (f"턴당 산출 +{C.FACTORY_OUTPUT * dg * m.mult('output_factory'):,.0f}(석탄 기준, 연료 1/턴 소비)")
+            return (f"턴당 산출 +{C.FACTORY_OUTPUT * dg * m.mult('output_factory') * m.mult('output_prod'):,.0f}(석탄 기준, 연료 1/턴 소비)")
         if key == "bank":
-            return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank'):,.0f}"
+            return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
             return f"석탄·석유 → 전기 턴당 최대 {2 * lv}개 (공장 산출 x1.25)"
         if key == "liquefy":
@@ -1344,7 +1370,8 @@ class Game:
         y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
                             rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
                             m.mult("output_bank"), m.mult("output_factory"),
-                            1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0)
+                            1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
+                            m.mult("output_prod"))
         if owner != NEUTRAL and owner == rr.owner:
             y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
             far = m.value("far_output", 0)
@@ -1443,6 +1470,7 @@ class Game:
                 if rest:
                     newcap = max(rest, key=lambda r: r.pop)
                     f_old.capital = newcap.id
+                    f_old.capital_fall_turn = self.turn
                     for r in rest:
                         r.h_delta += C.CAPITAL_LOST_HAPPY
                     self.event("capital", f"{f_old.name}의 수도가 함락되어 {self.info(newcap.id).name}(으)로 천도했습니다.",
@@ -1525,8 +1553,10 @@ class Game:
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
         if old != NEUTRAL:
             half = bool(m.value("wanggeon_occupy"))         # 왕건: 저항·회복 기간 절반
+            n_res = C.RESIST_TURNS // 2 if half else C.RESIST_TURNS
+            n_res = int(round(n_res * m.mult("resist_time")))  # 광개토대왕 '약탈경제': +50%
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
-                         "resist": C.RESIST_TURNS // 2 if half else C.RESIST_TURNS,
+                         "resist": n_res,
                          "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
         self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
                    + (f" ({self.fname(old)}에게서, 저항 {rr.resist['resist']}턴)." if old != NEUTRAL else "."),
@@ -1560,6 +1590,7 @@ class Game:
         self._phase_naval()
         self._phase_bombard()
         self._phase_attack()
+        self._phase_guerrilla()
         # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
@@ -1703,7 +1734,19 @@ class Game:
                 + C.NAVAL_BMB_POWER * (a.units.get("bmb", 0) + a.units.get("stl", 0)) for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
-        return p * self.morale(fid) * self.mods(fid).mult("naval_power")   # 이순신: 해전 +30%
+        return p * self.morale(fid) * self.lead_mult(fid, "naval_power")   # 이순신: 해전 +30%
+
+    def naval_buff_off(self, fid) -> bool:
+        """이순신 '백의종군': 해전에서 진 뒤 12턴 동안 해군 버프 비활성."""
+        return getattr(self.factions[fid], "naval_off_until", 0) > self.turn
+
+    def lead_mult(self, fid, key) -> float:
+        """mods.mult(key). 백의종군 중이면 지도자 해군 버프분을 뺀다."""
+        v = self.mods(fid).mult(key)
+        if key in ("naval_power", "naval_bomb") and self.naval_buff_off(fid):
+            lv = LEADER_BY_KEY.get(self.factions[fid].leader, {}).get("fx", {}).get(key, 0)
+            v /= 1 + lv
+        return v
 
     def _naval_battle(self, sid, x, fx, y, fy):
         px, py = self._naval_power(x, fx, sid), self._naval_power(y, fy, sid)
@@ -1711,6 +1754,12 @@ class Game:
             return
         r = self.rng.uniform(C.RAND_LO, C.RAND_HI)
         dy, dx = R.battle_damage(px, py, r)
+        for loser, lp, wp in ((x, px, py), (y, py, px)):
+            off = self.mods(loser).value("naval_loss_off")
+            if off and lp < wp:
+                self.factions[loser].naval_off_until = self.turn + off
+                self.event("info", f"{self.fname(loser)}: 해전 패배로 {off}턴 동안 "
+                           f"{self.fx_source(loser, 'naval_loss_off')} — 해군 버프 비활성", fids=(loser,))
         lx = self._ship_damage(fx, dx, y, sid)
         ly = self._ship_damage(fy, dy, x, sid)
         self._score_units(x, y, ly)
@@ -1804,7 +1853,7 @@ class Game:
                 notes.append(f"폭격기 {shot}대 격추")
             a.units = {k: v for k, v in a.units.items() if v > 0}
         dmg = units.get("art", 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
-        dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * m.mult("naval_bomb")
+        dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * self.lead_mult(a.owner, "naval_bomb")
         dmg += bombers.get("bmb", 0) * C.UNITS["bmb"]["bomb"] * (1 - C.AA_DMG_K * aa)
         dmg += bombers.get("stl", 0) * C.UNITS["stl"]["bomb"] * (C.STEALTH_AA_DMG if aa >= 5 else 1.0)
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
@@ -1966,6 +2015,26 @@ class Game:
                         self.merge_armies(fleet.id, x.id)
                     else:
                         self.remove_army(x)
+
+    def _phase_guerrilla(self):
+        """이토 히로부미 '정미의병': 저항 중인 점령지의 주둔 부대가 보병 2개와 (보정 없이) 싸운 만큼 피해."""
+        for f in self.factions:
+            n = f.alive and self.mods(f.id).value("guerrilla")
+            if not n:
+                continue
+            for rr in self.regions_of(f.id):
+                if not self.resisting(rr):
+                    continue
+                arms = [a for a in self.armies_at(rr.id, f.id) if a.domain() == "land"]
+                if not arms:
+                    continue
+                A = C.UNITS["inf"]["atk"] * n
+                Dv = sum(C.UNITS[k]["df"] * c for a in arms for k, c in a.units.items())
+                dmg = R.battle_damage(A, Dv, self.rng.uniform(C.RAND_LO, C.RAND_HI))[0]
+                lost = self.apply_damage(arms, dmg)
+                if lost:
+                    self.event("battle", f"의병 습격: {self.info(rr.id).name}의 {f.name} 주둔군 손실 "
+                               f"{sum(lost.values())}", region=rr.id, fids=(f.id,))
 
     def _advance(self, fid, attackers, tgt):
         moved = False
@@ -2348,6 +2417,8 @@ class Game:
     def upkeep(self, fid) -> float:
         total = 0.0
         m = self.mods(fid)
+        cut = m.value("cut_supply", 0)
+        linked = self.supply_linked(fid) if cut else None
         for a in self.armies.values():
             if a.owner != fid:
                 continue
@@ -2359,8 +2430,24 @@ class Game:
                     c *= C.NAVAL_AT_SEA_UPKEEP
                 if u["kind"] == "land":
                     c *= m.mult("upkeep_land")
+                if cut and a.loc not in linked:
+                    c *= 1 + cut                     # 히데요시 '보급로 차단'
                 total += c
         return total * C.MONEY_SCALE
+
+    def supply_linked(self, fid) -> set:
+        """수도에서 자국 영토를 따라 육로로 닿는 지역 + 그 육상 인접 지역(전선)."""
+        cap = self.factions[fid].capital
+        if self.regions[cap].owner != fid:
+            return set()
+        seen, stack = {cap}, [cap]
+        while stack:
+            u = stack.pop()
+            for v in self.world.land_adj[u]:
+                if v not in seen and self.regions[v].owner == fid:
+                    seen.add(v)
+                    stack.append(v)
+        return seen | {v for u in seen for v in self.world.land_adj[u]}
 
     def _phase_tax(self, f: Faction):
         gdp = self.gdp(f.id)
@@ -2471,10 +2558,23 @@ class Game:
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
-        h = self.base_happy(rr) - f.war_weary - rr.conscript
+        h = self.base_happy(rr) - f.war_weary - rr.conscript - self.minority_penalty(rr.owner)
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
+
+    def minority_penalty(self, fid) -> float:
+        """홍타이지 '소수민족': 보유 지역이 30곳을 넘으면 넘는 1곳마다 전 지역 행복도 −0.3."""
+        k = self.mods(fid).value("minority_rule")
+        if not k:
+            return 0.0
+        cache = self.__dict__.setdefault("_minority", {})
+        stamp = getattr(self, "acq_counter", 0)
+        hit = cache.get(fid)
+        if hit is None or hit[0] != stamp:
+            hit = (stamp, k * max(0, self.region_count(fid) - C.MINORITY_REGIONS))
+            cache[fid] = hit
+        return hit[1]
 
     def avg_happiness(self, fid, effective=True) -> float:
         """평균 행복도. effective=False 면 전쟁 피로·징집 피로·저항을 빼기 전 행복도."""
@@ -2511,6 +2611,9 @@ class Game:
         p = R.rebellion_probability(self.eff_happy(rr)) * self.mods(fid).mult("rebel_prob")
         if self.mods(fid).value("avg_rebel") and self.avg_happiness(fid) <= -30:
             p *= self.mods(fid).value("avg_rebel")
+        k = self.mods(fid).value("capital_fall_rebel")      # 연개소문 '삼형제의 내분'
+        if k and self.turn - getattr(self.factions[fid], "capital_fall_turn", -999) < C.CAPITAL_FALL_TURNS:
+            p *= k
         return min(1.0, p)
 
     def _phase_rebellion(self):
@@ -2596,7 +2699,7 @@ class Game:
     def _spawn_rebel(self, fid, rid, Rv):
         """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
         rr = self.regions[rid]
-        n_inf = max(1, int(round(Rv / 12)))
+        n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
         keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit", "landmark") else None
         siblings = self.rebel_children(fid)
         if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
@@ -2655,6 +2758,13 @@ class Game:
         self.dip.op[(nid, fid)] = -100
         if self.factions[fid].is_ai:
             self.dip.op[(fid, nid)] = -100
+        if self.mods(fid).value("rebel_ally_enemy"):          # 견훤 '금산사 유폐'
+            foes = [e for e in D.enemies(self, fid) if e != nid and self.factions[e].alive]
+            if foes:
+                e = max(foes, key=lambda x: self.power.get(x, 0))
+                self.dip.alliance[D.pair(nid, e)] = self.turn
+                self.event("diplo", f"{f.name}이(가) {self.fname(e)}와(과) 동맹을 맺었습니다 "
+                           f"({self.fx_source(fid, 'rebel_ally_enemy')}).", fids=(nid, e, fid))
         return f, False
 
     # ------------------------------------------------------------------ 국력·패권
