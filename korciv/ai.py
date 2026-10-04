@@ -25,9 +25,11 @@ LEADER_BIAS_KEYS = {
     "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
     "fishery": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
     "factory": [("output_factory", 1), ("output_prod", 1), ("cost_factory", -1), ("build_time_factory", -1),
-                ("build_time_prod", -1), ("build_time_all", -1)],
+                ("build_time_prod", -1), ("build_time_all", -1), ("build_time_industry", -1)],
     "bank": [("output_bank", 1), ("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
     "line": [("line_k", 1), ("cost_line", -1), ("ambushed_def", 1)],
+    "power": [("build_time_industry", -1)],
+    "extract": [("build_time_industry", -1)],
     "annex": [("occ_time", -1)],
     "landmark": [("landmark_turns", 1), ("cost_landmark", -1)],
     "assault": [("atk_assault", 1), ("no_ally_assault", 1), ("atk_vs_line", 1)],
@@ -470,7 +472,9 @@ def _social(g, f):
             # 선언하면 x 와 적대하는 세력이 나를 싫어하게 된다(−5): 그 손실을 따진다
             cost = sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x)
                        and not D.at_war(g, fid, y))
-            score = D.opinion(g, fid, x) / 20 + len(my_enemies & set(D.enemies(g, x))) - 0.3 * cost
+            if g.mods(fid).value("friend_no_backlash"):
+                cost = 0
+            score = D.opinion(g, fid, x) / 20 + len(my_enemies & set(D.enemies(g, x))) - C.AI_FRIEND_BACKLASH_W * cost
             if D.allied(g, fid, x):
                 score -= 0.5                 # 이미 동맹이면 덜 급하다
             cands.append((score, x))
@@ -1063,12 +1067,12 @@ def _slots(g, f, threat, military=True):
             lv = r.b["extract"] + 1
             cost = R.prod_building_cost("extract", lv)
             gain = lv * 20 * C.AI_UTILITY_HORIZON
-            cands.append((gain / cost, r.id, "build", "extract", None, cost / (2 * lv)))
+            cands.append((gain / cost * bias("extract"), r.id, "build", "extract", None, cost / (2 * lv)))
         if r.b["factory"] >= 2 and r.b["power"] < 2:
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
             gain = 250 * R.g(r.b["factory"]) * tax * C.AI_UTILITY_HORIZON * 1.5
-            cands.append((gain / cost, r.id, "build", "power", None, cost / (2 * lv)))
+            cands.append((gain / cost * bias("power"), r.id, "build", "power", None, cost / (2 * lv)))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
             lv = r.b["specialty"] + 1
             cost = R.prod_building_cost("specialty", lv)

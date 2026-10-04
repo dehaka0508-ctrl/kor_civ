@@ -967,6 +967,8 @@ class Game:
             mult *= m.mult("build_time_prod")
         if key == "factory":
             mult *= m.mult("build_time_factory")
+        if key in C.INDUSTRY_BUILDINGS:
+            mult *= m.mult("build_time_industry")     # 정조 '문체반정'
         return max(1, int(math.floor(base_turns * mult + 0.5)))
 
     def unit_cost(self, fid, rid, key) -> float:

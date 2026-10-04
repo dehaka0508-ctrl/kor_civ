@@ -263,6 +263,7 @@ HOSTILE_OP = -30            # '적대': 전쟁 중이거나 우호도가 이 이
 AI_FRIEND_DECL_P = 0.05     # AI 우호 선언 기본 확률(호전성 0 기준, 호전성 10이면 0)
 AI_DENOUNCE_P = 0.04        # AI 비난 기본 확률(호전성 10 기준)
 AI_DENOUNCE_PLAYER = 0.5    # 플레이어를 비난할 때는 이 배율(낮은 확률)
+AI_FRIEND_BACKLASH_W = 0.4  # 우호 선언 대상 고를 때 '대상과 적대하는 세력' 1곳당 감점
 
 FRIEND_ON, FRIEND_OFF = 30, 20
 TREATY_MIN = 45
@@ -355,3 +356,4 @@ AMBUSH_TURNS = 4            # 선덕여왕 '대야성 함락': 선전포고를 �
 CAPITAL_FALL_TURNS = 8     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
 MINORITY_REGIONS = 40       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
 HEAL_RATE = 0.10           # 한 턴 동안 아무것도 하지 않은 부대의 체력 회복(최대 체력 대비)
+INDUSTRY_BUILDINGS = ("factory", "extract", "liquefy", "power")   # 공장·정유·탄광·석탄액화·발전소

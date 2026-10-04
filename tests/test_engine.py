@@ -73,11 +73,28 @@ def test_market_price_rises():
     assert g.buy_price(0, "food") == g.buy_price(0, "food")
 
 
-def test_tax_lock_jeongjo():
-    g = new_game(player_leader="jeongjo")
+def test_tax_lock(monkeypatch):
+    from korciv.leaders import LEADER_BY_KEY
+    monkeypatch.setitem(LEADER_BY_KEY["custom"], "fx", {"tax_lock": 4})
+    g = new_game(player_leader="custom")
     assert g.set_tax(0, 0.15)[0]
     ok, _ = g.set_tax(0, 0.12)
     assert not ok
+
+
+def test_jeongjo_industry_build_time():
+    from korciv.rules import prod_building_turns
+    g = new_game(player_leader="jeongjo")
+    base = prod_building_turns(1)
+    assert g.build_time(0, "factory", 10) == 12 and g.build_time(0, "power", 10) == 12
+    assert g.build_time(0, "extract", 10) == 12 and g.build_time(0, "liquefy", 10) == 12
+    assert g.build_time(0, "bank", 10) == 10 and base > 0
+
+
+def test_kimdj_friendship_no_backlash():
+    g = new_game(player_start="S002", n_enemies=3, player_leader="kimdj")
+    g.dip.op[(3, 1)] = -60
+    assert all(e[2] > 0 for e in D.friendship_effects(g, 0, 1))
 
 
 def test_war_and_peace():
