@@ -5,9 +5,9 @@ from korciv.data import load_world
 
 def test_region_counts():
     w = load_world()
-    assert len(w.regions) == 424
+    assert len(w.regions) == 426
     c = Counter(r.ns for r in w.regions.values())
-    assert c == {"남": 227, "북": 194, "남북 병합": 3}
+    assert c == {"남": 227, "북": 196, "남북 병합": 3}
     assert round(sum(r.pop0 for r in w.regions.values()), 1) == 8611.2
 
 
@@ -50,7 +50,7 @@ def test_sea_coasts():
     assert w.seas["SEA1"].adj == ["SEA2"]
     assert w.seas["SEA3"].adj == ["SEA2", "SEA4", "SEA8"]
     assert w.island_seas_of(w.name_to_id["제주 서귀포시"]) == ("SEA8",)
-    assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("울릉 오징어", "독도 새우")
+    assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("독도새우", "명이")
     # 해안선에 맞춘 해역 모양이 저장되어 있다
     assert set(w.sea_shapes) == set(w.seas)
 
@@ -58,15 +58,15 @@ def test_sea_coasts():
 def test_cross_border_links():
     w = load_world()
     n = w.name_to_id
-    assert n["황북 개성시"] in w.land_adj[n["경기 파주시"]]
+    assert n["개성 판문구역"] in w.land_adj[n["경기 파주시"]]
     assert n["강원 평강군"] in w.land_adj[n["강원 철원군"]]
 
 
 def test_mountain_pass_not_adjacent_unless_touching():
     w = load_world()
     n = w.name_to_id
-    assert n["양강 김형권군"] not in w.land_adj[n["함남 북청군"]]
-    assert n["양강 백암군"] not in w.land_adj[n["함북 김책시"]]
+    assert n["량강 김형권군"] not in w.land_adj[n["함남 북청군"]]
+    assert n["량강 백암군"] not in w.land_adj[n["함북 김책시"]]
     # 도하 하구 경로는 인접
-    assert n["황북 개성시"] in w.land_adj[n["인천 강화군"]]
+    assert n["개성 개풍구역"] in w.land_adj[n["인천 강화군"]]
     assert w.terrain_between(n["경북 문경시"], n["충북 괴산군"])["kind"] == "돌파"

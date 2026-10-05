@@ -24,7 +24,7 @@ def test_setup():
     assert g.regions["S002"].owner == 0
     assert g.player.money == 3000
     assert g.player.res["food"] == pytest.approx(55.2 * 5)
-    assert sum(1 for a in g.armies.values() if a.owner == NEUTRAL) == 424 - 4
+    assert sum(1 for a in g.armies.values() if a.owner == NEUTRAL) == 426 - 4
     starts = [f.capital for f in g.factions]
     assert len(set(starts)) == 4
 
@@ -97,8 +97,16 @@ def test_kimdj_friendship_no_backlash():
     assert all(e[2] > 0 for e in D.friendship_effects(g, 0, 1))
 
 
+def _neutral_ai(g, *fids):
+    """시드에 따라 달라지는 AI 지도자·체제 효과를 없앤다."""
+    for fid in fids:
+        g.factions[fid].leader, g.factions[fid].gov = "custom", "philosopher"
+    g._mods.clear()
+
+
 def test_war_and_peace():
     g = new_game(n_enemies=2)
+    _neutral_ai(g, 1, 2)
     ok, _ = D.declare_war(g, 0, 1)
     assert ok and D.at_war(g, 0, 1)
     assert D.opinion(g, 1, 0) <= -99
@@ -438,7 +446,7 @@ def _border_setup(aggr, gov="presidential"):
     g = new_game(player_start="S002", n_enemies=1)
     g.turn = 40
     ai_f = g.factions[1]
-    ai_f.aggression, ai_f.gov = aggr, gov
+    ai_f.aggression, ai_f.gov, ai_f.leader = aggr, gov, "custom"   # 지도자 효과 없이
     g._mods.clear()
     border = sorted(g.world.land_adj["S002"])[:2]
     _own(g, 1, border)
@@ -458,9 +466,9 @@ def test_ai_war_needs_opinion_below_aggression_threshold():
     assert not D.at_war(g, 0, 1)
     g.dip.op[(1, 0)] = -95.0          # 참다참다 못해
     for r in g.regions_of(1):
-        r.happy = -10.0
+        r.happy = -25.0
     AI._consider_war(g, f)
-    assert not D.at_war(g, 0, 1)      # 하지만 민심(실질 행복도 −10)이 전쟁 피로를 견디지 못할 전망이면 참는다
+    assert not D.at_war(g, 0, 1)      # 하지만 민심(실질 행복도 −20 미만)이 무너져 있으면 참는다
     for r in g.regions_of(1):
         r.happy = 40.0                # 민심에 여유가 있으면
     AI._consider_war(g, f)
@@ -575,6 +583,7 @@ def test_food_bought_before_projects():
 
 def test_war_weariness_separate_from_happiness():
     g = new_game(n_enemies=2)
+    _neutral_ai(g, 1, 2)
     cap = g.regions[g.player.capital]
     cap.happy = 0.0
     g.player.tax = 0.10

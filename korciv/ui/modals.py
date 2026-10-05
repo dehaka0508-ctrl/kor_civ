@@ -113,7 +113,7 @@ def draw_setup(app):
     r.center = (sw // 2, sh // 2)
     gui.panel(r, radius=14)
     gui.text((r.x + 32, r.y + 24), "한반도의 문명", 28, weight="bold")
-    gui.text((r.x + 34, r.y + 64), "424개 시군구 · 1턴 = 1주 · 2026년 1월 1주 시작", 14, t.muted)
+    gui.text((r.x + 34, r.y + 64), "426개 시군구 · 1턴 = 1주 · 2026년 1월 1주 시작", 14, t.muted)
     # 좌측: 국가·지도자
     x, y = r.x + 32, r.y + 104
     gui.text((x, y), "국가 이름", 13, t.muted, "semibold")

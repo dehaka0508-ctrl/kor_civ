@@ -10,6 +10,7 @@
 - 북한: geoBoundaries PRK ADM2 (gbOpen, CC BY 4.0)
   평양 중심 17개 구역+승호구역, 라선 2개 구역은 원자료에 경계가 없어서
   대표 좌표 기반 보로노이 분할로 근사한다(아래 PYONGYANG_SEEDS, RASON_SEEDS).
+  개성특별시 3개 구역(개성시·개풍구역·판문구역)도 같은 방식이다(KAESONG_SEEDS).
 
 사용법
     python tools/build_map.py            # 캐시에 없으면 내려받는다
@@ -79,7 +80,7 @@ NK_NAMES = {
     "Sinyang": "평남 신양군", "Tukjang": "평남 득장지구", "Maengsan": "평남 맹산군",
     "Taehung": "평남 대흥군", "Nyongwon": "평남 녕원군",
     # 황북
-    "Kaesong City": "황북 개성시", "Sariwon City": "황북 사리원시", "Hwangju": "황북 황주군",
+    "Sariwon City": "황북 사리원시", "Hwangju": "황북 황주군",
     "Songrim City": "황북 송림시", "Pongsan": "황북 봉산군", "Phyongsan": "황북 평산군",
     "Koksan": "황북 곡산군", "Unpha": "황북 은파군", "Sohung": "황북 서흥군",
     "Sangwon": "황북 상원군", "Sinkye": "황북 신계군", "Junghwa": "황북 중화군",
@@ -115,11 +116,11 @@ NK_NAMES = {
     "Chosan": "자강 초산군", "Usi": "자강 우시군", "Hwaphyong": "자강 화평군",
     "Sijung": "자강 시중군", "Junggang": "자강 중강군", "Songwon": "자강 송원군",
     "Rangrim": "자강 랑림군", "Ryongrim": "자강 룡림군", "Kophung": "자강 고풍군",
-    # 양강
-    "Hyesan City": "양강 혜산시", "Kabsan": "양강 갑산군", "Paekam": "양강 백암군",
-    "Unhung": "양강 운흥군", "Kim Hyong Jik": "양강 김형직군", "Phungso": "양강 풍서군",
-    "Kim Jong Suk": "양강 김정숙군", "Samsu": "양강 삼수군", "Kim Hyong Gwon": "양강 김형권군",
-    "Pochon": "양강 보천군", "Taehongdan": "양강 대홍단군", "Samjiyon": "양강 삼지연시",
+    # 량강
+    "Hyesan City": "량강 혜산시", "Kabsan": "량강 갑산군", "Paekam": "량강 백암군",
+    "Unhung": "량강 운흥군", "Kim Hyong Jik": "량강 김형직군", "Phungso": "량강 풍서군",
+    "Kim Jong Suk": "량강 김정숙군", "Samsu": "량강 삼수군", "Kim Hyong Gwon": "량강 김형권군",
+    "Pochon": "량강 보천군", "Taehongdan": "량강 대홍단군", "Samjiyon": "량강 삼지연시",
 }
 
 # 평양(원자료 한 폴리곤) 분할용 대표 좌표 (lon, lat). 근사값.
@@ -135,6 +136,9 @@ PYONGYANG_SEEDS = {
     "평양 력포구역": (125.860, 38.955), "황북 승호구역": (125.990, 38.990),
 }
 RASON_SEEDS = {"라선 라진구역": (130.300, 42.240), "라선 선봉구역": (130.420, 42.390)}
+# 개성특별시(원자료는 개성시 한 폴리곤): 시내·개풍구역(서남, 예성강·한강 하구)·판문구역(동남, 판문점 쪽). 근사값.
+KAESONG_SEEDS = {"개성 개성시": (126.545, 38.030), "개성 개풍구역": (126.470, 37.860),
+                 "개성 판문구역": (126.660, 37.905)}
 
 
 def fetch(url: str, name: str) -> str:
@@ -221,6 +225,9 @@ def build():
             continue
         if n == "Rason City":
             nk_geom.update(voronoi_split(g, RASON_SEEDS))
+            continue
+        if n == "Kaesong City":
+            nk_geom.update(voronoi_split(g, KAESONG_SEEDS))
             continue
         if n not in NK_NAMES:
             raise SystemExit(f"매칭 안 된 북한 구역: {n}")
@@ -378,7 +385,7 @@ def build():
         "do8": do8,
         "source": {
             "south": "vuski/admdongkor ver20260701 (CC BY 4.0, 통계청 SGIS)",
-            "north": "geoBoundaries PRK ADM2 gbOpen (CC BY 4.0); 평양 구역·라선 2구역은 보로노이 근사",
+            "north": "geoBoundaries PRK ADM2 gbOpen (CC BY 4.0); 평양 구역·라선 2구역·개성특별시 3구역은 보로노이 근사",
         },
         "regions": out_regions,
         "adjacency": sorted(adjacency),
