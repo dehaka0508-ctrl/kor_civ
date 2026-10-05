@@ -2422,8 +2422,7 @@ class Game:
                         break
                     give(r, kind)
         for r in regs:
-            r.h_delta += C.SPECIALTY_HAPPY * (len(new[r.id] - old[r.id]) - len(old[r.id] - new[r.id]))
-            r.supplied = new[r.id]
+            r.supplied = new[r.id]          # 행복도는 공급받는 동안 턴당 +0.1/종 (_phase_happiness)
 
     def specialty_kinds(self, fid):
         """이 세력이 가진(재고 또는 생산) 특산물 종류."""
@@ -2546,7 +2545,8 @@ class Game:
                 r.h_delta = 0.0
                 continue
             t, cap, floor = per_fac[r.owner]
-            h = (r.happy + r.h_delta + t) * C.HAPPY_DECAY
+            spec = C.SPECIALTY_HAPPY_TURN * len(r.supplied)      # 특산물: 공급받는 종류마다 턴당
+            h = (r.happy + r.h_delta + t + spec) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
             if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
@@ -2604,10 +2604,17 @@ class Game:
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
-        h = self.base_happy(rr) - f.war_weary - rr.conscript - self.minority_penalty(rr.owner)
+        h = (self.base_happy(rr) - f.war_weary - rr.conscript - self.minority_penalty(rr.owner)
+             + self.scenic_bonus(rr))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
+
+    def scenic_bonus(self, rr) -> float:
+        """자연경관: 경관 지역과, 그 지역 주인의 인접 지역에 행복도 +5(경관마다)."""
+        if rr.owner == NEUTRAL:
+            return 0.0
+        return C.SCENIC_HAPPY * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
 
     def minority_penalty(self, fid) -> float:
         """홍타이지 '소수민족': 보유 지역이 30곳을 넘으면 넘는 1곳마다 전 지역 행복도 −0.3."""

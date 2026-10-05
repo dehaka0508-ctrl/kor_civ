@@ -273,7 +273,7 @@ def test_specialty_auto_lowest_happiness_first_and_manual():
     g._distribute_specialties(f, regs)
     low = min(regs, key=lambda r: r.happy)
     assert low.supplied == {"가", "나"}           # 행복도 가장 낮은 지역부터
-    assert low.h_delta == 2 * C.SPECIALTY_HAPPY
+    assert low.h_delta == 0                        # 1회성 증가 없음(턴당 +0.1/종은 행복도 단계에서)
     # 수동: 가장 행복한 지역에 '가' 고정, 낮은 지역은 '나' 제외
     high = max(regs, key=lambda r: r.happy)
     g.set_specialty(0, high.id, "가", "pin")
@@ -283,7 +283,7 @@ def test_specialty_auto_lowest_happiness_first_and_manual():
         r.h_delta = 0
     g._distribute_specialties(f, regs)
     assert "가" in high.supplied and "나" not in low.supplied
-    assert low.h_delta == -2 * C.SPECIALTY_HAPPY  # 두 종류 모두 중단
+    assert low.supplied == set()                  # 두 종류 모두 중단
 
 
 def test_landmark_naming():
@@ -1294,3 +1294,26 @@ def test_ai_leader_bias():
     assert ai.leader_bias(g, 1, "assault") < 1.0           # 안시성: 방어선 공격 불리
     _lead(g, 1, "custom")
     assert ai.leader_bias(g, 1, "naval") == 1.0
+
+
+def test_scenic_bonus_and_specialty_per_turn():
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    n = w.name_to_id
+    sc = n["서울 성동구"]                          # 서울숲
+    assert w.regions[sc].scenic == "서울숲"
+    nb = sorted(w.land_adj[sc])[0]
+    _own(g, 0, [sc, nb])
+    assert g.scenic_bonus(g.regions[sc]) >= C.SCENIC_HAPPY
+    base = g.scenic_bonus(g.regions[nb])
+    assert base >= C.SCENIC_HAPPY                  # 같은 나라의 인접 지역도 +5
+    _own(g, 1, [sc])
+    assert g.scenic_bonus(g.regions[nb]) == base - C.SCENIC_HAPPY   # 경관 지역을 잃으면 사라짐
+    assert w.regions[n["광주 동구"]].scenic == "" and w.regions[n["전남 화순군"]].scenic == "무등산 입석대"
+    # 특산물: 공급받는 종류마다 턴당 +0.1
+    r = g.regions["S002"]
+    r.happy = 0.0
+    r.supplied = {"a", "b"}
+    g.player.tax = 0.10
+    g._phase_happiness()
+    assert r.happy == pytest.approx(0.2 * C.HAPPY_DECAY, abs=0.02)

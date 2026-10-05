@@ -212,11 +212,19 @@ def draw_region_info(app, rect):
         res.append(info.power_source)
     if info.specialty:
         res.append(f"특산물: {info.specialty}")
+    if info.scenic:
+        res.append(f"자연경관: {info.scenic}")
     if info.coastal:
         res.append("해안: " + ", ".join(app.world.seas[s].name for s in info.seas))
     y = draw_chips(gui, x, y, w, res or ["없음"])
     if owner == pid:
-        y = section(gui, x, y + 6, w, f"특산물 공급 {len(r.supplied)}/{C.SPECIALTY_MAX_TYPES}종")
+        sb = g.scenic_bonus(r)
+        if sb:
+            src = [app.world.regions[n].scenic for n in app.world.scenic_near[node] if g.regions[n].owner == pid]
+            y = section(gui, x, y + 6, w, f"자연경관 행복도 +{sb:g}")
+            y = draw_chips(gui, x, y, w, src)
+        y = section(gui, x, y + 6, w, f"특산물 공급 {len(r.supplied)}/{C.SPECIALTY_MAX_TYPES}종"
+                    + (f" (행복도 턴당 +{C.SPECIALTY_HAPPY_TURN * len(r.supplied):g})" if r.supplied else ""))
         sup = [k + (" (고정)" if k in r.spec_pin else "") for k in sorted(r.supplied)]
         y = draw_chips(gui, x, y, w, sup or ["없음"])
         if gui.button((x, y - 2, 120, 26), "배분 수정", size=12):

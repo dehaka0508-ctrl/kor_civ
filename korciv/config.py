@@ -40,7 +40,8 @@ MARKET_STEP = 0.10         # 식량 제외 자원은 같은 턴 1개 살 때마�
 OIL_RESERVE_FOR_LIQUEFY = 20   # 석유 비축이 이보다 적을 때만 석탄액화
 SPECIALTY_VALUE = 20
 SPECIALTY_MAX_TYPES = 5
-SPECIALTY_HAPPY = 3
+SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행복도 턴당 +0.1
+SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5
 
 LANDMARK_COST_PER_TURN = 100_000
 LANDMARK_TURNS = 15

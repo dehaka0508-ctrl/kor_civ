@@ -86,6 +86,7 @@ class RegionInfo:
     note: str
     output0: float
     food0: float
+    scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
 
     @property
     def is_oil(self):
@@ -178,6 +179,9 @@ class World:
         for rid in self.order:
             for sid in self.regions[rid].seas:
                 self.seas[sid].coast.append(rid)
+        # 자연경관: 이 지역 행복도에 영향을 주는 경관 지역(자기 자신 + 육상 인접)
+        self.scenic_near = {rid: tuple(n for n in [rid] + sorted(self.land_adj[rid]) if self.regions[n].scenic)
+                            for rid in self.order}
 
     @staticmethod
     def _parse(r) -> RegionInfo:
@@ -194,6 +198,7 @@ class World:
             oil=int(r["정유"]), coal=int(r["탄광"]), power_self=int(r["자체발전"]),
             power_source=src, power_site="화력" in src, specialty=", ".join(specs), specialties=specs,
             note=r["비고"] or "", output0=float(r["초기산출"] or 0), food0=float(r["식량생산"] or 0),
+            scenic=(r.get("자연경관") or "").strip(),
         )
 
     # ------------------------------------------------------------ 그래프
