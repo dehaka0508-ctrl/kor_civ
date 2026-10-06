@@ -1102,6 +1102,7 @@ def draw_priority_list(app, x, y, w, items):
     if sel in ids and drag is None:
         i = ids.index(sel)
         gui.rect(t.accent, pygame.Rect(x, top + i * row_h, w, row_h - 4), 2, radius=8)
+        app.arrow_capture_v = True                # ↑↓를 누르고 있어도 지도는 위아래로 움직이지 않는다
         for k in list(gui.keys):
             if k.key in (pygame.K_UP, pygame.K_DOWN) and not gui.focus:
                 gui.keys.remove(k)                 # 지도 이동 대신 순서 이동

@@ -235,3 +235,31 @@ def test_click_foreign_region_by_visibility(app):
     app.select(neutral)                   # 중립은 현행대로 지역 정보
     assert app.left_tab == "region" and app.tab == "info"
     frame(app)
+
+
+def test_arrow_key_hold_pans(app, monkeypatch):
+    """방향키를 누르고 있으면 프레임마다 지도가 계속 움직인다."""
+    app.start_game(Settings(seed=4, n_enemies=3))
+    app.game.set_player_government("presidential")
+    app.scene, app.modal = "main", None
+    app.game.pending_proposals.clear()
+    app.gui.focus = None
+    held = {pygame.K_RIGHT}
+
+    class Pressed:
+        def __getitem__(self, k):
+            return k in held
+    monkeypatch.setattr(pygame.key, "get_pressed", lambda: Pressed())
+    t = [1000]
+    monkeypatch.setattr(pygame.time, "get_ticks", lambda: t[0])
+    app.arrow_pan()
+    x0 = app.map.cx
+    for _ in range(5):
+        t[0] += 16
+        app.arrow_pan()
+    assert app.map.cx > x0                 # 오른쪽 키: 지도 중심이 오른쪽(동쪽)으로
+    held.clear()
+    x1 = app.map.cx
+    t[0] += 16
+    app.arrow_pan()
+    assert app.map.cx == x1                # 떼면 멈춘다

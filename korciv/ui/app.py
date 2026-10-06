@@ -861,8 +861,32 @@ class App:
                     lines.append(f"적 총 체력 {pv['def_hp']:.0f}")
         self.gui.tooltip = "\n".join(lines)
 
+    PAN_SPEED = 900          # 방향키를 누르고 있을 때 초당 이동(화면 픽셀)
+
+    def arrow_pan(self):
+        """방향키를 누르고 있는 동안 지도를 계속 민다(누른 시간만큼, 프레임 속도와 무관)."""
+        now = pygame.time.get_ticks()
+        last, self._pan_t = getattr(self, "_pan_t", now), now
+        if self.gui.focus:
+            self.arrow_capture_v = False
+            return
+        pressed = pygame.key.get_pressed()
+        dx = (pressed[pygame.K_LEFT] - pressed[pygame.K_RIGHT])
+        dy = (pressed[pygame.K_UP] - pressed[pygame.K_DOWN])
+        if getattr(self, "arrow_capture_v", False):   # 지출 우선순위 행을 고른 동안 ↑↓는 순서 이동
+            dy = 0
+        self.arrow_capture_v = False
+        if not (dx or dy):
+            return
+        step = self.PAN_SPEED * min(0.1, max(0.0, (now - last) / 1000))
+        if dx and dy:
+            step *= 0.7071
+        if step > 0:
+            self.map.pan(dx * step, dy * step)
+
     def keyboard(self):
         g = self.gui
+        self.arrow_pan()
         for k in list(g.keys):
             if g.focus:
                 continue
@@ -885,14 +909,6 @@ class App:
                 self.map.zoom_at(self.map.view.center, 1.25)
             elif k.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self.map.zoom_at(self.map.view.center, 0.8)
-            elif k.key == pygame.K_LEFT:
-                self.map.pan(80, 0)
-            elif k.key == pygame.K_RIGHT:
-                self.map.pan(-80, 0)
-            elif k.key == pygame.K_UP:
-                self.map.pan(0, 80)
-            elif k.key == pygame.K_DOWN:
-                self.map.pan(0, -80)
             elif pygame.K_1 <= k.key <= pygame.K_7:
                 self.mode = MAP_MODES[k.key - pygame.K_1][0]
             elif k.key == pygame.K_F1:
