@@ -1002,6 +1002,27 @@ def test_coalition_not_resigned_when_already_together():
     assert not ok and "이미" in why
 
 
+def test_alliance_kept_until_opinion_30_and_coalition_at_60():
+    g = new_game(n_enemies=2)
+    p = D.pair(1, 2)
+    g.dip.alliance[p] = g.turn
+    g.dip.op[(1, 2)] = g.dip.op[(2, 1)] = 31.0
+    D.update_turn(g)
+    assert p in g.dip.alliance                     # 체결 문턱(65)보다 낮아도 30 초과면 유지
+    assert D.opinion(g, 1, 2) > C.ALLIANCE_LEAVE
+    g.dip.op[(1, 2)] = 20.0
+    D.update_turn(g)
+    assert D.opinion(g, 1, 2) <= C.ALLIANCE_LEAVE
+    assert p not in g.dip.alliance                 # 30 이하면 파기(불가침으로)
+    g.hegemon = None
+    g.dip.alliance[p] = g.turn - C.COALITION_ALLIANCE_TURNS
+    g.dip.op[(1, 2)] = g.dip.op[(2, 1)] = 60.0
+    ok, why = D.treaty_check(g, 1, 2, "coalition")
+    assert ok, why
+    g.dip.alliance[p] = g.turn - C.COALITION_ALLIANCE_TURNS + 1
+    assert not D.treaty_check(g, 1, 2, "coalition")[0]
+
+
 def test_time_victory_and_socialist_rule():
     import random as _r
     from korciv.leaders import ai_pick_government

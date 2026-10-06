@@ -779,11 +779,11 @@ def update_turn(g):
                 else:
                     del store[p]
                     g.event("diplo", f"{g.fname(a)}–{g.fname(b)} 조약이 만료되었습니다.", fids=p)
-    # AI 동맹 탈퇴
+    # AI 동맹 파기(우호도 30 이하)
     for p in list(d.alliance):
         a, b = p
         for x, y in ((a, b), (b, a)):
-            if g.factions[x].is_ai and opinion(g, x, y) < C.ALLIANCE_LEAVE and p in d.alliance:
+            if g.factions[x].is_ai and opinion(g, x, y) <= C.ALLIANCE_LEAVE and p in d.alliance:
                 leave_alliance(g, x, y)
     d.rejected.clear()
     temps = d.__dict__.get("op_temp")
