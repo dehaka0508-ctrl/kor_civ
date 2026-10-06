@@ -55,7 +55,7 @@ RIVERS = {
             (34.80, 126.48), (34.78, 126.40)],
     "섬진강": [(35.70, 127.35), (35.55, 127.22), (35.40, 127.15), (35.27, 127.28), (35.20, 127.45),
             (35.13, 127.62), (35.05, 127.75), (34.93, 127.77)],
-    "낙동강": [(36.80, 128.85), (36.62, 128.80), (36.55, 128.55), (36.50, 128.30),
+    "낙동강": [(37.07, 129.00), (36.95, 128.95), (36.80, 128.88), (36.62, 128.80), (36.55, 128.55), (36.50, 128.30),
             (36.30, 128.30), (36.12, 128.38), (35.90, 128.42), (35.70, 128.40), (35.50, 128.45),
             (35.40, 128.62), (35.35, 128.80), (35.25, 128.95), (35.08, 128.95)],
 }
@@ -278,6 +278,45 @@ def loop_erase(G, path, start, keep=()):
     return edges
 
 
+def check_rivers(G, routes, geom, id2name):
+    """하천 점검: 경로가 한 줄로 이어지는지, 하구가 바다에 닿는지(지류는 본류 경로에 닿는지)."""
+    from shapely.geometry import Polygon
+    with open(os.path.join(DATA, "map_geometry.json"), encoding="utf-8") as f:
+        seas = json.load(f)["seas"]
+    sea = unary_union([Polygon(p["ext"]).buffer(0) for polys in seas.values() for p in polys])
+    bad = []
+    for name in RIVERS:
+        path = routes[name]
+        # 이어짐: 연속한 간선이 노드를 공유
+        nodes = []
+        for e in path:
+            u, v = G.edges[e][:2]
+            if not nodes:
+                nodes = [u, v] if path[1:] and v in G.edges[path[1]][:2] else [v, u]
+                continue
+            if nodes[-1] == u:
+                nodes.append(v)
+            elif nodes[-1] == v:
+                nodes.append(u)
+            else:
+                bad.append(f"{name}: 끊김")
+                break
+        last = Point(G.nodes[nodes[-1]])
+        if name in TRIBUTARY:
+            main = {n for e in routes[TRIBUTARY[name]] for n in G.edges[e][:2]}
+            ok = nodes[-1] in main
+            where = f"본류({TRIBUTARY[name]}) 합류" if ok else "본류에 안 닿음"
+        else:
+            d = sea.distance(last) * 111
+            ok = d < 3.0
+            where = f"하구 해안까지 {d:.1f}km"
+        if not ok:
+            bad.append(f"{name}: {where}")
+        print(f"  점검 {name}: 간선 {len(path)}개, {where}")
+    if bad:
+        raise SystemExit("하천 점검 실패: " + "; ".join(bad))
+
+
 def read_rows():
     with open(TPATH, encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
@@ -385,14 +424,14 @@ def main():
         routes[name] = loop_erase(G, path, start, keep=fedges)
         used.update(frozenset(G.edges[e][2:4]) for e in routes[name] if G.edges[e][2])
 
-    # 산맥을 먼저(본맥 → 갈래), 그다음 하천(본류 → 지류): 앞서 놓인 경계는 뒤에서 피한다
-    # 차령산맥은 남한강을 가로지르므로 하천 다음에 놓는다
-    for name in ("태백산맥", "낭림산맥", "마천령산맥", "소백산맥", "묘향산맥", "멸악산맥", "함경산맥"):
-        do(name, RANGES[name], BRANCH.get(name), at_start=name in BRANCH_AT_START)
+    # 하천 우선: 하천은 수원에서 바다(또는 본류)까지 반드시 이어져야 하므로 먼저 경계를 차지하고(본류 → 지류),
+    # 산맥은 그다음에 놓여 하천이 쓴 경계를 피한다(산맥은 끊기거나 낮은 곳이 있어도 된다).
     for name in ("한강(본류)", "청천강", "대동강", "예성강", "임진강", "금강", "만경강", "영산강", "섬진강", "낙동강",
                  "북한강", "남한강", "소양강"):
         do(name, RIVERS[name], TRIBUTARY.get(name))
-    do("차령산맥", RANGES["차령산맥"], BRANCH["차령산맥"], at_start=True)
+    for name in ("태백산맥", "낭림산맥", "마천령산맥", "소백산맥", "차령산맥", "묘향산맥", "멸악산맥", "함경산맥"):
+        do(name, RANGES[name], BRANCH.get(name), at_start=name in BRANCH_AT_START)
+    check_rivers(G, routes, geom, id2name)
 
     out = []
     seen = set()
@@ -442,7 +481,15 @@ def main():
                         ("mid", (125.6, 36.9, 129.2, 39.2)), ("se", (127.4, 34.9, 129.6, 37.3)),
                         ("sw", (125.9, 34.5, 128.0, 36.8))):
             preview(f"{base}_{tag}{ext}", geom, by_name, G, routes, RIVERS, RANGES, out, bbox=bb, S=700, ne_path=a.ne)
+    # 짝 없는 연결(휴전선 자료 어긋남 등 가상 간선)도 선으로 그려 하천·산맥이 끊겨 보이지 않게 한다
+    links = []
+    for name, path in routes.items():
+        segs = [[[round(x, 4), round(y, 4)] for x, y in G.edges[e][4].coords] for e in path if G.edges[e][2] is None]
+        if segs:
+            links.append({"name": name, "kind": "산악 돌파" if name.endswith("산맥") else "도하", "lines": segs})
     if not a.dry:
+        with open(os.path.join(DATA, "terrain-links.json"), "w", encoding="utf-8") as f:
+            json.dump(links, f, ensure_ascii=False, indent=1)
         with open(TPATH, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(old[0].keys()))
             w.writeheader()

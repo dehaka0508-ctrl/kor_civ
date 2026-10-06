@@ -170,6 +170,13 @@ class World:
                         "name": r["지형"], "note": r["근거"], "mult": float(r["공격배수"])}
         self.terrain_lines = [t for t in self.terrain_lines if frozenset((t["a"], t["b"])) in self.terrain
                               or (not t["b"] and t["a"] in self.outer_rivers)]
+        # 짝 없이 이어 주는 선(남북 자료가 어긋난 휴전선 부근 등): 그리기 전용
+        lpath = os.path.join(data_dir, "terrain-links.json")
+        if os.path.exists(lpath):
+            with open(lpath, encoding="utf-8") as f:
+                for ln in json.load(f):
+                    self.terrain_lines.append({"a": "", "b": "", "kind": ln["kind"], "name": ln["name"],
+                                               "connector": False, "lines": ln["lines"]})
         # 도하 경계·국경 하천을 가진 지역(하천 어장 가능)
         self.river_regions = {rid for fp, t in self.terrain.items() if t["kind"] == "도하" for rid in fp}
         self.river_regions |= self.outer_rivers
