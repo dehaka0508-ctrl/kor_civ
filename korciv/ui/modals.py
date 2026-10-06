@@ -525,10 +525,9 @@ def draw_start_popup(app, rid):
         res.append(f"정유 석유 {info.oil}/턴")
     if info.coal:
         res.append(f"탄광 석탄 {info.coal}/턴")
-    if info.power_self:
-        res.append(f"자체 발전 전기 {info.power_self}/턴")
     if info.power_source:
-        res.append(info.power_source)
+        from .panels import power_text
+        res.append(power_text(info))
     if info.specialty:
         res.append(f"특산물: {info.specialty}")
     chips("자원·특산물", res)

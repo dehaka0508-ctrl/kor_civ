@@ -28,7 +28,7 @@ MAP_MODES = [("political", "정치"), ("happy", "행복도"), ("pop", "인구"),
 # 자원·건물·군사 모드는 누르면 위로 세부 메뉴가 펼쳐지고, 고른 한 가지만 지도에 표시한다.
 # (키, 이름, 색, 최대 단계 또는 None=단계 없음)
 SUB_MODES = {
-    "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#212529", 6),
+    "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#000000", 6),
                  ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", 3), ("nuclear", "원전", "#F08C00", 3)],
     "building": [("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
                  ("bank", "은행", "#2F9E44", 5), ("power", "발전소", "#FAB005", 5)],
@@ -375,6 +375,12 @@ class App:
                 continue
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
+            if self.mode in SUB_MODES and not visible and owner != pid:
+                # 세부 모드: 안개 지역은 바탕만 어둡게, 단계 색은 그대로(보이는 곳과 같은 단계면 같은 색)
+                base = mix(desaturate(mix(self.owner_fill(owner), t.neutral, 0.75), 0.7), (0, 0, 0), 0.1)
+                fill = self.overlay_color(rid, r, owner, info, False, base=base)
+                out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
+                continue
             fill = self.mode_color(rid, r, owner, info, visible or owner == pid)
             if self.mode == "political" and visible and owner == pid and r.project:
                 # 생산·행동이 진행 중인 내 지역은 더 진한 색
@@ -430,8 +436,13 @@ class App:
         lv = self.overlay_level(key, r, info, visible)
         if lv <= 0:
             return base
-        x = 0.85 if top is None else 0.2 + 0.75 * min(1.0, lv / top)     # 1단계가 가장 연하고 오를수록 진하게
-        return mix(base, hex2rgb(col), x)
+        # 단계 색은 바탕(세력 색·안개)과 상관없이 같은 단계면 같은 색: 1단계가 가장 연하고 오를수록 진하게
+        x = 0.85 if top is None else 0.2 + 0.75 * min(1.0, lv / top)
+        light = (241, 243, 245)
+        if key == "oil":                      # 석유: 채도 0의 회색 계열, 1단계부터 바탕보다 확실히 진하게
+            light = (238, 238, 238)
+            x = 0.45 + 0.55 * min(1.0, lv / top)
+        return mix(light, hex2rgb(col), x)
 
     def mode_color(self, rid, r, owner, info, visible=True):
         t = self.theme
@@ -1080,7 +1091,7 @@ class App:
              + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
              f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
             ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소(석탄 1→2, 석유 1→4)·자체 발전으로 생산, 공장 연료\n"
-             "에너지 자원은 살 수 없고 팔 수만 있습니다. 배정: 국가 현황 옆 [자원 배정] 탭"),
+             "석유·석탄은 살 수 없고 팔 수만 있습니다(전기는 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),
             ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전소 연료, 석유 대신 군 생산(석유 1 = 석탄 2)"),
             ("oil", "석유", f"{snap['oil']:.0f}", None, "석유: 유전 생산, 군 생산·발전소(전기 4)·공장 연료"),
             ("food", "식량", f"{snap['food']:,.0f}", None,
@@ -1125,7 +1136,7 @@ class App:
             if key in SUB_MODES:
                 tip += "\n누르면 위로 세부 메뉴가 펼쳐집니다"
                 if self.mode == key:
-                    label = f"{label}·{self.sub_mode(key)[1]}"
+                    tip += f"\n지금: {self.sub_mode(key)[1]}"
             bx = r.x + 8 + i * (w + 4)
             if gui.button((bx, r.y + 8, w, 32), label, selected=self.mode == key, tooltip=tip,
                           size=12 if len(label) > 4 else 13):

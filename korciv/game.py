@@ -163,27 +163,44 @@ class Game:
             self.finalize_setup()
 
     def _pick_starts(self, n, requested):
+        """시작 수도: 직접 고른 곳은 그대로, 무작위 수도는 다른 모든 수도와 육상 최단 거리 START_MIN_DIST(6)칸 이상.
+        여러 번 섞어 보아도 안 되면(국가가 아주 많을 때) 거리를 1칸씩 줄인다."""
         chosen = []
         for rid in requested:
             if rid and rid in self.regions and rid not in chosen:
                 chosen.append(rid)
-        candidates = list(self.world.order)
-        self.rng.shuffle(candidates)
-        for min_d in (4, 3, 2, 1):
-            for rid in candidates:
-                if len(chosen) >= n:
-                    break
-                if rid in chosen:
-                    continue
-                if all(self._land_dist(rid, c, min_d) >= min_d for c in chosen):
-                    chosen.append(rid)
-            if len(chosen) >= n:
-                break
-        return chosen[:n]
+        base = list(chosen)
+        cands = list(self.world.order)
+        for min_d in range(C.START_MIN_DIST, 0, -1):
+            for _ in range(C.START_PICK_TRIES):
+                picked = list(base)
+                self.rng.shuffle(cands)
+                for rid in cands:
+                    if len(picked) >= n:
+                        break
+                    if rid in picked:
+                        continue
+                    if all(self._land_dist(rid, c, min_d) >= min_d for c in picked):
+                        picked.append(rid)
+                if len(picked) >= n:
+                    return picked[:n]
+        return (base + [r for r in cands if r not in base])[:n]
 
     def _land_dist(self, a, b, cap):
-        dist = self.world.distances_from(a, cap)
-        return dist.get(b, cap + 1)
+        """육상 최단 거리(cap 이상이면 cap+1)."""
+        dist = {a: 0}
+        frontier = [a]
+        for d in range(1, cap + 1):
+            nxt = []
+            for u in frontier:
+                for v in self.world.land_adj[u]:
+                    if v not in dist:
+                        dist[v] = d
+                        if v == b:
+                            return d
+                        nxt.append(v)
+            frontier = nxt
+        return 0 if a == b else cap + 1
 
     def _give_start_region(self, f: Faction, rid: str):
         r = self.regions[rid]
@@ -1516,7 +1533,7 @@ class Game:
 
     def max_buyable(self, fid, res) -> int:
         f = self.factions[fid]
-        if f.money <= 0 or res in C.ENERGY:
+        if f.money <= 0 or res in C.UNBUYABLE:
             return 0
         lo, hi = 0, 1
         while self.buy_cost(fid, res, hi) <= f.money and hi < 10 ** 7:
@@ -1531,8 +1548,8 @@ class Game:
 
     def market_buy(self, fid, res, qty):
         f = self.factions[fid]
-        if res in C.ENERGY:
-            return 0, 0.0                    # 에너지 자원은 돈으로 살 수 없다(판매만)
+        if res in C.UNBUYABLE:
+            return 0, 0.0                    # 석유·석탄은 돈으로 살 수 없다(판매만)
         bought = 0
         spent = 0.0
         for _ in range(int(qty)):
@@ -3414,6 +3431,18 @@ class Game:
             for fid, v in vis.items():
                 if a.owner != fid and a.loc in v:
                     self.factions[fid].met.add(a.owner)
+        # 동맹·연합끼리는 시야(위 visible)뿐 아니라 '만난 세력'도 공유한다
+        alive = [f for f in self.factions if f.alive]
+        changed = True
+        while changed:
+            changed = False
+            for f in alive:
+                for o in alive:
+                    if o.id != f.id and D.allied(self, f.id, o.id) and not o.met <= f.met | {f.id}:
+                        f.met |= o.met - {f.id}
+                        changed = True
+                    if o.id != f.id and D.allied(self, f.id, o.id):
+                        f.met.add(o.id)
 
     def is_visible(self, fid, node) -> bool:
         return self.settings.fog == 0 or node in self.visible(fid)

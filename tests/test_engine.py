@@ -1606,12 +1606,14 @@ def test_econ_conquest_diplomatic_victory():
     assert g.game_over and set(g.winner[0]) == {0, 1, 2} and g.winner[1] == "diplomatic"
 
 
-def test_dangun_war_weary_recovery():
-    for lk, rec in (("cus", 1.0), ("dan", 1.5)):
-        g = new_game(player_start="S002", n_enemies=1, player_leader=lk)
-        g.player.war_weary = 10.0
-        g._phase_happiness()
-        assert g.player.war_weary == pytest.approx(10.0 - rec)
+def test_dangun_one_buff_one_debuff():
+    from korciv.leaders import LEADER_BY_KEY
+    fx = LEADER_BY_KEY["dan"]["fx"]
+    assert fx == {"happy_turn": 0.15, "cost_air": 0.20}
+    g = new_game(player_start="S002", n_enemies=1, player_leader="dan")
+    g.player.war_weary = 10.0
+    g._phase_happiness()
+    assert g.player.war_weary == pytest.approx(9.0)          # 회복은 기본 1/턴
 
 
 def test_unit_table_v14():
@@ -1707,3 +1709,46 @@ def test_science_progress_text():
     for k in C.SCIENCE_UNITS:
         g.add_units(0, "S002", k, 1)
     assert science_progress_text(g, 0) == "6/7 · 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결"
+
+
+
+def test_starts_six_apart_market_upkeep_power_sites():
+    for seed in range(15):
+        g = Game(Settings(seed=seed, n_enemies=9, all_ai=True))
+        caps = [f.capital for f in g.factions]
+        assert all(g._land_dist(a, b, 6) >= 6 for i, a in enumerate(caps) for b in caps[i + 1:])
+    g = new_game(player_start="S002", n_enemies=1)
+    assert (C.MARKET_BUY["elec"], C.MARKET_SELL["elec"], C.MARKET_SELL["food"]) == (20, 10, 3)
+    g.player.money = 1000
+    assert g.max_buyable(0, "oil") == 0 and g.max_buyable(0, "coal") == 0
+    k, _ = g.market_buy(0, "elec", 2)
+    assert k == 2
+    for k, u in C.UNITS.items():
+        if not u.get("science"):
+            assert u["upkeep"] / (u["cost"] * u["turns"]) == pytest.approx(5 / 250)
+    w = g.world
+    site = next(r for r in w.order if w.regions[r].power_site)
+    assert g.regions[site].b["power"] == 1 and w.regions[site].power_source.startswith("화력(")
+    assert R.prod_building_cost("power", 2, True) == R.prod_building_cost("power", 2, False)
+
+
+def test_new_dams_and_power_text():
+    from korciv.data import load_world
+    from korciv.ui.panels import power_text
+    w = load_world()
+    n = w.name_to_id
+    assert power_text(w.regions[n["충북 충주"]]) == "수력(충주댐) 1/턴"
+    assert power_text(w.regions[n["부산 기장"]]) == "원자력(고리) 3/턴"
+    assert w.regions[n["강원 춘천"]].power_self == 3
+    for nm, dam in (("경기 가평", "청평댐"), ("경기 남양주", "팔당댐"), ("경북 안동", "안동댐"), ("경남 합천", "합천댐"),
+                    ("전북 임실", "섬진강댐"), ("대전 대덕", "대청댐")):
+        assert dam in w.regions[n[nm]].power_source
+
+
+def test_allies_share_met():
+    g = new_game(player_start="S002", n_enemies=3, fog=2)
+    g.player.met = {1}
+    g.factions[1].met = {0, 3}
+    g.dip.alliance[D.pair(0, 1)] = g.turn
+    g._update_fog()
+    assert 3 in g.player.met

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 LEADERS = [
     dict(key="dan", name="단군왕검", aggr=3,
-         buff=("홍익인간", "전 지역 행복도 +0.1/턴, 평시 전쟁 피로 회복 1 → 1.5/턴"), debuff=("신화 시대", "공군 생산비 +20%"),
-         fx={"happy_turn": 0.1, "war_weary_recovery": 0.5, "cost_air": 0.20}),
+         buff=("홍익인간", "전 지역 행복도 +0.15/턴"), debuff=("신화 시대", "공군 생산비 +20%"),
+         fx={"happy_turn": 0.15, "cost_air": 0.20}),
     dict(key="jum", name="동명성왕", aggr=6,
          buff=("신궁", "포병 폭격 피해 +30%"), debuff=("내륙 건국", "해군 생산비 +15%"),
          fx={"bomb_art": 0.30, "cost_naval": 0.15}),

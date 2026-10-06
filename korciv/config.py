@@ -32,14 +32,15 @@ RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역
 FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
 POWER_ELEC = {"coal": 2, "oil": 4}   # 발전소: 단계 L마다 연료 1개/턴까지 → 전기
 OIL_AS_COAL = 2                      # 석유 1 = 석탄 2 (군 생산 비용 대체 등)
-ENERGY = ("oil", "coal", "elec")     # 돈으로 살 수 없는 자원(판매는 가능)
+ENERGY = ("oil", "coal", "elec")
+UNBUYABLE = ("oil", "coal")          # 돈으로 살 수 없는 자원(판매는 가능). 전기는 시장에서 산다
 AUTO_OIL_RESERVE = 6                 # 자동 배정은 군 생산용 석유를 이만큼 남긴다
 
 START_RESOURCES = {"oil": 5, "coal": 10, "elec": 0}   # 식량은 인구 * 5
 RESOURCES = ("food", "oil", "coal", "elec")
 RESOURCE_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "전기"}
-MARKET_BUY = {"food": 4, "oil": 40, "coal": 20, "elec": 30}
-MARKET_SELL = {"food": 2, "oil": 20, "coal": 10, "elec": 15}
+MARKET_BUY = {"food": 4, "oil": 40, "coal": 20, "elec": 20}     # 석유·석탄은 구매 불가(UNBUYABLE)
+MARKET_SELL = {"food": 3, "oil": 20, "coal": 10, "elec": 10}
 MARKET_STEP = 0.10         # 식량 제외 자원은 같은 턴 1개 살 때마다 +10%
 SPECIALTY_VALUE = 20
 SPECIALTY_MAX_TYPES = 5
@@ -82,7 +83,7 @@ PROD_BUILDINGS = {
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
 PROD_TURNS_PER_LEVEL = 2
-POWER_SITE_DISCOUNT = 0.5  # 기존 화력발전소 소재지 발전소 건설비
+POWER_SITE_DISCOUNT = 1.0  # 화력발전소 소재지: 건설비 할인 없음(대신 발전소 1단계로 시작)
 
 # 방어·군사 건물 (6절)
 DEF_BUILDINGS = {
@@ -171,6 +172,11 @@ UNITS = {
     "module":     dict(name="탑승 모듈", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
     "propellant": dict(name="발사체 연료", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
 }
+# 유지비: 모든 유닛이 보병과 같은 (유지비 / 생산비) 비율. 보병 5 / 250 = 2%
+UPKEEP_RATIO = UNITS["inf"]["upkeep"] / (UNITS["inf"]["cost"] * UNITS["inf"]["turns"])
+for _k, _u in UNITS.items():
+    if not _u.get("science"):
+        _u["upkeep"] = round(_u["cost"] * _u["turns"] * UPKEEP_RATIO, 2)
 UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "booster", "module", "propellant"]
 BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science")]   # 일반 생산 목록
 NAVAL_AT_SEA_UPKEEP = 2.0
@@ -184,6 +190,8 @@ AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 2
 LAND_STEPS_OWN = 2
 
+START_MIN_DIST = 6         # 무작위 수도끼리(와 직접 고른 수도) 육상 최단 거리 최소 칸 수
+START_PICK_TRIES = 40
 START_LINE_LEVEL = 1       # 시작 도시의 모든 경계 방어선 단계(반란국 제외)
 LINE_BONUS = 0.30          # 방어선 돌격 방어 x(1 + 0.30L) (단계별 성능 원안 0.25의 1.2배)
 # 지형 경계(도하·산악 돌파) 공격 배수는 data/terrain-borders.csv 의 공격배수 열(기본 0.9)을 쓴다.

@@ -255,10 +255,8 @@ def draw_region_info(app, rect):
         res.append(f"정유 {info.oil}+{r.b['extract']}/턴")
     if info.coal:
         res.append(f"탄광 {info.coal}+{r.b['extract']}/턴")
-    if info.power_self:
-        res.append(f"자체 발전 {info.power_self}/턴")
     if info.power_source:
-        res.append(info.power_source)
+        res.append(power_text(info))
     if info.specialty:
         res.append(f"특산물: {info.specialty}")
     if info.scenic:
@@ -787,9 +785,9 @@ def draw_nation_tab(app, body):
         def do_sell(n, res=res, name=name):
             k, s_ = g.market_sell(pid, res, n)
             app.toast(f"{name} {k}개 판매 (+{s_:,.0f})")
-        energy = res in C.ENERGY
+        energy = res in C.UNBUYABLE
         if gui.button((bx, y, 54, 24), "구매", size=11, enabled=not energy,
-                      tooltip="에너지 자원은 돈으로 살 수 없습니다(판매만)" if energy
+                      tooltip="석유·석탄은 돈으로 살 수 없습니다(판매만)" if energy
                       else f"최대 {g.max_buyable(pid, res):,}개까지"):
             modals.open_qty(app, f"{name} 구매", g.max_buyable(pid, res), 0, do_buy,
                             preview=lambda n, res=res: f"비용 {g.buy_cost(pid, res, n):,.0f} (자금 {f.money:,.0f})",
@@ -968,6 +966,13 @@ def draw_diplo_detail(app, body, fid):
 
 # ------------------------------------------------------------------ 좌측 [국가 현황]
 PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "science": "과학", "capital": "천도"}
+
+
+def power_text(info) -> str:
+    """'수력(충주댐) 1/턴', '원자력(고리) 3/턴', '화력(당진)'(화력발전소 소재지는 발전소 1단계로 시작)."""
+    if info.power_self:
+        return f"{info.power_source} {info.power_self}/턴"
+    return info.power_source
 
 
 def science_progress_text(g, pid) -> str:

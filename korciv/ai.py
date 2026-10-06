@@ -1156,7 +1156,7 @@ def _slots(g, f, threat, military=True):
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
             turns = g.build_time(fid, "power", R.prod_building_turns(lv))
-            gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns) * (1.3 if info.power_site else 1.0)
+            gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns)
             cands.append((gain / cost * bias("power"), r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
             lv = r.b["specialty"] + 1

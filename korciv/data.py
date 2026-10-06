@@ -219,6 +219,8 @@ class World:
         name = full[: len(full) - len(fshort)] + short
         seas = tuple(SEA_BY_NAME[s.strip()] for s in r["인접해역"].split(",") if s.strip())
         src = r["발전원"] or ""
+        if "화력" in src and "소재" in src:      # '강릉안인화력 소재(…)' → '화력(강릉안인)'
+            src = f"화력({src.split('화력')[0]})"
         specs = tuple(x.strip() for x in (r["특산물"] or "").split(",") if x.strip())
         return RegionInfo(
             id=r["ID"], name=name, short=short, province=r["광역"], ns=r["남북"], orig=r["원명칭"],
