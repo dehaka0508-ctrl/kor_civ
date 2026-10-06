@@ -411,6 +411,21 @@ def draw_action_tab(app, body):
     if r.focus:
         state = "적용 중" if g.focus_active(r) else "대기: 건설·생산 중에는 효과 없음"
         gui.text((x + w, y + 4), state, 11, t.good if g.focus_active(r) else t.muted, anchor="topright")
+    y += 28
+    # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
+    pf = getattr(r, "pop_focus", False)
+    can = pf or g.eff_happy(r) >= C.POP_FOCUS_MIN_H
+    on = gui.checkbox((x, y, w, 26), f"인구 성장 집중 (성장률 턴당 +{C.POP_FOCUS_GROWTH:.1%}p)", pf, size=13)
+    if on != pf:
+        ok, msg = g.set_pop_focus(pid, rid, on)
+        app.toast(msg, None if ok else t.bad)
+        app.changed()
+    if pf:
+        state = ("적용 중" if g.pop_focus_active(r) else
+                 ("대기: 실질 행복도 5 미만" if g.eff_happy(r) < C.POP_FOCUS_MIN_H else "대기: 건설·생산 중에는 효과 없음"))
+        gui.text((x + w, y + 4), state, 11, t.good if g.pop_focus_active(r) else t.muted, anchor="topright")
+    elif not can:
+        gui.text((x + w, y + 4), "실질 행복도 5 이상 필요", 11, t.muted, anchor="topright")
     y += 32
     if r.project:
         y = draw_project(app, x, y, w, rid, r.project)

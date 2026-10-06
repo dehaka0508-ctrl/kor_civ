@@ -1317,3 +1317,20 @@ def test_scenic_bonus_and_specialty_per_turn():
     g.player.tax = 0.10
     g._phase_happiness()
     assert r.happy == pytest.approx(0.2 * C.HAPPY_DECAY, abs=0.02)
+
+
+def test_pop_focus():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    r.happy = 0.0
+    ok, _ = g.set_pop_focus(0, "S002", True)
+    assert not ok                                  # 실질 행복도 5 미만
+    r.happy = 20.0
+    assert g.set_pop_focus(0, "S002", True)[0] and r.pop_focus and not r.focus
+    p0 = r.pop
+    g._phase_population()
+    cap = g.pop_cap(r)
+    expect = p0 * (C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.eff_happy(r))) * (1 - p0 / cap)
+    assert r.pop - p0 == pytest.approx(expect)
+    g.set_focus(0, "S002", True)
+    assert r.focus and not r.pop_focus             # 집중은 하나만

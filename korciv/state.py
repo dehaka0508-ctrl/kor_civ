@@ -52,6 +52,7 @@ class Region:
     spec_block: set = field(default_factory=set)   # 수동 제외 특산물
     landmark_name: str = ""
     focus: bool = False            # 생산 집중(건설·병력 생산을 안 할 때 인구 산출 +15%)
+    pop_focus: bool = False        # 인구 성장 집중(건설·병력 생산을 안 할 때 성장률 +0.5%p)
     acquired_seq: int = 0          # 영토를 얻은 순서(수도 0) — '다음 지역' 순회용
     famine: float = 0.0
     h_delta: float = 0.0

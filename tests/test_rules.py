@@ -60,9 +60,9 @@ def test_battle_example_10_vs_10_infantry():
 
 
 def test_pop_growth_and_tax_happiness():
-    assert R.pop_growth_rate(9) == 0
-    assert R.pop_growth_rate(10) == pytest.approx(C.G_MAX * 0.1)
-    assert R.pop_growth_rate(60) == pytest.approx(C.G_MAX)
+    assert R.pop_growth_rate(4.9) == 0
+    assert R.pop_growth_rate(5) == pytest.approx(C.G_MAX * 0.1)
+    assert R.pop_growth_rate(45) == pytest.approx(C.G_MAX)
     assert R.tax_happiness(0) == pytest.approx(1.0)
     assert R.tax_happiness(20) == pytest.approx(-1.0)
     assert R.tax_happiness(50) == pytest.approx(-4.0)

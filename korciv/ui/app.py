@@ -560,15 +560,17 @@ class App:
         mv = self.map
         u = ui_scale()
         for r in g.regions_of(g.player_id):
-            if not r.focus:
+            pf = getattr(r, "pop_focus", False)
+            if not r.focus and not pf:
                 continue
             x, y = mv.label_screen(r.id)
             if not mv.view.collidepoint(x, y):
                 continue
             if mv.z >= 2.0:
                 x += render_text(self.world.regions[r.id].short, 11, (0, 0, 0), "semibold").get_width() / 2 + 3 * u
-            col = (25, 25, 25) if g.focus_active(r) else (130, 130, 130)
-            t = render_text("[P]", 11, col, "bold")
+            act = g.pop_focus_active(r) if pf else g.focus_active(r)
+            col = ((20, 120, 60) if pf else (25, 25, 25)) if act else (130, 130, 130)
+            t = render_text("[G]" if pf else "[P]", 11, col, "bold")
             self.screen.blit(t, t.get_rect(midleft=(x + 2 * u, y + 2 * u - (6 * u if mv.z >= 4 else 0))))
 
     def draw_occupations(self):
@@ -1042,7 +1044,7 @@ class App:
         g = self.game
         return [rid for rid in g.review_order(g.player_id)
                 if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ
-                and not g.regions[rid].focus]
+                and not g.regions[rid].focus and not getattr(g.regions[rid], "pop_focus", False)]
 
     def next_region(self):
         q = self.review_queue()

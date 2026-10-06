@@ -1426,7 +1426,28 @@ class Game:
         if rr.owner != fid:
             return False, "내 지역이 아닙니다."
         rr.focus = bool(on)
+        if on:
+            rr.pop_focus = False             # 집중은 하나만
         return True, "생산 집중 " + (f"켬: 인구 산출 +{C.FOCUS_POP_BONUS:.0%}" if on else "끔")
+
+    def set_pop_focus(self, fid, rid, on):
+        rr = self.regions[rid]
+        if rr.owner != fid:
+            return False, "내 지역이 아닙니다."
+        if on and self.eff_happy(rr) < C.POP_FOCUS_MIN_H:
+            return False, f"실질 행복도 {C.POP_FOCUS_MIN_H} 이상에서만 쓸 수 있습니다."
+        rr.pop_focus = bool(on)
+        if on:
+            rr.focus = False
+        return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH:.1%}p" if on else "끔")
+
+    def pop_focus_active(self, rr) -> bool:
+        """건설·병력 생산을 하지 않고 실질 행복도 5 이상일 때만 효과."""
+        return (getattr(rr, "pop_focus", False) and (rr.project is None or rr.project.kind == "annex")
+                and self.eff_happy(rr) >= C.POP_FOCUS_MIN_H)
+
+    def pop_cap(self, rr) -> float:
+        return self.info(rr.id).pop0 * C.POP_CAP_START_MULT + C.POP_CAP_PER_LEVEL * rr.level_sum()
 
     def region_output_estimate(self, rid):
         rr = self.regions[rid]
@@ -2518,7 +2539,9 @@ class Game:
                 r.pop *= 1 + C.FAMINE_POP * r.famine
             else:
                 g = R.pop_growth_rate(self.eff_happy(r)) * f.pop_mult
-                cap = info.pop0 * C.POP_CAP_START_MULT + C.POP_CAP_PER_LEVEL * r.level_sum()
+                if self.pop_focus_active(r):
+                    g += C.POP_FOCUS_GROWTH          # 인구 성장 집중
+                cap = self.pop_cap(r)
                 if g > 0 and r.pop < cap:
                     r.pop += r.pop * g * (1 - r.pop / cap)
             if self.eff_happy(r) <= C.MIGRATION_H:

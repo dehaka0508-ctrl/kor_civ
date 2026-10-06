@@ -152,8 +152,13 @@ def plan_turn(g, fid):
     _naval_orders(g, f, threat)
     _air_orders(g, f, threat)
     _slots(g, f, threat)
-    for r in g.regions_of(fid):   # 슬롯이 비는 지역은 생산 집중(건설·생산 중엔 효과 없음)
-        r.focus = True
+    # 슬롯이 비는 지역: 인구가 상한에 한참 못 미치고 민심·식량에 여유가 있으면 인구 성장 집중,
+    # 아니면 생산 집중(둘 다 건설·생산 중엔 효과 없음)
+    food_ok = f.last.get("food_prod", 0) >= f.last.get("food_cons", 0) * 1.05 or f.res.get("food", 0) > \
+        f.last.get("food_cons", 1) * 8
+    for r in g.regions_of(fid):
+        grow = food_ok and g.eff_happy(r) >= C.POP_FOCUS_MIN_H + 3 and r.pop < 0.7 * g.pop_cap(r)
+        r.pop_focus, r.focus = grow, not grow
 
 
 # ------------------------------------------------------------------ 위협도
@@ -1013,7 +1018,7 @@ def _slots(g, f, threat, military=True):
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     at_war = bool(D.enemies(g, fid))
-    idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not r.focus)]
+    idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
     cands = []
     bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
     annex_bias = bias("annex")

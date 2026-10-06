@@ -134,7 +134,7 @@ def rebellion_probability(h: float) -> float:
 
 
 def pop_growth_rate(h: float, g_max: float = C.G_MAX) -> float:
-    """g_pop(H) = G_MAX (0.1 + 0.9 clamp((H-10)/40, 0, 1)), H<10 이면 0"""
+    """g_pop(H) = G_MAX (0.1 + 0.9 clamp((H-5)/40, 0, 1)), H<5 이면 0"""
     if h < C.POP_GROWTH_MIN_H:
         return 0.0
     x = max(0.0, min(1.0, (h - C.POP_GROWTH_MIN_H) / 40))

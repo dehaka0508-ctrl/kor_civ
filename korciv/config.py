@@ -88,7 +88,9 @@ AIRPORT_CAPACITY = 20
 
 # ---------------------------------------------------------------- 인구·행복도 (5절)
 G_MAX = 0.0025             # 원안 값 0.01 도 가능
-POP_GROWTH_MIN_H = 10
+POP_GROWTH_MIN_H = 5
+POP_FOCUS_GROWTH = 0.005     # 인구 성장 집중: 성장률 턴당 +0.5%p (실질 행복도 5 이상, 건설·생산 중이 아닐 때)
+POP_FOCUS_MIN_H = 5
 POP_CAP_START_MULT = 2
 POP_CAP_PER_LEVEL = 5
 FAMINE_POP = -0.005
