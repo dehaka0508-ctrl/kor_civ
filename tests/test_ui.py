@@ -7,7 +7,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 pygame = pytest.importorskip("pygame")
 
-from korciv.state import Settings  # noqa: E402
+from korciv.state import NEUTRAL, Settings  # noqa: E402
 from korciv.ui.app import MAP_MODES, App  # noqa: E402
 
 
@@ -195,3 +195,33 @@ def test_flags_and_diplo_detail(app):
     app.dip_view = other
     frame(app)
     app.dip_view = None
+
+
+def test_click_foreign_region_by_visibility(app):
+    app.start_game(Settings(seed=5, n_enemies=3, fog=1))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    app.modal = None
+    g.pending_proposals.clear()
+    pid = g.player_id
+    other = next(f for f in g.factions if f.id != pid)
+    cap = other.capital
+    assert not g.is_visible(pid, cap) and g.is_explored(pid, cap)
+    app.sel, app.left_open = None, False
+    app.select(cap)                       # 시야 밖 타국 영토 → 외교 탭 세력 상세
+    assert app.left_open and app.left_tab == "diplo" and app.dip_view == other.id
+    frame(app)
+    app.select(cap)                       # 다시 누르면 닫힘
+    assert not app.left_open
+    g.new_army(pid, cap, {"inf": 1})      # 시야 확보 → 지역 현황
+    g._visible = {}
+    assert g.is_visible(pid, cap)
+    app.sel = None
+    app.select(cap)
+    assert app.left_tab == "region" and app.tab == "info"
+    frame(app)
+    neutral = next(rid for rid, r in g.regions.items() if r.owner == NEUTRAL and not g.is_visible(pid, rid))
+    app.select(neutral)                   # 중립은 현행대로 지역 정보
+    assert app.left_tab == "region" and app.tab == "info"
+    frame(app)

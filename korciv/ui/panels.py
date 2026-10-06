@@ -161,6 +161,9 @@ def draw_region_info(app, rect):
     gui.text((x + 18, y), oname, 13, weight="semibold")
     if not visible:
         gui.text((x + w, y), "시야 밖(마지막 정보)", 11, t.muted, anchor="topright")
+    # 내 지역과 시야 안의 타국 지역은 같은 현황을 보여 준다(중립·시야 밖은 기본 정보만)
+    full = owner == pid or (visible and owner != NEUTRAL)
+    of = g.factions[owner] if full else None
     y += 24
     scroll_rect = pygame.Rect(rect.x, y, rect.w, rect.bottom - y - 8)
     content_h = 1100
@@ -175,8 +178,8 @@ def draw_region_info(app, rect):
     if r.owner == NEUTRAL:
         vtxt += f" · 편입·점령 {g.neutral_turns(pid, node)}턴"
     y = kv(gui, x, y, w, "지역 가치", vtxt, t.accent)
-    if r.owner == pid:
-        y = kv(gui, x, y, w, "세수", f"{y_out * g.player.tax:,.0f} /턴")
+    if full:
+        y = kv(gui, x, y, w, "세수", f"{y_out * of.tax:,.0f} /턴 (세율 {of.tax * 100:.0f}%)")
         y = kv(gui, x, y, w, "식량 생산", f"{r.food:,.1f} (소비 {r.pop:,.1f})")
         if r.b["factory"]:
             y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b['factory']}개 투입")
@@ -202,7 +205,7 @@ def draw_region_info(app, rect):
             parts.append(f"전쟁 피로 −{ww:.1f}")
         if r.conscript > 0:
             parts.append(f"징집 피로 −{r.conscript:.0f} (최근 10턴 중 {g.drafted_turns(node)}턴 징집)")
-        elif owner == pid and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
+        elif full and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
             parts.append(f"최근 10턴 중 {g.drafted_turns(node)}턴 징집({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)")
         y = gui.wrap((x, y - 2), " · ".join(parts), w, 11, t.muted) + 2
         phase, k = g.resist_phase(r)
@@ -216,9 +219,9 @@ def draw_region_info(app, rect):
                 txt = "점령 직후 안정기"
             txt += f" · 반란 없음 {C.RESIST_NO_REBEL_TURNS - k}턴"
             y = gui.wrap((x, y), "점령 저항: " + txt, w, 12, t.warn if phase == "resist" else t.muted) + 4
-        if eh <= C.REBEL_THRESHOLD and owner == pid and not phase:
-            y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(pid, node)*100:.1f}%/턴", t.bad)
-    if owner == pid and r.focus:
+        if eh <= C.REBEL_THRESHOLD and full and not phase:
+            y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(owner, node)*100:.1f}%/턴", t.bad)
+    if full and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
     if visible:
@@ -264,24 +267,25 @@ def draw_region_info(app, rect):
     if info.coastal:
         res.append("해안: " + ", ".join(app.world.seas[s].name for s in info.seas))
     y = draw_chips(gui, x, y, w, res or ["없음"])
-    if owner == pid:
+    if full:
         cp = g.crowd_penalty(r)
         t1, t2 = g.crowd_thresholds(node)
         y = section(gui, x, y + 6, w, f"과밀 행복도 {cp:+g}" if cp else "과밀 없음")
         y = draw_chips(gui, x, y, w, [f"인구 {r.pop:.1f} · −2 문턱 {t1:.1f} · −4 문턱 {t2:.1f}"])
         sb = g.scenic_bonus(r)
         if sb:
-            src = [app.world.regions[n].scenic for n in app.world.scenic_near[node] if g.regions[n].owner == pid]
+            src = [app.world.regions[n].scenic for n in app.world.scenic_near[node] if g.regions[n].owner == owner]
             y = section(gui, x, y + 6, w, f"자연경관 행복도 +{sb:g}")
             y = draw_chips(gui, x, y, w, src)
         y = section(gui, x, y + 6, w, f"특산물 공급 {len(r.supplied)}/{C.SPECIALTY_MAX_TYPES}종"
                     + (f" (행복도 턴당 +{C.SPECIALTY_HAPPY_TURN * len(r.supplied):g})" if r.supplied else ""))
         sup = [k + (" (고정)" if k in r.spec_pin else "") for k in sorted(r.supplied)]
         y = draw_chips(gui, x, y, w, sup or ["없음"])
-        if gui.button((x, y - 2, 120, 26), "배분 수정", size=12):
-            app.spec_sel = node
-            app.modal = ("specialty", None)
-        y += 30
+        if owner == pid:
+            if gui.button((x, y - 2, 120, 26), "배분 수정", size=12):
+                app.spec_sel = node
+                app.modal = ("specialty", None)
+            y += 30
     terr = [(n, app.world.terrain_between(node, n)) for n in sorted(app.world.land_adj[node])]
     terr = [(n, tr) for n, tr in terr if tr]
     if terr:
@@ -311,15 +315,16 @@ def draw_region_info(app, rect):
             app.left_open, app.left_tab, app.tab = True, "region", "army"
         y += 26
     # 슬롯
-    if owner == pid:
+    if full:
         y = section(gui, x, y + 6, w, "진행 중 슬롯")
         p = r.project
         if not p:
-            gui.text((x, y), "비어 있음 — 우측 행동 탭에서 지정", 13, t.warn)
+            gui.text((x, y), "비어 있음 — [행동] 탭에서 지정" if owner == pid else "비어 있음", 13,
+                     t.warn if owner == pid else t.muted)
             y += 22
         else:
-            y = draw_project(app, x, y, w, node, p)
-    elif owner not in (NEUTRAL,):
+            y = draw_project(app, x, y, w, node, p, can_cancel=owner == pid)
+    if owner not in (NEUTRAL, pid):
         y += 8
         if gui.button((x, y, w, 32), "외교", "primary"):
             app.open_diplomacy(owner)
@@ -358,7 +363,7 @@ def project_name(app, p):
     return p.kind
 
 
-def draw_project(app, x, y, w, rid, p):
+def draw_project(app, x, y, w, rid, p, can_cancel=True):
     gui = app.gui
     t = app.theme
     name = project_name(app, p)
@@ -374,6 +379,8 @@ def draw_project(app, x, y, w, rid, p):
     gui.text((x, y), f"턴당 {p.per_turn:,.0f} · 낸 비용 {p.paid:,.0f}" + (" · 자금 부족으로 정지" if p.stalled else ""),
              12, t.bad if p.stalled else t.muted)
     y += 22
+    if not can_cancel:
+        return y
     if gui.button((x, y, 150, 28), "취소 (50% 환급)"):
         ok, msg = app.game.cancel_project(app.game.player_id, rid)
         app.toast(msg)

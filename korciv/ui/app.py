@@ -752,16 +752,33 @@ class App:
         cur = g.armies.get(self.sel_army) if self.sel_army else None
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
-        if prev == node and self.left_open and self.left_tab == "region":
+        hidden = self.hidden_owner(node)
+        showing = (self.left_tab == "region" if hidden is None
+                   else self.left_tab == "diplo" and self.dip_view == hidden)
+        if prev == node and self.left_open and showing:
             self.left_open = False          # 이미 선택한 지역을 다시 누르면 메뉴를 닫는다
             return
         self.left_open = True
-        if g.regions.get(node) is None:
+        if hidden is not None:
+            # 시야 밖 타국 영토: 외교 탭의 그 세력 상세 화면
+            self.left_tab, self.dip_view, self.war_confirm = "diplo", hidden, None
+        elif g.regions.get(node) is None:
             # 해역: 내 함대가 있으면 [부대], 없으면 해역 정보
             self.left_tab, self.tab = "region", ("army" if mine else "info")
         else:
             # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보])
             self.left_tab, self.tab = "region", ("action" if g.regions[node].owner == g.player_id else "info")
+
+    def hidden_owner(self, node):
+        """탐색했지만 지금 시야 밖인 타국 영토면 마지막으로 본 주인 세력, 아니면 None."""
+        g = self.game
+        r = g.regions.get(node)
+        if r is None or self.fog_reveal or g.is_visible(g.player_id, node) or not g.is_explored(g.player_id, node):
+            return None
+        owner = g.player.last_seen.get(node, r.owner)
+        if owner in (NEUTRAL, g.player_id) or not (0 <= owner < len(g.factions)) or not g.factions[owner].alive:
+            return None
+        return owner
 
     def right_click(self, node, pos):
         g = self.game
