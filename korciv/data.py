@@ -57,6 +57,14 @@ PROVINCE_ORDER = ["서울", "부산", "대구", "인천", "광주", "대전", "�
 DO8 = ["경기", "충청", "전라", "경상", "강원", "황해", "평안", "함경"]
 
 
+def display_short(s: str) -> str:
+    """지역 이름에서 끝의 시·군·구·구역을 뗀다(영등포구 → 영등포). 한 글자만 남으면 그대로(중구, 남구, 중구역)."""
+    for suf in ("구역", "시", "군", "구"):
+        if s.endswith(suf) and len(s) - len(suf) >= 2:
+            return s[: -len(suf)]
+    return s
+
+
 @dataclass(frozen=True)
 class RegionInfo:
     id: str
@@ -87,6 +95,7 @@ class RegionInfo:
     output0: float
     food0: float
     scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
+    full: str = ""       # 원래 표기명(시·군·구 포함). 자료 파일의 지명 대조용
     coal_field: str = ""  # 탄전 구분 ①/② (탄광 열은 시작 탄광 단계)
 
     @property
@@ -123,7 +132,8 @@ class World:
                 info = self._parse(r)
                 self.regions[info.id] = info
                 self.order.append(info.id)
-        self.name_to_id = {r.name: r.id for r in self.regions.values()}
+        self.name_to_id = {r.full: r.id for r in self.regions.values()}
+        self.name_to_id.update({r.name: r.id for r in self.regions.values()})
 
         with open(os.path.join(data_dir, "map_geometry.json"), encoding="utf-8") as f:
             geo = json.load(f)
@@ -203,8 +213,10 @@ class World:
 
     @staticmethod
     def _parse(r) -> RegionInfo:
-        name = r["표기명"]
-        short = name.split(" ", 1)[1] if " " in name else name
+        full = r["표기명"]
+        fshort = full.split(" ", 1)[1] if " " in full else full
+        short = display_short(fshort)
+        name = full[: len(full) - len(fshort)] + short
         seas = tuple(SEA_BY_NAME[s.strip()] for s in r["인접해역"].split(",") if s.strip())
         src = r["발전원"] or ""
         specs = tuple(x.strip() for x in (r["특산물"] or "").split(",") if x.strip())
@@ -216,7 +228,7 @@ class World:
             oil=int(r["정유"]), coal=int(r["탄광"]), power_self=int(r["자체발전"]),
             power_source=src, power_site="화력" in src, specialty=", ".join(specs), specialties=specs,
             note=r["비고"] or "", output0=float(r["초기산출"] or 0), food0=float(r["식량생산"] or 0),
-            scenic=(r.get("자연경관") or "").strip(), coal_field=(r.get("탄전") or "").strip(),
+            scenic=(r.get("자연경관") or "").strip(), coal_field=(r.get("탄전") or "").strip(), full=full,
         )
 
     # ------------------------------------------------------------ 그래프

@@ -570,27 +570,66 @@ def draw_military_tab(app, body):
     last = g.player.last
     if last.get("tax"):
         y = kv(gui, x, y, w, "세수 대비", f"{total / last['tax'] * 100:.0f}%")
-    y = section(gui, x, y + 10, w, "유닛 종류별")
+    y = section(gui, x, y + 10, w, "유닛 종류별 (누르면 부대 목록)")
     cols = (x + w - 150, x + w)
     gui.text((cols[0], y), "수", 11, t.muted, anchor="topright")
     gui.text((cols[1], y), "유지비/턴", 11, t.muted, anchor="topright")
     y += 18
+    opened = app.__dict__.setdefault("mil_open", set())
+    armies_of = {}
+    for a in g.armies.values():
+        if a.owner == pid:
+            for k in a.units:
+                if a.units[k] > 0:
+                    armies_of.setdefault(k, []).append(a)
+    # 펼친 목록이 길어질 수 있어 아래는 스크롤한다
+    rows = []
     for kind, title in (("land", "육군"), ("naval", "해군"), ("air", "공군")):
         keys = [k for k in C.UNIT_ORDER if C.UNITS[k]["kind"] == kind and counts.get(k)]
         if not keys:
             continue
-        gui.text((x, y), title, 12, t.muted, "semibold")
-        y += 20
+        rows.append(("title", title, 20))
         for k in keys:
-            gui.icon(k, (x + 10, y + 9), t.text)
-            gui.text((x + 26, y), C.UNITS[k]["name"], 13)
-            gui.text((cols[0], y), f"{counts[k]:,}", 13, anchor="topright")
-            gui.text((cols[1], y), f"{up.get(k, 0):,.0f}", 13, anchor="topright")
-            y += 22
+            rows.append(("unit", k, 26))
+            if k in opened:
+                for a in sorted(armies_of.get(k, []), key=lambda a: (-a.units[k], a.id)):
+                    rows.append(("army", (k, a), 24))
+    area = pygame.Rect(body.x, y, body.w, body.bottom - y - 30)
+    content = sum(h for _, _, h in rows) + 8
+    off = gui.begin_scroll("military_tab", area, content)
+    yy = y - off
+    for typ, v, h in rows:
+        if typ == "title":
+            gui.text((x, yy), v, 12, t.muted, "semibold")
+        elif typ == "unit":
+            k = v
+            row = pygame.Rect(x, yy - 2, w, h - 2)
+            if gui.button(row, "", "ghost", selected=k in opened,
+                          tooltip="이 병종이 있는 부대 목록 펼치기/접기"):
+                opened.symmetric_difference_update({k})
+            gui.icon(k, (x + 10, yy + 9), t.text)
+            gui.text((x + 26, yy), C.UNITS[k]["name"] + (" ▼" if k in opened else " ▶"), 13)
+            gui.text((cols[0], yy), f"{counts[k]:,}", 13, anchor="topright")
+            gui.text((cols[1], yy), f"{up.get(k, 0):,.0f}", 13, anchor="topright")
+        else:
+            k, a = v
+            loc = app.world.node_name(a.loc)
+            lab = f"{loc} · {C.UNITS[k]['name']} {a.units[k]}" + (f" (부대: {a.label()})" if len(a.units) > 1 else "")
+            if a.order or a.goto:
+                lab += " ▶"
+            clicked = gui.button((x + 18, yy, w - 18, h - 2), "", "ghost",
+                                 tooltip="이 부대가 있는 지역의 [부대] 메뉴로 이동")
+            gui.text((x + 26, yy + (h - 2) / 2), lab, 11, t.text, anchor="midleft", max_w=w - 30)
+            if clicked:
+                app.select(a.loc)
+                app.sel_army = a.id
+                app.left_open, app.left_tab, app.tab = True, "region", "army"
+                app.map.center_on(a.loc)
+        yy += h
     if not n_all:
-        gui.text((x, y), "군사 유닛이 없습니다.", 13, t.muted)
-        y += 22
-    gui.text((x, y + 10), "부대 조종: 지도에서 지역을 눌러 [부대] 탭", 11, t.muted)
+        gui.text((x, yy), "군사 유닛이 없습니다.", 13, t.muted)
+    gui.end_scroll("military_tab", area, content)
+    gui.text((x, body.bottom - 24), "부대 조종: 지도에서 지역을 눌러 [부대] 탭", 11, t.muted)
 
 
 def draw_army_tab(app, body):
@@ -931,6 +970,21 @@ def draw_diplo_detail(app, body, fid):
 PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "science": "과학", "capital": "천도"}
 
 
+def science_progress_text(g, pid) -> str:
+    """'0/7 · 항공우주연구소 건설(수도)' 형식. 7단계는 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결."""
+    f = g.factions[pid]
+    total = len(C.SCIENCE_STEPS) + 1
+    done = sum(1 for st in C.SCIENCE_STEPS if st in f.science)
+    nxt = next((st for st in C.SCIENCE_STEPS if st not in f.science), None)
+    if nxt is not None:
+        spec = C.SCIENCE[nxt]
+        return f"{done}/{total} · {spec['name']} {'생산' if spec['unit'] else '건설'}({spec['where']})"
+    lost = [C.SCIENCE[k]["name"] for k in C.SCIENCE_UNITS if not g.science_units_alive(pid).get(k)]
+    if lost:
+        return f"{done}/{total} · 잃은 부품 다시 생산: " + ", ".join(lost)
+    return f"{done}/{total} · 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결"
+
+
 def draw_victory_progress(app, x, y, w, pid):
     """승리 조건별 진행 상황(국가 현황)."""
     g, gui, t = app.game, app.gui, app.theme
@@ -943,20 +997,13 @@ def draw_victory_progress(app, x, y, w, pid):
             txt += f" · 반란 가능 지역 {cs['risky']}곳"
         y = kv(gui, x, y, w, "정복승리(2/3 + 반란 없음)", txt, t.good if cs["ok"] else None)
     if "science" in vs:
-        nxt = g.science_next(pid)
-        done = len(f.science)
-        if nxt is None:
-            txt = f"{done}/6단계 완료 · 세 유닛을 발사대에 모으면 발사"
-        else:
-            k = C.SCIENCE_STEPS.index(nxt) + 1
-            txt = f"{done}/6단계 · 다음 {k}단계 {C.SCIENCE[nxt]['name']}({C.SCIENCE[nxt]['where']})"
-        y = kv(gui, x, y, w, "과학승리", txt)
+        y = kv(gui, x, y, w, "과학승리", science_progress_text(g, pid))
     if "economic" in vs:
         alive = g.alive_ids()
         total = g.world_gdp() or 1
         share = g.gdp(pid) / total
         need = g.econ_share_needed()
-        y = kv(gui, x, y, w, "경제승리(중립 포함 GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
+        y = kv(gui, x, y, w, "경제승리(GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
                                               f"{C.ECON_VICTORY_TURNS}턴", t.good if share >= need else None)
     if "diplomatic" in vs:
         alive = g.alive_ids()
@@ -1188,7 +1235,7 @@ def draw_energy_tab(app, body):
     f = g.player
     x, w = body.x + 14, body.w - 28
     y = body.y + 4
-    auto = gui.checkbox((x, y, w, 24), f"자동 배정 (석유 {C.AUTO_OIL_RESERVE}개는 군 생산용)", f.auto_energy, size=12)
+    auto = gui.checkbox((x, y, w, 24), "자동 배정", f.auto_energy, size=12)
     if gui.hover(pygame.Rect(x, y, w, 24)):
         gui.tooltip = ("공장 산출이 가장 커지게 배정합니다: 석탄을 먼저 발전소에(석탄 1 → 전기 2),\n"
                        "발전소 용량이 모자라면 석유로(석유 1 → 전기 4). 공장은 1개당 산출이 높은 곳부터 채웁니다.\n"

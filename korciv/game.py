@@ -22,6 +22,22 @@ def faction_name_from(short: str) -> str:
     return short + "국"
 
 
+def initial_buildings(info) -> dict:
+    """게임 시작 시점의 건물 단계(지역 자료 기준). 전장의 안개로 모르는 지역은 지도에 이 상태로 보인다."""
+    b = {k: 0 for k in ("farm", "fishery", "factory", "bank", "power", "specialty",
+                        "extract", "shelter", "aa", "academy", "airport", "port")}
+    b.update(farm=info.farm, fishery=info.fishery, factory=info.factory, bank=info.bank)
+    if info.is_coal:
+        b["extract"] = info.coal          # 탄광: ① 1단계로 시작, ② 0단계(건설 가능)
+    if info.power_source:
+        b["power"] = 1                    # 현실 발전소(화력·원자력·수력) 소재지는 1단계로 시작
+    if info.specialty:
+        b["specialty"] = 1
+    if info.start_port:
+        b["port"] = 1
+    return b
+
+
 def unit_power(key: str) -> float:
     u = C.UNITS[key]
     return max(u.get("atk", 0), u.get("df", 0), u.get("bomb", 0) / 2)
@@ -107,17 +123,7 @@ class Game:
         w = self.world
         for rid in w.order:
             info = w.regions[rid]
-            b = {k: 0 for k in ("farm", "fishery", "factory", "bank", "power", "specialty",
-                                "extract", "shelter", "aa", "academy", "airport", "port")}
-            b.update(farm=info.farm, fishery=info.fishery, factory=info.factory, bank=info.bank)
-            if info.is_coal:
-                b["extract"] = info.coal          # 탄광: ① 1단계로 시작, ② 0단계(건설 가능)
-            if info.power_source:
-                b["power"] = 1                    # 현실 발전소(화력·원자력·수력) 소재지는 1단계로 시작
-            if info.specialty:
-                b["specialty"] = 1
-            if info.start_port:
-                b["port"] = 1
+            b = initial_buildings(info)
             self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=info.pop0, b=b)
             self.new_army(NEUTRAL, rid, {"inf": 1})
 

@@ -1681,3 +1681,29 @@ def test_econ_share_counts_neutral_and_rebel_weary_mult():
     g.player.war_weary, g.player.war_weary_def = 20.0, 5.0
     assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + 20 - 15 * 1.2)
     assert C.SCIENCE_COST_PER_TURN == 120_000
+
+
+def test_display_names_and_flag_number_input():
+    from korciv.data import display_short, load_world
+    from korciv.ui.modals import parse_byte
+    assert display_short("영등포구") == "영등포" and display_short("중구") == "중구"
+    assert display_short("선봉구역") == "선봉" and display_short("중구역") == "중구역"
+    assert display_short("세종시") == "세종" and display_short("울릉군") == "울릉"
+    w = load_world()
+    assert w.regions[w.name_to_id["서울 영등포구"]].name == "서울 영등포"
+    assert w.name_to_id["서울 영등포"] == w.name_to_id["서울 영등포구"]
+    assert w.regions[w.name_to_id["부산 중구"]].name == "부산 중구"
+    assert [parse_byte(x) for x in ("0", "128", "255", "256", "999", "", "-3", "1a", " 7 ")] == \
+        [0, 128, 255, 255, 255, 0, 0, 0, 7]
+
+
+def test_science_progress_text():
+    from korciv.ui.panels import science_progress_text
+    g = new_game(player_start="S002", n_enemies=1)
+    assert science_progress_text(g, 0) == "0/7 · 항공우주연구소 건설(수도)"
+    g.player.science = ["lab", "observatory", "pad"]
+    assert science_progress_text(g, 0) == "3/7 · 로켓 추진체 생산(공장 5단계 지역)"
+    g.player.science = list(C.SCIENCE_STEPS)
+    for k in C.SCIENCE_UNITS:
+        g.add_units(0, "S002", k, 1)
+    assert science_progress_text(g, 0) == "6/7 · 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결"

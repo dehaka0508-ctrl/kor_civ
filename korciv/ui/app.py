@@ -11,7 +11,7 @@ import pygame
 from .. import config as C
 from .. import diplomacy as D
 from ..data import SEA_NAMES, load_world
-from ..game import Game
+from ..game import Game, initial_buildings
 from ..state import NEUTRAL, Army, Settings
 from ..version import VERSION, compatible
 from . import modals, panels
@@ -24,7 +24,18 @@ TOP_H = 56
 LEFT_W = 360
 RIGHT_W = 320
 MAP_MODES = [("political", "정치"), ("happy", "행복도"), ("pop", "인구"), ("resource", "자원"),
-             ("military", "군사"), ("opinion", "우호도"), ("do8", "조선 8도")]
+             ("building", "건물"), ("military", "군사"), ("opinion", "우호도"), ("do8", "조선 8도")]
+# 자원·건물·군사 모드는 누르면 위로 세부 메뉴가 펼쳐지고, 고른 한 가지만 지도에 표시한다.
+# (키, 이름, 색, 최대 단계 또는 None=단계 없음)
+SUB_MODES = {
+    "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#212529", 6),
+                 ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", 3), ("nuclear", "원전", "#F08C00", 3)],
+    "building": [("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
+                 ("bank", "은행", "#2F9E44", 5), ("power", "발전소", "#FAB005", 5)],
+    "military": [("line", "방어선", "#C92A2A", 5), ("aa", "대공포", "#7048E8", 5), ("shelter", "방공호", "#5C940D", 5),
+                 ("academy", "사관학교", "#E67700", None), ("airport", "공항", "#1864AB", None),
+                 ("port", "항구", "#0C8599", None)],
+}
 DO8_COLORS = {"경기": "#A5D8FF", "충청": "#B2F2BB", "전라": "#FFEC99", "경상": "#FFC9C9",
               "강원": "#D0BFFF", "황해": "#FFD8A8", "평안": "#99E9F2", "함경": "#E9ECEF"}
 
@@ -357,11 +368,14 @@ class App:
             visible = not fog_on or g.is_visible(pid, rid)
             if not explored:
                 fill = t.unexplored
+                if self.mode in SUB_MODES:          # 모르는 지역은 시작 시점 기준으로 표시
+                    fill = self.overlay_color(rid, r, NEUTRAL, info, False,
+                                              base=mix(t.unexplored, (255, 255, 255), 0.55))
                 out[rid] = (fill, mix(fill, (255, 255, 255), 0.5))
                 continue
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
-            fill = self.mode_color(rid, r, owner, info)
+            fill = self.mode_color(rid, r, owner, info, visible or owner == pid)
             if self.mode == "political" and visible and owner == pid and r.project:
                 # 생산·행동이 진행 중인 내 지역은 더 진한 색
                 fill = mix(self.faction_rgb(owner), (0, 0, 0), 0.18)
@@ -380,7 +394,46 @@ class App:
             return self.theme.neutral
         return mix(self.faction_rgb(owner), (255, 255, 255), 0.3)
 
-    def mode_color(self, rid, r, owner, info):
+    def sub_mode(self, mode=None):
+        mode = mode or self.mode
+        key = self.__dict__.setdefault("sub_modes", {}).get(mode) or SUB_MODES[mode][0][0]
+        return next(x for x in SUB_MODES[mode] if x[0] == key)
+
+    def overlay_level(self, sub, r, info, visible):
+        """세부 모드의 단계(0 = 표시 안 함). 지금 보이지 않는 지역은 게임 시작 시점의 건물 상태로."""
+        b = r.b if visible else initial_buildings(info)
+        lines = r.lines if visible else {}
+        src = info.power_source or ""
+        if sub == "specialty":
+            return b["specialty"] if info.specialty else 0
+        if sub == "coal":
+            return (b["extract"] or 0.3) if info.is_coal else 0      # 탄광 없는 탄전은 아주 연하게
+        if sub == "oil":
+            return info.oil + b["extract"] if info.is_oil else 0
+        if sub == "scenic":
+            return 1 if info.scenic else 0
+        if sub == "dam":
+            return info.power_self if "수력" in src else 0
+        if sub == "nuclear":
+            return info.power_self if "원자력" in src else 0
+        if sub == "power":
+            return b["power"] - (1 if ("수력" in src or "원자력" in src) else 0)   # 댐·원전은 자원 탭에서
+        if sub == "line":
+            return max(lines.values(), default=0)
+        return b.get(sub, 0)
+
+    def overlay_color(self, rid, r, owner, info, visible, base=None):
+        t = self.theme
+        key, _, col, top = self.sub_mode()
+        if base is None:
+            base = mix(self.owner_fill(owner), t.neutral, 0.75)
+        lv = self.overlay_level(key, r, info, visible)
+        if lv <= 0:
+            return base
+        x = 0.85 if top is None else 0.2 + 0.75 * min(1.0, lv / top)     # 1단계가 가장 연하고 오를수록 진하게
+        return mix(base, hex2rgb(col), x)
+
+    def mode_color(self, rid, r, owner, info, visible=True):
         t = self.theme
         g = self.game
         m = self.mode
@@ -394,29 +447,8 @@ class App:
         if m == "pop":
             x = min(1.0, math.log10(max(1.0, r.pop)) / 2.1)
             return mix((241, 243, 245), (25, 113, 194), x)
-        if m == "resource":
-            base = mix(self.owner_fill(owner), t.neutral, 0.75)
-            if info.is_oil:
-                return hex2rgb("#343A40")
-            if info.is_coal:
-                return hex2rgb("#8D6E63")
-            if info.power_self:
-                return hex2rgb("#FAB005")
-            if info.power_site:
-                return hex2rgb("#FFD8A8")
-            if info.specialty:
-                return mix(base, hex2rgb("#40C057"), 0.45)
-            return base
-        if m == "military":
-            base = mix(self.owner_fill(owner), t.neutral, 0.7)
-            if not g.is_visible(g.player_id, rid):
-                return base
-            pw = sum(g.army_power(a) for a in g.armies_at(rid) if a.owner != NEUTRAL)
-            if pw <= 0:
-                return base
-            mine = owner == g.player_id
-            x = min(1.0, pw / 400)
-            return mix(base, hex2rgb("#1C7ED6") if mine else hex2rgb("#E03131"), 0.25 + 0.75 * x)
+        if m in SUB_MODES:
+            return self.overlay_color(rid, r, owner, info, visible)
         if m == "opinion":
             if owner == NEUTRAL:
                 return t.neutral
@@ -454,7 +486,8 @@ class App:
         mv = self.map
         busy = 0 if pick_mode or not self.game else hash(frozenset(
             r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
-        key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
+        key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (
+            self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "", self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
         # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)
@@ -725,6 +758,8 @@ class App:
         mv = self.map
         pos = gui.mouse_phys
         over_ui = gui.over_ui(gui.mouse) or not mv.view.collidepoint(pos)
+        if not over_ui and (gui.clicked or gui.rclicked):
+            self.mode_popup = None              # 지도를 누르면 세부 메뉴를 닫는다
         self.hover = None if over_ui else mv.pick(pos)
         if not over_ui and gui.wheel:
             mv.zoom_at(pos, 1.2 ** gui.wheel)
@@ -930,8 +965,9 @@ class App:
                 self.map.zoom_at(self.map.view.center, 1.25)
             elif k.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self.map.zoom_at(self.map.view.center, 0.8)
-            elif pygame.K_1 <= k.key <= pygame.K_7:
+            elif pygame.K_1 <= k.key <= pygame.K_8:
                 self.mode = MAP_MODES[k.key - pygame.K_1][0]
+                self.mode_popup = None
             elif k.key == pygame.K_F1:
                 self.modal = ("help", None)
             elif k.key == pygame.K_F2:
@@ -1083,12 +1119,21 @@ class App:
         w = 74
         r = pygame.Rect(12, sh - 60, len(MAP_MODES) * (w + 4) + 12, 48)
         gui.panel(r)
+        popup = getattr(self, "mode_popup", None)
         for i, (key, label) in enumerate(MAP_MODES):
             tip = f"지도 모드 ({i+1})" + ("\n내 영토 중 진한 색 = 생산·행동 진행 중" if key == "political" else "")
-            if gui.button((r.x + 8 + i * (w + 4), r.y + 8, w, 32), label, selected=self.mode == key,
-                          tooltip=tip):
+            if key in SUB_MODES:
+                tip += "\n누르면 위로 세부 메뉴가 펼쳐집니다"
+                if self.mode == key:
+                    label = f"{label}·{self.sub_mode(key)[1]}"
+            bx = r.x + 8 + i * (w + 4)
+            if gui.button((bx, r.y + 8, w, 32), label, selected=self.mode == key, tooltip=tip,
+                          size=12 if len(label) > 4 else 13):
                 self.mode = key
+                self.mode_popup = (None if popup == key else key) if key in SUB_MODES else None
                 self.changed()
+            if popup == key:
+                self.draw_sub_menu(key, bx, r.y - 6, w)
         # 지형 경계 토글·범례
         t = pygame.Rect(r.right + 8, r.y, 176, 48)
         gui.panel(t)
@@ -1105,6 +1150,30 @@ class App:
             gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n점선: 맞닿지 않은 하구·수로 경로"
         # 줌 표시
         gui.text((t.right + 10, r.centery), f"×{self.map.z:.1f}", 12, self.theme.muted, anchor="midleft")
+
+    def draw_sub_menu(self, mode, x, bottom, w):
+        """자원·건물·군사 세부 메뉴(칩 위로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
+        gui = self.gui
+        t = self.theme
+        opts = SUB_MODES[mode]
+        bh = 30
+        pw = 128
+        p = pygame.Rect(x, bottom - len(opts) * (bh + 4) - 12, pw, len(opts) * (bh + 4) + 8)
+        gui.panel(p)
+        cur = self.sub_mode(mode)[0]
+        for i, (key, name, col, top) in enumerate(opts):
+            row = pygame.Rect(p.x + 6, p.y + 6 + i * (bh + 4), pw - 12, bh)
+            tip = "단계가 오를수록 진한 색" if top else "있는 곳만 표시"
+            if gui.button(row, "", "ghost", selected=key == cur, tooltip=tip):
+                self.sub_modes[mode] = key
+                self.mode = mode
+                self.mode_popup = None
+                self.changed()
+            c = hex2rgb(col)
+            gui.rect(mix((241, 243, 245), c, 0.35), (row.x + 6, row.y + 8, 7, 14), radius=2)
+            gui.rect(mix((241, 243, 245), c, 0.95), (row.x + 13, row.y + 8, 7, 14), radius=2)
+            gui.text((row.x + 28, row.centery), name, 13, t.text, "semibold" if key == cur else "regular",
+                     anchor="midleft")
 
     def review_queue(self):
         """아직 확인하지 않은 빈 슬롯 지역(수도 → 획득 순)."""

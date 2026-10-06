@@ -204,6 +204,15 @@ def force_state(app, rng):
         app.scene = "main" if g.setup_done else "government"
     k = rng.random()
     pid = g.player_id
+    if rng.random() < 0.15:
+        # 지도 세부 모드·군사 탭 부대 목록 펼치기
+        from korciv.ui.app import SUB_MODES
+        mode = rng.choice(list(SUB_MODES))
+        app.mode = mode
+        app.__dict__.setdefault("sub_modes", {})[mode] = rng.choice(SUB_MODES[mode])[0]
+        app.mode_popup = mode if rng.random() < 0.5 else None
+        app.mil_open = set(rng.sample(C.UNIT_ORDER, 3))
+        app.changed()
     if k < 0.3:
         app.left_open = True
         app.left_tab = rng.choice([t[0] for t in panels.SIDE_TABS] + ["region"] * 3)

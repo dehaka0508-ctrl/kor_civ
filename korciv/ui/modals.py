@@ -98,6 +98,28 @@ def draw_qty(app):
             on_ok(v)
 
 
+def parse_byte(text: str) -> int:
+    """0~255 직접 입력: 255를 넘으면 255, 숫자가 아니면(빈칸·음수·문자) 0."""
+    text = (text or "").strip()
+    if not text.isdigit():
+        return 0
+    return min(255, int(text))
+
+
+def _num_input(gui, owner, rect, tid, value):
+    """숫자 입력칸. 입력하는 동안은 글자 그대로 두고, Enter·다른 곳 클릭으로 끝나면 parse_byte 로 반영."""
+    drafts = owner.__dict__.setdefault("num_drafts", {})
+    shown = drafts.get(tid, str(value))
+    new = gui.text_input(rect, tid, shown, size=13, max_len=6)
+    if gui.focus == tid:
+        drafts[tid] = new
+        return value
+    if tid in drafts:
+        drafts.pop(tid)
+        return parse_byte(new)
+    return value
+
+
 VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
                 f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시켜도 승리",
@@ -306,7 +328,10 @@ def draw_flag_editor(app):
         gui.text((x, y + i * 40 + 8), ch, 15, cc if not preset else t.muted, "bold", anchor="midleft")
         v, _ = gui.slider((x + 26, y + i * 40, 200, 16), col[i], 0, 255, 1, f"flag_{ck}_{i}", enabled=not preset)
         col[i] = int(v)
-        gui.text((x + 300, y + i * 40 + 8), f"{col[i]:02X} ({col[i]})", 13, t.muted, anchor="midright")
+        if not preset:
+            col[i] = _num_input(gui, s, (x + 236, y + i * 40 - 7, 64, 30), f"flagnum_{ck}_{i}", col[i])
+        else:
+            gui.text((x + 300, y + i * 40 + 8), str(col[i]), 13, t.muted, anchor="midright")
     fl[ck] = tuple(col)
     y += 3 * 40 + 6
     gui.text((x, y), "역사 국기", 14, weight="bold")
@@ -1082,7 +1107,7 @@ def draw_log(app):
 HELP = """[조작]
 좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
-Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드   F2: 개발자 안개 토글
+Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~8: 지도 모드   F2: 개발자 안개 토글
 P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
