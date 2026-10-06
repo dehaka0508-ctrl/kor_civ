@@ -1063,7 +1063,7 @@ def _slots(g, f, threat, military=True):
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             gain = dy * tax * horizon * wts.get("economy", 1)
             if key in ("farm", "fishery"):
-                dfood = C.FOOD_PER_G * (R.g(lv) - R.g(lv - 1))
+                dfood = C.FOOD_PER_G                       # 농장·어장은 단계마다 같은 양
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory":
                 gain *= 0.8  # 연료 필요

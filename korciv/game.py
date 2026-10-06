@@ -1162,11 +1162,11 @@ class Game:
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
         if key == "farm":
-            return f"완공 시 턴당 식량 +{C.FOOD_PER_G * dg:.0f}, 산출 +{C.FARM_OUTPUT * dg * m.mult('output_prod'):.0f}"
+            return f"완공 시 턴당 식량 +{C.FOOD_PER_G:.0f}, 산출 +{C.FARM_OUTPUT * m.mult('output_prod'):.0f}"
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * dg * fm:.1f}, 산출 +{C.FISH_OUTPUT * dg * fm * m.mult('output_prod'):.0f}")
+            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * fm:.1f}, 산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             return (f"턴당 산출 +{C.FACTORY_OUTPUT * dg * m.mult('output_factory') * m.mult('output_prod'):,.0f}(석탄 기준, 연료 1/턴 소비)")
         if key == "bank":

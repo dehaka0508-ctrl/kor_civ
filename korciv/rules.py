@@ -17,18 +17,20 @@ def region_output(pop, farm, fishery, factory, bank, landmark, phi=1.0,
                   fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0, prod_mult=1.0) -> float:
     """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) + 9000K (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
     return (C.POP_OUTPUT * pop * pop_mult
-            + (C.FARM_OUTPUT * g(farm)
-               + C.FISH_OUTPUT * g(fishery) * fish_mult
+            + (C.FARM_OUTPUT * farm                      # 농장·어장은 단계에 비례
+               + C.FISH_OUTPUT * fishery * fish_mult
                + C.FACTORY_OUTPUT * g(factory) * phi * factory_mult
                + C.BANK_OUTPUT * g(bank) * bank_mult) * prod_mult
             + C.LANDMARK_OUTPUT * (1 if landmark else 0))
 
 
 def food_output(farm, fishery, fish_mult=1.0) -> float:
-    return C.FOOD_PER_G * (g(farm) + g(fishery) * fish_mult)
+    return C.FOOD_PER_G * (farm + fishery * fish_mult)
 
 
 def prod_building_cost(key: str, level: int, power_site=False) -> float:
+    if key in ("farm", "fishery"):           # 턴당 200/400/800/1400/2000 × 소요 턴
+        return C.FOOD_BUILD_COST_TURN[level - 1] * prod_building_turns(level) * C.MONEY_SCALE
     base = C.PROD_BUILDINGS[key]["base"]
     cost = base * level ** 1.5 * C.BUILD_COST_MULT
     if key == "power" and power_site:

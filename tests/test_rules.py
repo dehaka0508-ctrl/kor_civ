@@ -18,17 +18,17 @@ def test_start_outputs_match_design_doc():
         return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False, 1.0)
 
     assert y("서울 강남구") == pytest.approx(3096)
-    assert y("경북 김천시") == pytest.approx(2356)
+    assert y("경북 김천시") == pytest.approx(2296)        # 농장·어장 산출은 단계에 비례(150×L)
     assert y("강원 인제군") == pytest.approx(243)
     total = sum(R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False) for r in w.regions.values())
-    assert total == pytest.approx(743016, rel=1e-3)
+    assert total == pytest.approx(735006, rel=1e-3)
 
 
 def test_building_costs():
-    # 기획서 원안 × BUILD_COST_MULT(0.5)
-    costs = [round(R.prod_building_cost("farm", l) / C.BUILD_COST_MULT, -1) for l in range(1, 6)]
-    assert costs == [400, 1130, 2080, 3200, 4470]
-    assert C.BUILD_COST_MULT == 0.5 and R.prod_building_cost("farm", 1) == pytest.approx(200)
+    # 농장·어장: 턴당 200/400/800/1400/2000 × 소요 턴(2L)
+    costs = [R.prod_building_cost(k, l) / R.prod_building_turns(l) for k in ("farm", "fishery") for l in range(1, 6)]
+    assert costs == [200, 400, 800, 1400, 2000] * 2
+    assert C.BUILD_COST_MULT == 0.5
     assert round(R.prod_building_cost("factory", 5) / C.BUILD_COST_MULT, -1) == 16770
     assert round(R.def_building_cost("line", 3) / C.BUILD_COST_MULT) == 1559
     assert [R.prod_building_turns(l) for l in range(1, 6)] == [2, 4, 6, 8, 10]
