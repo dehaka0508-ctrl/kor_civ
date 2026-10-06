@@ -290,3 +290,33 @@ def test_random_flag_follows_ai_rules():
         f = FL.random_flag(rng)
         assert "preset" not in f and f["c2"] == (255, 255, 255)
         assert (f["em"] != "none") == (f["bg"] in ("solid", "border"))
+
+
+def test_save_version_and_slot_visibility(app, tmp_path, monkeypatch):
+    """세이브에는 버전이 적히고, 버전이 없거나 주·부 버전이 다른 세이브는 [이어하기]에 보이지 않는다."""
+    import pickle
+    from korciv import version as V
+    from korciv.ui import app as appmod
+    monkeypatch.setattr(appmod, "SAVE_DIR", str(tmp_path))
+    app.start_game(Settings(seed=4, n_enemies=1))
+    assert app.save("slot1")
+    with open(tmp_path / "slot1.sav", "rb") as f:
+        assert pickle.load(f)["version"] == V.VERSION
+    assert app.slot_info(1) is not None
+    with open(tmp_path / "slot2.sav", "wb") as f:          # 버전 표기 없는 예전 형식
+        pickle.dump(app.game, f)
+    assert app.slot_info(2) is None
+    major, minor, patch = V.parse(V.VERSION)
+    with open(tmp_path / "slot3.sav", "wb") as f:          # 내용 패치(부 버전)가 다름
+        pickle.dump({"version": f"{major}.{minor + 1}.0", "game": app.game}, f)
+    assert app.slot_info(3) is None
+    with open(tmp_path / "slot3.sav", "wb") as f:          # 수 버전만 다르면 이어서 가능
+        pickle.dump({"version": f"{major}.{minor}.{patch + 5}", "game": app.game}, f)
+    assert app.slot_info(3) is not None
+    app.game = None
+    app.load("slot2")
+    assert app.game is None                                 # 불러오기도 거부
+    app.load("slot1")
+    assert app.game is not None
+    app.game, app.scene = None, "title"
+    frame(app)                                              # 시작 화면 버전 표시

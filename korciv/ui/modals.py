@@ -142,6 +142,8 @@ def draw_title(app):
         app.scene = "setup"
     if gui.button((bx + bw + gap, by, bw, bh), "이어하기", size=18, weight="bold"):
         app.open_slots("load")
+    from ..version import RELEASE_DATE, VERSION
+    gui.text((sw - 16, sh - 12), f"v{VERSION} · {RELEASE_DATE} 업데이트", 11, app.theme.muted, anchor="bottomright")
 
 
 # ------------------------------------------------------------------ 게임 설정
@@ -670,7 +672,8 @@ def draw_save_slots(app):
         gui.text((row.x + 16, row.y + 10), f"슬롯 {i}", 15, weight="bold")
         if info:
             when = time.strftime("%m-%d %H:%M", time.localtime(info["mtime"]))
-            gui.text((row.x + 16, row.y + 36), f"{info['label']} · 저장 {when}", 12, t.muted, max_w=row.w - 150)
+            gui.text((row.x + 16, row.y + 36), f"{info['label']} · 저장 {when} · v{info['version']}", 12, t.muted,
+                     max_w=row.w - 150)
         else:
             gui.text((row.x + 16, row.y + 36), "비어 있음", 12, t.muted)
         if mode == "load":

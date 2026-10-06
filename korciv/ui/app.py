@@ -13,6 +13,7 @@ from .. import diplomacy as D
 from ..data import SEA_NAMES, load_world
 from ..game import Game
 from ..state import NEUTRAL, Army, Settings
+from ..version import VERSION, compatible
 from . import modals, panels
 from .gui import Gui
 from .mapview import MapView
@@ -147,7 +148,7 @@ class App:
         os.makedirs(SAVE_DIR, exist_ok=True)
         path = os.path.join(SAVE_DIR, name + ".sav")
         with open(path, "wb") as f:
-            pickle.dump(self.game, f)
+            pickle.dump({"version": VERSION, "game": self.game}, f)
         self.toast(f"저장했습니다: {path}")
         return True
 
@@ -157,14 +158,24 @@ class App:
         path = os.path.join(SAVE_DIR, f"slot{slot}.sav")
         if not os.path.exists(path):
             return None
-        info = {"path": path, "mtime": os.path.getmtime(path), "label": ""}
+        g, ver = App.read_save(path)
+        if g is None:
+            return None                  # 버전 표기가 없거나 이어서 할 수 없는 버전: 보이지 않음
+        return {"path": path, "mtime": os.path.getmtime(path), "version": ver,
+                "label": f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"}
+
+    @staticmethod
+    def read_save(path):
+        """(게임, 버전). 버전 표기가 없거나 지금 버전과 이어서 할 수 없으면 (None, 버전)."""
         try:
             with open(path, "rb") as f:
-                g = pickle.load(f)
-            info["label"] = f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"
+                data = pickle.load(f)
         except Exception:
-            info["label"] = "(읽을 수 없는 파일)"
-        return info
+            return None, None
+        if not isinstance(data, dict) or "game" not in data:
+            return None, None
+        ver = data.get("version")
+        return (data["game"] if compatible(ver) else None), ver
 
     def open_slots(self, mode):
         """mode: save / save_exit / load — 슬롯 선택 창."""
@@ -176,8 +187,11 @@ class App:
         if not os.path.exists(path):
             self.toast("저장 파일이 없습니다.", self.theme.bad)
             return
-        with open(path, "rb") as f:
-            self.game = pickle.load(f)
+        g, ver = self.read_save(path)
+        if g is None:
+            self.toast(f"이 버전({VERSION})에서 이어서 할 수 없는 저장 파일입니다.", self.theme.bad)
+            return
+        self.game = g
         self.modal = None
         self.reset_ui()
         self.scene = "main" if self.game.setup_done else "government"

@@ -1124,6 +1124,8 @@ class Game:
         for key in C.UNIT_ORDER:
             u = C.UNITS[key]
             ok, why = True, ""
+            if u["kind"] == "naval" and not info.coastal:
+                continue                      # 내륙 지역: 해군은 아예 표시하지 않는다(항구도 지을 수 없음)
             if u["kind"] == "naval" and not rr.b["port"]:
                 ok, why = False, "항구 필요"
             if u["kind"] == "air" and not rr.b["airport"]:

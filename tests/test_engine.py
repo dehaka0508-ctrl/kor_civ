@@ -1454,3 +1454,4 @@ def test_impossible_facilities_hidden():
             assert "extract" not in keys
         if not info.coastal:
             assert "port" not in keys
+            assert not any(o["kind"] == "unit" and C.UNITS[o["key"]]["kind"] == "naval" for o in g.options(pid, rid))
