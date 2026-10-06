@@ -261,6 +261,10 @@ def run_game(job):
             for f in g.factions[:N_FAC]:
                 if f.alive:
                     tax_samples[f.id].append(f.tax)
+        if done % 48 == 0:
+            for f in g.factions[:N_FAC]:
+                if f.alive and f.ai.get("victory_goal"):
+                    g._st[f.id][f"goal:{f.ai['victory_goal']}"] += 1
     for t in SNAPS:
         if t not in snaps:
             snap(t)
@@ -277,7 +281,8 @@ def run_game(job):
                      "regions": {t: snaps[t][f.id][0] for t in SNAPS},
                      "gdp": {t: snaps[t][f.id][1] for t in SNAPS},
                      "tax": round(sum(tax_samples[f.id]) / len(tax_samples[f.id]), 3) if tax_samples[f.id] else None,
-                     "army_end": dict(army), "stats": dict(g._st[f.id])})
+                     "army_end": dict(army), "stats": dict(g._st[f.id]),
+                     "goal_end": f.ai.get("victory_goal"), "science_done": len(f.science)})
     return {"seed": seed, "turns": g.turn - 1, "victory": g.winner[1] if g.winner else None,
             "winner_rebel": bool(winners) and all(w >= N_FAC for w in winners),
             "rebel_states": len(g.factions) - N_FAC,
@@ -352,8 +357,36 @@ def report(path):
       + f" · 반란 세력이 이긴 판 {sum(g['winner_rebel'] for g in games)}")
     p(f"- 판당 반란으로 생긴 신생국 {sum(g['rebel_states'] for g in games) / ng:.2f}개")
     p("")
+    # 표 0: 승리 유형별 종료 턴
+    p("## 0. 승리 유형과 종료 턴")
+    p("")
+    p("| 승리 유형 | 판 | 비율 | 종료 턴 중앙값 | 최소~최대 | 200턴 미만 | 200~350턴 | 350턴 초과 |")
+    p("|---|---|---|---|---|---|---|---|")
+    import statistics as _st
+    for k, v in vc.most_common():
+        ts = sorted(g["turns"] for g in games if g["victory"] == k)
+        p(f"| {VNAME.get(k, k)} | {v} | {v / ng * 100:.0f}% | {_st.median(ts):.0f} | {ts[0]}~{ts[-1]} | "
+          f"{sum(t < 200 for t in ts)} | {sum(200 <= t <= 350 for t in ts)} | {sum(t > 350 for t in ts)} |")
+    ts = [g["turns"] for g in games]
+    p(f"| 전체 | {ng} | 100% | {_st.median(ts):.0f} | {min(ts)}~{max(ts)} | {sum(t < 200 for t in ts)} | "
+      f"{sum(200 <= t <= 350 for t in ts)} | {sum(t > 350 for t in ts)} |")
+    p("")
+    # 승자가 마지막에 노리던 목표, 처음 8개국이 1년마다 고른 목표 비율
+    gc = Counter()
+    for r in rows:
+        for kk, v in r["stats"].items():
+            if kk.startswith("goal:"):
+                gc[kk[5:]] += v
+    tg = sum(gc.values()) or 1
+    p("- AI가 1년마다 고른 승리 목표 비율: " + ", ".join(f"{VNAME.get(k, k)} {v / tg * 100:.0f}%" for k, v in gc.most_common()))
+    wg = Counter((r["_victory"] if "_victory" in r else None, r.get("goal_end")) for r in rows if r["win"])
+    sd = Counter(r.get("science_done", 0) for r in rows)
+    p("- 과학 단계 진행(처음 8개국, 게임 종료 시): " + ", ".join(f"{k}단계 {v}" for k, v in sorted(sd.items())))
+    p("")
     # 표 1: 지도자별 결과
     p("## 1. 지도자별 결과")
+    p("")
+    p("지역·GDP의 240·480 칸은 그 전에 게임이 끝났으면 종료 시점 값입니다.")
     p("")
     p("| 순위 | 지도자 | 분류 | 호전 | 판 | 승률 | 승리 유형(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120/240/480 | GDP 120/240/480 | 당한 반란(판당) | 반란 독립(판당) |")
     p("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
