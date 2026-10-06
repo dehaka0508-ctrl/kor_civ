@@ -145,6 +145,20 @@ LEADER_CATEGORIES = [
 _CAT_OF = {k: cid for cid, _, keys in LEADER_CATEGORIES for k in keys}
 _ORDER = [k for _, _, keys in LEADER_CATEGORIES for k in keys] + ["custom"]
 LEADERS.sort(key=lambda l: _ORDER.index(l["key"]))
+
+# 초상화 파일 이름 코드(3글자): korciv/assets/portraits/<코드>.png. 내부 키(세이브·AI가 쓰는 값)와는 따로 둔다.
+PORTRAIT_CODES = {
+    "dangun": "dan", "jumong": "jum", "onjo": "onz", "hyeokgeose": "egg", "suro": "sur", "daejoyeong": "dae",
+    "wanggeon": "wan", "gungye": "gun", "gyeonhwon": "dog", "seonggye": "tae", "syngman": "lee", "kimilsung": "kim",
+    "gwanggaeto": "ggt", "geunchogo": "gcg", "jinheung": "jin", "muryeong": "mur", "seondeok": "sen", "muyeol": "muy",
+    "gongmin": "gon", "sejong": "sej", "gwanghae": "hae", "jeongjo": "jjo", "parkcj": "pak", "kimdj": "kdj",
+    "yeon": "yon", "jangbogo": "jan", "jungbu": "jun", "choiyoung": "cho", "yisunsin": "yis", "honggyeongrae": "hon",
+    "honggildong": "gil", "dosan": "ahn", "kimgu": "kgu",
+    "yangdi": "yan", "taizong": "tai", "kublai": "kan", "hideyoshi": "toy", "hongtaiji": "taj", "ito": "ito",
+    "custom": "cus",
+}
+for _l in LEADERS:
+    _l["img"] = PORTRAIT_CODES[_l["key"]]
 for _l in LEADERS:
     _l["cat"] = _CAT_OF.get(_l["key"], "custom")
 LEADER_BY_KEY = {l["key"]: l for l in LEADERS}

@@ -383,3 +383,14 @@ def test_ai_leader_picker_and_fog_name_rules(app):
         o = next(f for f in g.factions if f.id != g.player_id and not g.has_met(g.player_id, f.id))
         assert (g.seen_name(o.id) == o.name) == name_known
         assert g.seen_leader(o.id) == "수수께끼의 지도자"
+
+
+def test_portrait_codes():
+    """초상화 파일 이름은 지도자마다 서로 다른 3글자 코드이고, 올려 둔 이미지가 그 이름으로 불린다."""
+    from korciv.leaders import LEADERS, PORTRAIT_CODES
+    from korciv.ui.art import portrait_path
+    codes = [PORTRAIT_CODES[l["key"]] for l in LEADERS]
+    assert len(codes) == len(set(codes)) and all(len(c) == 3 and c.islower() for c in codes)
+    for key, code in (("dangun", "dan"), ("jumong", "jum"), ("onjo", "onz")):
+        p = portrait_path(key)
+        assert p and os.path.basename(p).startswith(code + ".")
