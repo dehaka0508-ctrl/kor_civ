@@ -258,7 +258,7 @@ def draw_region_info(app, rect):
     if info.power_source:
         res.append(power_text(info))
     if info.specialty:
-        res.append(f"특산물: {info.specialty}")
+        res += [f"특산물: {sp}" for sp in info.specialties]   # 두 종류면 따로 표기
     if info.scenic:
         res.append(f"자연경관: {info.scenic}")
     if info.coastal:

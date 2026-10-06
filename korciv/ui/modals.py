@@ -529,7 +529,7 @@ def draw_start_popup(app, rid):
         from .panels import power_text
         res.append(power_text(info))
     if info.specialty:
-        res.append(f"특산물: {info.specialty}")
+        res += [f"특산물: {sp}" for sp in info.specialties]   # 두 종류면 따로 표기
     chips("자원·특산물", res)
     geo = [f"인접 지역 {len(w.land_adj[rid])}곳"]
     if info.coastal:
