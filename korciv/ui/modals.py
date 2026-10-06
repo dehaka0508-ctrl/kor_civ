@@ -369,7 +369,7 @@ def draw_government(app):
             app.game.set_player_government(gdef["key"])
             app.scene = "main"
             app.changed()
-            app.toast(f"{gdef['name']}을(를) 채택했습니다. 첫 턴입니다 — 우측 행동 탭에서 슬롯을 지정하세요.")
+            app.toast(f"{gdef['name']}을(를) 채택했습니다. 첫 턴입니다 — 지역을 눌러 [행동]에서 슬롯을 지정하세요.")
         y += 70
 
 

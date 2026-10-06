@@ -60,23 +60,64 @@ def kv(gui, x, y, w, k, v, vcol=None):
 
 
 # ------------------------------------------------------------------ 좌측 패널
-def draw_left(app, rect):
-    """좌측 패널: [국가 현황] / [자원 배정] / [지역 정보] 탭, 접기 가능."""
+# 좌측 세로 탭(위에서부터): 키, 이름, 설명
+SIDE_TABS = (("nation", "국가", "세율·자원 시장·특산물"), ("diplo", "외교", "세력별 관계·외교 창"),
+             ("army", "군사", "선택한 부대·분리·합치기·공격 방식"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
+             ("status", "국가\n현황", "국가 통계·재정·지출 우선순위"))
+RAIL_W = 64
+
+
+def draw_side(app, rail, panel_rect):
+    """좌측 끝 세로 탭 + 바로 옆 패널. 지역을 누르면 패널에 [행동]/[지역 정보]가 뜬다.
+    같은 탭을 한 번 더 누르면 패널을 접는다."""
     gui = app.gui
     t = app.theme
-    gui.panel(rect)
-    tw = (rect.w - 60 - 8) / 3
-    for i, (k, label) in enumerate((("nation", "국가 현황"), ("energy", "자원 배정"), ("region", "지역 정보"))):
-        if gui.button((rect.x + 12 + i * (tw + 4), rect.y + 10, tw, 32), label, selected=app.left_tab == k, size=14):
-            app.left_tab = k
-    if gui.button((rect.right - 40, rect.y + 10, 30, 32), "‹", "ghost", size=16, tooltip="접기"):
+    gui.panel(rail)
+    bh = 58
+    for i, (k, label, tip) in enumerate(SIDE_TABS):
+        r = pygame.Rect(rail.x + 6, rail.y + 8 + i * (bh + 6), rail.w - 12, bh)
+        sel = app.left_open and app.left_tab == k
+        if gui.button(r, "", selected=sel, tooltip=tip):
+            if sel:
+                app.left_open = False
+            else:
+                app.left_open, app.left_tab = True, k
+        lines = label.split("\n")
+        for j, ln in enumerate(lines):
+            gui.text((r.centerx, r.centery + (j - (len(lines) - 1) / 2) * 17), ln, 13,
+                     (255, 255, 255) if sel else t.text, "semibold", anchor="center")
+    if not app.left_open:
+        return
+    gui.panel(panel_rect)
+    k = app.left_tab
+    if k == "region":
+        tabs = (("action", "행동"), ("info", "지역 정보"))
+        tw = (panel_rect.w - 24 - 36) / 2
+        for i, (tk, label) in enumerate(tabs):
+            if gui.button((panel_rect.x + 12 + i * (tw + 4), panel_rect.y + 10, tw, 32), label,
+                          selected=app.tab == tk, size=14):
+                app.tab = tk
+        top = 48
+    else:
+        title = next(lb for kk, lb, _ in SIDE_TABS if kk == k).replace("\n", " ")
+        gui.text((panel_rect.x + 16, panel_rect.y + 14), title, 17, weight="bold")
+        top = 46
+    if gui.button((panel_rect.right - 40, panel_rect.y + 10, 30, 32), "‹", "ghost", size=16, tooltip="접기"):
         app.left_open = False
         return
-    body = pygame.Rect(rect.x, rect.y + 48, rect.w, rect.h - 48)
-    if app.left_tab == "nation":
-        draw_nation_status(app, body)
-    elif app.left_tab == "energy":
+    body = pygame.Rect(panel_rect.x, panel_rect.y + top, panel_rect.w, panel_rect.h - top - 6)
+    if k == "nation":
+        draw_nation_tab(app, body)
+    elif k == "diplo":
+        draw_diplo_tab(app, body)
+    elif k == "army":
+        draw_army_tab(app, body)
+    elif k == "energy":
         draw_energy_tab(app, body)
+    elif k == "status":
+        draw_nation_status(app, body)
+    elif app.tab == "action":
+        draw_action_tab(app, body)
     elif not app.sel:
         gui.text((body.x + 16, body.y + 10), "지도에서 지역을 선택하세요.", 13, t.muted)
     else:
@@ -263,7 +304,7 @@ def draw_region_info(app, rect):
         if a.owner == pid and gui.hover(rr) and gui.clicked:
             gui.clicked = False
             app.sel_army = a.id
-            app.tab = "army"
+            app.left_open, app.left_tab = True, "army"
         y += 26
     # 슬롯
     if owner == pid:
@@ -360,28 +401,11 @@ def draw_sea_info(app, rect, sid):
             if a.owner == g.player_id and gui.hover(r) and gui.clicked:
                 gui.clicked = False
                 app.sel_army = a.id
-                app.tab = "army"
+                app.left_open, app.left_tab = True, "army"
             y += 24
 
 
 # ------------------------------------------------------------------ 우측 패널
-def draw_right(app, rect):
-    gui = app.gui
-    gui.panel(rect)
-    tabs = [("action", "행동"), ("army", "부대"), ("nation", "국가")]
-    tw = (rect.w - 24) / 3
-    for i, (k, label) in enumerate(tabs):
-        if gui.button((rect.x + 12 + i * tw, rect.y + 10, tw - 4, 32), label, selected=app.tab == k, size=14):
-            app.tab = k
-    body = pygame.Rect(rect.x, rect.y + 52, rect.w, rect.h - 60)
-    if app.tab == "action":
-        draw_action_tab(app, body)
-    elif app.tab == "army":
-        draw_army_tab(app, body)
-    else:
-        draw_nation_tab(app, body)
-
-
 def draw_action_tab(app, body):
     gui = app.gui
     g = app.game
@@ -694,11 +718,24 @@ def draw_nation_tab(app, body):
         app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
         app.modal = ("specialty", None)
     y += 30
-    gui.text((x, y), "국가 통계·재정·특산물 재고는 좌측 [국가 현황] 탭에 있습니다.", 11, t.muted)
+    gui.text((x, y), "국가 통계·재정·특산물 재고는 [국가 현황] 탭에 있습니다.", 11, t.muted)
     y += 18
-    # 외교
-    y = section(gui, x, y + 8, w, "외교")
-    for o in g.factions:
+    y += 10
+    gui.end_scroll("nation", area, y - y0)
+
+
+def draw_diplo_tab(app, body):
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    x, w = body.x + 14, body.w - 28
+    others = [o for o in g.factions if o.id != pid and o.alive]
+    area = pygame.Rect(body.x, body.y, body.w, body.h)
+    off = gui.begin_scroll("diplo", area, len(others) * 46 + 10)
+    y = body.y - off
+    y0 = y
+    for o in others:
         if o.id == pid or not o.alive:
             continue
         gui.rect(hex2rgb(o.color), (x, y + 6, 10, 14), radius=3)
@@ -710,10 +747,10 @@ def draw_nation_tab(app, body):
                  t.bad if st == -1 else t.muted, max_w=w - 80)
         if gui.button((x + w - 58, y + 6, 58, 26), "외교", size=12):
             app.open_diplomacy(o.id)
-        y += 42
-    # 기타
-    y += 10
-    gui.end_scroll("nation", area, y - y0)
+        y += 46
+    if not others:
+        gui.text((x, y), "다른 세력이 없습니다.", 13, t.muted)
+    gui.end_scroll("diplo", area, y - y0)
 
 
 # ------------------------------------------------------------------ 좌측 [국가 현황]
@@ -847,6 +884,7 @@ def draw_nation_status(app, body):
                 app.select(src)
                 app.tab = "action"
                 app.left_tab = "region"
+                app.left_open = True
                 app.map.center_on(src)
         y += 28
     if not kinds:

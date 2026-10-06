@@ -76,16 +76,16 @@ def test_tax_slider_release_commits(app):
     app.start_game(Settings(seed=5, n_enemies=1))
     app.game.set_player_government("presidential")
     app.scene = "main"
-    app.tab = "nation"
-    app.left_open = False
+    from korciv.ui import panels
+    from korciv.ui.app import LEFT_W
+    app.left_open, app.left_tab = True, "nation"
     gui = app.gui
     orig = pygame.mouse.get_pos
     try:
-        # 슬라이더 위치: 우측 패널 국가 탭 첫 줄 (논리 좌표 → 실제 픽셀)
-        sw, sh = app.lsize()
-        x0 = sw - 320 - 12 + 14 + 40
-        wdt = 320 - 28 - 122
-        y = 56 + 12 + 52 + 26 + 4 + 10
+        # 슬라이더 위치: 좌측 세로 탭 옆 [국가] 패널 첫 줄 (논리 좌표 → 실제 픽셀)
+        x0 = 8 + panels.RAIL_W + 6 + 14 + 40
+        wdt = LEFT_W - 28 - 122
+        y = 56 + 12 + 46 + 26 + 4 + 10
         u = gui.u
         def at(lx):
             p = (int(lx * u), int(y * u))
@@ -141,7 +141,7 @@ def test_priority_arrow_keys_reorder(app):
         g.transfer_region(r, pid)
     for r in [g.player.capital] + near:
         assert g.start_project(pid, r, "build", "farm")[0]
-    app.left_open, app.left_tab = True, "nation"
+    app.left_open, app.left_tab = True, "status"
     frame(app)
     ids = [r.id for r in g.projects_by_priority(pid)]
     app.prio_sel = ids[0]

@@ -127,7 +127,7 @@ class App:
         self.spec_sel = None
         self.lm_name = ""
         self.visited = set()         # 이번 턴 '다음 지역'으로 확인한 지역
-        self.left_tab = "region"      # 좌측 패널: nation / region
+        self.left_tab = "status"      # 좌측 패널: nation/diplo/army/energy/status(세로 탭), region(지역 선택)
         self.prio_drag = None
 
     # ------------------------------------------------------------ 게임 시작·저장
@@ -274,15 +274,9 @@ class App:
         self.gui.input_enabled = not modal_open
         self.draw_map()
         self.draw_topbar()
-        if self.left_open:
-            panels.draw_left(self, pygame.Rect(12, TOP_H + 12, LEFT_W, sh - TOP_H - 90))
-        else:
-            b = pygame.Rect(12, TOP_H + 12, 120, 36)
-            self.gui.block(b)
-            if self.gui.button(b, "국가 현황 ›", tooltip="국가 현황·지역 정보 펼치기"):
-                self.left_open = True
-                self.left_tab = "nation"
-        panels.draw_right(self, pygame.Rect(sw - RIGHT_W - 12, TOP_H + 12, RIGHT_W, sh - TOP_H - 132))
+        h = sh - TOP_H - 90
+        rail = pygame.Rect(8, TOP_H + 12, panels.RAIL_W, h)
+        panels.draw_side(self, rail, pygame.Rect(rail.right + 6, TOP_H + 12, LEFT_W, h))
         self.draw_mode_chips()
         self.draw_end_turn()
         self.draw_toasts()
@@ -760,9 +754,12 @@ class App:
             self.toast(f"{self.world.node_name(node)}: 부대 {(i + 1) % len(mine) + 1}/{len(mine)} 선택 "
                        f"({g.armies[self.sel_army].label()})")
         self.left_open = True
-        self.left_tab = "region"
-        if mine and self.tab == "action" and g.regions.get(node) is None:
-            self.tab = "army"
+        if g.regions.get(node) is None:
+            # 해역: 내 함대가 있으면 [군사], 없으면 해역 정보
+            self.left_tab, self.tab = ("army", self.tab) if mine else ("region", "info")
+        else:
+            # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보])
+            self.left_tab, self.tab = "region", ("action" if g.regions[node].owner == g.player_id else "info")
 
     def right_click(self, node, pos):
         g = self.game
