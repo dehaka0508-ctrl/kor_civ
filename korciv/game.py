@@ -2568,7 +2568,7 @@ class Game:
                     g += C.POP_FOCUS_GROWTH          # 인구 성장 집중
                 if g > 0:
                     r.pop += r.pop * g
-            if self.growth_happy(r) <= C.MIGRATION_H:     # 이주도 전쟁 피로와 무관
+            if self.eff_happy(r) <= C.MIGRATION_H:        # 이주는 전쟁 피로를 포함한 실질 행복도로 판정
                 r.pop *= 1 + C.MIGRATION_POP
             r.pop = max(0.1, r.pop)
 

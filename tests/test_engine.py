@@ -1328,10 +1328,15 @@ def test_pop_focus():
     r.happy = 20.0
     assert g.set_pop_focus(0, "S002", True)[0] and r.pop_focus and not r.focus
     p0 = r.pop
-    g.player.war_weary = 80                        # 전쟁 피로는 인구 성장에 영향 없음
+    g.player.war_weary = 40                        # 전쟁 피로는 인구 성장에 영향 없음(이주 문턱 −30 위)
     expect = p0 * (C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.growth_happy(r)))
     g._phase_population()
     assert r.pop - p0 == pytest.approx(expect)
+    g.player.war_weary = 80                        # 이주는 전쟁 피로 포함 실질 행복도(−60)로 판정
+    p1 = r.pop
+    g._phase_population()
+    assert r.pop == pytest.approx(p1 * (1 + C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.growth_happy(r)))
+                                  * (1 + C.MIGRATION_POP))
     g.set_focus(0, "S002", True)
     assert r.focus and not r.pop_focus             # 집중은 하나만
 
