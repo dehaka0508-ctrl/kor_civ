@@ -14,7 +14,7 @@ import io
 import math
 import os
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EMB = os.path.join(ROOT, "korciv", "assets", "emblems")
@@ -35,6 +35,11 @@ def save_mask(alpha: Image.Image, name):
     img = Image.new("RGBA", (M, M), (255, 255, 255, 0))
     img.putalpha(out)
     img.save(os.path.join(EMB, name + ".png"), optimize=True)
+
+
+def close(alpha: Image.Image, k=5):
+    """작은 구멍(워터마크 자국)을 메운다: 팽창 후 침식."""
+    return alpha.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.MinFilter(k))
 
 
 def svg_alpha(path):
@@ -107,23 +112,29 @@ def cloud_alpha():
 def main():
     ap = argparse.ArgumentParser()
     # 넘긴 입력만 다시 만든다(소나무·구름은 항상)
-    for k in ("--icons", "--deva-font", "--samjogo", "--cheonma", "--taegeukgi", "--eogi", "--goryeo", "--dragon"):
+    for k in ("--icons", "--deva-font", "--samjogo", "--cheonma", "--taegeukgi", "--eogi", "--goryeo", "--dragon", "--cloud"):
         ap.add_argument(k)
     a = ap.parse_args()
     os.makedirs(EMB, exist_ok=True)
     os.makedirs(FLG, exist_ok=True)
     save_mask(pine_alpha(), "pine")
-    save_mask(cloud_alpha(), "cloud")
+    if a.cloud:
+        # 흰 바탕의 갈색 선 → R−B(채도)가 클수록 불투명. 회색 워터마크는 채도가 없어 빠진다
+        rr, _, bb = Image.open(a.cloud).convert("RGB").split()
+        sat = ImageChops.subtract(rr, bb)
+        save_mask(close(sat.point(lambda v: max(0, min(255, int((v - 8) * 255 / 27))))), "cloud")
+    else:
+        save_mask(cloud_alpha(), "cloud")
     if a.icons:
         # game-icons (CC BY 3.0, Delapouite·Lorc)
         save_mask(svg_alpha(os.path.join(a.icons, "delapouite", "tiger-head.svg")), "tiger")
         if not a.dragon:
             save_mask(svg_alpha(os.path.join(a.icons, "lorc", "sea-dragon.svg")), "dragon")
     if a.dragon:
-        # 밝은 바탕의 빨간 그림 → 붉을수록 불투명 (워터마크 없는 정식 이미지를 넣을 것)
+        # 밝은 바탕의 빨간 그림 → 붉을수록 불투명
         rr, gg, bb = Image.open(a.dragon).convert("RGB").split()
         red = ImageChops.subtract(rr, ImageChops.lighter(gg, bb))
-        save_mask(red.point(lambda v: max(0, min(255, int((v - 60) * 255 / 80)))), "dragon")
+        save_mask(close(red.point(lambda v: max(0, min(255, int((v - 50) * 255 / 40))))), "dragon")
     if a.deva_font:
         build_om(a.deva_font)
     if a.samjogo:
