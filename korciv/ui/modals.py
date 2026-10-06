@@ -17,7 +17,7 @@ from .theme import hex2rgb, measure, mix
 class SetupState:
     def __init__(self):
         self.name = "대한"
-        self.leader = "sejong"
+        self.leader = "sej"
         self.custom_name = ""
         self.n_enemies = 4
         self.difficulty = 2
@@ -172,7 +172,7 @@ def draw_setup(app):
         cur_cat = next((i for i, c in enumerate(LEADER_CATEGORIES) if s.leader in c[2]), 0)
     s.leader_cat = gui.segmented((x, y, 618, 32), cats, cur_cat, size=11)
     y += 40
-    shown = [LEADER_BY_KEY[k] for k in LEADER_CATEGORIES[s.leader_cat][2]] + [LEADER_BY_KEY["custom"]]
+    shown = [LEADER_BY_KEY[k] for k in LEADER_CATEGORIES[s.leader_cat][2]] + [LEADER_BY_KEY["cus"]]
     cols, bw, bh = 4, 150, 34
     for i, l in enumerate(shown):
         cx = x + (i % cols) * (bw + 6)
@@ -183,7 +183,7 @@ def draw_setup(app):
             s.leader = l["key"]
     y += 4 * (bh + 6) + 8
     lead = LEADER_BY_KEY[s.leader]
-    if s.leader == "custom":
+    if s.leader == "cus":
         gui.text((x, y + 8), "지도자 이름", 13, t.muted)
         s.custom_name = gui.text_input((x + 90, y, 200, 32), "custom", s.custom_name, max_len=10)
         y += 40
@@ -416,7 +416,7 @@ def start_from_setup(app):
     settings = Settings(
         n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
-        player_leader_name=(s.custom_name.strip() or "이름 없는 지도자") if s.leader == "custom" else "",
+        player_leader_name=(s.custom_name.strip() or "이름 없는 지도자") if s.leader == "cus" else "",
         player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
         ai_leaders=_unique_ai_leaders(s), seed=seed, max_turns=s.max_turns)
     app.start_game(settings)

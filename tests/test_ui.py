@@ -369,7 +369,7 @@ def test_unmet_factions_hidden_under_fog(app):
 def test_ai_leader_picker_and_fog_name_rules(app):
     from korciv.ui import modals
     s = modals.SetupState()
-    s.leader, s.n_enemies, s.ai_leaders = "sejong", 3, ["yisunsin", None, None]
+    s.leader, s.n_enemies, s.ai_leaders = "sej", 3, ["yis", None, None]
     app.setup, app.scene, app.game = s, "setup", None
     s.ai_pick = 1
     frame(app)                                   # 고르기 창
@@ -386,11 +386,11 @@ def test_ai_leader_picker_and_fog_name_rules(app):
 
 
 def test_portrait_codes():
-    """초상화 파일 이름은 지도자마다 서로 다른 3글자 코드이고, 올려 둔 이미지가 그 이름으로 불린다."""
-    from korciv.leaders import LEADERS, PORTRAIT_CODES
+    """지도자 키는 서로 다른 3글자이고, 올려 둔 이미지가 그 이름으로 불린다."""
+    from korciv.leaders import LEADERS
     from korciv.ui.art import portrait_path
-    codes = [PORTRAIT_CODES[l["key"]] for l in LEADERS]
-    assert len(codes) == len(set(codes)) and all(len(c) == 3 and c.islower() for c in codes)
-    for key, code in (("dangun", "dan"), ("jumong", "jum"), ("onjo", "onz")):
+    keys = [l["key"] for l in LEADERS]
+    assert len(keys) == len(set(keys)) and all(len(k) == 3 and k.islower() for k in keys)
+    for key in ("dan", "jum", "onz"):
         p = portrait_path(key)
-        assert p and os.path.basename(p).startswith(code + ".")
+        assert p and os.path.basename(p).startswith(key + ".")

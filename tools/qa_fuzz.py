@@ -108,7 +108,7 @@ def check(g, where):
 
 def run_sim(seed, turns, n):
     rng = random.Random(seed)
-    leaders = [l["key"] for l in LEADERS if l["key"] != "custom"]
+    leaders = [l["key"] for l in LEADERS if l["key"] != "cus"]
     lineup = rng.sample(leaders, n)
     g = Game(Settings(n_enemies=n - 1, seed=seed, all_ai=True, max_turns=turns, fog=rng.choice([0, 1, 2]),
                       difficulty=rng.randrange(len(C.DIFFICULTIES)), player_leader=lineup[0], ai_leaders=lineup[1:]))

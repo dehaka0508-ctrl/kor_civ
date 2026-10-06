@@ -121,7 +121,7 @@ class Game:
 
         st = self.settings
         n_ai = max(1, min(9, st.n_enemies))
-        leaders = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "custom"]
+        leaders = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus"]
         ai_leaders = list(st.ai_leaders or [])
         pool = [k for k in leaders if k != st.player_leader and k not in ai_leaders]
         self.rng.shuffle(pool)
@@ -226,7 +226,7 @@ class Game:
 
     def mods(self, fid) -> Mods:
         if fid == NEUTRAL:
-            return Mods("custom", None)
+            return Mods("cus", None)
         m = self._mods.get(fid)
         if m is None:
             f = self.factions[fid]
@@ -3010,8 +3010,8 @@ class Game:
         palette = C.FACTION_COLORS + C.REBEL_COLORS
         color = next((c for c in palette if c not in used), palette[nid % len(palette)])
         taken = {f.leader for f in self.factions if f.alive}
-        pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "custom" and l["key"] not in taken]
-        lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "custom"])
+        pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus" and l["key"] not in taken]
+        lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "cus"])
         leader = LEADER_BY_KEY[lk]
         name = faction_name_from(info.short)
         if any(f.name == name for f in self.factions):

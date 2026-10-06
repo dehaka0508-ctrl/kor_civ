@@ -26,7 +26,7 @@ FACTIONS_PER_GAME = 6
 
 def _leader_keys():
     from korciv.leaders import LEADERS
-    return [l["key"] for l in LEADERS if l["key"] != "custom"]
+    return [l["key"] for l in LEADERS if l["key"] != "cus"]
 
 
 def run_game(job):

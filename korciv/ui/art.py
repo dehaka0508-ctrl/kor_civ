@@ -242,13 +242,11 @@ def draw_flag(gui, rect, flag):
 
 # ------------------------------------------------------------------ 초상화
 def portrait_path(leader_key):
-    """지도자 초상화 파일: <3글자 코드>.png (예: 세종대왕 sej.png)."""
-    from ..leaders import PORTRAIT_CODES
-    code = PORTRAIT_CODES.get(leader_key)
-    if not code:
+    """지도자 초상화 파일: <지도자 키(3글자)>.png (예: 세종대왕 sej.png)."""
+    if not leader_key or "/" in leader_key or "." in leader_key:
         return None
     for ext in PORTRAIT_EXTS:
-        p = os.path.join(PORTRAIT_DIR, code + ext)
+        p = os.path.join(PORTRAIT_DIR, leader_key + ext)
         if os.path.exists(p):
             return p
     return None

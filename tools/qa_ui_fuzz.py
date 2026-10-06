@@ -193,7 +193,7 @@ def force_state(app, rng):
         return
     if g is None or r < RESTART_P:
         app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 9), fog=rng.choice([0, 1, 2]),
-                                player_leader=rng.choice(["sejong", "custom", "yisunsin", "kimilsung", "ito"]),
+                                player_leader=rng.choice(["sej", "cus", "yis", "kim", "ito"]),
                                 player_leader_name="큐에이"))
         if rng.random() < 0.7:
             app.game.set_player_government(rng.choice(["presidential", "absolute", "socialist", "philosopher"]))

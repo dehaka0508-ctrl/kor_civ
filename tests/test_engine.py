@@ -78,8 +78,8 @@ def test_energy_cannot_be_bought_but_sold():
 
 def test_tax_lock(monkeypatch):
     from korciv.leaders import LEADER_BY_KEY
-    monkeypatch.setitem(LEADER_BY_KEY["custom"], "fx", {"tax_lock": 4})
-    g = new_game(player_leader="custom")
+    monkeypatch.setitem(LEADER_BY_KEY["cus"], "fx", {"tax_lock": 4})
+    g = new_game(player_leader="cus")
     assert g.set_tax(0, 0.15)[0]
     ok, _ = g.set_tax(0, 0.12)
     assert not ok
@@ -87,7 +87,7 @@ def test_tax_lock(monkeypatch):
 
 def test_jeongjo_industry_build_time():
     from korciv.rules import prod_building_turns
-    g = new_game(player_leader="jeongjo")
+    g = new_game(player_leader="jjo")
     base = prod_building_turns(1)
     assert g.build_time(0, "factory", 10) == 12 and g.build_time(0, "power", 10) == 12
     assert g.build_time(0, "extract", 10) == 12
@@ -95,7 +95,7 @@ def test_jeongjo_industry_build_time():
 
 
 def test_kimdj_friendship_no_backlash():
-    g = new_game(player_start="S002", n_enemies=3, player_leader="kimdj")
+    g = new_game(player_start="S002", n_enemies=3, player_leader="kdj")
     g.dip.op[(3, 1)] = -60
     assert all(e[2] > 0 for e in D.friendship_effects(g, 0, 1))
 
@@ -103,7 +103,7 @@ def test_kimdj_friendship_no_backlash():
 def _neutral_ai(g, *fids):
     """시드에 따라 달라지는 AI 지도자·체제 효과를 없앤다."""
     for fid in fids:
-        g.factions[fid].leader, g.factions[fid].gov = "custom", "philosopher"
+        g.factions[fid].leader, g.factions[fid].gov = "cus", "philosopher"
     g._mods.clear()
 
 
@@ -435,7 +435,7 @@ def test_government_opinion_baseline():
     assert bias("socialist", "presidential") == -10          # 사회주의 → 민주주의
     assert bias("presidential", "absolute") == -10           # 민주주의 → 군주제
     assert bias("socialist", "absolute") == 0                # 한 방향만
-    g = new_game(n_enemies=2, ai_leaders=["sejong", "jeongjo"])   # 우호도 효과가 없는 지도자
+    g = new_game(n_enemies=2, ai_leaders=["sej", "jjo"])   # 우호도 효과가 없는 지도자
     g.factions[1].gov, g.factions[2].gov = "absolute", "socialist"
     g.dip.op[(1, 2)] = 0.0
     for _ in range(300):
@@ -449,7 +449,7 @@ def _border_setup(aggr, gov="presidential"):
     g = new_game(player_start="S002", n_enemies=1)
     g.turn = 40
     ai_f = g.factions[1]
-    ai_f.aggression, ai_f.gov, ai_f.leader = aggr, gov, "custom"   # 지도자 효과 없이
+    ai_f.aggression, ai_f.gov, ai_f.leader = aggr, gov, "cus"   # 지도자 효과 없이
     g._mods.clear()
     border = sorted(g.world.land_adj["S002"])[:2]
     _own(g, 1, border)
@@ -716,41 +716,41 @@ def test_leader_roster_and_categories():
     from korciv.leaders import LEADERS, LEADER_CATEGORIES, LEADER_BY_KEY, MULT_KEYS, ADD_KEYS
     keys = [k for _, _, ks in LEADER_CATEGORIES for k in ks]
     assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 39
-    assert LEADER_BY_KEY["jumong"]["name"] == "동명성왕" and LEADER_BY_KEY["sejong"]["name"] == "세종대왕"
+    assert LEADER_BY_KEY["jum"]["name"] == "동명성왕" and LEADER_BY_KEY["sej"]["name"] == "세종대왕"
     for l in LEADERS:
-        assert len(l["fx"]) >= (0 if l["key"] == "custom" else 2)
+        assert len(l["fx"]) >= (0 if l["key"] == "cus" else 2)
     # 새 지도자로 게임을 시작해도 효과가 적용된다
-    g = new_game(player_start="S002", n_enemies=5, player_leader="yisunsin",
-                 ai_leaders=["yangdi", "kublai", "hideyoshi", "hongtaiji", "ito"])
+    g = new_game(player_start="S002", n_enemies=5, player_leader="yis",
+                 ai_leaders=["yan", "kan", "toy", "taj", "ito"])
     assert g.mods(0).mult("naval_power") == pytest.approx(1.3)
-    assert {f.leader for f in g.factions} == {"yisunsin", "yangdi", "kublai", "hideyoshi", "hongtaiji", "ito"}
+    assert {f.leader for f in g.factions} == {"yis", "yan", "kan", "toy", "taj", "ito"}
 
 
 
 def test_honggildong_no_monarchy():
     import random
     from korciv.leaders import ai_pick_government, banned_govs
-    assert banned_govs("honggildong") == {"absolute", "constitutional"}
-    assert banned_govs("sejong") == set()
+    assert banned_govs("gil") == {"absolute", "constitutional"}
+    assert banned_govs("sej") == set()
     rng = random.Random(1)
-    picks = {ai_pick_government(rng, a, 0, 0, banned=banned_govs("honggildong"))
+    picks = {ai_pick_government(rng, a, 0, 0, banned=banned_govs("gil"))
              for a in range(11) for _ in range(30)}
     assert not picks & {"absolute", "constitutional"}
-    g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="honggildong"))
+    g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil"))
     g.set_player_government("absolute")
     assert g.player.gov == "philosopher"
     assert g.mods(0).add("surprise") == pytest.approx(0.05)
 
 
 def test_wanggeon_far_output():
-    g = new_game(player_start="S002", n_enemies=1, player_leader="wanggeon")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="wan")
     near = g.near_capital(0)
     assert "S002" in near and g.world.land_adj["S002"] <= near
     far = next(r for r in g.world.order if r not in near and g.world.land_adj[r])
     _own(g, 0, [far])
     m = g.mods(0)
     base = g.calc_output(far)
-    g.factions[0].leader = "custom"
+    g.factions[0].leader = "cus"
     g._mods.pop(0, None)
     assert base == pytest.approx(g.calc_output(far) * 0.95)
     assert m.value("far_output") == 0.05
@@ -976,7 +976,7 @@ def test_ai_army_leaves_neutral_occupation_when_country_in_crisis():
 
 
 def test_battle_breakdown_lists_sides_and_factors():
-    g = new_game(player_start="S002", n_enemies=1, player_leader="seonggye")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="tae")
     tgt = sorted(g.world.land_adj["S002"])[0]
     _own(g, 1, [tgt])
     for a in list(g.armies_at(tgt)):
@@ -1097,50 +1097,50 @@ def _lead(g, fid, key):
 
 
 def test_unique_debuffs_setup_and_economy():
-    base = new_game(player_start="S002", n_enemies=1, player_leader="custom")
-    onjo = new_game(player_start="S002", n_enemies=1, player_leader="onjo")
+    base = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    onjo = new_game(player_start="S002", n_enemies=1, player_leader="onz")
     assert onjo.regions["S002"].pop == pytest.approx(base.regions["S002"].pop * 0.9)      # 십제
-    g = new_game(player_start="S002", n_enemies=1, player_leader="custom")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
     r = g.regions["S002"]
     r.b["bank"], r.b["factory"], r.b["farm"] = 2, 2, 2
     y0 = g.calc_output("S002")
-    _lead(g, 0, "sejong")
+    _lead(g, 0, "sej")
     y1 = g.calc_output("S002")
     pop_part = C.POP_OUTPUT * r.pop
     assert y1 - pop_part == pytest.approx((y0 - pop_part) * 0.92)                          # 부민고소금지법
-    _lead(g, 0, "gongmin")
+    _lead(g, 0, "gon")
     assert g.landmark_cost_mult(0) == pytest.approx(1.25)                                  # 영전 공사
-    _lead(g, 0, "hyeokgeose")                                                              # 교대 계승
+    _lead(g, 0, "egg")                                                              # 교대 계승
     g.turn = 48
     opts = g.options(0, "S002")
     assert all(not o["ok"] for o in opts if o["kind"] in ("build", "unit", "landmark"))
     g.turn = 49
     assert any(o["ok"] for o in g.options(0, "S002") if o["kind"] == "build")
-    _lead(g, 0, "hongtaiji")                                                               # 소수민족
+    _lead(g, 0, "taj")                                                               # 소수민족
     others = [x for x in g.world.order if g.regions[x].owner == NEUTRAL][:44]
     _own(g, 0, others)
     assert g.minority_penalty(0) == pytest.approx(0.3 * (45 - 40))
 
 
 def test_unique_debuffs_diplomacy_and_rebels():
-    g = new_game(player_start="S002", n_enemies=2, player_leader="jangbogo")
+    g = new_game(player_start="S002", n_enemies=2, player_leader="jan")
     g.dip.nonaggr[D.pair(0, 1)] = g.turn + 99
     g.dip.op[(1, 0)] = 100
     ok, why = D.treaty_check(g, 1, 0, "alliance")
     assert not ok and "골품의 벽" in why
     # 궁예: 반란군 보병 +2, 견훤: 반란 세력이 가장 강한 적국과 동맹
     res = {}
-    for lk in ("custom", "gungye", "gyeonhwon"):
+    for lk in ("cus", "gun", "dog"):
         g = new_game(player_start="S002", n_enemies=2, player_leader=lk)
         near = sorted(g.world.land_adj["S002"])[:2]
         _own(g, 0, near)
         D.declare_war(g, 1, 0)
         nf, _ = g._spawn_rebel(0, near[0], 24)
         res[lk] = (sum(a.units.get("inf", 0) for a in g.armies_at(near[0], nf.id)), D.allied(g, nf.id, 1))
-    assert res["gungye"][0] == res["custom"][0] + 2
-    assert res["gyeonhwon"][1] and not res["custom"][1]
+    assert res["gun"][0] == res["cus"][0] + 2
+    assert res["dog"][1] and not res["cus"][1]
     # 연개소문: 수도 함락 후 12턴 반란 확률 ×3
-    g = new_game(player_start="S002", n_enemies=1, player_leader="yeon")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="yon")
     near = sorted(g.world.land_adj["S002"])[:2]
     _own(g, 0, near)
     g.regions[near[0]].happy = -80
@@ -1153,26 +1153,26 @@ def test_unique_debuffs_diplomacy_and_rebels():
 
 
 def test_unique_debuffs_combat():
-    g = new_game(player_start="S002", n_enemies=1, player_leader="seondeok")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="sen")
     tgt = sorted(g.world.land_adj["S002"])[0]
     _own(g, 1, [tgt])
     g.new_army(1, tgt, {"inf": 5})
     D.declare_war(g, 1, 0)
     d1 = g.defense_strength(1, "S002", tgt, "assault")[0]
-    _lead(g, 0, "custom")
+    _lead(g, 0, "cus")
     d0 = g.defense_strength(1, "S002", tgt, "assault")[0]
     assert d1 == pytest.approx(d0 * 0.85) and d0 > 0                                      # 대야성 함락
-    _lead(g, 0, "seondeok")
+    _lead(g, 0, "sen")
     g.turn += C.AMBUSH_TURNS
     assert g.defense_strength(1, "S002", tgt, "assault")[0] == pytest.approx(d0)
     # 당 태종: 방어선이 있는 지역 공격 −15%
-    _lead(g, 1, "taizong")
+    _lead(g, 1, "tai")
     a = g.armies_at(tgt, 1)
     s0 = g.combat_strength(1, a, "S002")[0]
     g.regions["S002"].lines[tgt] = 1
     assert g.combat_strength(1, a, "S002")[0] == pytest.approx(s0 * 0.85)
     # 광개토대왕: 저항 기간 +50%
-    _lead(g, 1, "gwanggaeto")
+    _lead(g, 1, "ggt")
     g.complete_occupation(1, "S002")
     assert g.regions["S002"].resist["resist"] == 6
 
@@ -1190,7 +1190,7 @@ def test_unique_debuffs_occupation_upkeep_naval():
     assert a.id not in g.armies or a.units.get("inf", 0) < 5 or a.dmg.get("inf", 0) > 0
     assert any("의병 습격" in e["text"] for e in g.events) or a.dmg.get("inf", 0) > 0
     # 히데요시: 수도와 육로로 이어지지 않은 곳의 부대 유지비 2배
-    g = new_game(player_start="S002", n_enemies=1, player_leader="hideyoshi")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="toy")
     far = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL
                and r not in g.supply_linked(0) and g.world.land_adj[r])
     for x in list(g.armies.values()):
@@ -1201,7 +1201,7 @@ def test_unique_debuffs_occupation_upkeep_naval():
     g.new_army(0, far, {"inf": 2})
     assert g.upkeep(0) == pytest.approx(u0 * 3)
     # 이순신: 해전에서 지면 12턴 해군 버프 비활성
-    g = new_game(player_start="S002", n_enemies=1, player_leader="yisunsin")
+    g = new_game(player_start="S002", n_enemies=1, player_leader="yis")
     assert g.lead_mult(0, "naval_power") == pytest.approx(1.3)
     sid = next(iter(g.world.seas))
     D.declare_war(g, 0, 1)
@@ -1212,7 +1212,7 @@ def test_unique_debuffs_occupation_upkeep_naval():
     g.turn += 12
     assert not g.naval_buff_off(0)
     # 쿠빌라이: 상륙 돌격 ×0.75, 해전 −15%
-    _lead(g, 0, "kublai")
+    _lead(g, 0, "kan")
     assert g.mods(0).value("amphib_extra") == 0.75 and g.mods(0).mult("naval_power") == pytest.approx(0.85)
     assert "일본 원정 실패" in g.fx_source(0, "naval_power")
 
@@ -1288,14 +1288,14 @@ def test_hp_pool_split_merge_heal():
 
 def test_ai_leader_bias():
     from korciv import ai
-    g = new_game(player_start="S002", n_enemies=2, player_leader="custom", ai_leaders=["yisunsin", "sejong"])
+    g = new_game(player_start="S002", n_enemies=2, player_leader="cus", ai_leaders=["yis", "sej"])
     assert ai.leader_bias(g, 1, "naval") > 1.0 and ai.leader_bias(g, 1, "naval") <= 1.15
     assert ai.leader_bias(g, 2, "bank") > 1.0
-    _lead(g, 1, "gungye")
+    _lead(g, 1, "gun")
     assert ai.leader_bias(g, 1, "assault") > 1.0
-    _lead(g, 1, "taizong")
+    _lead(g, 1, "tai")
     assert ai.leader_bias(g, 1, "assault") < 1.0           # 안시성: 방어선 공격 불리
-    _lead(g, 1, "custom")
+    _lead(g, 1, "cus")
     assert ai.leader_bias(g, 1, "naval") == 1.0
 
 

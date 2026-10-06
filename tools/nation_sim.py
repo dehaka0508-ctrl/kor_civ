@@ -27,7 +27,7 @@ SNAPS = (100, 240, 480)
 
 def lineups(n_games, seed):
     from korciv.leaders import LEADERS
-    keys = [l["key"] for l in LEADERS if l["key"] != "custom"]
+    keys = [l["key"] for l in LEADERS if l["key"] != "cus"]
     rng = random.Random(seed)
     used = Counter({k: 0 for k in keys})
     out = []

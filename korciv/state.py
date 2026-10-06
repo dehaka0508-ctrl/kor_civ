@@ -188,7 +188,7 @@ class Settings:
     fog: int = 1
     victories: tuple = ("conquest", "economic", "landmark", "time")
     max_turns: int = C.TIME_VICTORY_TURNS   # 시간 종료 승리 턴
-    player_leader: str = "sejong"
+    player_leader: str = "sej"
     player_leader_name: str = ""
     player_name: str = "대한"
     player_start: Optional[str] = None
