@@ -1088,12 +1088,13 @@ class Game:
             ok, why = True, ""
             if lv > spec["max"]:
                 continue
+            # 지역 조건상 영영 지을 수 없는 시설은 목록에 넣지 않는다
             if key == "fishery" and not self.can_fish(rid):
-                ok, why = False, "바다·하천 인접 지역만"
+                continue
             if key == "specialty" and not info.specialty:
-                ok, why = False, "특산물 지정 지역만"
+                continue
             if key == "extract" and not (info.is_oil or info.is_coal):
-                ok, why = False, "유전·탄전 지역만"
+                continue
             cost = R.prod_building_cost(key, lv, info.power_site)
             if key == "factory":
                 cost *= m.mult("cost_factory")
@@ -1117,7 +1118,7 @@ class Game:
                 continue
             ok, why = True, ""
             if key == "port" and not info.coastal:
-                ok, why = False, "해안 지역만"
+                continue
             add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
                 self.build_time(fid, key, spec["turns"]), ok, why, 1)
         for key in C.UNIT_ORDER:

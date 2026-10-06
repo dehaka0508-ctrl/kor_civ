@@ -1379,8 +1379,7 @@ def test_energy_coal_fields_and_plants_start():
     _own(g, 0, [paju])
     opt = next(o for o in g.options(0, paju) if o["key"] == "extract")
     assert opt["ok"]
-    opt = next(o for o in g.options(0, "S002") if o["key"] == "extract")
-    assert not opt["ok"]
+    assert not any(o["key"] == "extract" for o in g.options(0, "S002"))   # 유전·탄전이 없으면 아예 안 나옴
     assert not any(o["key"] == "liquefy" for o in g.options(0, "S002"))
 
 
@@ -1437,3 +1436,21 @@ def test_units_pay_oil_with_coal():
     g.pay_oil(0, 2)                                            # 석유 1 + 석탄 2(= 석유 1)
     assert f.res["oil"] == 0 and f.res["coal"] == 0
     assert not g.can_pay_oil(0, 1)
+
+
+def test_impossible_facilities_hidden():
+    """지을 수 없는 어장·특산물·지하자원·항구는 선택지에 아예 나오지 않는다."""
+    from korciv.game import Game
+    from korciv.state import Settings
+    g = Game(Settings(seed=3, n_enemies=1))
+    pid = g.player_id
+    for rid in list(g.regions)[:200]:
+        info = g.info(rid)
+        keys = {o["key"] for o in g.options(pid, rid) if o["kind"] == "build"}
+        assert ("fishery" in keys) == (g.can_fish(rid) and g.regions[rid].b["fishery"] < 5) or g.regions[rid].b["fishery"] >= 5
+        if not info.specialty:
+            assert "specialty" not in keys
+        if not (info.is_oil or info.is_coal):
+            assert "extract" not in keys
+        if not info.coastal:
+            assert "port" not in keys

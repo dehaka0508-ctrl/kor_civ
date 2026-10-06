@@ -263,3 +263,30 @@ def test_arrow_key_hold_pans(app, monkeypatch):
     t[0] += 16
     app.arrow_pan()
     assert app.map.cx == x1                # 떼면 멈춘다
+
+
+def test_ai_flag_rules():
+    from korciv import flags as FL
+    for i in range(500):
+        f = FL.default_flag("#c0392b", i)
+        assert "preset" not in f                       # 역사 국기는 플레이어 전용
+        if f["bg"] in ("solid", "border"):
+            assert f["em"] != "none" and f["ec"] == (255, 255, 255)
+            if f["em"] == "flower":
+                assert f["ec2"] == f["c1"]
+            if f["em"] == "yinyang":
+                assert f["ec2"] == (0, 0, 0)
+        else:
+            assert f["em"] == "none"
+        if f["bg"] != "solid":
+            assert f["c2"] == (255, 255, 255)
+
+
+def test_random_flag_follows_ai_rules():
+    import random as _r
+    from korciv import flags as FL
+    rng = _r.Random(1)
+    for _ in range(200):
+        f = FL.random_flag(rng)
+        assert "preset" not in f and f["c2"] == (255, 255, 255)
+        assert (f["em"] != "none") == (f["bg"] in ("solid", "border"))

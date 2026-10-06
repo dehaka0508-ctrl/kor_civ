@@ -78,9 +78,13 @@ def draw_emblem(s, key, cx, cy, R, fl):
     elif key == "star5":
         pygame.draw.polygon(s, ec, _star(cx, cy, R))
     elif key == "hexagram":                    # 두 정삼각형 윤곽이 겹친 육망성
-        w = max(1, int(R * 0.16))
-        pygame.draw.polygon(s, ec, _ngon(cx, cy, R, 3), w)
-        pygame.draw.polygon(s, ec, _ngon(cx, cy, R, 3, rot=math.pi / 2), w)
+        # 굵은 선 윤곽은 뾰족한 꼭짓점이 갈라지므로, 꽉 찬 삼각형에서 안쪽 삼각형을 오려 낸 띠로 그린다
+        w = R * 0.16
+        for rot in (-math.pi / 2, math.pi / 2):
+            tri = pygame.Surface(s.get_size(), pygame.SRCALPHA)
+            pygame.draw.polygon(tri, ec, _ngon(cx, cy, R, 3, rot=rot))
+            pygame.draw.polygon(tri, (0, 0, 0, 0), _ngon(cx, cy, R - 2 * w, 3, rot=rot))
+            s.blit(tri, (0, 0))
     elif key == "crescent_star":
         x0 = cx - R * 0.2
         pygame.draw.circle(s, ec, (int(x0), cy), int(R * 0.8))

@@ -337,10 +337,8 @@ def draw_flag_editor(app):
             fl.pop("preset", None)
         draw_flag(gui, cell.inflate(-12, -10), {**fl, "preset": None, "bg": "solid", "em": ek})
     # 하단 버튼
-    if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위"):
-        rnd = random.Random()
-        s.flag_draft = {"bg": rnd.choice(FL.BG_KEYS), "em": rnd.choice(FL.EMBLEM_KEYS[1:]),
-                        **{k: tuple(rnd.randrange(256) for _ in range(3)) for k, _ in FLAG_TARGETS}}
+    if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위", tooltip="무작위 색으로 AI 국기 규칙에 따라 만듭니다"):
+        s.flag_draft = FL.random_flag()         # AI 국기 규칙을 따른다
     if gui.button((r.right - 220, r.bottom - 56, 92, 38), "취소"):
         s.flag_draft = None
         return

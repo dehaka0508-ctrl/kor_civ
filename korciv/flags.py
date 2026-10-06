@@ -75,16 +75,44 @@ def normalize(flag) -> dict:
     return f
 
 
+WHITE, BLACK = (255, 255, 255), (0, 0, 0)
+AI_PATTERN_BGS = [k for k in BG_KEYS if k not in ("solid", "border")]
+
+
+def _darker(c, k=0.45):
+    return tuple(int(v * (1 - k)) for v in c)
+
+
 def default_flag(color_hex: str, seed) -> dict:
-    """세력 색에서 만든 기본 국기(같은 seed 면 항상 같다). 게임 난수에는 손대지 않는다."""
+    """AI·반란 세력의 기본 국기(같은 seed 면 항상 같다). 게임 난수에는 손대지 않는다.
+    - 배경: 단색 25% · 윤곽선 25% · 나머지 무늬 50%, 배경 색 1은 세력 색, 배경 색 2는 흰색
+    - 단색·윤곽선: 문양 하나('없음' 제외), 문양 색 1 흰색
+      (꽃 가운데 = 배경 색 1, 도교 태극 색 2 = 검정, 태극 아래쪽 = 배경 색 1을 어둡게)
+    - 나머지 무늬: 문양 없음
+    - 역사 국기는 쓰지 않는다(플레이어 전용)."""
     rng = random.Random(f"flag:{seed}")
     c1 = hex2rgb(color_hex)
-    light = sum(c1) / 3 > 150
-    white, dark = (255, 255, 255), (30, 30, 40)
-    return {"bg": rng.choice(["solid", "solid", "h2", "v3", "h3", "border", "quarters", "cross", "diag_up"]),
-            "c1": c1, "c2": dark if light else white,
-            "em": rng.choice(EMBLEM_KEYS[1:]), "ec": dark if light else white,
-            "ec2": (0, 71, 160) if c1[0] > max(c1[1], c1[2]) + 40 else (205, 46, 58)}
+    roll = rng.random()
+    if roll < 0.25:
+        bg = "solid"
+    elif roll < 0.5:
+        bg = "border"
+    else:
+        bg = rng.choice(AI_PATTERN_BGS)
+    fl = {"bg": bg, "c1": c1, "c2": WHITE, "em": "none", "ec": WHITE, "ec2": WHITE}
+    if bg in ("solid", "border"):
+        em = rng.choice(EMBLEM_KEYS[1:])
+        fl["em"] = em
+        fl["ec2"] = {"flower": c1, "yinyang": BLACK, "taegeuk": _darker(c1)}.get(em, WHITE)
+    return fl
+
+
+def random_flag(rng=None) -> dict:
+    """국기 만들기 [무작위]: 선명한 색 하나를 고른 뒤 AI 국기 규칙을 따른다."""
+    import colorsys
+    rng = rng or random.Random()
+    r, g, b = colorsys.hsv_to_rgb(rng.random(), rng.uniform(0.55, 0.9), rng.uniform(0.45, 0.85))
+    return default_flag(rgb2hex((r * 255, g * 255, b * 255)), rng.random())
 
 
 def uses_c2(fl) -> bool:
