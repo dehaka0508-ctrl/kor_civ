@@ -1434,8 +1434,8 @@ class Game:
         rr = self.regions[rid]
         if rr.owner != fid:
             return False, "내 지역이 아닙니다."
-        if on and self.eff_happy(rr) < C.POP_FOCUS_MIN_H:
-            return False, f"실질 행복도 {C.POP_FOCUS_MIN_H} 이상에서만 쓸 수 있습니다."
+        if on and self.growth_happy(rr) < C.POP_FOCUS_MIN_H:
+            return False, f"행복도(전쟁 피로 제외) {C.POP_FOCUS_MIN_H} 이상에서만 쓸 수 있습니다."
         rr.pop_focus = bool(on)
         if on:
             rr.focus = False
@@ -1444,10 +1444,34 @@ class Game:
     def pop_focus_active(self, rr) -> bool:
         """건설·병력 생산을 하지 않고 실질 행복도 5 이상일 때만 효과."""
         return (getattr(rr, "pop_focus", False) and (rr.project is None or rr.project.kind == "annex")
-                and self.eff_happy(rr) >= C.POP_FOCUS_MIN_H)
+                and self.growth_happy(rr) >= C.POP_FOCUS_MIN_H)
 
-    def pop_cap(self, rr) -> float:
-        return self.info(rr.id).pop0 * C.POP_CAP_START_MULT + C.POP_CAP_PER_LEVEL * rr.level_sum()
+    def crowd_thresholds(self, rid) -> tuple:
+        """과밀 행복도 감소가 시작되는 인구 (−2, −4)."""
+        p0 = self.info(rid).pop0
+        for top, a, b in C.CROWD_TIERS:
+            if top is None or p0 <= top:
+                return p0 * (1 + a), p0 * (1 + b)
+
+    def crowd_penalty(self, rr) -> float:
+        """과밀: 시작 인구 대비 크게 늘면 그 지역 행복도 −2, 더 늘면 −4."""
+        t1, t2 = self.crowd_thresholds(rr.id)
+        if rr.pop >= t2:
+            return C.CROWD_HAPPY[1]
+        if rr.pop >= t1:
+            return C.CROWD_HAPPY[0]
+        return 0.0
+
+    def growth_happy(self, rr) -> float:
+        """인구 성장 판정용 행복도: 실질 행복도에서 전쟁 피로만 뺀 것(전쟁 피로는 성장에 영향 없음)."""
+        if rr.owner == NEUTRAL:
+            return rr.happy
+        f = self.factions[rr.owner]
+        h = (self.base_happy(rr) - rr.conscript - self.minority_penalty(rr.owner) + self.scenic_bonus(rr)
+             + self.crowd_penalty(rr))
+        if f.happy_floor_until > self.turn:
+            h = max(0.0, h)
+        return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
 
     def region_output_estimate(self, rid):
         rr = self.regions[rid]
@@ -2538,13 +2562,13 @@ class Game:
             if r.famine > 0:
                 r.pop *= 1 + C.FAMINE_POP * r.famine
             else:
-                g = R.pop_growth_rate(self.eff_happy(r)) * f.pop_mult
+                # 인구 상한 없음. 성장은 전쟁 피로를 뺀 행복도로 판정하고, 과밀 행복도 감소가 브레이크
+                g = R.pop_growth_rate(self.growth_happy(r)) * f.pop_mult
                 if self.pop_focus_active(r):
                     g += C.POP_FOCUS_GROWTH          # 인구 성장 집중
-                cap = self.pop_cap(r)
-                if g > 0 and r.pop < cap:
-                    r.pop += r.pop * g * (1 - r.pop / cap)
-            if self.eff_happy(r) <= C.MIGRATION_H:
+                if g > 0:
+                    r.pop += r.pop * g
+            if self.growth_happy(r) <= C.MIGRATION_H:     # 이주도 전쟁 피로와 무관
                 r.pop *= 1 + C.MIGRATION_POP
             r.pop = max(0.1, r.pop)
 
@@ -2628,7 +2652,7 @@ class Game:
             return rr.happy
         f = self.factions[rr.owner]
         h = (self.base_happy(rr) - f.war_weary - rr.conscript - self.minority_penalty(rr.owner)
-             + self.scenic_bonus(rr))
+             + self.scenic_bonus(rr) + self.crowd_penalty(rr))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))

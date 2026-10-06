@@ -157,7 +157,8 @@ def plan_turn(g, fid):
     food_ok = f.last.get("food_prod", 0) >= f.last.get("food_cons", 0) * 1.05 or f.res.get("food", 0) > \
         f.last.get("food_cons", 1) * 8
     for r in g.regions_of(fid):
-        grow = food_ok and g.eff_happy(r) >= C.POP_FOCUS_MIN_H + 3 and r.pop < 0.7 * g.pop_cap(r)
+        # 과밀(−2) 문턱 아래에서만 키운다
+        grow = food_ok and g.growth_happy(r) >= C.POP_FOCUS_MIN_H + 3 and r.pop < g.crowd_thresholds(r.id)[0]
         r.pop_focus, r.focus = grow, not grow
 
 

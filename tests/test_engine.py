@@ -1328,9 +1328,32 @@ def test_pop_focus():
     r.happy = 20.0
     assert g.set_pop_focus(0, "S002", True)[0] and r.pop_focus and not r.focus
     p0 = r.pop
+    g.player.war_weary = 80                        # 전쟁 피로는 인구 성장에 영향 없음
+    expect = p0 * (C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.growth_happy(r)))
     g._phase_population()
-    cap = g.pop_cap(r)
-    expect = p0 * (C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.eff_happy(r))) * (1 - p0 / cap)
     assert r.pop - p0 == pytest.approx(expect)
     g.set_focus(0, "S002", True)
     assert r.focus and not r.pop_focus             # 집중은 하나만
+
+
+def test_crowd_penalty_tiers():
+    g = new_game(player_start="S002", n_enemies=1)
+    small = next(rid for rid in g.world.order if g.info(rid).pop0 <= 10)
+    big = next(rid for rid in g.world.order if g.info(rid).pop0 > 60)
+    _own(g, 0, [small, big])
+    rs, rb = g.regions[small], g.regions[big]
+    p0 = g.info(small).pop0
+    rs.pop = p0 * 1.99
+    assert g.crowd_penalty(rs) == 0
+    rs.pop = p0 * 2.0
+    assert g.crowd_penalty(rs) == -2
+    rs.pop = p0 * 2.5
+    assert g.crowd_penalty(rs) == -4
+    q0 = g.info(big).pop0
+    rb.pop = q0 * 1.4
+    assert g.crowd_penalty(rb) == -2
+    rb.pop = q0 * 1.5
+    assert g.crowd_penalty(rb) == -4
+    h = g.eff_happy(rb)
+    rb.pop = q0
+    assert g.eff_happy(rb) == pytest.approx(h + 4)

@@ -218,6 +218,10 @@ def draw_region_info(app, rect):
         res.append("해안: " + ", ".join(app.world.seas[s].name for s in info.seas))
     y = draw_chips(gui, x, y, w, res or ["없음"])
     if owner == pid:
+        cp = g.crowd_penalty(r)
+        t1, t2 = g.crowd_thresholds(node)
+        y = section(gui, x, y + 6, w, f"과밀 행복도 {cp:+g}" if cp else "과밀 없음")
+        y = draw_chips(gui, x, y, w, [f"인구 {r.pop:.1f} · −2 문턱 {t1:.1f} · −4 문턱 {t2:.1f}"])
         sb = g.scenic_bonus(r)
         if sb:
             src = [app.world.regions[n].scenic for n in app.world.scenic_near[node] if g.regions[n].owner == pid]
@@ -414,7 +418,7 @@ def draw_action_tab(app, body):
     y += 28
     # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
     pf = getattr(r, "pop_focus", False)
-    can = pf or g.eff_happy(r) >= C.POP_FOCUS_MIN_H
+    can = pf or g.growth_happy(r) >= C.POP_FOCUS_MIN_H
     on = gui.checkbox((x, y, w, 26), f"인구 성장 집중 (성장률 턴당 +{C.POP_FOCUS_GROWTH:.1%}p)", pf, size=13)
     if on != pf:
         ok, msg = g.set_pop_focus(pid, rid, on)
@@ -422,10 +426,10 @@ def draw_action_tab(app, body):
         app.changed()
     if pf:
         state = ("적용 중" if g.pop_focus_active(r) else
-                 ("대기: 실질 행복도 5 미만" if g.eff_happy(r) < C.POP_FOCUS_MIN_H else "대기: 건설·생산 중에는 효과 없음"))
+                 ("대기: 행복도 5 미만" if g.growth_happy(r) < C.POP_FOCUS_MIN_H else "대기: 건설·생산 중에는 효과 없음"))
         gui.text((x + w, y + 4), state, 11, t.good if g.pop_focus_active(r) else t.muted, anchor="topright")
     elif not can:
-        gui.text((x + w, y + 4), "실질 행복도 5 이상 필요", 11, t.muted, anchor="topright")
+        gui.text((x + w, y + 4), "행복도 5 이상 필요", 11, t.muted, anchor="topright")
     y += 32
     if r.project:
         y = draw_project(app, x, y, w, rid, r.project)
