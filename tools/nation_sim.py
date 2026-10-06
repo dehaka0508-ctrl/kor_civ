@@ -99,7 +99,7 @@ def simulate(args):
                 break
 
 
-VNAME = {"conquest": "정복", "economic": "경제", "landmark": "랜드마크", "time": "시간 종료"}
+VNAME = {"conquest": "정복", "science": "과학", "economic": "경제", "diplomatic": "외교", "time": "시간 종료"}
 
 
 def report(path):

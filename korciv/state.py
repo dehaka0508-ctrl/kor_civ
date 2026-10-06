@@ -17,7 +17,7 @@ BUILDING_NAMES = {**{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
 
 @dataclass
 class Project:
-    kind: str                 # build / unit / annex / landmark / capital
+    kind: str                 # build / unit / annex / science / capital
     key: str                  # 건물 키, 유닛 키, 편입 대상 구역 ID
     level: int = 0
     turns: int = 1
@@ -26,7 +26,7 @@ class Project:
     paid: float = 0.0
     border: Optional[str] = None   # 방어선: 인접 구역 ID 또는 "coast"
     stalled: bool = False
-    name: Optional[str] = None     # 랜드마크 이름
+    name: Optional[str] = None
     priority: float = 0.0          # 자금 지출 우선순위(작을수록 먼저). 기본은 착수 순서
     funded: bool = False
 
@@ -43,14 +43,13 @@ class Region:
     happy: float = 0.0
     b: dict = field(default_factory=dict)
     lines: dict = field(default_factory=dict)
-    landmark: bool = False
+    sci: set = field(default_factory=set)        # 과학승리 시설(lab / observatory / pad)
     energy: dict = field(default_factory=dict)   # 수동 연료 배정 {"coal": n, "oil": n, "elec": n} (공장·발전소)
     project: Optional[Project] = None
     occs: dict = field(default_factory=dict)   # 무력 점령 진행 {fid: {"by", "progress", "need"}} (여러 세력 동시 가능)
     supplied: set = field(default_factory=set)
     spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
     spec_block: set = field(default_factory=set)   # 수동 제외 특산물
-    landmark_name: str = ""
     focus: bool = False            # 생산 집중(건설·병력 생산을 안 할 때 인구 산출 +15%)
     pop_focus: bool = False        # 인구 성장 집중(건설·병력 생산을 안 할 때 성장률 +0.5%p)
     acquired_seq: int = 0          # 영토를 얻은 순서(수도 0) — '다음 지역' 순회용
@@ -160,6 +159,7 @@ class Faction:
     spend: dict = field(default_factory=dict)       # 이번 턴 작업 지출 {종류: 금액}
     refund: float = 0.0                             # 이번 턴 환급
     war_weary: float = 0.0          # 전쟁 피로도 0~200 (실질 행복도 = 행복도 − 전쟁 피로도)
+    war_weary_def: float = 0.0      # 그중 선포당한 전쟁에서 쌓인 몫(반란 판정에서는 빼지 않는다)
     last_declare: int = -999        # 마지막으로 선전포고한 턴(전쟁광 평판)
     last_aggr_end: int = -999       # 스스로 선포한 전쟁이 마지막으로 끝난 턴
     warmonger: int = 0              # 1년 안에 잇따라 선포한 횟수
@@ -168,6 +168,7 @@ class Faction:
     income_mult: float = 1.0
     aggression: float = 5.0
     econ_streak: int = 0
+    science: list = field(default_factory=list)     # 완료한 과학 단계(C.SCIENCE_STEPS 순서)
     explored: set = field(default_factory=set)
     last_seen: dict = field(default_factory=dict)
     ai: dict = field(default_factory=dict)
@@ -186,7 +187,7 @@ class Settings:
     n_enemies: int = 3
     difficulty: int = 2
     fog: int = 1
-    victories: tuple = ("conquest", "economic", "landmark", "time")
+    victories: tuple = ("conquest", "science", "economic", "diplomatic", "time")
     max_turns: int = C.TIME_VICTORY_TURNS   # 시간 종료 승리 턴
     player_leader: str = "sej"
     player_leader_name: str = ""

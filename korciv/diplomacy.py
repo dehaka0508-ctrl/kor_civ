@@ -227,7 +227,8 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     for f in (a, b) if happiness else ():
         # 직접 선포한 쪽만 +20. 방어 동맹 참전(aggressor = 상대)은 양쪽 모두 +10
         role = "aggressor" if f == a and aggressor in (None, a) else "defender"
-        add_war_weary(g, f, C.WAR_WEARY_START[role] * g.mods(f).mult("war_start_weary"))
+        add_war_weary(g, f, C.WAR_WEARY_START[role] * g.mods(f).mult("war_start_weary"),
+                      defensive=role == "defender")
     # 통행권으로 상대 영토에 있던 병력은 가장 가까운 자국 영토로
     for army in list(g.armies.values()):
         if army.owner in (a, b) and not g.world.is_sea(army.loc):
@@ -237,9 +238,27 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
                 g.teleport_home(army)
 
 
-def add_war_weary(g, fid, v):
+def add_war_weary(g, fid, v, defensive=False):
+    """전쟁 피로 증감. defensive: 선포당한 전쟁에서 쌓인 피로(war_weary_def 에도 더한다).
+    회복(음수)은 두 몫을 같은 비율로 줄인다."""
     f = g.factions[fid]
-    f.war_weary = max(0.0, min(C.WAR_WEARY_MAX, f.war_weary + v))
+    old = f.war_weary
+    f.war_weary = max(0.0, min(C.WAR_WEARY_MAX, old + v))
+    d = getattr(f, "war_weary_def", 0.0)
+    if v >= 0:
+        if defensive:
+            d += f.war_weary - old
+    elif old > 0:
+        d *= f.war_weary / old
+    f.war_weary_def = max(0.0, min(f.war_weary, d))
+
+
+def war_weary_defensive(g, fid) -> bool:
+    """이번 턴 쌓이는 전쟁 피로가 '당한 쪽' 몫인가: 스스로 선포한 전쟁이 하나도 없으면 True(독립 전쟁 포함)."""
+    for p, w in g.dip.wars.items():
+        if fid in p and w.get("aggressor", w.get("declarer")) == fid:
+            return False
+    return True
 
 
 def war_weary_rate(g, fid) -> float:

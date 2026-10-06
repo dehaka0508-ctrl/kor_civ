@@ -66,8 +66,7 @@ def run_game(job):
     for f in g.factions:
         info = g.world.regions[f.capital]
         starts[f.id] = {"rid": f.capital, "name": info.name, "value": g.region_value(f.capital)[0],
-                        "output": R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank,
-                                                  False)}
+                        "output": R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank)}
     mid = {}
     peak = {f.id: 1 for f in g.factions}
     for _ in range(turns):
@@ -98,7 +97,7 @@ def run_game(job):
             "victory_type": g.winner[1] if f.id in winners else None,
             "gov": f.gov, "victory_turn": g.turn if f.id in winners else None,
             "rank": sorted((x for x in g.factions[:n_fac]), key=lambda x: -g.gdp(x.id)).index(f) + 1,
-            "landmarks": sum(1 for r in g.regions.values() if r.owner == f.id and r.landmark),
+            "landmarks": len(f.science),
             **LT.summary(tracker, f.id),
         })
     return {"seed": seed, "turns": g.turn, "victory": g.winner[1] if g.winner else None,

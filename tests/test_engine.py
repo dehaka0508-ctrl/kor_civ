@@ -211,14 +211,14 @@ def test_rebel_region_becomes_capital_and_inherits_state():
     rid = near[0]
     r = g.regions[rid]
     r.b["bank"] = 3
-    r.landmark = True
+    r.sci.add("lab")
     pop, b = r.pop, dict(r.b)
     g.start_project(0, rid, "build", "farm")
     msg = _fail_suppression(g, 0, rid)
     nf = g.factions[-1]
     assert "분리독립" in msg
     assert r.owner == nf.id and nf.capital == rid and nf.rebel_of == 0
-    assert r.pop == pop and r.b == b and r.landmark
+    assert r.pop == pop and r.b == b and "lab" in r.sci
     assert r.project and r.project.key == "farm"
     assert D.at_war(g, 0, nf.id)
     # 첫 24턴 행복도 하한 0
@@ -289,22 +289,76 @@ def test_specialty_auto_lowest_happiness_first_and_manual():
     assert low.supplied == set()                  # 두 종류 모두 중단
 
 
-def test_landmark_naming():
+def test_science_victory_chain():
     g = new_game(player_start="S002", n_enemies=1)
-    n = g.world.name_to_id
-    assert g.default_landmark_name(n["경북 안동시"]) == "안동 타워"
-    assert g.default_landmark_name(n["부산 북구"]) == "북구 타워"
-    assert g.default_landmark_name(n["서울 중구"]) == "중구 타워"
-    assert g.default_landmark_name(n["세종시"]) == "세종 타워"
-    ok, msg = g.start_project(0, "S002", "landmark", "landmark", name="테헤란 타워")
-    assert ok and "테헤란 타워" in msg
+    f = g.player
+    sci = lambda rid: [o for o in g.options(0, rid) if o["kind"] == "science"]
+    other = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [other])
+    assert [o["key"] for o in sci("S002")] == ["lab"] and not sci(other)       # 1단계는 수도에서만
+    base = sci("S002")[0]
+    assert base["turns"] == C.SCIENCE_TURNS and base["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN)
+    ok, _ = g.start_project(0, "S002", "science", "lab")
+    assert ok
     p = g.regions["S002"].project
     g.regions["S002"].project = None
-    g._complete_project(g.player, g.regions["S002"], p)
-    assert g.regions["S002"].landmark and g.regions["S002"].landmark_name == "테헤란 타워"
-    g.regions["S002"].landmark = False
-    ok, _ = g.start_project(0, "S002", "landmark", "landmark")
-    assert g.regions["S002"].project.name == "강남 타워"
+    g._complete_project(f, g.regions["S002"], p)
+    assert f.science == ["lab"] and "lab" in g.regions["S002"].sci
+    # 2단계: 산맥과 맞닿은 지역에서만, 비용 ×1.2
+    mtn = next(r for r in g.world.order if r in g.world.mountain_regions and g.regions[r].owner == NEUTRAL)
+    flat = next(r for r in g.world.order if r not in g.world.mountain_regions and g.regions[r].owner == NEUTRAL
+                and g.world.land_adj[r])
+    _own(g, 0, [mtn, flat])
+    assert [o["key"] for o in sci(mtn)] == ["observatory"] and not sci(flat)
+    assert sci(mtn)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2)
+    # 4·5단계는 공장 5단계, 6단계는 석유 지역
+    f.science = ["lab", "observatory", "pad"]
+    assert not sci(flat)
+    g.regions[flat].b["factory"] = 5
+    assert [o["key"] for o in sci(flat)] == ["booster"]
+    f.science += ["booster", "module"]
+    oil = next(r for r in g.world.order if g.world.regions[r].is_oil)
+    _own(g, 0, [oil])
+    assert [o["key"] for o in sci(oil)] == ["propellant"]
+    # 유닛을 잃으면 그 단계를 다시 만들 수 있다(다음 단계와 함께)
+    assert g.science_available(0) == ["propellant", "booster", "module"]
+    f.science.append("propellant")
+    assert g.science_available(0) == ["booster", "module", "propellant"]
+    # 발사: 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
+    pad = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [pad])
+    g.regions[pad].sci.add("pad")
+    for k in C.SCIENCE_UNITS[:2]:
+        g.add_units(0, pad, k, 1)
+    assert g.launch_ready(0) is None
+    g.add_units(0, pad, "propellant", 1)
+    assert g.launch_ready(0) == pad
+    assert len([a for a in g.armies_at(pad, 0) if g.is_science_army(a)]) == 1      # 과학 유닛끼리만 한 부대
+    g.end_turn()
+    assert g.game_over and g.winner == ((0,), "science")
+
+
+def test_science_units_cannot_fight():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    a = g.add_units(0, "S002", "booster", 1)
+    reach = g.reachable(a)
+    assert tgt not in reach                                   # 중립 땅으로는 못 간다
+    _own(g, 0, [tgt])
+    for x in g.armies_at(tgt):
+        g.remove_army(x)
+    reach = g.reachable(a)
+    assert reach[tgt]["action"] == "move"
+    assert g.unit_cost(0, "S002", "inf") > 0 and "booster" not in {o["key"] for o in g.options(0, "S002")
+                                                                    if o["kind"] == "unit"}
+
+
+def test_science_leaders():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="sen")
+    assert g.science_turns(0) == 10                                                # 첨성대
+    g = new_game(player_start="S002", n_enemies=1, player_leader="gon")
+    assert g.science_step_cost(0, "lab") == pytest.approx(
+        C.SCIENCE_COST_PER_TURN * C.SCIENCE_TURNS * 1.25)                          # 영전 공사
 
 
 def test_production_focus_bonus():
@@ -739,7 +793,20 @@ def test_honggildong_no_monarchy():
     g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil"))
     g.set_player_government("absolute")
     assert g.player.gov == "philosopher"
-    assert g.mods(0).add("surprise") == pytest.approx(0.05)
+    assert g.mods(0).add("surprise") == 0
+    # 신출귀몰: 같은 턴에 한 국가의 두 지역 이상을 공격하면 공격력 +10%
+    g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil"))
+    g.set_player_government("philosopher")
+    t1, t2 = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 1, [t1, t2])
+    D.declare_war(g, 0, 1)
+    a = g.new_army(0, "S002", {"inf": 5})
+    b = g.new_army(0, "S002", {"inf": 5})
+    g.order_army(a.id, t1)
+    s1 = g.combat_strength(0, [a], t1)[0]
+    g.order_army(b.id, t2)
+    assert g.multi_attack_on(0, t1)
+    assert g.combat_strength(0, [a], t1)[0] == pytest.approx(s1 * 1.10)
 
 
 def test_wanggeon_far_output():
@@ -755,17 +822,10 @@ def test_wanggeon_far_output():
     assert base == pytest.approx(g.calc_output(far) * 0.95)
     assert m.value("far_output") == 0.05
 
-def test_landmark_cost_grows():
+def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
-    opt = next(o for o in g.options(0, "S002") if o["kind"] == "landmark")
-    base = opt["per_turn"]
-    assert base == pytest.approx(C.LANDMARK_COST_PER_TURN)
-    others = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:7]
-    _own(g, 0, others)
-    for rid in others:
-        g.regions[rid].landmark = True
-    opt = next(o for o in g.options(0, "S002") if o["kind"] == "landmark")
-    assert opt["per_turn"] == pytest.approx(base * 1.2 ** 7)   # 8번째 랜드마크 ≈ 3.6배
+    costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
+    assert costs[-1] == pytest.approx(costs[0] * 1.2 ** 5)    # 6단계 ≈ 2.5배
 
 
 def test_no_peace_victory():
@@ -1124,23 +1184,30 @@ def test_unique_debuffs_setup_and_economy():
     g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
     r = g.regions["S002"]
     r.b["bank"], r.b["factory"], r.b["farm"] = 2, 2, 2
-    y0 = g.calc_output("S002")
-    _lead(g, 0, "sej")
-    y1 = g.calc_output("S002")
-    pop_part = C.POP_OUTPUT * r.pop
-    assert y1 - pop_part == pytest.approx((y0 - pop_part) * 0.92)                          # 부민고소금지법
-    _lead(g, 0, "gon")
-    assert g.landmark_cost_mult(0) == pytest.approx(1.25)                                  # 영전 공사
+    # 세종 '고기 없이는 못살아': 전국 특산물 생산 10개당 1개 감소(9개까지는 그대로)
+    spec = [x for x in g.world.order if g.world.regions[x].specialties][:5]
+    _own(g, 0, spec)
+    for lk in ("cus", "sej"):
+        _lead(g, 0, lk)
+        for lv in (3, 2):
+            for x in spec:
+                g.regions[x].b["specialty"] = lv
+                g.regions[x].resist = None
+            g.player.specialty = {}
+            g._phase_resources(g.player)
+            made = sum(len(g.world.regions[x].specialties) * lv for x in spec)
+            have = sum(g.player.specialty.values()) + sum(len(x.supplied) for x in g.regions_of(0))
+            assert have == made - (made // 10 if lk == "sej" else 0)
     _lead(g, 0, "egg")                                                              # 교대 계승
     g.turn = 48
     opts = g.options(0, "S002")
-    assert all(not o["ok"] for o in opts if o["kind"] in ("build", "unit", "landmark"))
+    assert all(not o["ok"] for o in opts if o["kind"] in ("build", "unit", "science"))
     g.turn = 49
     assert any(o["ok"] for o in g.options(0, "S002") if o["kind"] == "build")
     _lead(g, 0, "taj")                                                               # 소수민족
     others = [x for x in g.world.order if g.regions[x].owner == NEUTRAL][:44]
     _own(g, 0, others)
-    assert g.minority_penalty(0) == pytest.approx(0.3 * (45 - 40))
+    assert g.minority_penalty(0) == pytest.approx(0.3 * (g.region_count(0) - 40))
 
 
 def test_unique_debuffs_diplomacy_and_rebels():
@@ -1189,6 +1256,7 @@ def test_unique_debuffs_combat():
     # 당 태종: 방어선이 있는 지역 공격 −15%
     _lead(g, 1, "tai")
     a = g.armies_at(tgt, 1)
+    g.regions["S002"].lines.clear()                     # 시작 방어선 제거
     s0 = g.combat_strength(1, a, "S002")[0]
     g.regions["S002"].lines[tgt] = 1
     assert g.combat_strength(1, a, "S002")[0] == pytest.approx(s0 * 0.85)
@@ -1476,3 +1544,71 @@ def test_impossible_facilities_hidden():
         if not info.coastal:
             assert "port" not in keys
             assert not any(o["kind"] == "unit" and C.UNITS[o["key"]]["kind"] == "naval" for o in g.options(pid, rid))
+
+
+def test_defensive_war_weariness_not_in_rebellion():
+    g = new_game(player_start="S002", n_enemies=2)
+    near = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [near])
+    r = g.regions[near]
+    r.happy = -30
+    D.declare_war(g, 1, 0)                          # 선포당함
+    for _ in range(5):
+        D.add_war_weary(g, 0, D.war_weary_rate(g, 0), defensive=D.war_weary_defensive(g, 0))
+    f = g.player
+    assert f.war_weary > 0 and f.war_weary_def == pytest.approx(f.war_weary)
+    assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + f.war_weary)
+    assert g.eff_happy(r) < g.rebel_happy(r)
+    D.declare_war(g, 0, 2)                          # 내가 선포한 전쟁: 그 피로는 반란 판정에도 들어간다
+    w0, d0 = f.war_weary, f.war_weary_def
+    D.add_war_weary(g, 0, 5, defensive=D.war_weary_defensive(g, 0))
+    assert f.war_weary_def == pytest.approx(d0) and f.war_weary == pytest.approx(w0 + 5)
+    D.add_war_weary(g, 0, -f.war_weary / 2)         # 회복은 같은 비율로
+    assert f.war_weary_def == pytest.approx(d0 / 2)
+
+
+def test_start_capital_lines_but_not_rebels():
+    g = new_game(player_start="S002", n_enemies=2)
+    for f in g.factions:
+        r = g.regions[f.capital]
+        assert all(r.lines.get(n) == 1 for n in g.world.land_adj[f.capital])
+        if g.world.regions[f.capital].coastal:
+            assert r.lines.get("coast") == 1
+    near = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [near])
+    g.regions[near].lines.clear()
+    nf, _ = g._spawn_rebel(0, near, 10)
+    assert not any(g.regions[near].lines.values())
+
+
+def test_econ_conquest_diplomatic_victory():
+    assert R.econ_share(8) == pytest.approx(0.5) and R.econ_share(6) == pytest.approx(0.6)
+    g = new_game(player_start="S002", n_enemies=7)
+    assert g.econ_share_needed() == pytest.approx(0.5)
+    # 정복: 2/3 이상 + 반란 가능 지역 없음
+    g = new_game(player_start="S002", n_enemies=1)
+    need = math.ceil(len(g.regions) * 2 / 3)
+    free = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:need]
+    _own(g, 0, free)
+    for r in g.regions_of(0):
+        r.happy, r.resist = 0.0, None
+    st = g.conquest_status(0)
+    assert st["have"] >= need and st["risky"] == 0 and st["ok"]
+    g.regions[free[0]].happy = -90
+    assert not g.conquest_status(0)["ok"] and g.conquest_status(0)["risky"] == 1
+    g.regions[free[0]].happy = 0.0
+    g._check_victory()
+    assert g.winner == ((0,), "conquest")
+    # 외교: 살아 있는 모든 나라가 한 연합
+    g = new_game(player_start="S002", n_enemies=2)
+    g.dip.coalitions[1] = {"members": {0, 1, 2}, "since": g.turn}
+    g._check_victory()
+    assert g.game_over and set(g.winner[0]) == {0, 1, 2} and g.winner[1] == "diplomatic"
+
+
+def test_dangun_war_weary_recovery():
+    for lk, rec in (("cus", 1.0), ("dan", 1.5)):
+        g = new_game(player_start="S002", n_enemies=1, player_leader=lk)
+        g.player.war_weary = 10.0
+        g._phase_happiness()
+        assert g.player.war_weary == pytest.approx(10.0 - rec)

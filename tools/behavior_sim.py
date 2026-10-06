@@ -79,7 +79,9 @@ def instrument():
             _add(self, f.id, f"build:{key}")
         elif kind == "unit":
             _add(self, f.id, f"unit:{key}")
-        elif kind in ("landmark", "capital"):
+        elif kind == "science":
+            _add(self, f.id, f"science:{key}")
+        elif kind == "capital":
             _add(self, f.id, kind)
         return r
     G._complete_project = _complete_project
@@ -301,7 +303,7 @@ def simulate(a):
 
 
 # ------------------------------------------------------------------ 보고서
-VNAME = {"conquest": "정복", "economic": "경제", "landmark": "랜드마크", "time": "시간 종료", None: "없음"}
+VNAME = {"conquest": "정복", "science": "과학", "economic": "경제", "diplomatic": "외교", "time": "시간 종료", None: "없음"}
 BLD = {"farm": "농장", "fishery": "어장", "factory": "공장", "bank": "은행", "power": "발전소", "specialty": "특산물",
        "extract": "광산·유전", "shelter": "방공호", "aa": "대공포", "line": "방어선", "academy": "사관학교",
        "airport": "공항", "port": "항구"}
@@ -425,7 +427,7 @@ def report(path):
             if kk.startswith("build:"):
                 bl[kk[6:]] += v
     total_b = sum(bl.values())
-    p(f"판당 완공 {total_b / nf:.1f}건 · 랜드마크 {avg('landmark'):.2f} · 천도 {avg('capital'):.2f}")
+    p(f"판당 완공 {total_b / nf:.1f}건 · 과학 단계 {sum(avg('science:' + k) for k in C.SCIENCE_STEPS):.2f} · 천도 {avg('capital'):.2f}")
     p("")
     p("| 건물 | 판당 완공 | 비중 |")
     p("|---|---|---|")

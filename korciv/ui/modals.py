@@ -99,13 +99,17 @@ def draw_qty(app):
 
 
 VICTORY_TIPS = {
-    "conquest": "정복승리: 다른 모든 세력(반란으로 생긴 나라 포함)을 멸망시키면 승리",
-    "economic": f"경제승리: 내 GDP가 나머지 모든 세력 GDP 합의 {C.ECON_VICTORY_RATIO:g}배를 넘는 상태로 "
-                f"{C.ECON_VICTORY_TURNS}턴 유지하면 승리",
-    "time": "시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 480턴=10년)이 되면\n"
+    "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
+                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시켜도 승리",
+    "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 바다와 맞닿은 지역에\n"
+               "로켓 발사대 → ④ 공장 5단계 지역에서 로켓 추진체 → ⑤ 공장 5단계 지역에서 탑승 모듈 →\n"
+               "⑥ 석유 생산 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
+               f"(단계마다 턴당 {C.SCIENCE_COST_PER_TURN:,} × {C.SCIENCE_TURNS}턴, 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})",
+    "economic": f"경제승리: 전체 GDP 중 내 몫이 기준 이상인 상태로 {C.ECON_VICTORY_TURNS}턴 유지하면 승리\n"
+                f"(기준은 시작 국가 수에 따라: 8개국 50%, 6개국 60%, 한 나라 늘 때마다 −5%p)",
+    "diplomatic": "외교승리: 살아 있는 모든 나라가 하나의 연합에 속하면 연합 전원이 함께 승리",
+    "time": f"시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 {C.TIME_VICTORY_TURNS}턴)이 되면\n"
             "점수(점유 지역·GDP·인구 비율의 평균)가 가장 높은 세력이 승리",
-    "landmark": "랜드마크승리: 조선 8도 모두와 수도에 랜드마크를 보유하면 승리\n"
-                f"(랜드마크 하나를 지을 때마다 다음 비용 ×{C.LANDMARK_COST_GROWTH:g})",
 }
 
 
@@ -215,7 +219,7 @@ def draw_setup(app):
     gui.text((x2, y), "승리 조건", 13, t.muted, "semibold")
     y += 22
     for i, (k, nm) in enumerate(C.VICTORY_TYPES.items()):
-        cb = (x2 + (i % 2) * 230, y + (i // 2) * 28, 220, 24)
+        cb = (x2 + (i % 3) * 156, y + (i // 3) * 28, 150, 24)
         s.victories[k] = gui.checkbox(cb, nm, s.victories[k])
         if gui.hover(pygame.Rect(cb)):
             gui.tooltip = VICTORY_TIPS.get(k, nm)
@@ -587,8 +591,6 @@ def draw_active_modal(app):
         draw_help(app)
     elif name == "gameover":
         draw_gameover(app)
-    elif name == "landmark_name":
-        draw_landmark_name(app)
     elif name == "specialty":
         draw_specialty(app)
     elif name == "saveslots":
@@ -1128,30 +1130,6 @@ def draw_gameover(app):
         app.scene = "title"
         app.reset_ui()
     if gui.button((r.right - 264, r.bottom - 64, 240, 44), "지도 계속 보기"):
-        close(app)
-
-
-# ------------------------------------------------------------------ 랜드마크 이름
-def draw_landmark_name(app):
-    g = app.game
-    gui = app.gui
-    t = app.theme
-    rid = app.modal[1]
-    r = modal_frame(app, 520, 300, "랜드마크 이름 짓기")
-    info = app.world.regions[rid]
-    turns = g.mods(g.player_id).value("landmark_turns", C.LANDMARK_TURNS)
-    gui.text((r.x + 24, r.y + 56), f"{info.name} · {turns}턴 동안 매 턴 {C.LANDMARK_COST_PER_TURN:,} 지불", 13, t.muted)
-    gui.text((r.x + 24, r.y + 92), "이름", 13, t.muted, "semibold")
-    app.lm_name = gui.text_input((r.x + 24, r.y + 114, r.w - 48, 38), "lm_name", app.lm_name, size=15, max_len=16)
-    gui.text((r.x + 24, r.y + 160), f"비워 두면 「{g.default_landmark_name(rid)}」로 짓습니다.", 12, t.muted)
-    if gui.button((r.x + 24, r.bottom - 64, 220, 44), "착공", "primary"):
-        gui.blur()
-        ok, msg = g.start_project(g.player_id, rid, "landmark", "landmark", name=app.lm_name)
-        app.toast(msg, None if ok else t.bad)
-        close(app)
-        app.changed()
-    if gui.button((r.right - 244, r.bottom - 64, 220, 44), "취소"):
-        gui.blur()
         close(app)
 
 

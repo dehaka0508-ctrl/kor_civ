@@ -149,10 +149,7 @@ def player_turn(g, rng):
         opts = g.options(pid, rid)
         if opts:
             o = rng.choice(opts)
-            if o["kind"] == "landmark":
-                g.start_project(pid, rid, o["kind"], o["key"], name="퍼저 랜드마크")
-            else:
-                g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+            g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
             acts += 1
         if rng.random() < 0.1:
             g.set_focus(pid, rid, rng.random() < 0.5)

@@ -19,7 +19,6 @@ FARM_OUTPUT = 150
 FISH_OUTPUT = 150
 FACTORY_OUTPUT = 1000
 BANK_OUTPUT = 600
-LANDMARK_OUTPUT = 9000
 LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
 FOOD_PER_G = 15            # 농장·바다 어장 식량 15 × 단계(단계에 비례), 산출은 그 10배
 FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000)   # 농장·어장 단계별 턴당 건설비
@@ -47,9 +46,21 @@ SPECIALTY_MAX_TYPES = 5
 SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행복도 턴당 +0.1
 SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5
 
-LANDMARK_COST_PER_TURN = 100_000
-LANDMARK_TURNS = 15
-LANDMARK_COST_GROWTH = 1.2     # 보유·건설 중인 랜드마크 1개마다 다음 랜드마크 비용 ×1.2 (8번째는 1.2^7 ≈ 3.6배)
+# ---- 과학승리: 6단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
+# 단계마다 턴당 10만 × 15턴, 단계 k(0부터)는 비용 ×1.2^k (마지막 6단계는 1.2^5 ≈ 2.5배)
+SCIENCE_COST_PER_TURN = 100_000
+SCIENCE_TURNS = 15
+SCIENCE_COST_GROWTH = 1.2
+SCIENCE_STEPS = ("lab", "observatory", "pad", "booster", "module", "propellant")
+SCIENCE = {
+    "lab":        dict(name="항공우주연구소", unit=False, where="수도"),
+    "observatory": dict(name="천체관측소", unit=False, where="산맥과 맞닿은 지역"),
+    "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역"),
+    "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역"),
+    "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역"),
+    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역"),
+}
+SCIENCE_UNITS = ("booster", "module", "propellant")
 CAPITAL_MOVE_TURNS = 4
 CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
@@ -126,8 +137,6 @@ UNIT_START_HAPPY = {"light": -0.5, "heavy": -1.0}
 UNIT_DISBAND_HAPPY = {"light": 0.5, "heavy": 1.0}
 FAMINE_HAPPY = -5
 BOMBED_HAPPY = -2
-LANDMARK_HAPPY = 20
-LANDMARK_ADJ_HAPPY = 5
 REBEL_ACCEPT_HAPPY = 20
 REBEL_SUPPRESS_HAPPY = 5
 REBEL_SUPPRESS_LOSS = 0.10
@@ -152,8 +161,13 @@ UNITS = {
     "ftr":  dict(name="전투기", cost=3500, turns=3, oil=2, upkeep=60, atk=0, air=30, df=20, bomb=0, hp=15, kind="air", weight="heavy"),
     "bmb":  dict(name="폭격기", cost=7000, turns=5, oil=4, upkeep=110, atk=0, df=5, bomb=60, hp=20, kind="air", weight="heavy"),
     "stl":  dict(name="스텔스폭격기", cost=20000, turns=10, oil=8, upkeep=300, atk=0, df=5, bomb=60, hp=20, kind="air", weight="heavy", stealth=True),
+    # 과학승리 유닛: 전투력 없음, 자국(연합) 영토 안에서만 이동. 생산은 과학 단계(행동 탭 '특수')로만
+    "booster":    dict(name="로켓 추진체", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
+    "module":     dict(name="탑승 모듈", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
+    "propellant": dict(name="발사체 연료", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
 }
-UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "stl"]
+UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "stl", "booster", "module", "propellant"]
+BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science")]   # 일반 생산 목록
 NAVAL_AT_SEA_UPKEEP = 2.0
 ASSAULT_UNITS = ("inf", "tank", "lst")
 SURPRISE_UNITS = ("inf", "tank")
@@ -163,6 +177,7 @@ AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 2
 LAND_STEPS_OWN = 2
 
+START_LINE_LEVEL = 1       # 시작 도시의 모든 경계 방어선 단계(반란국 제외)
 LINE_BONUS = 0.30          # 방어선 돌격 방어 x(1 + 0.30L) (단계별 성능 원안 0.25의 1.2배)
 # 지형 경계(도하·산악 돌파) 공격 배수는 data/terrain-borders.csv 의 공격배수 열(기본 0.9)을 쓴다.
 BRIDGE_ATTACK_MULT = 1.0   # 연륙교는 기획서 2절대로 '육지처럼' 취급(지형 경계에 있으면 그 배수 적용)
@@ -326,9 +341,15 @@ AI_DEF_WEALTH_P = 0.06
 AI_GOAL_WEIGHT = 0.25      # 목표에 맞는 전략 가중치에 더하는 값(맹목적이지 않도록 작게)
 
 # ---------------------------------------------------------------- 승리 (10절)
-ECON_VICTORY_RATIO = 2.0
+# 경제승리: 전체 GDP 중 내 몫이 econ_share(시작 국가 수) 이상인 상태로 10턴.
+# 8개국 50%, 6개국 60%(= 2위 이하 합의 1.5배): 몫 = 0.9 − 0.05 × 국가 수 (35%~80%)
+ECON_SHARE_A, ECON_SHARE_B = 0.9, 0.05
+ECON_SHARE_MIN, ECON_SHARE_MAX = 0.35, 0.80
 ECON_VICTORY_TURNS = 10
-VICTORY_TYPES = {"conquest": "정복승리", "economic": "경제승리", "landmark": "랜드마크승리", "time": "시간 종료 승리"}
+# 정복승리: 전체 지역의 2/3 이상 + 반란이 일어날 수 있는 지역(반란 판정 행복도 −50 이하) 없음
+CONQUEST_SHARE = 2 / 3
+VICTORY_TYPES = {"conquest": "정복승리", "science": "과학승리", "economic": "경제승리",
+                 "diplomatic": "외교승리", "time": "시간 종료 승리"}
 # 시간 종료 승리: 정해진 턴(기본 480턴 = 10년, 시작 설정에서 최대 1200턴)이 되면 점수 1위가 승리.
 # 점수 = (점유 지역 비율 + GDP 비율 + 인구 비율) / 3 × 100 (살아 있는 세력 전체 대비)
 TIME_VICTORY_TURNS = 480

@@ -21,15 +21,14 @@ def factory_output(level: int, fuel=None) -> float:
     return C.FACTORY_UNIT_OUTPUT[min(level, 5) - 1] * n
 
 
-def region_output(pop, farm, fishery, factory, bank, landmark, fuel=None,
+def region_output(pop, farm, fishery, factory, bank, fuel=None,
                   fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0, prod_mult=1.0) -> float:
-    """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) + 9000K (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
+    """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
     return (C.POP_OUTPUT * pop * pop_mult
             + (C.FARM_OUTPUT * farm                      # 농장·어장은 단계에 비례
                + C.FISH_OUTPUT * fishery * fish_mult
                + factory_output(factory, fuel) * factory_mult
-               + C.BANK_OUTPUT * g(bank) * bank_mult) * prod_mult
-            + C.LANDMARK_OUTPUT * (1 if landmark else 0))
+               + C.BANK_OUTPUT * g(bank) * bank_mult) * prod_mult)
 
 
 def food_output(farm, fishery, fish_mult=1.0) -> float:
@@ -74,9 +73,14 @@ def conscript_penalty(n: int) -> float:
     return C.CONSCRIPT_PENALTY.get(min(n, C.CONSCRIPT_WINDOW), 0.0)
 
 
-def landmark_cost_mult(n_landmarks: int) -> float:
-    """이미 가진(또는 짓는 중인) 랜드마크 수 -> 다음 랜드마크 비용 배수 1.3^n."""
-    return C.LANDMARK_COST_GROWTH ** max(0, n_landmarks)
+def science_cost_mult(step_index: int) -> float:
+    """과학 단계 k(0부터) 비용 배수 1.2^k."""
+    return C.SCIENCE_COST_GROWTH ** max(0, step_index)
+
+
+def econ_share(n_nations: int) -> float:
+    """경제승리에 필요한 전체 GDP 몫: 8개국 50%, 6개국 60%(2위 이하 합의 1.5배), 국가가 하나 늘 때마다 −5%p."""
+    return max(C.ECON_SHARE_MIN, min(C.ECON_SHARE_MAX, C.ECON_SHARE_A - C.ECON_SHARE_B * n_nations))
 
 
 def def_building_turns(level: int) -> int:

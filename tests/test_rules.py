@@ -15,12 +15,12 @@ def test_start_outputs_match_design_doc():
 
     def y(name):
         r = w.regions[n[name]]
-        return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False)
+        return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank)
 
     assert y("서울 강남구") == pytest.approx(3096)
     assert y("경북 김천시") == pytest.approx(2296)        # 농장·어장 산출은 단계에 비례(150×L)
     assert y("강원 인제군") == pytest.approx(243)
-    total = sum(R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False) for r in w.regions.values())
+    total = sum(R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank) for r in w.regions.values())
     assert total == pytest.approx(735006, rel=1e-3)
 
 
@@ -109,7 +109,8 @@ def test_new_curves():
     assert R.unhappy_combat_mult(-9) == 1.0
     assert R.unhappy_combat_mult(-50) == pytest.approx(R.unhappy_output_mult(-50))
     assert [R.conscript_penalty(n) for n in range(4, 11)] == [0, 0, 0, 1, 2, 4, 8]
-    assert R.landmark_cost_mult(7) == pytest.approx(1.2 ** 7)
+    assert R.science_cost_mult(5) == pytest.approx(1.2 ** 5)
+    assert R.econ_share(8) == pytest.approx(0.5) and R.econ_share(2) == pytest.approx(0.8)
     assert R.bomb_building_chance(True, False) == pytest.approx(0.3)
     assert R.bomb_building_chance(False, True) == pytest.approx(0.6)
     assert R.bomb_building_chance(True, True) == pytest.approx(0.9)

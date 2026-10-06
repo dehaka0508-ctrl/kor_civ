@@ -89,6 +89,8 @@ class Game:
                 f.spend, f.refund = {}, 0.0
             if not hasattr(f, "war_weary"):
                 f.war_weary = 0.0
+            if not hasattr(f, "war_weary_def"):
+                f.war_weary_def = 0.0
             if hasattr(f, "war_weary_applied"):     # 예전 방식: 피로가 행복도에 섞여 있었다
                 for r in self.regions.values():
                     if r.owner == f.id:
@@ -186,6 +188,9 @@ class Game:
         if self.world.regions[rid].island == "무연륙 섬":
             self.new_army(f.id, rid, {"lst": 1})
         f.res = {"food": r.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
+        # 시작 도시는 모든 경계(육지 경계·해안선)에 방어선 1단계를 갖고 시작한다(반란국은 해당 없음)
+        for n in list(self.world.land_adj[rid]) + (["coast"] if self.world.regions[rid].coastal else []):
+            r.lines[n] = max(r.lines.get(n, 0), C.START_LINE_LEVEL)
 
     def finalize_setup(self):
         """정치체제 선택 후 호출: 시작 자금·우호도 적용."""
@@ -337,10 +342,15 @@ class Game:
         o = self.regions[rid].owner
         return o == fid or (o != NEUTRAL and D.same_coalition(self, fid, o))
 
+    @staticmethod
+    def is_science_army(a) -> bool:
+        return any(a.units.get(k) for k in C.SCIENCE_UNITS)
+
     def add_units(self, fid, loc, key, n=1) -> Army:
         kind = C.UNITS[key]["kind"]
+        sci = bool(C.UNITS[key].get("science"))
         for a in self.armies_at(loc, fid):
-            if a.domain() == kind and not a.order:
+            if a.domain() == kind and not a.order and self.is_science_army(a) == sci:
                 self._add_to_army(a, key, n)
                 return a
         return self.new_army(fid, loc, {key: n})
@@ -579,6 +589,10 @@ class Game:
                     out[v] = {"action": "move", "path": [v], "strong": True}
                 elif (army.units.get("bmb") or army.units.get("stl")) and self.hostile(fid, rr.owner):
                     out[v] = {"action": "bombard", "path": [], "strong": False}
+        if any(army.units.get(k) for k in C.SCIENCE_UNITS):
+            # 과학승리 유닛은 싸우거나 남의 땅을 차지할 수 없다: 자국(연합) 영토로의 이동·상륙만
+            out = {v: o for v, o in out.items() if o["action"] in ("move", "land")
+                   and (w.is_sea(v) or self.friendly_territory(fid, v))}
         return out
 
     def order_army(self, army_id, target, mode="assault", force_bombard=False):
@@ -631,11 +645,13 @@ class Game:
         if target == start or (target not in self.regions and not w.is_sea(target)):
             return None
 
+        sci = self.is_science_army(army)
+
         def passable(v):
             if w.is_sea(v) or self.hostile_units_at(fid, v):
                 return False
             o = self.regions[v].owner
-            return self.friendly_territory(fid, v) or (o != NEUTRAL and not self.hostile(fid, o)
+            return self.friendly_territory(fid, v) or (not sci and o != NEUTRAL and not self.hostile(fid, o)
                                                         and D.has_passage(self, fid, o))
 
         if dom == "land":
@@ -781,6 +797,8 @@ class Game:
             mult *= m.mult("atk_vs_line")        # 당 태종 '안시성': 방어선이 있는 지역
         if self.retake_bonus(fid, target):
             mult *= 1 + C.RESIST_RETAKE_ATK      # 저항 중인 옛 영토를 되찾는 공격
+        if self.multi_attack_on(fid, target):
+            mult *= m.mult("multi_attack")      # 홍길동 '신출귀몰': 한 국가의 두 지역 이상 동시 공격
         total = 0.0
         contrib = {}
         sources = set()
@@ -908,6 +926,8 @@ class Game:
             af.append((f"전투기 {sum(x.units['ftr'] for x in aa)}대 지원 (+{ap:.0f})", 1 + ap / max(1.0, pv["A"] - ap)))
         if self.retake_bonus(fid, target):
             add(af, "저항 중인 옛 영토 탈환", 1 + C.RESIST_RETAKE_ATK)
+        if self.multi_attack_on(fid, target):
+            add(af, self.fx_source(fid, "multi_attack"), m.mult("multi_attack"))
         line = pv["line"]
         if rr.owner != NEUTRAL:
             om = self.mods(rr.owner)
@@ -1170,7 +1190,7 @@ class Game:
                 continue
             add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
                 self.build_time(fid, key, spec["turns"]), ok, why, 1)
-        for key in C.UNIT_ORDER:
+        for key in C.BUILD_UNITS:
             u = C.UNITS[key]
             ok, why = True, ""
             if u["kind"] == "naval" and not info.coastal:
@@ -1189,26 +1209,96 @@ class Game:
                 n = t["joint"] + 1
                 name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
             add("annex", t["target"], name, t["cost"], t["turns"])
-        if not rr.landmark:
-            busy = any(r.project and r.project.kind == "landmark" and r.id == rid for r in self.regions.values())
-            turns = m.value("landmark_turns", C.LANDMARK_TURNS)
-            lm_mult = self.landmark_cost_mult(fid)
-            name = "랜드마크" + (f" (비용 ×{lm_mult:.2f})" if abs(lm_mult - 1) > 0.005 else "")
-            add("landmark", "landmark", name, C.LANDMARK_COST_PER_TURN * C.MONEY_SCALE * lm_mult * turns, turns,
-                not busy)
+        for step in self.science_available(fid):
+            if not self.science_site_ok(fid, rid, step):
+                continue
+            busy = self.science_busy(fid, step)
+            turns = self.science_turns(fid)
+            k = C.SCIENCE_STEPS.index(step)
+            name = f"과학 {k + 1}단계: {C.SCIENCE[step]['name']}"
+            add("science", step, name, self.science_step_cost(fid, step), turns,
+                busy is None, "" if busy is None else f"{self.info(busy).name}에서 진행 중", level=k + 1)
         if self.factions[fid].capital != rid:
             y = max(rr.output, self.region_output_estimate(rid))
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
         return opts
 
-    def landmark_count(self, fid) -> int:
-        """보유한 랜드마크 + 짓고 있는 랜드마크 수."""
-        return sum(1 for r in self.regions.values() if r.owner == fid
-                   and (r.landmark or (r.project and r.project.kind == "landmark")))
+    # ---- 과학승리
+    def science_turns(self, fid) -> int:
+        return int(self.mods(fid).value("science_turns", C.SCIENCE_TURNS))
 
-    def landmark_cost_mult(self, fid) -> float:
-        """다음 랜드마크 비용 배수: 랜드마크 1개마다 ×1.3."""
-        return R.landmark_cost_mult(self.landmark_count(fid)) * self.mods(fid).mult("cost_landmark")
+    def science_step_cost(self, fid, step) -> float:
+        """과학 단계 총비용: 턴당 10만 × 턴 수 × 1.2^단계(0부터) × 지도자 보정."""
+        k = C.SCIENCE_STEPS.index(step)
+        return (C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE * R.science_cost_mult(k)
+                * self.mods(fid).mult("cost_science") * self.science_turns(fid))
+
+    def science_units_alive(self, fid) -> dict:
+        out = {}
+        for a in self.armies.values():
+            if a.owner == fid:
+                for k in C.SCIENCE_UNITS:
+                    if a.units.get(k):
+                        out[k] = out.get(k, 0) + a.units[k]
+        return out
+
+    def science_available(self, fid) -> list:
+        """지금 착수할 수 있는 과학 단계들: 아직 안 한 첫 단계 + 완료했지만 그 유닛을 잃은 유닛 단계."""
+        done = self.factions[fid].science
+        out = []
+        nxt = next((st for st in C.SCIENCE_STEPS if st not in done), None)
+        if nxt is not None:
+            out.append(nxt)
+        alive = self.science_units_alive(fid)
+        for st in C.SCIENCE_UNITS:
+            if st in done and not alive.get(st) and self.science_busy(fid, st) is None:
+                out.append(st)
+        return out
+
+    def science_next(self, fid):
+        """AI·현황용: 다음으로 할 과학 단계(없으면 None)."""
+        av = self.science_available(fid)
+        return av[0] if av else None
+
+    def science_busy(self, fid, step):
+        """그 단계를 진행 중인 지역 ID(없으면 None)."""
+        for r in self.regions.values():
+            if r.owner == fid and r.project and r.project.kind == "science" and r.project.key == step:
+                return r.id
+        return None
+
+    def science_site_ok(self, fid, rid, step) -> bool:
+        """그 단계를 이 지역에서 진행할 수 있는가(위치 조건)."""
+        rr, info = self.regions[rid], self.info(rid)
+        if step == "lab":
+            return self.factions[fid].capital == rid
+        if step == "observatory":
+            return rid in self.world.mountain_regions
+        if step == "pad":
+            return info.coastal
+        if step in ("booster", "module"):
+            return rr.b["factory"] >= 5
+        if step == "propellant":
+            return info.is_oil
+        return False
+
+    def science_sites(self, fid, step):
+        return [r.id for r in self.regions_of(fid) if self.science_site_ok(fid, r.id, step)]
+
+    def launch_ready(self, fid):
+        """과학승리 판정: 6단계를 모두 마치고, 내 발사대 지역 한 곳에 세 유닛이 모두 있으면 그 지역 ID."""
+        f = self.factions[fid]
+        if any(st not in f.science for st in C.SCIENCE_STEPS):
+            return None
+        for r in self.regions_of(fid):
+            if "pad" not in r.sci:
+                continue
+            have = set()
+            for a in self.armies_at(r.id, fid):
+                have |= {k for k in C.SCIENCE_UNITS if a.units.get(k)}
+            if have == set(C.SCIENCE_UNITS):
+                return r.id
+        return None
 
     def order_frozen(self, fid) -> str:
         """박혁거세 '교대 계승': 매년 12월 4주차에는 건설·생산 명령 불가. 막힌 이유(없으면 빈 문자열)."""
@@ -1288,9 +1378,7 @@ class Game:
                              per_turn=opt["per_turn"], border=opt["border"])
         self.proj_counter = getattr(self, "proj_counter", 0) + 1
         rr.project.priority = self.proj_counter
-        if kind == "landmark":
-            rr.project.name = (name or "").strip()[:16] or self.default_landmark_name(rid)
-        label = f"랜드마크 「{rr.project.name}」" if kind == "landmark" else opt["name"]
+        label = opt["name"]
         return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
 
     def cancel_project(self, fid, rid):
@@ -1326,7 +1414,7 @@ class Game:
         if mode == "short":
             regs.sort(key=lambda r: self.project_left(r.id))
         else:
-            kinds = {"annex": ("annex",), "build": ("build", "landmark", "capital"), "unit": ("unit",)}[mode]
+            kinds = {"annex": ("annex",), "build": ("build", "science", "capital"), "unit": ("unit",)}[mode]
             regs.sort(key=lambda r: r.project.kind not in kinds)
         self.set_priority_order(fid, [r.id for r in regs])
 
@@ -1596,7 +1684,7 @@ class Game:
         m = self.mods(owner)
         phi = None if full else getattr(rr, "fuel_used", 0)
         y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
-                            rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
+                            phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
                             m.mult("output_bank"), m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
                             m.mult("output_prod"))
@@ -1870,7 +1958,7 @@ class Game:
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
         # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
-        drafted = self._phase_projects(("build", "unit", "landmark", "capital"))
+        drafted = self._phase_projects(("build", "unit", "science", "capital"))
         self._phase_conscription(drafted)
         # 8~9. 자원, 세수·유지비
         for f in self.factions:
@@ -2182,8 +2270,39 @@ class Game:
         out += [f"line:{b}" for b, lv in sorted(rr.lines.items()) if lv > 0]
         return out
 
+    def multi_attack_on(self, fid, target) -> bool:
+        """홍길동 '신출귀몰': 이번 턴 target 주인의 지역을 두 곳 이상 공격하는가(미리보기는 target 포함)."""
+        o = self.regions[target].owner
+        if not self.mods(fid).value("multi_attack") or o == NEUTRAL or o == fid:
+            return False
+        return len(self.attack_targets(fid, o) | {target}) >= 2
+
+    def attack_targets(self, fid, owner) -> set:
+        """이번 턴 fid 가 owner 의 지역 중 공격 명령을 내린 곳(홍길동 '신출귀몰' 판정)."""
+        snap = getattr(self, "_attack_snap", None)
+        if snap is None:
+            snap = self._attack_orders_by_owner()
+        return snap.get((fid, owner), set())
+
+    def _attack_orders_by_owner(self) -> dict:
+        out = {}
+        for a in self.armies.values():
+            if a.owner != NEUTRAL and a.order and a.order["type"] == "attack":
+                tgt = a.order["target"]
+                o = self.regions[tgt].owner if tgt in self.regions else NEUTRAL
+                if o != NEUTRAL:
+                    out.setdefault((a.owner, o), set()).add(tgt)
+        return out
+
     def _phase_attack(self):
         orders = [a for a in self.armies.values() if a.order and a.order["type"] == "attack"]
+        self._attack_snap = self._attack_orders_by_owner()
+        try:
+            self._phase_attack_inner(orders)
+        finally:
+            self._attack_snap = None
+
+    def _phase_attack_inner(self, orders):
         by_target = {}
         for a in orders:
             by_target.setdefault(a.order["target"], []).append(a)
@@ -2569,14 +2688,20 @@ class Game:
             text = f"{self.info(tgt.id).name} 편입 완료"
             self.event("captured", f"{f.name}이(가) {self.info(tgt.id).name}을(를) 편입했습니다.",
                        region=tgt.id, fids=(f.id,))
-        elif p.kind == "landmark":
-            rr.landmark = True
-            rr.landmark_name = p.name or self.default_landmark_name(rr.id)
-            rr.h_delta += C.LANDMARK_HAPPY
-            for n in self.world.land_adj[rr.id]:
-                if self.regions[n].owner == f.id:
-                    self.regions[n].h_delta += C.LANDMARK_ADJ_HAPPY
-            text = f"{name} 랜드마크 「{rr.landmark_name}」 완공!"
+        elif p.kind == "science":
+            spec = C.SCIENCE[p.key]
+            if spec["unit"]:
+                self.add_units(f.id, rr.id, p.key, 1)
+            else:
+                rr.sci.add(p.key)
+            if p.key not in f.science:
+                f.science.append(p.key)
+            k = C.SCIENCE_STEPS.index(p.key) + 1
+            text = f"{name} 과학 {k}단계 「{spec['name']}」 완료!"
+            if k == len(C.SCIENCE_STEPS):
+                text += " 세 유닛을 발사대 지역에 모으고 턴을 마치면 발사합니다."
+            self.event("science", f"{f.name}이(가) 과학 {k}단계 「{spec['name']}」을(를) 완료했습니다.",
+                       region=rr.id, fids=(f.id,))
         elif p.kind == "capital":
             f.capital = rr.id
             for r in self.regions_of(f.id):
@@ -2591,11 +2716,22 @@ class Game:
         regs = self.regions_of(f.id)
         active = [r for r in regs if not r.occ and not self.resisting(r)]   # 점령당하는 중·저항 지역은 생산 없음
         res = f.res
+        made = {}
         for r in active:
             info = self.info(r.id)
             if r.b["specialty"]:
                 for sp in info.specialties:
-                    f.specialty[sp] = f.specialty.get(sp, 0) + r.b["specialty"]
+                    made[sp] = made.get(sp, 0) + r.b["specialty"]
+        tithe = self.mods(f.id).value("specialty_tithe")     # 세종대왕 '고기 없이는 못살아'
+        if tithe:
+            cut = sum(made.values()) // int(tithe)
+            for _ in range(cut):                              # 가장 많이 나는 특산물부터 1개씩 수라상으로
+                sp = max(made, key=lambda k: (made[k], k))
+                made[sp] -= 1
+            f.last["specialty_tithe"] = cut
+        for sp, n in made.items():
+            if n > 0:
+                f.specialty[sp] = f.specialty.get(sp, 0) + n
         # 에너지: 채굴 → 발전소 → 전기 → 공장 (미리보기와 같은 계산)
         plan = self.energy_plan(f.id)
         for k in C.ENERGY:
@@ -2674,18 +2810,6 @@ class Game:
         elif state == "block":
             r.spec_block.add(kind)
         return True, ""
-
-    # ---- 랜드마크 이름
-    def default_landmark_name(self, rid) -> str:
-        short = self.info(rid).short
-        base = short
-        for suf in ("구역", "지구", "시", "군", "구"):
-            if short.endswith(suf) and len(short) > len(suf):
-                base = short[: -len(suf)]
-                break
-        if len(base) <= 1:   # 광역시 북구·중구처럼 한 글자가 되면 '구'를 붙인다
-            base = short
-        return f"{base} 타워"
 
     # ---- 9. 세수·유지비
     def upkeep(self, fid) -> float:
@@ -2771,7 +2895,10 @@ class Game:
             t += m.add("happy_turn")
             # 전쟁 피로도: 전쟁 중이면 쌓이고(선포한 쪽 1, 당한 쪽 0.5/턴), 평시엔 턴당 1 회복
             rate = D.war_weary_rate(self, f.id)
-            D.add_war_weary(self, f.id, rate if rate else -C.WAR_WEARY_RECOVERY)
+            if rate:
+                D.add_war_weary(self, f.id, rate, defensive=D.war_weary_defensive(self, f.id))
+            else:
+                D.add_war_weary(self, f.id, -C.WAR_WEARY_RECOVERY * m.mult("war_weary_recovery"))
             floor = 0.0 if f.happy_floor_until > self.turn else C.HAPPY_MIN
             per_fac[f.id] = (t, m.value("happy_cap", C.HAPPY_MAX), floor)
         for r in self.regions.values():
@@ -2834,16 +2961,22 @@ class Game:
             return C.RESIST_HAPPY + (rr.happy - C.RESIST_HAPPY) * frac
         return rr.happy
 
-    def eff_happy(self, rr) -> float:
-        """실질 행복도 = 행복도(저항 반영) − 전쟁 피로도 − 징집 피로. 산출·반란·인구·사기 판정에 쓴다."""
+    def eff_happy(self, rr, rebel=False) -> float:
+        """실질 행복도 = 행복도(저항 반영) − 전쟁 피로도 − 징집 피로. 산출·인구·사기 판정에 쓴다.
+        rebel=True(반란 판정): 선포당한 전쟁에서 쌓인 전쟁 피로는 빼지 않는다."""
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
-        h = (self.base_happy(rr) - f.war_weary - rr.conscript - self.minority_penalty(rr.owner)
+        weary = f.war_weary - (getattr(f, "war_weary_def", 0.0) if rebel else 0.0)
+        h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
              + self.scenic_bonus(rr) + self.crowd_penalty(rr))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
+
+    def rebel_happy(self, rr) -> float:
+        """반란 판정용 행복도: 실질 행복도에서 선포당한 전쟁의 피로만 되돌린 값."""
+        return self.eff_happy(rr, rebel=True)
 
     def scenic_bonus(self, rr) -> float:
         """자연경관: 경관 지역과, 그 지역 주인의 인접 지역에 행복도 +5(경관마다)."""
@@ -2896,7 +3029,7 @@ class Game:
         rr = self.regions[rid]
         if self.resist_phase(rr)[0]:
             return 0.0                        # 점령 후 36턴은 반란 없음
-        p = R.rebellion_probability(self.eff_happy(rr)) * self.mods(fid).mult("rebel_prob")
+        p = R.rebellion_probability(self.rebel_happy(rr)) * self.mods(fid).mult("rebel_prob")
         if self.mods(fid).value("avg_rebel") and self.avg_happiness(fid) <= -30:
             p *= self.mods(fid).value("avg_rebel")
         k = self.mods(fid).value("capital_fall_rebel")      # 연개소문 '삼형제의 내분'
@@ -2910,7 +3043,7 @@ class Game:
             if not f.alive:
                 continue
             for r in list(self.regions_of(f.id)):
-                if self.eff_happy(r) > C.REBEL_THRESHOLD:
+                if self.rebel_happy(r) > C.REBEL_THRESHOLD:
                     continue
                 if self.rng.random() < self.rebellion_chance(f.id, r.id):
                     r.rebellions += 1
@@ -2923,7 +3056,7 @@ class Game:
     def suppress_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
         S = sum(C.UNITS[k]["df"] * n for a in self.armies_at(rid, fid) for k, n in a.units.items())
-        Rv = rr.pop * 2 * max(0.0, -self.eff_happy(rr) / 50)
+        Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         p = S / (S + Rv) if S + Rv > 0 else 0.0
         return max(0.0, min(1.0, p + self.mods(fid).add("suppress")))
 
@@ -2956,7 +3089,7 @@ class Game:
             self.event("rebel", msg, region=rid, fids=(fid,))
             return msg
         p = self.suppress_chance(fid, rid)
-        Rv = rr.pop * 2 * max(0.0, -self.eff_happy(rr) / 50)
+        Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         if self.rng.random() < p:
             rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_SUPPRESS_HAPPY)
             for a in self.armies_at(rid, fid):
@@ -2988,7 +3121,7 @@ class Game:
         """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
         rr = self.regions[rid]
         n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
-        keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit", "landmark") else None
+        keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit") else None
         siblings = self.rebel_children(fid)
         if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
             if siblings:
@@ -3102,34 +3235,61 @@ class Game:
             self.game_over = True
             self.event("gameover", "패배: 모든 영토를 잃었습니다.", fids=(self.player_id,))
             return
-        if len(alive) == 1 and "conquest" in st.victories and len(self.factions) > 1:
-            self._win((alive[0],), "conquest")
-            return
-        if "economic" in st.victories:
-            gd = {f: self.gdp(f) for f in alive}
+        if "conquest" in st.victories and len(self.factions) > 1:
+            if len(alive) == 1:
+                self._win((alive[0],), "conquest")
+                return
             for fid in alive:
-                others = sum(v for k, v in gd.items() if k != fid)
+                if self.conquest_status(fid)["ok"]:
+                    self._win((fid,), "conquest")
+                    return
+        if "science" in st.victories:
+            for fid in alive:
+                if self.launch_ready(fid):
+                    self._win((fid,), "science")
+                    return
+        if "economic" in st.victories:
+            need = self.econ_share_needed()
+            gd = {f: self.gdp(f) for f in alive}
+            total = sum(gd.values())
+            for fid in alive:
                 f = self.factions[fid]
-                if gd[fid] > C.ECON_VICTORY_RATIO * others and others >= 0:
+                if total > 0 and gd[fid] >= need * total:
                     f.econ_streak += 1
                 else:
                     f.econ_streak = 0
                 if f.econ_streak >= C.ECON_VICTORY_TURNS:
                     self._win((fid,), "economic")
                     return
+        if "diplomatic" in st.victories and len(alive) >= 2:
+            cid = D.coalition_of(self, alive[0])
+            if cid is not None and set(alive) <= self.dip.coalitions[cid]["members"]:
+                self._win(tuple(alive), "diplomatic")
+                return
         if "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
             sc = self.time_scores()
             best = max(alive, key=lambda f: (sc[f], self.gdp(f)))
             self._win((best,), "time")
             return
-        if "landmark" in st.victories:
-            for fid in alive:
-                lm = [r for r in self.regions_of(fid) if r.landmark]
-                dos = {self.info(r.id).do8 for r in lm}
-                cap = self.regions[self.factions[fid].capital]
-                if all(d in dos for d in DO8) and cap.landmark and cap.owner == fid:
-                    self._win((fid,), "landmark")
-                    return
+
+    def start_nations(self) -> int:
+        """시작할 때의 국가 수(플레이어 포함, 반란국 제외)."""
+        return sum(1 for f in self.factions if f.rebel_of is None)
+
+    def econ_share_needed(self) -> float:
+        return R.econ_share(self.start_nations())
+
+    def can_rebel(self, rr) -> bool:
+        """이 지역에서 반란이 일어날 수 있는가(반란 판정 행복도 −50 이하이고 확률 > 0)."""
+        return (rr.owner != NEUTRAL and self.rebel_happy(rr) <= C.REBEL_THRESHOLD
+                and self.rebellion_chance(rr.owner, rr.id) > 0)
+
+    def conquest_status(self, fid) -> dict:
+        """정복승리 진행: 지역 수, 필요 지역 수, 반란 가능 지역 수."""
+        regs = self.regions_of(fid)
+        need = math.ceil(len(self.regions) * C.CONQUEST_SHARE - 1e-9)
+        risky = sum(1 for r in regs if self.can_rebel(r)) if len(regs) >= need else None
+        return {"have": len(regs), "need": need, "risky": risky, "ok": len(regs) >= need and risky == 0}
 
     def time_scores(self) -> dict:
         """시간 종료 승리 점수: (지역 비율 + GDP 비율 + 인구 비율) / 3 × 100."""

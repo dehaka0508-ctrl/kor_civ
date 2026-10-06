@@ -31,7 +31,7 @@ LEADER_BIAS_KEYS = {
     "power": [("build_time_industry", -1)],
     "extract": [("build_time_industry", -1)],
     "annex": [("occ_time", -1)],
-    "landmark": [("landmark_turns", 1), ("cost_landmark", -1)],
+    "science": [("science_turns", 1), ("cost_science", -1)],
     "assault": [("atk_assault", 1), ("no_ally_assault", 1), ("atk_vs_line", 1)],
     "surprise": [("surprise", 1)],
     "war": [("war_weary_rate", -1), ("war_start_weary", -1), ("resist_time", -1), ("guerrilla", -1),
@@ -48,8 +48,8 @@ def _bias_term(key, v) -> float:
         return v - 1.0
     if key == "line_k":
         return (v - C.LINE_BONUS) / C.LINE_BONUS
-    if key == "landmark_turns":
-        return (C.LANDMARK_TURNS - v) / C.LANDMARK_TURNS
+    if key == "science_turns":
+        return (C.SCIENCE_TURNS - v) / C.SCIENCE_TURNS
     if key == "surprise":
         return v * 2
     if key == "treaty_threshold":
@@ -75,36 +75,55 @@ def leader_bias(g, fid, action) -> float:
 
 # ------------------------------------------------------------------ 대전략
 def choose_victory_goal(g, f):
-    """1년에 한 번: 국내 상황·주변 정세로 추구할 승리 조건을 고른다(플레이어에게 보이지 않음)."""
-    vt = [v for v in ("conquest", "economic", "landmark") if v in g.settings.victories]
-    if not vt and "time" in g.settings.victories:
-        vt = ["economic"]                    # 시간 종료만 켜져 있으면 GDP·영토를 키우는 쪽으로
+    """1년에 한 번: 국내 상황·주변 정세·지도자 성향으로 추구할 승리 조건을 고른다(플레이어에게 보이지 않음).
+    정복(군사력·영토 비율), 과학(재정·진행 단계·필요한 땅), 경제(GDP 몫), 외교(동맹·연합), 시간(1위 유지)."""
+    vt = [v for v in ("conquest", "science", "economic", "diplomatic", "time") if v in g.settings.victories]
     if not vt:
         return None
     alive = g.alive_ids()
     n = max(1, len(alive))
+    fid = f.id
     aggr = eff_aggression(g, f)
-    my_mil = g.mil_power(f.id)
+    my_mil = g.mil_power(fid)
     top_mil = max((g.mil_power(x) for x in alive), default=1) or 1
-    avg_gdp = (sum(g.gdp(x) for x in alive) / n) or 1
-    gdp_rel = g.gdp(f.id) / avg_gdp
-    regs = g.regions_of(f.id)
-    neighbors = {g.regions[m].owner for r in regs for m in g.world.land_adj[r.id]} - {NEUTRAL, f.id}
-    weak_nb = sum(1 for o in neighbors if my_mil > 1.5 * perceived_power(g, f.id, o))
-    allies = sum(1 for o in alive if o != f.id and D.allied(g, f.id, o))
-    wars = len(D.enemies(g, f.id))
-    lm_do = len({g.info(r.id).do8 for r in regs if r.landmark})
-    lm_cost = C.LANDMARK_COST_PER_TURN * g.landmark_cost_mult(f.id)
+    regs = g.regions_of(fid)
+    neighbors = {g.regions[m].owner for r in regs for m in g.world.land_adj[r.id]} - {NEUTRAL, fid}
+    weak_nb = sum(1 for o in neighbors if my_mil > 1.5 * perceived_power(g, fid, o))
+    allies = sum(1 for o in alive if o != fid and D.allied(g, fid, o))
+    wars = len(D.enemies(g, fid))
+    # 정복: 2/3 목표 대비 진척
+    c_prog = len(regs) / max(1, len(g.regions)) / C.CONQUEST_SHARE
+    # 경제: 필요한 GDP 몫 대비 진척
+    total = sum(g.gdp(x) for x in alive) or 1
+    e_prog = g.gdp(fid) / total / g.econ_share_needed()
+    # 과학: 완료 단계, 다음 단계 비용을 감당할 재정, 필요한 땅(석유·공장 5단계·해안·산맥)
+    k_done = len(f.science)
+    step = g.science_next(fid)
+    afford = step is not None and f.money > 0.5 * g.science_step_cost(fid, step)
+    has_oil = any(g.info(r.id).is_oil for r in regs)
+    has_f5 = any(r.b["factory"] >= 5 for r in regs)
+    has_coast = any(g.info(r.id).coastal for r in regs)
+    has_mtn = any(r.id in g.world.mountain_regions for r in regs)
+    # 외교: 내 연합이 살아 있는 세력 중 차지하는 비율
+    cid = D.coalition_of(g, fid)
+    c_frac = len(g.dip.coalitions[cid]["members"] & set(alive)) / n if cid is not None else 0.0
+    can_ally = not g.mods(fid).value("no_alliance")
+    # 시간: 남은 턴이 적을수록, 점수 1위일수록
+    max_t = getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS)
+    t_prog = g.turn / max(1, max_t)
+    sc = g.time_scores()
+    top = max(sc, key=sc.get) == fid if sc else False
     score = {
         # 전쟁 피로가 쌓였으면 정복을 덜 노린다
-        "conquest": 0.1 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb)
-                    - 0.004 * f.war_weary - 0.05 * wars * (allies == 0),
-        "economic": 0.45 + 0.35 * min(2.5, gdp_rel),
-        # 랜드마크는 지을수록 비싸진다(×1.3): 다음 랜드마크를 감당할 재정이 있어야 노린다
-        "landmark": 0.1 + 0.03 * (10 - aggr) + 0.15 * lm_do + (0.3 if f.money > 3 * lm_cost else 0),
+        "conquest": (0.05 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb) + 0.5 * min(1.0, c_prog)
+                     - 0.004 * f.war_weary - 0.05 * wars * (allies == 0)) * leader_bias(g, fid, "war"),
+        "economic": (0.15 + 0.6 * min(1.2, e_prog)) * leader_bias(g, fid, "bank"),
+        "science": (0.05 + 0.03 * (10 - aggr) + 0.12 * k_done + (0.15 if afford else 0)
+                    + 0.1 * has_oil + 0.05 * has_f5 + 0.03 * (has_coast + has_mtn)) * leader_bias(g, fid, "science"),
+        "diplomatic": ((0.05 + 0.03 * (10 - aggr) + 0.6 * c_frac + 0.04 * min(4, allies))
+                       * leader_bias(g, fid, "ally") if can_ally else -1.0),
+        "time": 0.3 + (0.4 * t_prog if top else 0.1 * t_prog),
     }
-    score["conquest"] *= leader_bias(g, f.id, "war")
-    score["landmark"] *= leader_bias(g, f.id, "landmark")
     return max(vt, key=lambda v: score[v] + g.rng.uniform(0, 0.25))
 
 
@@ -123,8 +142,14 @@ def set_strategy(g, f):
     elif goal == "economic":
         w["economy"] += k
         w["expansion"] += k / 2
-    elif goal == "landmark":
+    elif goal == "science":
         w["economy"] += k
+    elif goal == "diplomatic":
+        w["defense"] += k / 2
+        w["military"] -= k / 2
+    elif goal == "time":
+        w["economy"] += k / 2
+        w["expansion"] += k / 2
     if D.enemies(g, f.id):
         w["military"] += 0.5
         w["defense"] += 0.5
@@ -149,6 +174,7 @@ def plan_turn(g, fid):
     _merge_idle(g, fid)
     _austerity(g, f, threat)
     _army_orders(g, f, threat)
+    _science_orders(g, f)
     _naval_orders(g, f, threat)
     _air_orders(g, f, threat)
     _slots(g, f, threat)
@@ -229,7 +255,7 @@ def _tax(g, f):
     worst = min(hs)
     last = f.last
     net = last.get("net", 0.0)
-    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "landmark")
+    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "science")
     reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
@@ -273,6 +299,8 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
         thr += C.AI_WAR_OP_NEED
     if f.ai.get("victory_goal") == "conquest":
         thr += 5
+    elif f.ai.get("victory_goal") == "diplomatic":
+        thr -= 8                           # 외교승리를 노리면 전쟁을 꺼린다
     thr += 30 * (leader_bias(g, f.id, "war") - 1)        # 지도자 성향: 전쟁에 유리하면 ±4.5까지
     return thr
 
@@ -416,6 +444,8 @@ def war_assessment(g, fid, e):
     if info["declarer"] == fid and info["turns"] < 6:
         d -= 0.3                          # 막 시작한 전쟁은 쉽게 접지 않는다
     d -= (aggr - 5) * 0.06
+    if f.ai.get("victory_goal") == "diplomatic":
+        d += 0.15                          # 외교승리를 노리면 강화에 적극적
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 
@@ -467,6 +497,8 @@ def _social(g, f):
     alive = [x for x in g.alive_ids() if x != fid]
     # 우호 선언: 나를 좋게 보는(또는 적의 적인) 세력과 가까워진다
     p_friend = C.AI_FRIEND_DECL_P * (10 - aggr) / 10 * leader_bias(g, fid, "ally")
+    if f.ai.get("victory_goal") == "diplomatic":
+        p_friend *= 1.5
     if alive and g.rng.random() < p_friend:
         my_enemies = set(D.enemies(g, fid))
         cands = []
@@ -638,7 +670,7 @@ def _austerity(g, f, threat):
         return
     deficit = -f.last.get("net", 0)
     for a in sorted([a for a in g.armies.values() if a.owner == f.id and a.domain() == "land"
-                     and a.loc not in threat], key=lambda a: -a.count()):
+                     and a.loc not in threat and not g.is_science_army(a)], key=lambda a: -a.count()):
         for k in ("tank", "art", "inf"):
             while a.units.get(k, 0) > (1 if k == "inf" else 0) and deficit > 0:
                 g.disband(a.id, {k: 1})
@@ -653,7 +685,8 @@ def _austerity(g, f, threat):
 def _merge_idle(g, fid):
     by_loc = {}
     for a in list(g.armies.values()):
-        if a.owner == fid and not a.order and a.domain() == "land" and not g.world.is_sea(a.loc):
+        if a.owner == fid and not a.order and a.domain() == "land" and not g.world.is_sea(a.loc) \
+                and not g.is_science_army(a):
             by_loc.setdefault(a.loc, []).append(a)
     for loc, arms in by_loc.items():
         base = arms[0]
@@ -669,7 +702,7 @@ def _army_orders(g, f, threat):
     wts = f.ai.get("weights", {})
     annexing = {r.project.key for r in g.regions_of(fid) if r.project and r.project.kind == "annex"}
     armies = [a for a in g.armies.values() if a.owner == fid and a.domain() == "land"
-              and not w.is_sea(a.loc)]
+              and not w.is_sea(a.loc) and not g.is_science_army(a)]
     front = set(threat)
     crisis = _war_crisis(g, fid, threat)
     cap_min = capital_min_garrison(g, f, threat)
@@ -921,6 +954,27 @@ def _naval_orders(g, f, threat):
                 g.order_army(fl.id, home[0])
 
 
+def _science_orders(g, f):
+    """과학승리 유닛: 발사대 지역으로 모은다(발사대가 여럿이면 유닛들에서 가장 가까운 곳)."""
+    fid = f.id
+    sci = [a for a in g.armies.values() if a.owner == fid and g.is_science_army(a) and not g.world.is_sea(a.loc)]
+    if not sci:
+        return
+    pads = [r.id for r in g.regions_of(fid) if "pad" in r.sci]
+    if not pads:
+        return
+    w = g.world
+
+    def total_dist(p):
+        d = w.distances_from(p, 30)
+        return sum(d.get(a.loc, 99) for a in sci)
+    pad = min(pads, key=total_dist)
+    for a in sci:
+        if a.loc == pad or a.goto == pad:
+            continue
+        g.order_army(a.id, pad)
+
+
 def _air_orders(g, f, threat):
     """전투기: 위협이 가장 큰 곳에서 가까운 자국 공항으로 옮겨 지상전을 지원한다."""
     fid = f.id
@@ -1012,9 +1066,9 @@ def auto_slots(g, fid, military=True):
 def _delta_output(g, rid, key):
     rr = g.regions[rid]
     b = dict(rr.b)
-    old = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark)
+    old = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"])
     b[key] += 1
-    new = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark)
+    new = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"])
     return new - old
 
 
@@ -1027,7 +1081,7 @@ def _slots(g, f, threat, military=True):
         return
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
-    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "landmark")
+    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "science")
     reserve = 200 + upkeep * 3
     avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
@@ -1234,24 +1288,32 @@ def _slots(g, f, threat, military=True):
             per = g.unit_cost(fid, r.id, key)
             u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1) * bias(key)
             cands.append((u, r.id, "unit", key, None, per))
-    # 랜드마크
-    lm_goal = f.ai.get("victory_goal") == "landmark"
-    lm_money, lm_income = (2.5, 0.4) if lm_goal else (4, 0.6)      # 랜드마크 목표면 조건을 조금 낮춘다
-    lm_money, lm_income = lm_money / bias("landmark"), lm_income / bias("landmark")
-    lm_cost = C.LANDMARK_COST_PER_TURN * g.landmark_cost_mult(fid)   # 하나 지을 때마다 ×1.3
-    lm_total = lm_cost * g.mods(fid).value("landmark_turns", C.LANDMARK_TURNS)
-    # 수입으로 감당하거나, 모아 둔 돈으로 전액을 치를 수 있으면 짓는다
-    if f.is_ai and ((f.money > lm_cost * lm_money and income - upkeep > lm_cost * lm_income)
-                    or f.money > lm_total * (1.2 if lm_goal else 1.6)):
-        building = any(r.project and r.project.kind == "landmark" for r in regs)
-        if not building:
-            owned_do = {g.info(r.id).do8 for r in regs if r.landmark}
-            cap = g.regions[f.capital]
-            target = cap if not cap.landmark else next(
-                (r for r in sorted(regs, key=lambda r: -r.pop) if not r.landmark and not r.project
-                 and g.info(r.id).do8 not in owned_do), None)
-            if target and not target.project and not target.occ:
-                g.start_project(fid, target.id, "landmark", "landmark")
+    # 과학승리 단계: 목표면 조건을 낮춘다. 그 밖엔 재정이 아주 넉넉할 때만
+    step = g.science_next(fid) if (f.is_ai and "science" in g.settings.victories) else None
+    if step is not None and g.science_busy(fid, step) is None:
+        sci_goal = f.ai.get("victory_goal") == "science"
+        sc_turns = g.science_turns(fid)
+        sc_total = g.science_step_cost(fid, step)
+        sc_per = sc_total / sc_turns
+        sm, si = ((2.0, 0.3) if sci_goal else (4, 0.6))
+        sm, si = sm / bias("science"), si / bias("science")
+        if (f.money > sc_per * sm and income - upkeep > sc_per * si) or f.money > sc_total * (1.1 if sci_goal else 2.5):
+            sites = [r for r in regs if g.science_site_ok(fid, r.id, step) and not r.project and not r.occ
+                     and not g.resisting(r)]
+            if sites:
+                # 위협이 적고 수도에 가까운 곳(유닛은 발사대까지 옮겨야 한다)
+                dist = g.world.distances_from(f.capital, 30)
+                best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
+                g.start_project(fid, best.id, "science", step)
+            elif sci_goal and step in ("booster", "module"):
+                # 공장 5단계 지역이 없으면 가장 높은 공장부터 올린다
+                pool_f = [r for r in idle if r.b["factory"] < 5]
+                if pool_f:
+                    r0 = max(pool_f, key=lambda r: (r.b["factory"], r.pop))
+                    lv = r0.b["factory"] + 1
+                    cost = R.prod_building_cost("factory", lv) * g.mods(fid).mult("cost_factory")
+                    turns = g.build_time(fid, "factory", R.prod_building_turns(lv))
+                    cands.append((3.0, r0.id, "build", "factory", None, cost / turns))
     cands.sort(key=lambda c: -c[0])
     used = set()
     for u, rid, kind, key, border, per in cands:

@@ -128,7 +128,6 @@ class App:
         self.show_terrain = True
         self.pick_popup = None
         self.spec_sel = None
-        self.lm_name = ""
         self.visited = set()         # 이번 턴 '다음 지역'으로 확인한 지역
         self.left_tab = "status"      # 좌측 패널: nation/diplo/army/energy/status(세로 탭), region(지역 선택)
         self.prio_drag = None
@@ -509,7 +508,7 @@ class App:
             for rid in set(g.battle_regions):
                 if rid in self.world.regions:
                     mv.outline(self.screen, rid, col, 3)
-        self.draw_landmarks()
+        self.draw_science_sites()
         self.draw_focus()
         self.draw_capitals()
         self.draw_occupations()
@@ -553,13 +552,14 @@ class App:
             self.star((x, y - (16 * u if self.map.z >= 2 else 0)), (8 if self.map.z < 2 else 10) * u,
                       mix(self.faction_rgb(f.id), (0, 0, 0), 0.2))
 
-    def draw_landmarks(self):
+    def draw_science_sites(self):
+        """과학승리 시설(연구소·관측소·발사대)과 진행 중인 과학 단계 표시."""
         g = self.game
         mv = self.map
         pid = g.player_id
         for r in g.regions.values():
-            building = r.project and r.project.kind == "landmark"
-            if not (r.landmark or building):
+            building = r.project and r.project.kind == "science" and not C.SCIENCE[r.project.key]["unit"]
+            if not (r.sci or building):
                 continue
             if not (r.owner == pid or g.is_explored(pid, r.id) or self.fog_reveal):
                 continue
@@ -569,14 +569,15 @@ class App:
             u = ui_scale()
             x += (18 if mv.z >= 2 else 9) * u
             y -= (16 if mv.z >= 2 else 7) * u
-            col = (241, 196, 15) if r.landmark else (180, 180, 180)
+            col = (241, 196, 15) if r.sci else (180, 180, 180)
             tri = [(x, y - 11 * u), (x + 5 * u, y + 7 * u), (x - 5 * u, y + 7 * u)]
             pygame.draw.polygon(self.screen, col, tri)
             pygame.draw.polygon(self.screen, mix(col, (0, 0, 0), 0.4), tri, 1)
             pygame.draw.line(self.screen, mix(col, (0, 0, 0), 0.4), (x - 7 * u, y + 7 * u), (x + 7 * u, y + 7 * u),
                              max(2, int(2 * u)))
-            if mv.z >= 3 and r.landmark:
-                t = render_text(r.landmark_name or g.default_landmark_name(r.id), 11, (122, 88, 0), "bold")
+            if mv.z >= 3 and r.sci:
+                names = "·".join(C.SCIENCE[k]["name"] for k in C.SCIENCE_STEPS if k in r.sci)
+                t = render_text(names, 11, (122, 88, 0), "bold")
                 self.screen.blit(t, t.get_rect(midleft=(x + 8 * u, y)))
 
     def draw_focus(self):
@@ -1036,6 +1037,7 @@ class App:
              f"{g.avg_happiness(f.id, effective=False):+.1f})\n세율 효과 {0.1*(10-f.tax*100):+.1f}/턴"),
             ("weary", "전쟁 피로", f"{snap['weary']:d}", self.theme.bad if f.war_weary >= 1 else None,
              f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
+             f"선포당한 전쟁에서 쌓인 {f.war_weary_def:.1f}은 반란 판정에서는 빼지 않습니다.\n"
              + (f"전쟁 중 턴당 +{D.war_weary_rate(g, f.id):.1f}" if D.enemies(g, f.id)
                 else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
              + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "

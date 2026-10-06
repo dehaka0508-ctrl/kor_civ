@@ -16,7 +16,7 @@ from collections import Counter, defaultdict
 SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_weary_rate", "avg_rebel", "happy_cap",
            "neutral_diplomacy", "start_money", "start_opinion", "treaty_threshold", "trade_m",
            "cost_air", "cost_naval", "cost_tank", "cost_mil", "inf_cost_early", "cost_line", "cost_factory",
-           "build_time_prod", "build_time_all", "build_time_factory", "landmark_turns", "occ_time",
+           "build_time_prod", "build_time_all", "build_time_factory", "science_turns", "occ_time",
            "war_start_weary"}
 AIR = {"ftr", "bmb", "stl"}
 NAVAL = {"lst", "dd", "cv"}
@@ -129,8 +129,8 @@ def install(G, D, A):
                     fx.append("cost_line")
             elif kind == "annex":
                 fx.append("occ_time")
-            elif kind == "landmark":
-                fx.append("landmark_turns")
+            elif kind == "science":
+                fx.append("science_turns")
             for k in fx:
                 if k in keys:
                     T.hit(fid, k)

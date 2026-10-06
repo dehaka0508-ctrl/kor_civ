@@ -180,6 +180,8 @@ class World:
         # 도하 경계·국경 하천을 가진 지역(하천 어장 가능)
         self.river_regions = {rid for fp, t in self.terrain.items() if t["kind"] == "도하" for rid in fp}
         self.river_regions |= self.outer_rivers
+        # 산악 돌파 경계를 가진 지역(산맥과 맞닿은 지역: 천체관측소)
+        self.mountain_regions = {rid for fp, t in self.terrain.items() if t["kind"] == "돌파" for rid in fp}
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":

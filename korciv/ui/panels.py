@@ -202,7 +202,8 @@ def draw_region_info(app, rect):
         parts = [f"행복도 {r.happy:+.1f}"]
         ww = g.factions[owner].war_weary
         if ww >= 0.05:
-            parts.append(f"전쟁 피로 −{ww:.1f}")
+            wd = getattr(g.factions[owner], "war_weary_def", 0.0)
+            parts.append(f"전쟁 피로 −{ww:.1f}" + (f"(당한 전쟁 {wd:.1f}은 반란 판정 제외)" if wd >= 0.05 else ""))
         if r.conscript > 0:
             parts.append(f"징집 피로 −{r.conscript:.0f} (최근 10턴 중 {g.drafted_turns(node)}턴 징집)")
         elif full and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
@@ -219,7 +220,7 @@ def draw_region_info(app, rect):
                 txt = "점령 직후 안정기"
             txt += f" · 반란 없음 {C.RESIST_NO_REBEL_TURNS - k}턴"
             y = gui.wrap((x, y), "점령 저항: " + txt, w, 12, t.warn if phase == "resist" else t.muted) + 4
-        if eh <= C.REBEL_THRESHOLD and full and not phase:
+        if g.rebel_happy(r) <= C.REBEL_THRESHOLD and full and not phase:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(owner, node)*100:.1f}%/턴", t.bad)
     if full and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
@@ -242,8 +243,9 @@ def draw_region_info(app, rect):
     for k in ("academy", "airport", "port"):
         if r.b[k]:
             chips.append(BUILDING_NAMES[k])
-    if r.landmark:
-        chips.append(f"★ {r.landmark_name or g.default_landmark_name(node)}")
+    for k in C.SCIENCE_STEPS:
+        if k in r.sci:
+            chips.append(f"★ {C.SCIENCE[k]['name']}")
     for bk, lv in sorted(r.lines.items()):
         if lv:
             nm = "해안" if bk == "coast" else app.world.regions[bk].short
@@ -357,8 +359,9 @@ def project_name(app, p):
         return f"{C.UNITS[p.key]['name']} 생산"
     if p.kind == "annex":
         return f"편입: {app.world.regions[p.key].name}"
-    if p.kind == "landmark":
-        return f"랜드마크 「{p.name}」" if p.name else "랜드마크 건설"
+    if p.kind == "science":
+        k = C.SCIENCE_STEPS.index(p.key) + 1
+        return f"과학 {k}단계: {C.SCIENCE[p.key]['name']}"
     if p.kind == "capital":
         return "천도"
     return p.kind
@@ -492,9 +495,9 @@ def draw_action_tab(app, body):
               (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 ({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
-              ("특수", [o for o in opts if o["kind"] in ("landmark", "capital")])]
+              ("특수", [o for o in opts if o["kind"] in ("science", "capital")])]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
-    content = sum(28 + sum(60 if o["kind"] == "build" else 44 for o in lst) for _, lst in groups if lst)
+    content = sum(28 + sum(60 if o["kind"] in ("build", "science") else 44 for o in lst) for _, lst in groups if lst)
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
     money = g.player.money
@@ -516,20 +519,19 @@ def draw_action_tab(app, body):
                 sub = o["why"]
             gui.text((x, yy + 21), sub, 11, t.muted if o["ok"] else t.bad, max_w=w - 70)
             eff = g.building_effect(pid, rid, o) if o["kind"] == "build" else ""
+            if o["kind"] == "science":
+                eff = ("완료하면 유닛 1개 — 발사대 지역으로 옮긴다" if C.SCIENCE[o["key"]]["unit"]
+                       else "완료하면 다음 과학 단계가 열린다")
             if eff:
                 gui.text((x, yy + 38), eff, 11, t.good, "semibold", max_w=w - 70)
             if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):
-                if o["kind"] == "landmark":
-                    app.lm_name = g.default_landmark_name(rid)
-                    app.modal = ("landmark_name", rid)
-                else:
-                    ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
-                    app.toast(msg, None if ok else t.bad)
-                    if ok:
-                        app.changed()
-            yy += 60 if (o["kind"] == "build") else 44
+                ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+                app.toast(msg, None if ok else t.bad)
+                if ok:
+                    app.changed()
+            yy += 60 if (o["kind"] in ("build", "science")) else 44
     gui.end_scroll("actions", area, content)
 
 
@@ -927,7 +929,47 @@ def draw_diplo_detail(app, body, fid):
 
 
 # ------------------------------------------------------------------ 좌측 [국가 현황]
-PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "landmark": "랜드마크", "capital": "천도"}
+PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "science": "과학", "capital": "천도"}
+
+
+def draw_victory_progress(app, x, y, w, pid):
+    """승리 조건별 진행 상황(국가 현황)."""
+    g, gui, t = app.game, app.gui, app.theme
+    vs = g.settings.victories
+    f = g.factions[pid]
+    if "conquest" in vs:
+        cs = g.conquest_status(pid)
+        txt = f"{cs['have']} / {cs['need']}곳"
+        if cs["risky"] is not None:
+            txt += f" · 반란 가능 지역 {cs['risky']}곳"
+        y = kv(gui, x, y, w, "정복승리(2/3 + 반란 없음)", txt, t.good if cs["ok"] else None)
+    if "science" in vs:
+        nxt = g.science_next(pid)
+        done = len(f.science)
+        if nxt is None:
+            txt = f"{done}/6단계 완료 · 세 유닛을 발사대에 모으면 발사"
+        else:
+            k = C.SCIENCE_STEPS.index(nxt) + 1
+            txt = f"{done}/6단계 · 다음 {k}단계 {C.SCIENCE[nxt]['name']}({C.SCIENCE[nxt]['where']})"
+        y = kv(gui, x, y, w, "과학승리", txt)
+    if "economic" in vs:
+        alive = g.alive_ids()
+        total = sum(g.gdp(a) for a in alive) or 1
+        share = g.gdp(pid) / total
+        need = g.econ_share_needed()
+        y = kv(gui, x, y, w, "경제승리(GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
+                                              f"{C.ECON_VICTORY_TURNS}턴", t.good if share >= need else None)
+    if "diplomatic" in vs:
+        alive = g.alive_ids()
+        cid = D.coalition_of(g, pid)
+        n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
+        y = kv(gui, x, y, w, "외교승리(모두 한 연합)", f"내 연합 {n} / 생존 {len(alive)}개국")
+    if "time" in vs:
+        sc = g.time_scores()
+        rank = sorted(sc, key=lambda k: -sc[k]).index(pid) + 1 if pid in sc else "-"
+        left = max(0, getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS) - g.turn)
+        y = kv(gui, x, y, w, "시간 종료 점수", f"{sc.get(pid, 0):.1f}점 · {rank}위 · {left}턴 남음")
+    return y
 
 
 def draw_nation_status(app, body):
@@ -957,17 +999,13 @@ def draw_nation_status(app, body):
     else:
         rec = f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복" if ww > 0 else "평시"
     y = kv(gui, x, y, w, "전쟁 피로도", f"{ww:.1f} / {C.WAR_WEARY_MAX:.0f} ({rec})", t.bad if ww >= 1 else None)
+    if f.war_weary_def >= 0.05:
+        y = kv(gui, x, y, w, "  그중 당한 전쟁", f"{f.war_weary_def:.1f} (반란 판정에서는 빼지 않음)")
     morale = g.morale(pid)
     if morale < 1:
         y = kv(gui, x, y, w, "군 사기", f"전투력 ×{morale:.2f} (실질 평균 행복도 −10 이하)", t.bad)
     y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
-    lm = [app.world.regions[r.id].do8 for r in regs if r.landmark]
-    y = kv(gui, x, y, w, "랜드마크(8도)", f"{len(lm)}개 · {len(set(lm))}/8도")
-    if "time" in g.settings.victories:
-        sc = g.time_scores()
-        rank = sorted(sc, key=lambda k: -sc[k]).index(pid) + 1 if pid in sc else "-"
-        left = max(0, getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS) - g.turn)
-        y = kv(gui, x, y, w, "시간 종료 점수", f"{sc.get(pid, 0):.1f}점 · {rank}위 · {left}턴 남음")
+    y = draw_victory_progress(app, x, y, w, pid)
     lead = LEADER_BY_KEY[f.leader]
     gov = GOV_BY_KEY.get(f.gov, {})
     y = gui.wrap((x, y + 2), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
@@ -997,12 +1035,12 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "  군 유지비", f"−{last.get('upkeep', 0):,.0f}")
     if last.get("buy", 0):
         y = kv(gui, x, y, w, "  시장 구매(식량 자동 구매 포함)", f"−{last.get('buy', 0):,.0f}")
-    for k in ("build", "unit", "annex", "landmark", "capital"):
+    for k in ("build", "unit", "annex", "science", "capital"):
         if spent.get(k):
             y = kv(gui, x, y, w, f"  {PROJECT_KIND_NAMES[k]}", f"−{spent[k]:,.0f}")
     y = kv(gui, x, y, w, "턴당 순수익", f"{last.get('net', 0):+,.0f}", t.good if last.get("net", 0) >= 0 else t.bad)
     y = section(gui, x, y + 6, w, "이번 턴 예정 작업 지출")
-    for k in ("build", "unit", "annex", "landmark", "capital"):
+    for k in ("build", "unit", "annex", "science", "capital"):
         if k in spend:
             n, s_ = spend[k]
             y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s_:,.0f}")

@@ -19,7 +19,7 @@ VT = list(VICTORY_TYPES)
 FX_NAMES = {
     "happy_turn": "행복도 +/턴", "cost_air": "공군 생산비", "bomb_art": "포병 폭격", "cost_naval": "해군 생산비",
     "atk_assault": "돌격 공격", "war_weary_rate": "전쟁 피로 증가", "war_start_weary": "개전 전쟁 피로", "line_k": "방어선 효과", "start_opinion": "시작 우호도",
-    "upkeep_land": "육군 유지비", "trade_m": "거래 배수", "cost_line": "방어선 건설비", "landmark_turns": "랜드마크 기간",
+    "upkeep_land": "육군 유지비", "trade_m": "거래 배수", "cost_line": "방어선 건설비", "science_turns": "과학 단계 기간",
     "rebel_prob": "반란 확률", "treaty_threshold": "조약 문턱", "no_ally_assault": "무동맹 돌격", "cost_tank": "전차 생산비",
     "occ_time": "점령·편입 턴", "inf_cost_early": "초반 보병비", "occupied_happy_extra": "점령지 행복도",
     "surprise": "기습 성공률", "wanggeon_occupy": "점령지 저항 단축", "tax_max": "세율 상한",

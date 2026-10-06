@@ -98,7 +98,7 @@ p(f"- 실제 교전: 판당 {battles/n:.0f}회 — 기습 {pct((b['surprise_win'
 p(f"- 돌격 방어선 파괴 판당 {b['line_break']/n:.1f}회, 폭격 판당 {(b['bomb_gun']+b['bomb_air']+b['bomb_gunair'])/n:.1f}회(건물 파괴 {b['bomb_hit']/n:.1f}회)")
 p(f"- 적 지역 점령 판당 {b['resist_start']/n:.0f}회, 그중 저항 중 탈환 {b['retake']/n:.0f}회")
 p(f"- 조약 체결 판당: 불가침 {b['treaty_nonaggr']/n/2:.1f}, 동맹 {b['treaty_alliance']/n/2:.1f}, 연합 {b['treaty_coalition']/n/2:.1f} · 강화 {b['peace']/n/2:.1f}")
-p(f"- 착공 판당: 편입 {b['start_annex']/n:.0f}, 건설 {b['start_build']/n:.0f}, 유닛 {b['start_unit']/n:.0f}, 랜드마크 {b['start_landmark']/n:.1f}")
+p(f"- 착공 판당: 편입 {b['start_annex']/n:.0f}, 건설 {b['start_build']/n:.0f}, 유닛 {b['start_unit']/n:.0f}, 과학 {b.get('start_science', 0)/n:.1f}")
 
 # 승리자 특성
 p("\n## 승리·1위 세력의 특징\n")

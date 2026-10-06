@@ -21,6 +21,7 @@ sys.path.insert(0, ROOT)
 
 import pygame                                      # noqa: E402
 
+from korciv import config as C                     # noqa: E402
 from korciv.state import Settings                  # noqa: E402
 from korciv.ui import app as appmod                # noqa: E402
 from korciv.ui import modals, panels               # noqa: E402
@@ -229,11 +230,16 @@ def force_state(app, rng):
             mine = [r.id for r in g.regions_of(pid)]
             app.spec_sel = rng.choice(mine) if mine else None
     elif k < 0.7:
+        # 과학 단계를 아무 데서나 진행시켜 과학 유닛·시설이 있는 상태를 만든다
+        f = g.factions[pid]
+        for step in C.SCIENCE_STEPS[:rng.randint(0, len(C.SCIENCE_STEPS))]:
+            if step not in f.science:
+                f.science.append(step)
         mine = [r.id for r in g.regions_of(pid)]
-        if mine:
+        if mine and rng.random() < 0.5:
             rid = rng.choice(mine)
-            app.lm_name = g.default_landmark_name(rid)
-            app.modal = ("landmark_name", rid)
+            g.regions[rid].sci.add("pad")
+            g.add_units(pid, rid, rng.choice(C.SCIENCE_UNITS), 1)
     elif k < 0.8:
         mine = [r.id for r in g.regions_of(pid)]
         if mine and rng.random() < 0.5:
