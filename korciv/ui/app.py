@@ -102,6 +102,8 @@ class App:
     def reset_ui(self):
         self.sel = None              # 선택한 구역/해역 ID
         self.sel_army = None
+        self.dip_view = None         # 외교 탭에서 상세 보기 중인 세력
+        self.war_confirm = None      # 선전포고 확인 대기 중인 세력
         self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
@@ -221,11 +223,14 @@ class App:
         self.screen.fill(self.theme.bg)
         if self.scene == "setup":
             slots_open = bool(self.modal and self.modal[0] == "saveslots")
-            self.gui.input_enabled = not slots_open
+            flag_open = self.setup.flag_draft is not None
+            self.gui.input_enabled = not (slots_open or flag_open)
             modals.draw_setup(self)
             self.gui.input_enabled = True
             if slots_open:
                 modals.draw_save_slots(self)
+            elif flag_open:
+                modals.draw_flag_editor(self)
         elif self.scene == "pick_start":
             self.draw_pick_start()
         elif self.scene in ("government", "main"):
@@ -950,11 +955,13 @@ class App:
             self.modal = ("pause", None)
         for dx in (-5, 5):
             gui.rect(self.theme.text, (pb.centerx + dx - 2, pb.centery - 8, 5, 16), radius=1)
-        gui.rect(self.faction_rgb(f.id), (56, 14, 8, 28), radius=3)
+        from ..flags import faction_flag
+        from .art import draw_flag
+        draw_flag(gui, (56, 12, 48, 32), faction_flag(f))
         from ..leaders import GOV_BY_KEY
         gov = GOV_BY_KEY.get(f.gov, {}).get("name", "체제 미정")
-        gui.text((72, 8), f.name, 18, weight="bold")
-        gui.text((72, 32), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 12,
+        gui.text((114, 8), f.name, 18, weight="bold")
+        gui.text((114, 32), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 12,
                  self.theme.muted)
         gui.text((sw // 2 - 90, TOP_H // 2), g.date_label(), 16, weight="bold", anchor="center")
         x = sw - 16

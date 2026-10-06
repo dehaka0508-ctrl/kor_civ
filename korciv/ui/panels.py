@@ -10,6 +10,8 @@ from .. import diplomacy as D
 from .. import rules as R
 from ..leaders import GOV_BY_KEY, LEADER_BY_KEY
 from ..state import BUILDING_NAMES, NEUTRAL
+from ..flags import faction_flag
+from .art import draw_flag, draw_portrait
 from .theme import fmt_money, hex2rgb, measure, mix
 
 
@@ -767,32 +769,133 @@ def draw_nation_tab(app, body):
 
 
 def draw_diplo_tab(app, body):
+    """세력 목록. 세력을 누르면 국기·초상화·관계가 담긴 상세 화면."""
     gui = app.gui
     g = app.game
     t = app.theme
     pid = g.player_id
+    view = getattr(app, "dip_view", None)
+    if view is not None and 0 <= view < len(g.factions) and g.factions[view].alive and view != pid:
+        draw_diplo_detail(app, body, view)
+        return
+    app.dip_view = None
     x, w = body.x + 14, body.w - 28
     others = [o for o in g.factions if o.id != pid and o.alive]
     area = pygame.Rect(body.x, body.y, body.w, body.h)
-    off = gui.begin_scroll("diplo", area, len(others) * 46 + 10)
+    off = gui.begin_scroll("diplo", area, len(others) * 50 + 10)
     y = body.y - off
     y0 = y
     for o in others:
-        if o.id == pid or not o.alive:
-            continue
-        gui.rect(hex2rgb(o.color), (x, y + 6, 10, 14), radius=3)
         st = D.stage(g, o.id, pid)
         op = D.opinion(g, o.id, pid)
-        gui.text((x + 16, y + 2), o.name, 13, weight="semibold", max_w=110)
+        if gui.button((x - 4, y, w + 8, 46), "", "ghost", tooltip="눌러서 상세 보기"):
+            app.dip_view = o.id
+            app.war_confirm = None
+        draw_flag(gui, (x, y + 9, 42, 28), faction_flag(o))
+        gui.text((x + 52, y + 5), o.name, 13, weight="semibold", max_w=w - 60)
         origin = f" · {g.fname(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
-        gui.text((x + 16, y + 20), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}{origin}", 11,
-                 t.bad if st == -1 else t.muted, max_w=w - 80)
-        if gui.button((x + w - 58, y + 6, 58, 26), "외교", size=12):
-            app.open_diplomacy(o.id)
-        y += 46
+        gui.text((x + 52, y + 24), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}{origin}", 11,
+                 t.bad if st == -1 else t.muted, max_w=w - 60)
+        y += 50
     if not others:
         gui.text((x, y), "다른 세력이 없습니다.", 13, t.muted)
     gui.end_scroll("diplo", area, y - y0)
+
+
+def stage_color(t, st):
+    return {-1: t.bad, 3: t.good, 4: t.good}.get(st, t.text if st > 0 else t.muted)
+
+
+def draw_diplo_detail(app, body, fid):
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    o = g.factions[fid]
+    x, w = body.x + 14, body.w - 28
+    area = pygame.Rect(body.x, body.y, body.w, body.h)
+    others = [f for f in g.factions if f.alive and f.id != fid]
+    off = gui.begin_scroll("diplo_detail", area, getattr(app, "_dip_h", 600))
+    y = body.y - off
+    y0 = y
+    if gui.button((x - 4, y, 72, 26), "‹ 목록", "ghost", size=12):
+        app.dip_view = None
+        gui.end_scroll("diplo_detail", area, 0)
+        return
+    y += 32
+    # 상단: 국기 + 국가명
+    draw_flag(gui, (x, y, 60, 40), faction_flag(o))
+    gui.text((x + 72, y), o.name, 19, weight="bold", max_w=w - 72)
+    gui.text((x + 72, y + 25), f"{o.leader_name} · {GOV_BY_KEY.get(o.gov, {}).get('name', '체제 미정')}", 12,
+             t.muted, max_w=w - 72)
+    y += 52
+    # 좌: 초상화(3:4), 우: 수도·관계·우호도
+    pw, ph = 120, 160
+    draw_portrait(gui, (x, y, pw, ph), o.leader, t)
+    rx, rw = x + pw + 14, w - pw - 14
+    st = D.stage(g, fid, pid)
+    op = D.opinion(g, fid, pid)
+    rel = D.STAGE_NAMES[st]
+    if st == -1:
+        rel += f" (전쟁 점수 {D.war_score(g, pid, fid):+.1f})"
+    pl = D.peace_left(g, pid, fid)
+    cap = app.world.regions[o.capital].name if o.capital in app.world.regions else "없음"
+    rows = [("수도", cap, None), ("관계", rel, stage_color(t, st)),
+            ("우호도 (상대 → 나)", f"{op:+.1f}", t.good if op >= 0 else t.bad)]
+    if pl:
+        rows.append(("강화 불가침", f"{pl}턴 남음", None))
+    ry = y + 2
+    for k, v, vc in rows:
+        gui.text((rx, ry), k, 11, t.muted)
+        gui.text((rx, ry + 15), v, 14, vc or t.text, "semibold", max_w=rw)
+        ry += 40
+    y += ph + 14
+    # 통계
+    cw = (w - 16) / 3
+    for i, (k, v) in enumerate((("인구", f"{g.total_pop(fid):,.0f}만"), ("지역 수", f"{g.region_count(fid)}곳"),
+                                ("GDP", f"{o.last.get('gdp', g.gdp(fid)):,.0f}"))):
+        cell = pygame.Rect(x + i * (cw + 8), y, cw, 48)
+        gui.rect(t.panel_alt, cell, radius=6)
+        gui.text((cell.centerx, cell.y + 6), k, 11, t.muted, anchor="midtop")
+        gui.text((cell.centerx, cell.y + 23), v, 14, weight="bold", anchor="midtop", max_w=cell.w - 6)
+    y += 60
+    # 타국과의 관계
+    gui.text((x, y), "타국과의 관계", 13, weight="bold")
+    y += 22
+    for f in others:
+        s2 = D.stage(g, fid, f.id)
+        draw_flag(gui, (x, y + 2, 24, 16), faction_flag(f))
+        gui.text((x + 32, y + 1), f.name + (" (나)" if f.id == pid else ""), 12, max_w=w - 140)
+        gui.text((x + w, y + 1), D.STAGE_NAMES[s2], 12, stage_color(t, s2), "semibold", anchor="topright")
+        y += 22
+    y += 12
+    # 외교 / 선전포고
+    bw = (w - 8) / 2
+    if gui.button((x, y, bw, 40), "외교", "primary", size=14):
+        app.war_confirm = None
+        app.open_diplomacy(fid)
+    can_war = st != -1 and not D.has_nonaggr(g, pid, fid)
+    if st == -1:
+        tip = "이미 전쟁 중입니다."
+    elif not can_war:
+        tip = "불가침·동맹 중에는 먼저 외교 창에서 파기해야 합니다."
+    else:
+        tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
+               f"상대 우호도 -100,\n전쟁광 평판: 다른 모든 세력 우호도 {D.warmonger_penalty(g, pid):+.0f}\n"
+               "한 번 더 눌러야 선포됩니다.")
+    confirm = getattr(app, "war_confirm", None) == fid and can_war
+    if gui.button((x + bw + 8, y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger", size=14,
+                  enabled=can_war, tooltip=tip):
+        if confirm:
+            app.war_confirm = None
+            ok, msg = D.declare_war(g, pid, fid)
+            app.toast(msg or f"{o.name}에 선전포고했습니다.", t.bad)
+            app.changed()
+        else:
+            app.war_confirm = fid
+    y += 52
+    app._dip_h = y - y0
+    gui.end_scroll("diplo_detail", area, y - y0)
 
 
 # ------------------------------------------------------------------ 좌측 [국가 현황]

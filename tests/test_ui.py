@@ -164,3 +164,34 @@ def test_reselect_region_closes_panel(app):
     frame(app)                            # 군사 요약
     app.left_tab, app.tab = "region", "army"
     frame(app)                            # 지역 부대 탭
+
+
+def test_flags_and_diplo_detail(app):
+    from korciv import flags as FL
+    from korciv.ui import modals
+    from korciv.ui.art import render_flag
+    for bg in FL.BG_KEYS:                 # 모든 배경·문양 조합이 그려진다
+        for em in FL.EMBLEM_KEYS:
+            surf = render_flag({"bg": bg, "em": em, "c1": (10, 20, 30), "c2": (200, 0, 0), "ec": (255, 255, 0)}, 30, 20)
+            assert surf.get_size() == (30, 20)
+    assert len(FL.EMBLEMS) - 1 == 20
+    a = FL.default_flag("#3366cc", "1:x")
+    assert a == FL.default_flag("#3366cc", "1:x")   # 기본 국기는 결정적
+    s = app.setup
+    s.flag_draft = dict(s.flag)
+    app.scene = "setup"
+    frame(app)                            # 국기 편집 창
+    s.flag_draft["em"] = "taegeuk"
+    s.flag = FL.normalize(s.flag_draft)
+    s.flag_draft = None
+    modals.start_from_setup(app)
+    assert app.game.player.flag["em"] == "taegeuk"
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    app.game.pending_proposals.clear()
+    app.left_open, app.left_tab = True, "diplo"
+    frame(app)
+    other = next(f.id for f in app.game.factions if f.id != app.game.player_id)
+    app.dip_view = other
+    frame(app)
+    app.dip_view = None

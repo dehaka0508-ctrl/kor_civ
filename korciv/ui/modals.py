@@ -7,8 +7,10 @@ import pygame
 
 from .. import config as C
 from .. import diplomacy as D
+from .. import flags as FL
 from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES
 from ..state import NEUTRAL, Settings
+from .art import draw_flag, draw_portrait, render_flag
 from .theme import hex2rgb, measure, mix
 
 
@@ -25,6 +27,9 @@ class SetupState:
         self.ai_leaders = []          # 빈 칸은 무작위
         self.seed = ""
         self.max_turns = C.TIME_VICTORY_TURNS
+        self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "star5"})
+        self.flag_draft = None        # 국기 편집 창이 열려 있으면 편집 중인 사본
+        self.flag_target = 0          # 0 배경 색1, 1 배경 색2, 2 문양 색
 
 
 def modal_frame(app, w, h, title=None):
@@ -143,8 +148,17 @@ def draw_setup(app):
         gui.text((x, y + 8), "지도자 이름", 13, t.muted)
         s.custom_name = gui.text_input((x + 90, y, 200, 32), "custom", s.custom_name, max_len=10)
         y += 40
-    gui.text((x, y), f"버프 · {lead['buff'][0]}: {lead['buff'][1]}", 13, t.good)
-    gui.text((x, y + 22), f"디버프 · {lead['debuff'][0]}: {lead['debuff'][1]}", 13, t.bad)
+    gui.text((x, y), f"버프 · {lead['buff'][0]}: {lead['buff'][1]}", 13, t.good, max_w=618)
+    gui.text((x, y + 22), f"디버프 · {lead['debuff'][0]}: {lead['debuff'][1]}", 13, t.bad, max_w=618)
+    # 초상화(세로 3:4)와 국기
+    y += 54
+    ph = min(160, r.bottom - 56 - y)
+    draw_portrait(gui, (x, y, ph * 3 // 4, ph), s.leader, t)
+    fx = x + ph * 3 // 4 + 24
+    gui.text((fx, y), "국기", 13, t.muted, "semibold")
+    draw_flag(gui, (fx, y + 22, 132, 88), s.flag)
+    if gui.button((fx, y + 118, 132, 32), "국기 만들기"):
+        s.flag_draft = dict(s.flag)
     # 우측: 게임 설정
     x2 = r.x + 680
     y = r.y + 104
@@ -211,6 +225,71 @@ def draw_setup(app):
              12, t.muted)
 
 
+FLAG_TARGETS = (("c1", "배경 색 1"), ("c2", "배경 색 2"), ("ec", "문양 색"))
+
+
+def draw_flag_editor(app):
+    """국기 만들기: 배경 무늬·문양·색(RGB 각 00~FF 슬라이더)."""
+    gui = app.gui
+    t = app.theme
+    s = app.setup
+    fl = s.flag_draft
+    r = modal_frame(app, 940, 610, "국기 만들기")
+    x, y = r.x + 24, r.y + 64
+    draw_flag(gui, (x, y, 300, 200), fl)
+    y += 220
+    s.flag_target = gui.segmented((x, y, 300, 32), [lb for _, lb in FLAG_TARGETS], s.flag_target, size=12)
+    ck = FLAG_TARGETS[s.flag_target][0]
+    col = list(fl[ck])
+    y += 46
+    gui.rect(tuple(col), (x, y, 44, 30), radius=4)
+    gui.rect(t.border, (x, y, 44, 30), 1, radius=4)
+    gui.text((x + 56, y + 15), FL.rgb2hex(col), 18, weight="bold", anchor="midleft")
+    y += 44
+    for i, (ch, cc) in enumerate((("R", (220, 60, 60)), ("G", (40, 160, 70)), ("B", (50, 100, 220)))):
+        gui.text((x, y + i * 40 + 8), ch, 15, cc, "bold", anchor="midleft")
+        v, _ = gui.slider((x + 26, y + i * 40, 200, 16), col[i], 0, 255, 1, f"flag_{ck}_{i}")
+        col[i] = int(v)
+        gui.text((x + 300, y + i * 40 + 8), f"{col[i]:02X} ({col[i]})", 13, t.muted, anchor="midright")
+    fl[ck] = tuple(col)
+    # 오른쪽: 배경 무늬·문양 고르기(현재 색으로 미리보기)
+    x2 = r.x + 360
+    y2 = r.y + 64
+    gui.text((x2, y2), "배경", 14, weight="bold")
+    y2 += 24
+    cw, chh = 100, 66
+    for i, (bk, bn) in enumerate(FL.BACKGROUNDS):
+        cell = pygame.Rect(x2 + (i % 5) * (cw + 12), y2 + (i // 5) * (chh + 10), cw, chh)
+        if gui.button(cell, "", selected=fl["bg"] == bk, tooltip=bn):
+            fl["bg"] = bk
+        draw_flag(gui, cell.inflate(-12, -10), {**fl, "em": "none", "bg": bk})
+    y2 += 2 * (chh + 10) + 12
+    gui.text((x2, y2), f"문양 ({len(FL.EMBLEMS) - 1}종) · {dict(FL.EMBLEMS)[fl['em']]}", 14, weight="bold")
+    y2 += 24
+    cw, chh = 74, 52
+    for i, (ek, en) in enumerate(FL.EMBLEMS):
+        cell = pygame.Rect(x2 + (i % 7) * (cw + 8), y2 + (i // 7) * (chh + 8), cw, chh)
+        if gui.button(cell, "", selected=fl["em"] == ek, tooltip=en):
+            fl["em"] = ek
+        draw_flag(gui, cell.inflate(-10, -10), {**fl, "bg": "solid", "em": ek})
+    # 하단 버튼
+    if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위"):
+        rnd = random.Random()
+        s.flag_draft = {"bg": rnd.choice(FL.BG_KEYS), "em": rnd.choice(FL.EMBLEM_KEYS[1:]),
+                        **{k: tuple(rnd.randrange(256) for _ in range(3)) for k, _ in FLAG_TARGETS}}
+    if gui.button((r.right - 220, r.bottom - 56, 92, 38), "취소"):
+        s.flag_draft = None
+        return
+    if gui.button((r.right - 118, r.bottom - 56, 94, 38), "확인", "primary"):
+        s.flag = FL.normalize(s.flag_draft)
+        s.flag_draft = None
+        return
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            s.flag_draft = None
+            gui.keys.remove(k)
+
+
 def start_from_setup(app):
     s = app.setup
     if not any(s.victories.values()):
@@ -220,7 +299,7 @@ def start_from_setup(app):
         n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
         player_leader_name=s.custom_name.strip() if s.leader == "custom" else "",
-        player_name=s.name.strip() or "대한", player_start=s.start,
+        player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
         ai_leaders=[k for k in (s.ai_leaders or [])[: s.n_enemies] if k], seed=seed, max_turns=s.max_turns)
     app.start_game(settings)
 
@@ -684,10 +763,10 @@ def draw_diplomacy(app):
         close(app)
         return
     r = modal_frame(app, 980, 700)
-    gui.rect(hex2rgb(other.color), (r.x + 24, r.y + 22, 14, 22), radius=3)
+    draw_flag(gui, (r.x + 24, r.y + 22, 48, 32), FL.faction_flag(other))
     from ..leaders import GOV_BY_KEY
-    gui.text((r.x + 46, r.y + 18), f"{other.name}", 20, weight="bold")
-    gui.text((r.x + 46, r.y + 46), f"{other.leader_name} · {GOV_BY_KEY.get(other.gov, {}).get('name', '')} · "
+    gui.text((r.x + 82, r.y + 18), f"{other.name}", 20, weight="bold")
+    gui.text((r.x + 82, r.y + 46), f"{other.leader_name} · {GOV_BY_KEY.get(other.gov, {}).get('name', '')} · "
              f"국력 {g.power.get(fid, 0):.2f} · 지역 {g.region_count(fid)}곳", 12, t.muted)
     if gui.button((r.right - 44, r.y + 16, 28, 28), "×", "ghost", size=18):
         close(app)

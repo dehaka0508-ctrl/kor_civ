@@ -142,6 +142,8 @@ class Game:
                         aggression=leader["aggr"])
             if not is_player:
                 f.pop_mult, f.income_mult = diff[1], diff[2]
+            else:
+                f.flag = st.player_flag
             self.factions.append(f)
             self._give_start_region(f, rid)
         for f in self.factions:
