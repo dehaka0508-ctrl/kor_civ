@@ -977,9 +977,10 @@ class App:
                 else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
              + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
              f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
-            ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소·자체 발전으로 생산, 공장 연료(φ 1.25)"),
-            ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전·액화"),
-            ("oil", "석유", f"{snap['oil']:.0f}", None, "석유: 정유 생산, 공장 연료·군 생산"),
+            ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소(석탄 1→2, 석유 1→4)·자체 발전으로 생산, 공장 연료\n"
+             "에너지 자원은 살 수 없고 팔 수만 있습니다. 배정: 국가 현황 옆 [자원 배정] 탭"),
+            ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전소 연료, 석유 대신 군 생산(석유 1 = 석탄 2)"),
+            ("oil", "석유", f"{snap['oil']:.0f}", None, "석유: 유전 생산, 군 생산·발전소(전기 4)·공장 연료"),
             ("food", "식량", f"{snap['food']:,.0f}", None,
              f"식량 생산 {last.get('food_prod',0):,.0f} / 소비 {last.get('food_cons',0):,.0f}"
              + (f"\n기근 {last.get('famine',0)*100:.0f}%" if last.get('famine') else "")),

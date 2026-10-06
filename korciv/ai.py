@@ -203,15 +203,14 @@ def _market(g, f):
     need_oil = 4 if f.ai.get("weights", {}).get("military", 0) > 1.0 else 2
     if D.enemies(g, f.id) and f.money > 10000:
         need_oil = 8                      # 전쟁 중: 함선·항공기 생산용 석유
-    if f.res.get("oil", 0) < need_oil and f.money > 4000:
-        g.market_buy(f.id, "oil", need_oil - int(f.res["oil"]))
+    # 에너지 자원은 돈으로 살 수 없다: 넉넉할 때만 판다(공장·발전소 몫은 남긴다)
     for res, keep in (("coal", 40), ("elec", 30)):
         if f.res.get(res, 0) > keep * 2:
             g.market_sell(f.id, res, f.res[res] - keep)
     cons = f.last.get("food_cons", 0)
     if cons and f.res.get("food", 0) > cons * 30:
         g.market_sell(f.id, "food", f.res["food"] - cons * 20)
-    if f.res.get("oil", 0) > 80:
+    if f.res.get("oil", 0) > 80 + need_oil:
         g.market_sell(f.id, "oil", f.res["oil"] - 60)
 
 
@@ -984,6 +983,21 @@ def _step_toward(g, fid, start, dest, reach):
     return None
 
 
+def fuel_balance(g, fid) -> dict:
+    """턴당 공장 연료 수급 추정(채굴만, 재고 제외): supply 공장에 넣을 수 있는 연료, demand 공장 단계 합,
+    spare = supply − demand, plant_room 남는 발전소 용량, raw_left 발전소에 못 넣은 석탄·석유."""
+    mined = g.energy_mined(fid)
+    plants, facts = g.energy_sites(fid)
+    cap = sum(r.b["power"] for r in plants)
+    conv_oil = min(cap, mined["oil"])
+    conv_coal = min(cap - conv_oil, mined["coal"])
+    supply = (mined["elec"] + C.POWER_ELEC["oil"] * conv_oil + C.POWER_ELEC["coal"] * conv_coal
+              + (mined["coal"] - conv_coal) + (mined["oil"] - conv_oil))
+    demand = sum(r.b["factory"] for r in facts)
+    return {"supply": supply, "demand": demand, "spare": supply - demand,
+            "plant_room": cap - conv_oil - conv_coal, "raw_left": mined["coal"] - conv_coal + mined["oil"] - conv_oil}
+
+
 def auto_slots(g, fid, military=True):
     """플레이어 편의: 빈 슬롯을 AI 판단으로 채운다. 채운 슬롯 수를 반환."""
     f = g.factions[fid]
@@ -998,9 +1012,9 @@ def auto_slots(g, fid, military=True):
 def _delta_output(g, rid, key):
     rr = g.regions[rid]
     b = dict(rr.b)
-    old = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark, 1.0)
+    old = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark)
     b[key] += 1
-    new = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark, 1.0)
+    new = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"], rr.landmark)
     return new - old
 
 
@@ -1020,6 +1034,8 @@ def _slots(g, f, threat, military=True):
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
+    fuel = fuel_balance(g, fid)
+    unit_val = 1300 * tax                     # 공장 연료 1개가 턴당 버는 세수(대략)
     cands = []
     bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
     annex_bias = bias("annex")
@@ -1065,20 +1081,29 @@ def _slots(g, f, threat, military=True):
             if key in ("farm", "fishery"):
                 dfood = C.FOOD_PER_G                       # 농장·어장은 단계마다 같은 양
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
-            if key == "factory":
-                gain *= 0.8  # 연료 필요
+            if key == "factory" and fuel["spare"] < 1:
+                # 남는 연료가 없으면 새 칸은 놀고, 이미 들어가는 연료의 1개당 산출 상승분만 이득
+                pu = C.FACTORY_UNIT_OUTPUT
+                up = (pu[lv - 1] - pu[lv - 2]) * getattr(r, "fuel_used", 0) if lv >= 2 else 0
+                gain = up * tax * horizon * wts.get("economy", 1)
             gain *= bias(key)
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             lv = r.b["extract"] + 1
             cost = R.prod_building_cost("extract", lv)
-            gain = lv * 20 * C.AI_UTILITY_HORIZON
-            cands.append((gain / cost * bias("extract"), r.id, "build", "extract", None, cost / (2 * lv)))
-        if r.b["factory"] >= 2 and r.b["power"] < 2:
+            turns = g.build_time(fid, "extract", R.prod_building_turns(lv))
+            horizon = max(0, C.AI_UTILITY_HORIZON - turns)
+            # 연료가 모자라면 1개 더 캐는 만큼 공장이 돈다(발전소가 남으면 석탄 1 → 전기 2), 남으면 판매가 정도
+            per = (unit_val * (2 if fuel["plant_room"] > 0 else 1) if fuel["spare"] < 0
+                   else C.MARKET_SELL["oil" if info.is_oil else "coal"])
+            cands.append((per * horizon / cost * bias("extract"), r.id, "build", "extract", None, cost / turns))
+        if r.b["power"] < 5 and fuel["spare"] < 0 and fuel["raw_left"] > 0:
+            # 발전소: 공장 연료가 모자라고 발전소에 못 넣은 석탄·석유가 남을 때(석탄 1 → 공장 연료 2)
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
-            gain = 250 * R.g(r.b["factory"]) * tax * C.AI_UTILITY_HORIZON * 1.5
-            cands.append((gain / cost * bias("power"), r.id, "build", "power", None, cost / (2 * lv)))
+            turns = g.build_time(fid, "power", R.prod_building_turns(lv))
+            gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns) * (1.3 if info.power_site else 1.0)
+            cands.append((gain / cost * bias("power"), r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
             lv = r.b["specialty"] + 1
             cost = R.prod_building_cost("specialty", lv)
@@ -1156,10 +1181,10 @@ def _slots(g, f, threat, military=True):
                           cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
     if military and at_war and airports:
         ap_idle = [r for r in airports if r.id in idle_ids]
-        if ap_idle and f.res.get("oil", 0) >= 2 and f.money > 8000 and n_ftr < 2 + len(regs) // 25:
+        if ap_idle and g.can_pay_oil(fid, 2) and f.money > 8000 and n_ftr < 2 + len(regs) // 25:
             r0 = ap_idle[0]
             cands.append((2.2 * bias("air"), r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
-        elif ap_idle and f.res.get("oil", 0) >= 4 and f.money > 15000 and n_bmb < 1 + len(regs) // 40:
+        elif ap_idle and g.can_pay_oil(fid, 4) and f.money > 15000 and n_bmb < 1 + len(regs) // 40:
             r0 = ap_idle[0]
             cands.append((1.8 * bias("air"), r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
     # 해군: 육로로 불리하거나 닿지 않는 적 해안을 노린다(상륙함), 적 항구가 있으면 구축함
@@ -1179,11 +1204,11 @@ def _slots(g, f, threat, military=True):
                 cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
                 cands.append((2.3 * bias("naval"), coast[0].id, "build", "port", None,
                               cost / C.SINGLE_BUILDINGS["port"]["turns"]))
-        if sea_t and ports_idle and f.res.get("oil", 0) >= 3 and f.money > 6000:
+        if sea_t and ports_idle and g.can_pay_oil(fid, 3) and f.money > 6000:
             if n_lst < 1 + len(regs) // 40 and (not land_contact or unfavorable or g.rng.random() < 0.15):
                 r0 = ports_idle[0]
                 cands.append((2.4 * bias("naval"), r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
-            elif enemy_ports and n_dd < n_lst + 1 and f.res.get("oil", 0) >= 4 and f.money > 10000:
+            elif enemy_ports and n_dd < n_lst + 1 and g.can_pay_oil(fid, 4) and f.money > 10000:
                 r0 = ports_idle[-1]
                 cands.append((2.0 * bias("naval"), r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
     # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
@@ -1202,7 +1227,7 @@ def _slots(g, f, threat, military=True):
         for r in order[:mil_need]:
             key = "inf"
             # 지도자 성향: 유리한 병종은 조금 더 자주(보병 대비 상대 배수)
-            if f.res.get("oil", 0) >= 2 and f.money > 8000 and g.rng.random() < 0.35 * bias("tank") / bias("inf"):
+            if g.can_pay_oil(fid, 2) and f.money > 8000 and g.rng.random() < 0.35 * bias("tank") / bias("inf"):
                 key = "tank"
             elif g.rng.random() < (0.28 if at_war else 0.15) * bias("art") / bias("inf") and f.money > 3000:
                 key = "art"                    # 전쟁 중엔 선제 폭격용 포병을 더

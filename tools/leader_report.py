@@ -150,7 +150,7 @@ def main(main_path, flat_path=None, prev=None):
             goals.update(r.get("goals", {}))
         gtot = sum(goals.values()) or 1
         main_goal = ", ".join(f"{VICTORY_TYPES[g][:2]} {c / gtot * 100:.0f}%" for g, c in goals.most_common(2))
-        econ = sum(avg(f"build_{b}") for b in ("farm", "fishery", "factory", "bank", "power", "liquefy", "specialty", "extract"))
+        econ = sum(avg(f"build_{b}") for b in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract"))
         dfn = sum(avg(f"build_{b}") for b in ("line", "shelter", "aa"))
         alive = sum(r["alive_turns"] for r in rs)
         war_share = sum(r["beh"].get("war_turns", 0) for r in rs) / max(1, alive)

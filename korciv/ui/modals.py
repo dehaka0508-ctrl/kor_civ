@@ -252,7 +252,7 @@ def draw_start_popup(app, rid):
         sub += f" · {info.island}"
     gui.text((x, r.y + 54), sub, 13, t.muted)
     y = r.y + 86
-    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False, 1.0)
+    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False)
     food = R.food_output(info.farm, info.fishery)
     half = (cw - 20) // 2
 

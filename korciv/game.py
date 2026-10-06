@@ -75,9 +75,12 @@ class Game:
             if "occ" in r.__dict__:            # 예전: 점령 하나만 저장
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
-            for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0)):
+            for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
+                            ("pop_focus", False)):
                 if not hasattr(r, attr):
                     setattr(r, attr, v)
+            if not isinstance(getattr(r, "energy", None), dict):
+                r.energy = {}
         for a in self.armies.values():
             if not hasattr(a, "goto"):
                 a.goto = None
@@ -91,7 +94,8 @@ class Game:
                     if r.owner == f.id:
                         r.happy = min(C.HAPPY_MAX, r.happy + f.war_weary_applied)
                 del f.war_weary_applied
-            for attr, v in (("last_declare", -999), ("last_aggr_end", -999), ("warmonger", 0)):
+            for attr, v in (("last_declare", -999), ("last_aggr_end", -999), ("warmonger", 0),
+                            ("auto_energy", True), ("capital_fall_turn", -999), ("naval_off_until", 0)):
                 if not hasattr(f, attr):
                     setattr(f, attr, v)
         self._morale = {}
@@ -101,9 +105,13 @@ class Game:
         w = self.world
         for rid in w.order:
             info = w.regions[rid]
-            b = {k: 0 for k in ("farm", "fishery", "factory", "bank", "power", "liquefy", "specialty",
+            b = {k: 0 for k in ("farm", "fishery", "factory", "bank", "power", "specialty",
                                 "extract", "shelter", "aa", "academy", "airport", "port")}
             b.update(farm=info.farm, fishery=info.fishery, factory=info.factory, bank=info.bank)
+            if info.is_coal:
+                b["extract"] = info.coal          # 탄광: ① 1단계로 시작, ② 0단계(건설 가능)
+            if info.power_source:
+                b["power"] = 1                    # 현실 발전소(화력·원자력·수력) 소재지는 1단계로 시작
             if info.specialty:
                 b["specialty"] = 1
             if info.start_port:
@@ -191,7 +199,7 @@ class Game:
                 if a.id != b.id and a.is_ai:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
-            r.output = self.calc_output(r.id, phi=1.0)
+            r.output = self.calc_output(r.id, full=True)
             r.food = R.food_output(r.b["farm"], r.b["fishery"])
         for f in self.factions:
             regs = self.regions_of(f.id)
@@ -1007,7 +1015,7 @@ class Game:
         """지역 가치 1~10과 점수 구성 {항목: 점수}."""
         rr = self.regions[rid]
         info = self.info(rid)
-        levels = sum(rr.b[k] for k in ("farm", "fishery", "factory", "bank", "power", "liquefy",
+        levels = sum(rr.b[k] for k in ("farm", "fishery", "factory", "bank", "power",
                                        "specialty", "extract"))
         singles = sum(rr.b[k] for k in ("port", "airport", "academy"))
         parts = R.region_value_parts(self.region_output_estimate(rid), rr.pop, levels, singles,
@@ -1083,7 +1091,7 @@ class Game:
             if key == "specialty" and not info.specialty:
                 ok, why = False, "특산물 지정 지역만"
             if key == "extract" and not (info.is_oil or info.is_coal):
-                ok, why = False, "정유·탄광 지역만"
+                ok, why = False, "유전·탄전 지역만"
             cost = R.prod_building_cost(key, lv, info.power_site)
             if key == "factory":
                 cost *= m.mult("cost_factory")
@@ -1117,8 +1125,8 @@ class Game:
                 ok, why = False, "항구 필요"
             if u["kind"] == "air" and not rr.b["airport"]:
                 ok, why = False, "공항 필요"
-            if ok and self.factions[fid].res.get("oil", 0) < u["oil"]:
-                ok, why = False, f"석유 {u['oil']} 필요"
+            if ok and not self.can_pay_oil(fid, u["oil"]):
+                ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
@@ -1168,19 +1176,20 @@ class Game:
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
             return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * fm:.1f}, 산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
-            return (f"턴당 산출 +{C.FACTORY_OUTPUT * dg * m.mult('output_factory') * m.mult('output_prod'):,.0f}(석탄 기준, 연료 1/턴 소비)")
+            per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
+            return f"연료 최대 {lv}개/턴(석탄·석유·전기 무관), 1개당 산출 {per:,.0f} → 최대 {per * lv:,.0f}/턴"
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
-            return f"석탄·석유 → 전기 턴당 최대 {2 * lv}개 (공장 산출 x1.25)"
-        if key == "liquefy":
-            return f"석탄 → 석유 턴당 최대 {lv}개"
+            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → 전기 {C.POWER_ELEC['coal']}, "
+                    f"석유 1 → 전기 {C.POWER_ELEC['oil']})")
         if key == "specialty":
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
         if key == "extract":
-            what = "석유" if info.is_oil else "석탄"
-            return f"{what} 턴당 +1 (합계 {(info.oil or info.coal) + lv}개)"
+            if info.is_oil:
+                return f"석유 턴당 +1 (합계 {info.oil + lv}개)"
+            return f"석탄 턴당 +1 (합계 {lv}개)" + (" — 탄광 건설" if lv == 1 else "")
         if key == "line":
             k = m.value("line_k", C.LINE_BONUS)
             fail = R.surprise_mults(lv)[1][0]
@@ -1217,9 +1226,9 @@ class Game:
         f = self.factions[fid]
         if kind == "unit":
             u = C.UNITS[key]
-            if f.res.get("oil", 0) < u["oil"]:
+            if not self.can_pay_oil(fid, u["oil"]):
                 return False, f"석유 {u['oil']} 필요"
-            f.res["oil"] -= u["oil"]
+            self.pay_oil(fid, u["oil"])
             rr.h_delta += C.UNIT_START_HAPPY[u["weight"]]
         rr.project = Project(kind=kind, key=key, level=opt["level"], turns=opt["turns"],
                              per_turn=opt["per_turn"], border=opt["border"])
@@ -1314,7 +1323,7 @@ class Game:
 
     def max_buyable(self, fid, res) -> int:
         f = self.factions[fid]
-        if f.money <= 0:
+        if f.money <= 0 or res in C.ENERGY:
             return 0
         lo, hi = 0, 1
         while self.buy_cost(fid, res, hi) <= f.money and hi < 10 ** 7:
@@ -1329,6 +1338,8 @@ class Game:
 
     def market_buy(self, fid, res, qty):
         f = self.factions[fid]
+        if res in C.ENERGY:
+            return 0, 0.0                    # 에너지 자원은 돈으로 살 수 없다(판매만)
         bought = 0
         spent = 0.0
         for _ in range(int(qty)):
@@ -1355,12 +1366,152 @@ class Game:
         f.trade_sell += gain
         return q, gain
 
-    def set_fuel(self, fid, rid, fuel):
+    # ------------------------------------------------------------------ 에너지
+    def can_pay_oil(self, fid, n) -> bool:
+        f = self.factions[fid]
+        return f.res.get("oil", 0) + f.res.get("coal", 0) / C.OIL_AS_COAL >= n - 1e-9
+
+    def pay_oil(self, fid, n):
+        """석유 n 을 낸다. 모자라면 부족분 × 2 만큼 석탄으로."""
+        f = self.factions[fid]
+        use = min(n, f.res.get("oil", 0))
+        f.res["oil"] = f.res.get("oil", 0) - use
+        f.res["coal"] = f.res.get("coal", 0) - (n - use) * C.OIL_AS_COAL
+
+    def energy_mined(self, fid) -> dict:
+        """이번 턴 채굴·자체 발전(점령당하는 중·저항 지역 제외)."""
+        out = {"oil": 0, "coal": 0, "elec": 0}
+        for r in self.regions_of(fid):
+            if r.occ or self.resisting(r):
+                continue
+            info = self.info(r.id)
+            if info.is_oil:
+                out["oil"] += info.oil + r.b["extract"]
+            elif info.is_coal:
+                out["coal"] += r.b["extract"]
+            out["elec"] += info.power_self
+        return out
+
+    def energy_sites(self, fid):
+        """연료를 받는 시설: (발전소 지역들, 공장 지역들). 공장은 단계가 높은 순."""
+        act = [r for r in self.regions_of(fid) if not r.occ and not self.resisting(r)]
+        plants = sorted([r for r in act if r.b["power"] > 0], key=lambda r: (-r.b["power"], r.id))
+        facts = sorted([r for r in act if r.b["factory"] > 0], key=lambda r: (-r.b["factory"], r.id))
+        return plants, facts
+
+    def auto_energy_plan(self, fid, stock) -> dict:
+        """자동 배정: 공장 산출이 가장 커지도록. 석유는 발전소(전기 4)가 공장 직접 투입(1)보다 이득이라
+        발전소에 먼저, 그다음 석탄(전기 2). 공장은 1개당 산출이 높은(단계 높은) 곳부터 전기 → 석탄 → 석유.
+        군 생산용 석유는 AUTO_OIL_RESERVE 만큼 남긴다. 반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
+        plants, facts = self.energy_sites(fid)
+        s = dict(stock)
+        oil_free = max(0, int(s["oil"]) - C.AUTO_OIL_RESERVE)
+        coal = int(s["coal"])
+        need = sum(r.b["factory"] for r in facts) - int(s["elec"])
+        plan, fplan = {}, {}
+        # 1) 석탄부터 발전소에(석유 1 = 석탄 2라 같은 값어치, 석유는 군 생산에 아낀다)
+        for r in plants:
+            cap = r.b["power"]
+            a = {"coal": 0, "oil": 0, "elec": 0}
+            while cap > 0 and need > 0 and coal > 0:
+                a["coal"] += 1; coal -= 1; cap -= 1; need -= C.POWER_ELEC["coal"]
+            while cap > 0 and need > 0 and oil_free > 0:
+                a["oil"] += 1; oil_free -= 1; cap -= 1; need -= C.POWER_ELEC["oil"]
+            plan[r.id] = a
+        # 2) 발전소 용량이 모자라 공장이 빈다면 석탄 칸을 석유로 바꾼다(칸당 전기 2 → 4, 석탄은 공장에 직접)
+        for a in plan.values():
+            while need > 0 and oil_free > 0 and a["coal"] > 0:
+                a["coal"] -= 1; a["oil"] += 1; coal += 1; oil_free -= 1
+                need -= C.POWER_ELEC["oil"] - C.POWER_ELEC["coal"] + 1
+        elec = int(s["elec"]) + sum(C.POWER_ELEC["oil"] * a["oil"] + C.POWER_ELEC["coal"] * a["coal"]
+                                    for a in plan.values())
+        for r in facts:
+            a = {"coal": 0, "oil": 0, "elec": 0}
+            room = r.b["factory"]
+            for key in ("elec", "coal", "oil"):
+                avail = elec if key == "elec" else (coal if key == "coal" else oil_free)
+                k = min(room, avail)
+                a[key] += k
+                room -= k
+                if key == "elec":
+                    elec -= k
+                elif key == "coal":
+                    coal -= k
+                else:
+                    oil_free -= k
+            fplan[r.id] = a
+        return {"p": plan, "f": fplan}
+
+    def energy_plan(self, fid) -> dict:
+        """이번 턴 에너지 흐름(실제 처리와 같은 순서): 채굴 → 발전소 투입 → 전기 생산 → 공장 투입.
+        배정량이 재고보다 많으면 순서대로 있는 만큼만 쓴다.
+        반환: stock(지금 재고), mined, plants{rid: {coal, oil, elec_out}}, factories{rid: {coal, oil, elec, units}},
+              after(턴 뒤 재고)"""
+        f = self.factions[fid]
+        stock = {k: float(f.res.get(k, 0)) for k in C.ENERGY}
+        mined = self.energy_mined(fid)
+        s = {k: stock[k] + mined[k] for k in C.ENERGY}
+        plants, facts = self.energy_sites(fid)
+        if f.auto_energy:
+            want = self.auto_energy_plan(fid, s)
+        else:
+            want = {"p": {r.id: (r.energy or {}).get("p", {}) for r in plants},
+                    "f": {r.id: (r.energy or {}).get("f", {}) for r in facts}}
+        out_p, out_f = {}, {}
+        for r in plants:
+            a = want["p"].get(r.id, {})
+            room = r.b["power"]
+            used = {}
+            for key in ("oil", "coal"):
+                k = int(max(0, min(a.get(key, 0), room, s[key])))
+                used[key] = k
+                room -= k
+                s[key] -= k
+            e = C.POWER_ELEC["oil"] * used["oil"] + C.POWER_ELEC["coal"] * used["coal"]
+            s["elec"] += e
+            out_p[r.id] = {"coal": used["coal"], "oil": used["oil"], "elec_out": e}
+        for r in facts:
+            a = want["f"].get(r.id, {})
+            room = r.b["factory"]
+            used = {}
+            for key in ("elec", "coal", "oil"):
+                k = int(max(0, min(a.get(key, 0), room, s[key])))
+                used[key] = k
+                room -= k
+                s[key] -= k
+            used["units"] = used["elec"] + used["coal"] + used["oil"]
+            out_f[r.id] = used
+        return {"stock": stock, "mined": mined, "plants": out_p, "factories": out_f, "after": s}
+
+    def set_energy(self, fid, rid, site, key, n):
+        """수동 배정(자동 배정을 끈 상태). site "p" 발전소(석탄·석유), "f" 공장(전기·석탄·석유). 합계 ≤ 단계."""
         rr = self.regions[rid]
-        if rr.owner == fid and fuel in ("auto", "coal", "oil", "elec"):
-            rr.fuel = fuel
-            return True
-        return False
+        if rr.owner != fid or site not in ("p", "f"):
+            return False
+        cap = rr.b["power"] if site == "p" else rr.b["factory"]
+        if cap <= 0 or (site == "p" and key == "elec") or key not in ("coal", "oil", "elec"):
+            return False
+        en = dict(rr.energy or {})
+        e = dict(en.get(site, {}))
+        e[key] = 0
+        e[key] = max(0, min(int(n), cap - sum(e.values())))
+        en[site] = e
+        rr.energy = en
+        return True
+
+    def set_auto_energy(self, fid, on):
+        """자동 배정을 끄면 지금 자동안을 수동 배정의 출발점으로 복사한다."""
+        f = self.factions[fid]
+        if f.auto_energy and not on:
+            f.auto_energy = True
+            plan = self.energy_plan(fid)
+            for r in self.regions_of(fid):
+                r.energy = {}
+            for rid, a in plan["plants"].items():
+                self.regions[rid].energy["p"] = {"coal": a["coal"], "oil": a["oil"]}
+            for rid, a in plan["factories"].items():
+                self.regions[rid].energy["f"] = {"coal": a["coal"], "oil": a["oil"], "elec": a["elec"]}
+        f.auto_energy = bool(on)
 
     # ------------------------------------------------------------------ 산출 계산
     def coast_controller(self, sea_id):
@@ -1384,11 +1535,12 @@ class Game:
                 return 1 + C.COAST_FISH_BONUS
         return 1.0
 
-    def calc_output(self, rid, phi=None, owner=None):
+    def calc_output(self, rid, full=False, owner=None):
+        """full=True 면 공장에 연료가 가득 들어간다고 보고 계산(추정·미리보기용)."""
         rr = self.regions[rid]
         owner = rr.owner if owner is None else owner
         m = self.mods(owner)
-        phi = rr.phi if phi is None else phi
+        phi = None if full else getattr(rr, "fuel_used", 0)
         y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
                             rr.landmark, phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
                             m.mult("output_bank"), m.mult("output_factory"),
@@ -1477,7 +1629,7 @@ class Game:
         rr = self.regions[rid]
         if rr.output > 0 and rr.owner != NEUTRAL:
             return rr.output
-        return self.calc_output(rid, phi=1.0 if rr.b["factory"] else 1.0)
+        return self.calc_output(rid, full=True)
 
     def gdp(self, fid) -> float:
         return sum(r.output for r in self.regions.values() if r.owner == fid)
@@ -2377,48 +2529,16 @@ class Game:
         res = f.res
         for r in active:
             info = self.info(r.id)
-            if info.is_oil:
-                res["oil"] += info.oil + r.b["extract"]
-            if info.is_coal:
-                res["coal"] += info.coal + r.b["extract"]
-            res["elec"] += info.power_self
             if r.b["specialty"]:
                 for sp in info.specialties:
                     f.specialty[sp] = f.specialty.get(sp, 0) + r.b["specialty"]
-        factories = sorted([r for r in active if r.b["factory"] > 0], key=lambda r: -r.b["factory"])
-        want_elec = sum(1 for r in factories if r.fuel in ("auto", "elec"))
-        want_coal = sum(1 for r in factories if r.fuel == "coal")
-        # 발전소: 석탄(부족하면 석유) -> 전기
-        cap = sum(2 * r.b["power"] for r in active)
-        need = max(0, want_elec - int(res["elec"]))
-        conv = 0
-        while conv < min(cap, need):
-            if res["coal"] - want_coal >= 1:
-                res["coal"] -= 1
-            elif res["oil"] > C.OIL_RESERVE_FOR_LIQUEFY:
-                res["oil"] -= 1
-            else:
-                break
-            res["elec"] += 1
-            conv += 1
-        # 석탄액화: 석유 비축이 적을 때 석탄 -> 석유
-        lcap = sum(r.b["liquefy"] for r in active)
-        if f.liquefy:
-            n = 0
-            while n < lcap and res["oil"] < C.OIL_RESERVE_FOR_LIQUEFY and res["coal"] - want_coal >= 1:
-                res["coal"] -= 1
-                res["oil"] += 1
-                n += 1
+        # 에너지: 채굴 → 발전소 → 전기 → 공장 (미리보기와 같은 계산)
+        plan = self.energy_plan(f.id)
+        for k in C.ENERGY:
+            res[k] = plan["after"][k]
         for r in regs:
-            r.phi = 1.0
-        for r in factories:
-            order = C.FUEL_AUTO_ORDER if r.fuel == "auto" else (r.fuel,)
-            r.phi = C.FUEL_PHI["none"]
-            for fuel in order:
-                if res.get(fuel, 0) >= 1:
-                    res[fuel] -= 1
-                    r.phi = C.FUEL_PHI[fuel]
-                    break
+            r.fuel_used = plan["factories"].get(r.id, {}).get("units", 0)
+        f.last["energy"] = plan
         live = {r.id for r in active}
         for r in regs:
             r.output = self.calc_output(r.id) if r.id in live else 0.0

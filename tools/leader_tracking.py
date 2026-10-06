@@ -121,7 +121,7 @@ def install(G, D, A):
             elif kind == "build":
                 b[f"build_{key}"] += 1
                 fx.append("build_time_all")
-                if key in ("farm", "fishery", "factory", "bank", "power", "liquefy", "specialty", "extract"):
+                if key in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract"):
                     fx.append("build_time_prod")
                 if key == "factory":
                     fx += ["build_time_factory", "cost_factory"]

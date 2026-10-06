@@ -8,7 +8,7 @@ from . import config as C
 
 NEUTRAL = -1
 
-ALL_BUILDINGS = ["farm", "fishery", "factory", "bank", "power", "liquefy", "specialty", "extract",
+ALL_BUILDINGS = ["farm", "fishery", "factory", "bank", "power", "specialty", "extract",
                  "shelter", "aa", "academy", "airport", "port"]
 BUILDING_NAMES = {**{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.DEF_BUILDINGS.items()},
@@ -44,7 +44,7 @@ class Region:
     b: dict = field(default_factory=dict)
     lines: dict = field(default_factory=dict)
     landmark: bool = False
-    fuel: str = "auto"
+    energy: dict = field(default_factory=dict)   # 수동 연료 배정 {"coal": n, "oil": n, "elec": n} (공장·발전소)
     project: Optional[Project] = None
     occs: dict = field(default_factory=dict)   # 무력 점령 진행 {fid: {"by", "progress", "need"}} (여러 세력 동시 가능)
     supplied: set = field(default_factory=set)
@@ -56,7 +56,7 @@ class Region:
     acquired_seq: int = 0          # 영토를 얻은 순서(수도 0) — '다음 지역' 순회용
     famine: float = 0.0
     h_delta: float = 0.0
-    phi: float = 1.0
+    fuel_used: int = 0             # 이번 턴 공장에 들어간 연료 개수
     output: float = 0.0
     food: float = 0.0
     bombed: bool = False
@@ -78,7 +78,7 @@ class Region:
 
     def level_sum(self) -> int:
         return sum(self.b.get(k, 0) for k in ("farm", "fishery", "factory", "bank", "power",
-                                              "liquefy", "specialty", "extract"))
+                                              "specialty", "extract"))
 
 
 @dataclass
@@ -153,7 +153,7 @@ class Faction:
     alive: bool = True
     auto_food: bool = True
     auto_specialty: bool = True     # 행복도 낮은 지역부터 자동 배분
-    liquefy: bool = True
+    auto_energy: bool = True        # 공장·발전소 연료 자동 배정
     buy_count: dict = field(default_factory=dict)   # 이번 턴 구매 개수(가격 상승용)
     trade_buy: float = 0.0
     trade_sell: float = 0.0

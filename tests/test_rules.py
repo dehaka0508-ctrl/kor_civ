@@ -15,7 +15,7 @@ def test_start_outputs_match_design_doc():
 
     def y(name):
         r = w.regions[n[name]]
-        return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False, 1.0)
+        return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank, False)
 
     assert y("서울 강남구") == pytest.approx(3096)
     assert y("경북 김천시") == pytest.approx(2296)        # 농장·어장 산출은 단계에 비례(150×L)

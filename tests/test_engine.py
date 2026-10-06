@@ -65,12 +65,15 @@ def test_cancel_refund_and_stall():
     assert g.regions["S002"].project.stalled
 
 
-def test_market_price_rises():
+def test_energy_cannot_be_bought_but_sold():
     g = new_game()
-    p0 = g.buy_price(0, "oil")
-    g.market_buy(0, "oil", 1)
-    assert g.buy_price(0, "oil") == pytest.approx(p0 * 1.1)
-    assert g.buy_price(0, "food") == g.buy_price(0, "food")
+    f = g.player
+    m0, o0 = f.money, f.res["oil"]
+    assert g.market_buy(0, "oil", 3) == (0, 0.0) and g.max_buyable(0, "coal") == 0
+    assert f.money == m0 and f.res["oil"] == o0
+    k, gain = g.market_sell(0, "coal", 2)
+    assert k == 2 and gain > 0
+    assert g.market_buy(0, "food", 1)[0] == 1
 
 
 def test_tax_lock(monkeypatch):
@@ -87,7 +90,7 @@ def test_jeongjo_industry_build_time():
     g = new_game(player_leader="jeongjo")
     base = prod_building_turns(1)
     assert g.build_time(0, "factory", 10) == 12 and g.build_time(0, "power", 10) == 12
-    assert g.build_time(0, "extract", 10) == 12 and g.build_time(0, "liquefy", 10) == 12
+    assert g.build_time(0, "extract", 10) == 12
     assert g.build_time(0, "bank", 10) == 10 and base > 0
 
 
@@ -307,11 +310,11 @@ def test_landmark_naming():
 def test_production_focus_bonus():
     g = new_game(player_start="S002", n_enemies=1)
     r = g.regions["S002"]
-    base = g.calc_output("S002", phi=1.0)
+    base = g.calc_output("S002", full=True)
     g.set_focus(0, "S002", True)
-    assert g.calc_output("S002", phi=1.0) == pytest.approx(base + 30 * r.pop * C.FOCUS_POP_BONUS)
+    assert g.calc_output("S002", full=True) == pytest.approx(base + 30 * r.pop * C.FOCUS_POP_BONUS)
     g.start_project(0, "S002", "build", "farm")          # 건설 중에는 효과 없음
-    assert g.calc_output("S002", phi=1.0) == pytest.approx(base)
+    assert g.calc_output("S002", full=True) == pytest.approx(base)
     assert g.idle_slots(0) == 0
 
 
@@ -805,9 +808,9 @@ def test_unhappy_region_output_penalty():
     g = new_game(player_start="S002", n_enemies=1)
     r = g.regions["S002"]
     r.happy = 0
-    base = g.calc_output("S002", phi=1.0)
+    base = g.calc_output("S002", full=True)
     r.happy = -100
-    assert g.calc_output("S002", phi=1.0) == pytest.approx(base * 0.7)
+    assert g.calc_output("S002", full=True) == pytest.approx(base * 0.7)
 
 
 def test_ai_tax_responds_to_finance_and_happiness():
@@ -945,10 +948,10 @@ def test_priority_auto_sort_and_market_max():
     assert lefts == sorted(lefts)
     f = g.factions[0]
     f.money = 1000.0
-    n = g.max_buyable(0, "oil")
-    assert g.buy_cost(0, "oil", n) <= 1000 < g.buy_cost(0, "oil", n + 1)
-    bought, spent = g.market_buy(0, "oil", n)
-    assert bought == n and spent == pytest.approx(g.buy_cost(0, "oil", 0) + spent)
+    n = g.max_buyable(0, "food")
+    assert g.buy_cost(0, "food", n) <= 1000 < g.buy_cost(0, "food", n + 1)
+    bought, spent = g.market_buy(0, "food", n)
+    assert bought == n and spent == pytest.approx(g.buy_cost(0, "food", n))
 
 
 def test_ai_army_leaves_neutral_occupation_when_country_in_crisis():
@@ -1362,3 +1365,75 @@ def test_crowd_penalty_tiers():
     h = g.eff_happy(rb)
     rb.pop = q0
     assert g.eff_happy(rb) == pytest.approx(h + 4)
+
+
+def test_energy_coal_fields_and_plants_start():
+    g = new_game(player_start="S002", n_enemies=1)
+    n = g.world.name_to_id
+    assert g.regions[n["강원 태백시"]].b["extract"] == 1          # ① 탄광 가동: 1단계
+    paju = n["경기 파주시"]
+    assert g.regions[paju].b["extract"] == 0 and g.world.regions[paju].is_coal   # ② 석탄층: 0단계, 건설 가능
+    assert not g.world.regions["S002"].is_coal
+    assert g.regions[n["충남 당진시"]].b["power"] == 1           # 현실 발전소 1단계
+    assert g.regions["S002"].b["power"] == 0
+    _own(g, 0, [paju])
+    opt = next(o for o in g.options(0, paju) if o["key"] == "extract")
+    assert opt["ok"]
+    opt = next(o for o in g.options(0, "S002") if o["key"] == "extract")
+    assert not opt["ok"]
+    assert not any(o["key"] == "liquefy" for o in g.options(0, "S002"))
+
+
+def _energy_setup():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    r.b["factory"], r.b["power"] = 3, 2
+    f = g.player
+    f.res.update(coal=0, oil=0, elec=0)
+    return g, r, f
+
+
+def test_energy_plan_auto_and_flow():
+    g, r, f = _energy_setup()
+    assert R.factory_output(5) == 10000 and R.factory_output(3, 2) == 2800
+    f.res.update(coal=3, oil=C.AUTO_OIL_RESERVE + 1)
+    plan = g.energy_plan(0)
+    p = plan["plants"]["S002"]
+    assert p == {"coal": 2, "oil": 0, "elec_out": 4}           # 석탄부터 발전소에(석유는 아낀다)
+    fu = plan["factories"]["S002"]
+    assert fu["units"] == 3                                    # 공장 3단계 = 연료 3개
+    # 발전소 용량이 모자라면 석탄 칸을 석유로 바꿔 전기를 더 만든다
+    r.b["power"] = 1
+    plan2 = g.energy_plan(0)
+    assert plan2["plants"]["S002"]["oil"] == 1 and plan2["factories"]["S002"]["units"] == 3
+    assert plan2["after"]["oil"] == C.AUTO_OIL_RESERVE         # 군 생산용 석유는 남긴다
+    r.b["power"] = 2
+    plan = g.energy_plan(0)
+    after = dict(plan["after"])
+    g._phase_resources(f)
+    assert {k: f.res[k] for k in C.ENERGY} == pytest.approx(after)    # 미리보기 = 실제 처리
+    assert r.fuel_used == 3
+    assert r.output == pytest.approx(g.calc_output("S002", full=True))
+
+
+def test_energy_manual_assignment():
+    g, r, f = _energy_setup()
+    f.res.update(coal=5, oil=0, elec=0)
+    g.set_auto_energy(0, False)
+    g.set_energy(0, "S002", "p", "coal", 2)                    # 발전소: 석탄 2 → 전기 4
+    g.set_energy(0, "S002", "f", "elec", 3)
+    g.set_energy(0, "S002", "f", "coal", 3)                    # 합계는 단계(3)까지
+    assert r.energy["f"]["coal"] == 0
+    plan = g.energy_plan(0)
+    assert plan["plants"]["S002"] == {"coal": 2, "oil": 0, "elec_out": 4}
+    assert plan["factories"]["S002"]["elec"] == 3 and plan["after"]["elec"] == 1
+    assert plan["after"]["coal"] == 3
+
+
+def test_units_pay_oil_with_coal():
+    g, r, f = _energy_setup()
+    f.res.update(oil=1, coal=2)
+    assert g.can_pay_oil(0, 2)
+    g.pay_oil(0, 2)                                            # 석유 1 + 석탄 2(= 석유 1)
+    assert f.res["oil"] == 0 and f.res["coal"] == 0
+    assert not g.can_pay_oil(0, 1)

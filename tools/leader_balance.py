@@ -67,7 +67,7 @@ def run_game(job):
         info = g.world.regions[f.capital]
         starts[f.id] = {"rid": f.capital, "name": info.name, "value": g.region_value(f.capital)[0],
                         "output": R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank,
-                                                  False, 1.0)}
+                                                  False)}
     mid = {}
     peak = {f.id: 1 for f in g.factions}
     for _ in range(turns):

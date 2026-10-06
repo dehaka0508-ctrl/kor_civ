@@ -13,13 +13,21 @@ def g(level: int) -> float:
     return level * (1 + C.LEVEL_GROWTH * (level - 1))
 
 
-def region_output(pop, farm, fishery, factory, bank, landmark, phi=1.0,
+def factory_output(level: int, fuel=None) -> float:
+    """공장: 연료 1개당 단계별 산출(1000/1200/1400/1600/2000), 단계 L이면 L개까지. fuel=None 이면 가득."""
+    if level <= 0:
+        return 0.0
+    n = level if fuel is None else max(0, min(level, fuel))
+    return C.FACTORY_UNIT_OUTPUT[min(level, 5) - 1] * n
+
+
+def region_output(pop, farm, fishery, factory, bank, landmark, fuel=None,
                   fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0, prod_mult=1.0) -> float:
     """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) + 9000K (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
     return (C.POP_OUTPUT * pop * pop_mult
             + (C.FARM_OUTPUT * farm                      # 농장·어장은 단계에 비례
                + C.FISH_OUTPUT * fishery * fish_mult
-               + C.FACTORY_OUTPUT * g(factory) * phi * factory_mult
+               + factory_output(factory, fuel) * factory_mult
                + C.BANK_OUTPUT * g(bank) * bank_mult) * prod_mult
             + C.LANDMARK_OUTPUT * (1 if landmark else 0))
 

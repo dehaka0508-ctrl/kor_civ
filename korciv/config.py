@@ -29,8 +29,12 @@ COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
 RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량 12×단계(바다 어장 15×단계의 80%)
 
-FUEL_PHI = {"coal": 1.0, "oil": 1.1, "elec": 1.25, "none": 0.25}
-FUEL_AUTO_ORDER = ("elec", "coal", "oil")   # 자동 연료: 석유는 군 생산용으로 아낀다
+# 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
+FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
+POWER_ELEC = {"coal": 2, "oil": 4}   # 발전소: 단계 L마다 연료 1개/턴까지 → 전기
+OIL_AS_COAL = 2                      # 석유 1 = 석탄 2 (군 생산 비용 대체 등)
+ENERGY = ("oil", "coal", "elec")     # 돈으로 살 수 없는 자원(판매는 가능)
+AUTO_OIL_RESERVE = 6                 # 자동 배정은 군 생산용 석유를 이만큼 남긴다
 
 START_RESOURCES = {"oil": 5, "coal": 10, "elec": 0}   # 식량은 인구 * 5
 RESOURCES = ("food", "oil", "coal", "elec")
@@ -38,7 +42,6 @@ RESOURCE_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "
 MARKET_BUY = {"food": 4, "oil": 40, "coal": 20, "elec": 30}
 MARKET_SELL = {"food": 2, "oil": 20, "coal": 10, "elec": 15}
 MARKET_STEP = 0.10         # 식량 제외 자원은 같은 턴 1개 살 때마다 +10%
-OIL_RESERVE_FOR_LIQUEFY = 20   # 석유 비축이 이보다 적을 때만 석탄액화
 SPECIALTY_VALUE = 20
 SPECIALTY_MAX_TYPES = 5
 SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행복도 턴당 +0.1
@@ -64,7 +67,6 @@ PROD_BUILDINGS = {
     "factory":   {"name": "공장", "base": 1500, "max": 5},
     "bank":      {"name": "은행", "base": 1200, "max": 5},
     "power":     {"name": "발전소", "base": 1500, "max": 5},
-    "liquefy":   {"name": "석탄액화공장", "base": 2000, "max": 5},
     "specialty": {"name": "특산물 시설", "base": 600, "max": 3},
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
@@ -361,4 +363,4 @@ AMBUSH_TURNS = 4            # 선덕여왕 '대야성 함락': 선전포고를 �
 CAPITAL_FALL_TURNS = 8     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
 MINORITY_REGIONS = 40       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
 HEAL_RATE = 0.10           # 한 턴 동안 아무것도 하지 않은 부대의 체력 회복(최대 체력 대비)
-INDUSTRY_BUILDINGS = ("factory", "extract", "liquefy", "power")   # 공장·정유·탄광·석탄액화·발전소
+INDUSTRY_BUILDINGS = ("factory", "extract", "power")   # 공장·정유·탄광·발전소

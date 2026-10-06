@@ -7,6 +7,7 @@ import pygame
 
 from .. import config as C
 from .. import diplomacy as D
+from .. import rules as R
 from ..leaders import GOV_BY_KEY, LEADER_BY_KEY
 from ..state import BUILDING_NAMES, NEUTRAL
 from .theme import fmt_money, hex2rgb, measure, mix
@@ -60,12 +61,12 @@ def kv(gui, x, y, w, k, v, vcol=None):
 
 # ------------------------------------------------------------------ 좌측 패널
 def draw_left(app, rect):
-    """좌측 패널: [국가 현황] / [지역 정보] 탭, 접기 가능."""
+    """좌측 패널: [국가 현황] / [자원 배정] / [지역 정보] 탭, 접기 가능."""
     gui = app.gui
     t = app.theme
     gui.panel(rect)
-    tw = (rect.w - 60) / 2
-    for i, (k, label) in enumerate((("nation", "국가 현황"), ("region", "지역 정보"))):
+    tw = (rect.w - 60 - 8) / 3
+    for i, (k, label) in enumerate((("nation", "국가 현황"), ("energy", "자원 배정"), ("region", "지역 정보"))):
         if gui.button((rect.x + 12 + i * (tw + 4), rect.y + 10, tw, 32), label, selected=app.left_tab == k, size=14):
             app.left_tab = k
     if gui.button((rect.right - 40, rect.y + 10, 30, 32), "‹", "ghost", size=16, tooltip="접기"):
@@ -74,6 +75,8 @@ def draw_left(app, rect):
     body = pygame.Rect(rect.x, rect.y + 48, rect.w, rect.h - 48)
     if app.left_tab == "nation":
         draw_nation_status(app, body)
+    elif app.left_tab == "energy":
+        draw_energy_tab(app, body)
     elif not app.sel:
         gui.text((body.x + 16, body.y + 10), "지도에서 지역을 선택하세요.", 13, t.muted)
     else:
@@ -120,7 +123,7 @@ def draw_region_info(app, rect):
     y0 = y
     y -= off
     y = kv(gui, x, y, w, "인구", f"{r.pop:,.1f}만 명 (시작 {info.pop0:.1f})")
-    y_out = r.output if r.owner != NEUTRAL else g.calc_output(node, phi=1.0)
+    y_out = r.output if r.owner != NEUTRAL else g.calc_output(node, full=True)
     y = kv(gui, x, y, w, "산출(GDP)", f"{y_out:,.0f} /턴")
     val, _ = g.region_value(node)
     vtxt = f"{val} / 10"
@@ -131,8 +134,7 @@ def draw_region_info(app, rect):
         y = kv(gui, x, y, w, "세수", f"{y_out * g.player.tax:,.0f} /턴")
         y = kv(gui, x, y, w, "식량 생산", f"{r.food:,.1f} (소비 {r.pop:,.1f})")
         if r.b["factory"]:
-            fuel = {1.0: "석탄", 1.1: "석유", 1.25: "전기", 0.25: "연료 없음"}.get(round(r.phi, 2), "-")
-            y = kv(gui, x, y, w, "공장 연료", fuel)
+            y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b['factory']}개 투입")
     # 행복도 막대
     if owner != NEUTRAL and visible:
         eh = g.eff_happy(r)
@@ -186,7 +188,7 @@ def draw_region_info(app, rect):
     # 건물
     y = section(gui, x, y + 6, w, "건물 단계")
     chips = []
-    for k in ("farm", "fishery", "factory", "bank", "power", "liquefy", "specialty", "extract", "shelter", "aa"):
+    for k in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa"):
         if r.b[k]:
             chips.append(f"{BUILDING_NAMES[k]} {r.b[k]}")
     for k in ("academy", "airport", "port"):
@@ -442,12 +444,9 @@ def draw_action_tab(app, body):
         gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음): 산출이 없고 아무것도 생산할 수 없습니다.",
                  w, 13, t.bad)
         return
-    if r.b["factory"]:
-        gui.text((x, y + 6), "공장 연료", 12, t.muted)
-        opts = ["auto", "coal", "oil", "elec"]
-        idx = gui.segmented((x + 70, y, w - 70, 28), ["자동", "석탄", "석유", "전기"], opts.index(r.fuel))
-        if opts[idx] != r.fuel:
-            g.set_fuel(pid, rid, opts[idx])
+    if r.b["factory"] or r.b["power"]:
+        if gui.button((x, y, w, 28), "연료 배정 (국가 현황 › 자원 배정)", size=12):
+            app.left_open, app.left_tab = True, "energy"
         y += 36
     if r.project:
         return
@@ -672,7 +671,10 @@ def draw_nation_tab(app, body):
         def do_sell(n, res=res, name=name):
             k, s_ = g.market_sell(pid, res, n)
             app.toast(f"{name} {k}개 판매 (+{s_:,.0f})")
-        if gui.button((bx, y, 54, 24), "구매", size=11, tooltip=f"최대 {g.max_buyable(pid, res):,}개까지"):
+        energy = res in C.ENERGY
+        if gui.button((bx, y, 54, 24), "구매", size=11, enabled=not energy,
+                      tooltip="에너지 자원은 돈으로 살 수 없습니다(판매만)" if energy
+                      else f"최대 {g.max_buyable(pid, res):,}개까지"):
             modals.open_qty(app, f"{name} 구매", g.max_buyable(pid, res), 0, do_buy,
                             preview=lambda n, res=res: f"비용 {g.buy_cost(pid, res, n):,.0f} (자금 {f.money:,.0f})",
                             ok_label="구매")
@@ -682,8 +684,7 @@ def draw_nation_tab(app, body):
         y += 30
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
-    f.liquefy = gui.checkbox((x, y, w, 24), f"석유 비축 {C.OIL_RESERVE_FOR_LIQUEFY} 미만이면 석탄액화", f.liquefy)
-    y += 30
+    y += 4
     # 특산물
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     supplied = sum(len(r.supplied) for r in g.regions_of(pid))
@@ -926,3 +927,118 @@ def draw_priority_list(app, x, y, w, items):
     elif sel is not None and sel not in ids:
         app.prio_sel = None
     return top + n * row_h + 4
+
+
+# ------------------------------------------------------------------ 자원 배정
+def draw_energy_tab(app, body):
+    """공장·발전소 연료 배정과 이번 턴 에너지 흐름(채굴 → 발전소 → 전기 → 공장)."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    f = g.player
+    x, w = body.x + 14, body.w - 28
+    y = body.y + 4
+    auto = gui.checkbox((x, y, w, 24), f"자동 배정 (석유 {C.AUTO_OIL_RESERVE}개는 군 생산용)", f.auto_energy, size=12)
+    if gui.hover(pygame.Rect(x, y, w, 24)):
+        gui.tooltip = ("공장 산출이 가장 커지게 배정합니다: 석탄을 먼저 발전소에(석탄 1 → 전기 2),\n"
+                       "발전소 용량이 모자라면 석유로(석유 1 → 전기 4). 공장은 1개당 산출이 높은 곳부터 채웁니다.\n"
+                       "끄면 지금 배정이 수동 배정의 출발점이 됩니다.")
+    if auto != f.auto_energy:
+        g.set_auto_energy(pid, auto)
+        app.changed()
+    y += 30
+    plan = g.energy_plan(pid)
+    plants, facts = g.energy_sites(pid)
+    flow_h = 236
+    area = pygame.Rect(body.x, y, body.w, body.bottom - y - flow_h)
+    row_h = 54
+    content = 30 + len(plants) * row_h + 30 + len(facts) * row_h + 10
+    off = gui.begin_scroll("energy", area, content)
+    yy = y - off
+
+    def steppers(r, site, keys, cap, used):
+        nonlocal yy
+        cur = (r.energy or {}).get(site, {}) if not f.auto_energy else {}
+        sw = (w - 8 * (len(keys) - 1)) / len(keys)
+        for i, (key, label) in enumerate(keys):
+            bx = x + i * (sw + 8)
+            gui.text((bx, yy + 22), label, 11, t.muted)
+            if f.auto_energy:
+                gui.text((bx + 34, yy + 22), f"{used.get(key, 0)}", 12, t.text, "semibold")
+                continue
+            v = cur.get(key, 0)
+            others = sum(cur.get(k, 0) for k, _ in keys if k != key)
+            nv = gui.stepper((bx + 30, yy + 20, sw - 30, 24), v, 0, max(0, cap - others), size=11)
+            if nv != v:
+                g.set_energy(pid, r.id, site, key, nv)
+                app.changed()
+
+    yy = section(gui, x, yy, w, f"발전소 {len(plants)}곳 · 연료 최대 {sum(r.b['power'] for r in plants)}/턴 "
+                 f"(석탄→전기 {C.POWER_ELEC['coal']}, 석유→{C.POWER_ELEC['oil']})")
+    for r in plants:
+        u = plan["plants"].get(r.id, {})
+        gui.text((x, yy), f"{app.world.regions[r.id].name} · {r.b['power']}단계", 12, weight="semibold", max_w=w - 90)
+        gui.text((x + w, yy), f"전기 +{u.get('elec_out', 0)}", 12, t.good if u.get("elec_out") else t.muted,
+                 anchor="topright")
+        steppers(r, "p", (("coal", "석탄"), ("oil", "석유")), r.b["power"], u)
+        yy += row_h
+    if not plants:
+        gui.text((x, yy), "발전소가 없습니다.", 12, t.muted)
+        yy += 24
+    yy = section(gui, x, yy + 6, w, f"공장 {len(facts)}곳 · 연료 최대 {sum(r.b['factory'] for r in facts)}/턴 (종류 무관)")
+    for r in facts:
+        u = plan["factories"].get(r.id, {})
+        lv = r.b["factory"]
+        per = C.FACTORY_UNIT_OUTPUT[min(lv, 5) - 1]
+        gui.text((x, yy), f"{app.world.regions[r.id].name} · {lv}단계 · 1개당 {per:,}", 12, weight="semibold",
+                 max_w=w - 70)
+        gui.text((x + w, yy), f"{u.get('units', 0)}/{lv}", 12, t.good if u.get("units") == lv else t.warn,
+                 anchor="topright")
+        steppers(r, "f", (("elec", "전기"), ("coal", "석탄"), ("oil", "석유")), lv, u)
+        yy += row_h
+    if not facts:
+        gui.text((x, yy), "공장이 없습니다.", 12, t.muted)
+    gui.end_scroll("energy", area, content)
+    # ---- 에너지 흐름표 (이번 턴 예상, 실제 처리와 같은 순서)
+    fy = body.bottom - flow_h + 6
+    gui.line(t.border, (x, fy - 4), (x + w, fy - 4))
+    cols = [x + w - 150, x + w - 95, x + w - 40]
+    gui.text((x, fy), "에너지 흐름 (이번 턴)", 13, weight="bold")
+    for cx, nm in zip(cols, ("석탄", "석유", "전기")):
+        gui.text((cx + 40, fy + 2), nm, 11, t.muted, anchor="topright")
+    fy += 22
+    p_coal = sum(a["coal"] for a in plan["plants"].values())
+    p_oil = sum(a["oil"] for a in plan["plants"].values())
+    p_elec = sum(a["elec_out"] for a in plan["plants"].values())
+    fu = {k: sum(a[k] for a in plan["factories"].values()) for k in ("coal", "oil", "elec")}
+    st, mi, af = plan["stock"], plan["mined"], plan["after"]
+    rows = [("재고", (st["coal"], st["oil"], st["elec"]), False),
+            ("① 채굴·자체 발전", (mi["coal"], mi["oil"], mi["elec"]), True),
+            ("② 발전소 투입", (-p_coal, -p_oil, 0), True),
+            ("③ 발전", (0, 0, p_elec), True),
+            ("④ 공장 투입", (-fu["coal"], -fu["oil"], -fu["elec"]), True),
+            ("턴 뒤 재고", (af["coal"], af["oil"], af["elec"]), False)]
+    for label, vals, signed in rows:
+        bold = not signed
+        gui.text((x, fy), label, 12, t.text if bold else t.muted, "semibold" if bold else "regular")
+        for cx, v in zip(cols, vals):
+            if signed and not v:
+                txt, col = "·", t.muted
+            else:
+                txt = f"{v:+,.0f}" if signed else f"{v:,.0f}"
+                col = (t.good if v > 0 else t.bad) if signed else t.text
+            gui.text((cx + 40, fy), txt, 12, col, "semibold" if bold else "regular", anchor="topright")
+        fy += 20
+        if label in ("재고", "④ 공장 투입"):
+            gui.line(t.border, (x, fy - 2), (x + w, fy - 2))
+    units = sum(a["units"] for a in plan["factories"].values())
+    cap = sum(r.b["factory"] for r in facts)
+    m = g.mods(pid)
+    out = sum(R.factory_output(r.b["factory"], plan["factories"][r.id]["units"]) for r in facts)
+    full = sum(R.factory_output(r.b["factory"]) for r in facts)
+    mult = m.mult("output_factory") * m.mult("output_prod")
+    gui.text((x, fy + 4), f"공장 연료 {units}/{cap} → 산출 {out * mult:,.0f}/턴", 12,
+             t.good if units >= cap else t.warn, "semibold", max_w=w)
+    if units < cap:
+        gui.text((x, fy + 22), f"연료가 차면 {full * mult:,.0f}/턴", 11, t.muted)

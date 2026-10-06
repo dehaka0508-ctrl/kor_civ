@@ -87,6 +87,7 @@ class RegionInfo:
     output0: float
     food0: float
     scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
+    coal_field: str = ""  # 탄전 구분 ①/② (탄광 열은 시작 탄광 단계)
 
     @property
     def is_oil(self):
@@ -94,7 +95,7 @@ class RegionInfo:
 
     @property
     def is_coal(self):
-        return self.coal > 0
+        return bool(self.coal_field)      # 탄전(① 탄광 가동 / ② 석탄층): 탄광 건설·증설 가능
 
     @property
     def can_fish(self):
@@ -198,7 +199,7 @@ class World:
             oil=int(r["정유"]), coal=int(r["탄광"]), power_self=int(r["자체발전"]),
             power_source=src, power_site="화력" in src, specialty=", ".join(specs), specialties=specs,
             note=r["비고"] or "", output0=float(r["초기산출"] or 0), food0=float(r["식량생산"] or 0),
-            scenic=(r.get("자연경관") or "").strip(),
+            scenic=(r.get("자연경관") or "").strip(), coal_field=(r.get("탄전") or "").strip(),
         )
 
     # ------------------------------------------------------------ 그래프
