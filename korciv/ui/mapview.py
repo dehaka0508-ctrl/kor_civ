@@ -38,6 +38,9 @@ def pip(x, y, poly):
 
 
 TERRAIN_COLORS = {"도하": (77, 171, 247), "돌파": (148, 216, 45)}   # 하늘색 / 연두색
+INTERACT_IDLE_MS = 150    # 드래그·휠이 이만큼 멈추면 지도를 정식으로 다시 그린다
+CACHE_MARGIN = 0.15       # 지도 캐시를 화면보다 상하좌우로 15%씩 넓게 그려, 작은 이동·휠 한 칸 축소는 다시 그리지 않는다
+LABEL_CELL = 64           # 지명 겹침 검사용 격자 크기(px)
 
 
 def dashed(surf, p1, p2, color, width=2, dash=6):
@@ -82,12 +85,30 @@ class MapView:
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
+        # 좌표 변환을 한 번에: 모든 꼭짓점을 한 배열에 모아 두고 다각형·선은 구간만 기억한다
+        bufs, n = [], 0
+
+        def put(arr):
+            nonlocal n
+            bufs.append(arr)
+            n += len(arr)
+            return (n - len(arr), n)
+        self.poly_span = [put(arr) for _, arr, _ in self.polys]
+        self.sea_span = {sid: [put(ext) for ext, _ in parts] for sid, parts in self.sea_polys.items()}
+        self.province_span = [put(a) for a in self.province_lines]
+        self.do8_span = [put(a) for a in self.do8_lines]
+        self.terrain_span = [(kind, [put(a) for a in lines], conn) for kind, lines, conn in self.terrain_lines]
+        self.verts = np.concatenate(bufs) if bufs else np.zeros((0, 2))
+        self.polys_by_rid = {}
+        for i, (rid, arr, bbox) in enumerate(self.polys):
+            self.polys_by_rid.setdefault(rid, []).append((arr, bbox))
         self.view = pygame.Rect(0, 0, 800, 800)
         self.z = 1.0
         self.cx, self.cy = 280.0, 520.0
         self.cache = None
-        self.cache_key = None
-        self.version = 0
+        self.cache_meta = None
+        self.version = 0              # 내용(색·지명·경계) 버전. 시점 이동은 버전을 올리지 않는다
+        self.last_interact = -10 ** 9
 
     # ------------------------------------------------------------ 좌표
     @property
@@ -119,7 +140,14 @@ class MapView:
             self.invalidate()
 
     def invalidate(self):
+        """지도 내용이 바뀌었다(색·소유·모드 등): 다음 프레임에 다시 그린다."""
         self.version += 1
+
+    def _touch(self):
+        self.last_interact = pygame.time.get_ticks()
+
+    def interacting(self) -> bool:
+        return pygame.time.get_ticks() - self.last_interact < INTERACT_IDLE_MS
 
     def zoom_at(self, pos, factor):
         bx, by = self.to_base(*pos)
@@ -132,22 +160,21 @@ class MapView:
         self.cx = bx - (pos[0] - self.view.centerx) / s
         self.cy = by - (pos[1] - self.view.centery) / s
         self._clamp()
-        self.invalidate()
+        self._touch()                 # 다시 그리지 않고 캐시를 늘려 보여 준다(멈추면 다시 그림)
 
     def pan(self, dx, dy):
         s = self.scale
         self.cx -= dx / s
         self.cy -= dy / s
         self._clamp()
-        self.invalidate()
+        self._touch()                 # 다시 그리지 않고 캐시를 밀어 보여 준다(멈추면 다시 그림)
 
     def center_on(self, node, zoom=None):
         if node in self.label:
             self.cx, self.cy = self.label[node]
             if zoom:
                 self.z = max(self.z, zoom)
-            self._clamp()
-            self.invalidate()
+            self._clamp()             # 조작 중이 아니므로 다음 프레임에 새 시점으로 다시 그린다
 
     def _clamp(self):
         self.cx = max(-50, min(BASE_W + 80, self.cx))
@@ -186,31 +213,80 @@ class MapView:
         return not (x1 * s + ox < self.view.x or x0 * s + ox > self.view.right
                     or y1 * s + oy < self.view.y or y0 * s + oy > self.view.bottom)
 
-    def render_base(self, key, theme, colors, sea_colors, mode, labels, show_terrain=True):
-        """colors: rid -> (fill, outline). 캐시가 유효하면 그대로 쓴다."""
+    def draw_base(self, screen, key, theme, colors_fn, sea_colors_fn, mode, labels_fn, show_terrain=True):
+        """바탕 지도(지역 색·경계·지명)를 화면에 그린다.
+        - 내용이 바뀌면(key·version) 지금 시점으로 다시 그린다.
+        - 드래그·휠 조작 중에는 다시 그리지 않고 마지막 캐시를 밀거나 늘려 보여 준다.
+          조작이 INTERACT_IDLE_MS 동안 멈추거나 캐시가 화면을 다 덮지 못하면 다시 그린다.
+        colors_fn 등은 다시 그릴 때만 부른다(매 프레임 색 계산을 하지 않는다)."""
         full_key = (key, self.version, self.view.size, theme.dark)
-        if self.cache is not None and self.cache_key == full_key:
-            return self.cache
-        surf = pygame.Surface(self.view.size)
+        meta = self.cache_meta
+        need = self.cache is None or meta["key"] != full_key
+        if not need and (meta["s"], meta["cx"], meta["cy"]) != (self.scale, self.cx, self.cy):
+            need = not self.interacting() or not self._cache_covers()
+        if need:
+            self._render(full_key, theme, colors_fn(), sea_colors_fn(), mode, labels_fn(), show_terrain)
+        self._blit_cache(screen, theme)
+
+    def _cache_place(self):
+        """캐시 왼쪽 위가 지금 화면에서 놓일 위치와 배율 k."""
+        m = self.cache_meta
+        k = self.scale / m["s"]
+        ox, oy = self.offset()
+        return ox - k * m["ox"], oy - k * m["oy"], k
+
+    def _cache_covers(self) -> bool:
+        dx, dy, k = self._cache_place()
+        w, h = self.cache.get_size()
+        return (dx <= self.view.x + 1 and dy <= self.view.y + 1
+                and dx + w * k >= self.view.right - 1 and dy + h * k >= self.view.bottom - 1)
+
+    def _blit_cache(self, screen, theme):
+        dx, dy, k = self._cache_place()
+        old_clip = screen.get_clip()
+        screen.set_clip(self.view)
+        if abs(k - 1.0) < 1e-9:
+            if not self._cache_covers():
+                screen.fill(theme.sea, self.view)
+            screen.blit(self.cache, (round(dx), round(dy)))
+        else:
+            # 화면에 보이는 부분만 잘라 늘린다(전체를 늘리면 확대할수록 느려진다)
+            w, h = self.cache.get_size()
+            x0 = max(0, int((self.view.x - dx) / k))
+            y0 = max(0, int((self.view.y - dy) / k))
+            x1 = min(w, int(math.ceil((self.view.right - dx) / k)) + 1)
+            y1 = min(h, int(math.ceil((self.view.bottom - dy) / k)) + 1)
+            screen.fill(theme.sea, self.view)
+            if x1 > x0 and y1 > y0:
+                part = self.cache.subsurface((x0, y0, x1 - x0, y1 - y0))
+                size = (max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k)))
+                screen.blit(pygame.transform.scale(part, size), (round(dx + x0 * k), round(dy + y0 * k)))
+        screen.set_clip(old_clip)
+
+    def _render(self, full_key, theme, colors, sea_colors, mode, labels, show_terrain=True):
+        """colors: rid -> (fill, outline). 화면보다 CACHE_MARGIN 만큼 넓게 그린다."""
+        mx, my = int(self.view.w * CACHE_MARGIN), int(self.view.h * CACHE_MARGIN)
+        surf = pygame.Surface((self.view.w + 2 * mx, self.view.h + 2 * my))
         # 바다색으로 채운다: 해역 다각형과 해안 사이에 틈이 있어도 바다로 보이게
         surf.fill(theme.sea)
         s = self.scale
         ox, oy = self.offset()
-        ox -= self.view.x
-        oy -= self.view.y
+        ox += mx - self.view.x
+        oy += my - self.view.y
+        T = self.verts * s + (ox, oy)          # 모든 꼭짓점을 한 번에 변환
 
-        def sp(arr):
-            return (arr * s + (ox, oy)).tolist()
+        def sp(span):
+            return T[span[0]:span[1]].tolist()
 
-        for sid, parts in self.sea_polys.items():
-            for ext, _ in parts:
-                pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), sp(ext))
-        for sid, parts in self.sea_polys.items():
-            for ext, _ in parts:
-                pygame.draw.lines(surf, theme.sea_line, True, sp(ext), 1)
-        view = pygame.Rect(0, 0, *self.view.size)
+        for sid, spans in self.sea_span.items():
+            for span in spans:
+                pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), sp(span))
+        for sid, spans in self.sea_span.items():
+            for span in spans:
+                pygame.draw.lines(surf, theme.sea_line, True, sp(span), 1)
+        view = surf.get_rect()
         thin = s < 1.2
-        for rid, arr, bbox in self.polys:
+        for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
             x0, y0, x1, y1 = bbox
             if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
                 continue
@@ -218,24 +294,24 @@ class MapView:
             if (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5:
                 surf.set_at((int(x0 * s + ox), int(y0 * s + oy)), fill)
                 continue
-            pts = sp(arr)
+            pts = sp(span)
             pygame.draw.polygon(surf, fill, pts)
             if not thin:
                 pygame.draw.lines(surf, line, True, pts, 1)
             else:
                 pygame.draw.aalines(surf, line, True, pts)
         pw = max(1, int((2 if self.z >= 2.5 else 1) * ui_scale()))
-        for arr in self.province_lines:
-            pygame.draw.lines(surf, theme.province_line, True, sp(arr), pw)
+        for span in self.province_span:
+            pygame.draw.lines(surf, theme.province_line, True, sp(span), pw)
         if mode == "do8":
-            for arr in self.do8_lines:
-                pygame.draw.lines(surf, theme.do8_line, True, sp(arr), 2)
+            for span in self.do8_span:
+                pygame.draw.lines(surf, theme.do8_line, True, sp(span), 2)
         if show_terrain:
             tw = max(2, int((3 if self.z < 2 else (4 if self.z < 4 else 5)) * ui_scale()))
-            for kind, lines, connector in self.terrain_lines:
+            for kind, spans, connector in self.terrain_span:
                 col = TERRAIN_COLORS[kind]
-                for arr in lines:
-                    pts = sp(arr)
+                for span in spans:
+                    pts = sp(span)
                     if len(pts) < 2:
                         continue
                     if connector:
@@ -261,7 +337,20 @@ class MapView:
             surf.blit(t, t.get_rect(center=(x * s + ox, y * s + oy)))
         # 구역 이름
         if self.z >= 2.0:
-            placed = []
+            # 겹침 검사는 격자로: 같은 칸·이웃 칸에 놓인 이름끼리만 비교한다
+            grid = {}
+
+            def cells(r):
+                for gx in range(r.left // LABEL_CELL, r.right // LABEL_CELL + 1):
+                    for gy in range(r.top // LABEL_CELL, r.bottom // LABEL_CELL + 1):
+                        yield gx, gy
+
+            def free(r):
+                return not any(r.colliderect(p) for c in cells(r) for p in grid.get(c, ()))
+
+            def place(r):
+                for c in cells(r):
+                    grid.setdefault(c, []).append(r)
             size = 11 if self.z < 3 else (12 if self.z < 5 else (13 if self.z < 10 else 15))
             color = theme.text if not theme.dark else (230, 232, 235)
             order = sorted(self.rbbox, key=lambda r: -self.area[r])
@@ -276,31 +365,31 @@ class MapView:
                     continue
                 t = render_text(name, size, color, "semibold")
                 r = t.get_rect(center=(px, py - (6 if self.z >= 4 else 0)))
-                if any(r.colliderect(p) for p in placed):
+                if not free(r):
                     skipped.append((rid, name, px, py))
                     continue
-                placed.append(r.inflate(4, 2))
+                place(r.inflate(4, 2))
                 surf.blit(t, r)
             # 겹쳐서 빠진 이름: 작은 글씨로 다시, 구역이 글자보다 넓거나 충분히 확대했으면 겹쳐도 표시
             for rid, name, px, py in skipped:
                 t = render_text(name, max(10, size - 2), color, "semibold")
                 r = t.get_rect(center=(px, py))
-                if self.z >= 10 or not any(r.colliderect(p) for p in placed):
-                    placed.append(r.inflate(2, 0))
+                if self.z >= 10 or free(r):
+                    place(r.inflate(2, 0))
                     surf.blit(t, r)
         self.cache = surf
-        self.cache_key = full_key
-        return surf
+        self.cache_meta = {"key": full_key, "s": s, "cx": self.cx, "cy": self.cy,
+                           "ox": ox, "oy": oy}    # 캐시 픽셀 = 기준 좌표 × s + (ox, oy)
 
     def outline(self, screen, rid, color, width=2):
-        for r, arr, bbox in self.polys:
-            if r == rid and self._visible_bbox(bbox):
+        for arr, bbox in self.polys_by_rid.get(rid, ()):
+            if self._visible_bbox(bbox):
                 pygame.draw.lines(screen, color, True, self._screen_poly(arr), width)
 
     def fill_overlay(self, overlay, rid, rgba):
         ox, oy = self.view.x, self.view.y
-        for r, arr, bbox in self.polys:
-            if r == rid and self._visible_bbox(bbox):
+        for arr, bbox in self.polys_by_rid.get(rid, ()):
+            if self._visible_bbox(bbox):
                 pts = [(x - ox, y - oy) for x, y in self._screen_poly(arr)]
                 pygame.draw.polygon(overlay, rgba, pts)
 

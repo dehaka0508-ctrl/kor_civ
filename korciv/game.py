@@ -1591,7 +1591,7 @@ class Game:
         rr.pop_focus = bool(on)
         if on:
             rr.focus = False
-        return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH:.1%}p" if on else "끔")
+        return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH * 100:g}%p" if on else "끔")
 
     def pop_focus_active(self, rr) -> bool:
         """건설·병력 생산을 하지 않고 실질 행복도 5 이상일 때만 효과."""

@@ -433,9 +433,9 @@ class App:
         key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (self.mode, self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
-        base = mv.render_base(key, self.theme, self.region_colors(pick_mode), self.sea_colors(), self.mode,
-                              self.map_labels(), show_terrain=self.show_terrain)
-        self.screen.blit(base, mv.view.topleft)
+        # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)
+        mv.draw_base(self.screen, key, self.theme, lambda: self.region_colors(pick_mode), self.sea_colors,
+                     self.mode, self.map_labels, show_terrain=self.show_terrain)
         self.screen.set_clip(mv.view)
         u = ui_scale()
         if pick_mode:
