@@ -333,8 +333,8 @@ def test_random_flag_ec2_not_white():
 
 
 def test_unmet_factions_hidden_under_fog(app):
-    """전장의 안개에서 조우하지 않은 국가는 '미지의 국가'·'수수께끼의 지도자'로만 보인다."""
-    app.start_game(Settings(seed=7, n_enemies=6, fog=1))
+    """안개 '미탐색'에서 조우하지 않은 국가는 '미지의 국가'·'수수께끼의 지도자'로만 보인다."""
+    app.start_game(Settings(seed=7, n_enemies=6, fog=2))
     g = app.game
     g.set_player_government("presidential")
     app.scene, app.modal = "main", None
@@ -364,3 +364,22 @@ def test_unmet_factions_hidden_under_fog(app):
     # 안개가 없으면 모두 안다
     app.start_game(Settings(seed=7, n_enemies=3, fog=0))
     assert all(app.game.has_met(app.game.player_id, f.id) for f in app.game.factions)
+
+
+def test_ai_leader_picker_and_fog_name_rules(app):
+    from korciv.ui import modals
+    s = modals.SetupState()
+    s.leader, s.n_enemies, s.ai_leaders = "sejong", 3, ["yisunsin", None, None]
+    app.setup, app.scene, app.game = s, "setup", None
+    s.ai_pick = 1
+    frame(app)                                   # 고르기 창
+    assert s.ai_pick == 1
+    s.ai_pick = None
+    frame(app)
+    # 안개 '지도 공개'는 국가명·수도는 알고 지도자는 모른다, '미탐색'은 둘 다 모른다
+    for fog, name_known in ((1, True), (2, False)):
+        app.start_game(Settings(seed=7, n_enemies=6, fog=fog))
+        g = app.game
+        o = next(f for f in g.factions if f.id != g.player_id and not g.has_met(g.player_id, f.id))
+        assert (g.seen_name(o.id) == o.name) == name_known
+        assert g.seen_leader(o.id) == "수수께끼의 지도자"

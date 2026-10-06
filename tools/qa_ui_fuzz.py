@@ -188,6 +188,8 @@ def force_state(app, rng):
         app.scene = rng.choice(["title", "setup", "pick_start"])
         if app.scene == "setup" and rng.random() < 0.4:
             app.setup.flag_draft = dict(app.setup.flag)
+        elif app.scene == "setup" and rng.random() < 0.4:
+            app.setup.ai_pick = rng.randrange(max(1, app.setup.n_enemies))
         return
     if g is None or r < RESTART_P:
         app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 9), fog=rng.choice([0, 1, 2]),

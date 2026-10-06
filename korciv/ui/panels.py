@@ -800,9 +800,9 @@ def draw_diplo_tab(app, body):
             app.dip_view = o.id
             app.war_confirm = None
         draw_flag(gui, (x, y + 9, 42, 28), faction_flag(o))
-        if not g.has_met(pid, o.id):            # 조우하지 않은 국가: 국기만
-            gui.text((x + 52, y + 5), g.UNKNOWN_NAME, 13, t.muted, "semibold", max_w=w - 60)
-            gui.text((x + 52, y + 24), g.UNKNOWN_LEADER, 11, t.muted, max_w=w - 60)
+        if not g.has_met(pid, o.id):            # 조우하지 않은 국가: 국기(지도 공개면 국가명까지)만
+            gui.text((x + 52, y + 5), g.seen_name(o.id), 13, t.muted, "semibold", max_w=w - 60)
+            gui.text((x + 52, y + 24), g.UNKNOWN_LEADER + " · 조우한 적 없음", 11, t.muted, max_w=w - 60)
             y += 50
             continue
         gui.text((x + 52, y + 5), o.name, 13, weight="semibold", max_w=w - 60)
@@ -857,7 +857,9 @@ def draw_diplo_detail(app, body, fid):
     rows = [("수도", cap, None), ("관계", rel, stage_color(t, st)),
             ("우호도 (상대 → 나)", f"{op:+.1f}", t.good if op >= 0 else t.bad)]
     if not known:
-        rows = [("수도", "알 수 없음", t.muted), ("관계", "조우한 적 없음", t.muted), ("우호도 (상대 → 나)", "?", t.muted)]
+        cap_txt = cap if g.knows_name(pid, fid) else "알 수 없음"     # 지도 공개: 국가명·수도만 공개
+        rows = [("수도", cap_txt, None if g.knows_name(pid, fid) else t.muted), ("관계", "조우한 적 없음", t.muted),
+                ("우호도 (상대 → 나)", "?", t.muted)]
     if pl:
         rows.append(("강화 불가침", f"{pl}턴 남음", None))
     ry = y + 2

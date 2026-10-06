@@ -29,6 +29,7 @@ class SetupState:
         self.max_turns = C.TIME_VICTORY_TURNS
         self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "disc"})
         self.flag_draft = None        # 국기 편집 창이 열려 있으면 편집 중인 사본
+        self.ai_pick = None           # 적 지도자 고르기 창이 열려 있으면 그 칸 번호
         self.flag_target = 0          # FLAG_TARGETS 순번: 배경 색 1·2, 문양 색 1·2
 
 
@@ -238,25 +239,17 @@ def draw_setup(app):
     if gui.button((x2 + 366, y - 6, 100, 30), "무작위"):
         s.start = None
     y += 40
-    gui.text((x2, y), "적 지도자 (클릭해 바꾸기, 빈 칸은 무작위)", 13, t.muted, "semibold")
+    gui.text((x2, y), "적 지도자 (눌러서 고르기, 무작위는 게임 시작 때 정함)", 13, t.muted, "semibold")
     y += 24
     while len(s.ai_leaders) < s.n_enemies:
         s.ai_leaders.append(None)
-    keys = [None] + [l["key"] for l in LEADERS if l["key"] != "custom"]
     for i in range(s.n_enemies):
         cx = x2 + (i % 3) * 158
         cy = y + (i // 3) * 36
         cur = s.ai_leaders[i]
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
         if gui.button((cx, cy, 152, 30), f"AI {i+1}: {lab}", size=12):
-            # 플레이어·다른 AI가 이미 고른 지도자는 건너뛴다(한 판에 같은 지도자가 둘 나오지 않게)
-            taken = {s.leader} | {k for j, k in enumerate(s.ai_leaders[: s.n_enemies]) if j != i and k}
-            j = keys.index(cur)
-            for _ in range(len(keys)):
-                j = (j + 1) % len(keys)
-                if keys[j] is None or keys[j] not in taken:
-                    break
-            s.ai_leaders[i] = keys[j]
+            s.ai_pick = i                        # 지도자 고르기 창
     y += 3 * 36 + 8
     gui.text((x2, y + 8), "시드", 13, t.muted)
     s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
@@ -358,6 +351,50 @@ def draw_flag_editor(app):
     for k in list(gui.keys):
         if k.key == pygame.K_ESCAPE:
             s.flag_draft = None
+            gui.keys.remove(k)
+
+
+def draw_ai_leader_picker(app):
+    """적 지도자 고르기: 분류별 전체 목록에서 한 번에 고른다. 플레이어·다른 칸이 이미 고른 지도자는 비활성."""
+    gui = app.gui
+    t = app.theme
+    s = app.setup
+    i = s.ai_pick
+    cur = s.ai_leaders[i] if i < len(s.ai_leaders) else None
+    taken = {s.leader} | {k for j, k in enumerate(s.ai_leaders[: s.n_enemies]) if j != i and k}
+    cols, bw, bh, gap = 6, 150, 34, 6
+    rows = sum((len(ks) + cols - 1) // cols for _, _, ks in LEADER_CATEGORIES)
+    h = 64 + len(LEADER_CATEGORIES) * 28 + rows * (bh + gap) + 76
+    r = modal_frame(app, 48 + cols * (bw + gap) - gap, h, f"AI {i + 1} 지도자 고르기")
+    x, y = r.x + 24, r.y + 60
+    for _, title, keys in LEADER_CATEGORIES:
+        gui.text((x, y), title, 13, t.muted, "semibold")
+        y += 24
+        for n, k in enumerate(keys):
+            l = LEADER_BY_KEY[k]
+            cell = (x + (n % cols) * (bw + gap), y + (n // cols) * (bh + gap), bw, bh)
+            mine = k == s.leader
+            tip = (f"{l['name']} (호전성 {l['aggr']})\n버프 {l['buff'][0]}: {l['buff'][1]}\n"
+                   f"디버프 {l['debuff'][0]}: {l['debuff'][1]}")
+            if k in taken:
+                tip = ("내 지도자입니다." if mine else "다른 AI가 이미 골랐습니다.") + "\n" + tip
+            if gui.button(cell, l["name"], selected=k == cur, enabled=k not in taken,
+                          size=13 if len(l["name"]) <= 7 else 11, tooltip=tip):
+                s.ai_leaders[i] = k
+                s.ai_pick = None
+                return
+        y += ((len(keys) + cols - 1) // cols) * (bh + gap) + 4
+    if gui.button((r.x + 24, r.bottom - 56, 140, 38), "무작위", selected=cur is None,
+                  tooltip="게임을 시작할 때 남은 지도자 가운데 무작위로 정합니다"):
+        s.ai_leaders[i] = None
+        s.ai_pick = None
+        return
+    if gui.button((r.right - 124, r.bottom - 56, 100, 38), "닫기"):
+        s.ai_pick = None
+        return
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            s.ai_pick = None
             gui.keys.remove(k)
 
 

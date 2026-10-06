@@ -247,13 +247,16 @@ class App:
         elif self.scene == "setup":
             slots_open = bool(self.modal and self.modal[0] == "saveslots")
             flag_open = self.setup.flag_draft is not None
-            self.gui.input_enabled = not (slots_open or flag_open)
+            pick_open = getattr(self.setup, "ai_pick", None) is not None
+            self.gui.input_enabled = not (slots_open or flag_open or pick_open)
             modals.draw_setup(self)
             self.gui.input_enabled = True
             if slots_open:
                 modals.draw_save_slots(self)
             elif flag_open:
                 modals.draw_flag_editor(self)
+            elif pick_open:
+                modals.draw_ai_leader_picker(self)
         elif self.scene == "pick_start":
             self.draw_pick_start()
         elif self.scene in ("government", "main"):

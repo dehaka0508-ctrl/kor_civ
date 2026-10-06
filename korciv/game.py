@@ -244,19 +244,24 @@ class Game:
             return True
         return fid in getattr(self.factions[viewer], "met", set())
 
+    def knows_name(self, viewer, fid) -> bool:
+        """세력 이름·수도를 아는가: 안개 '없음'·'지도 공개'는 처음부터, '미탐색'은 조우해야 안다."""
+        return self.settings.fog <= 1 or self.has_met(viewer, fid)
+
     def seen_name(self, fid, viewer=None) -> str:
-        """플레이어(또는 viewer)에게 보이는 세력 이름: 조우하지 않았으면 '미지의 국가'."""
+        """플레이어(또는 viewer)에게 보이는 세력 이름: 이름을 모르면 '미지의 국가'."""
         viewer = self.player_id if viewer is None else viewer
-        return self.fname(fid) if self.has_met(viewer, fid) else self.UNKNOWN_NAME
+        return self.fname(fid) if self.knows_name(viewer, fid) else self.UNKNOWN_NAME
 
     def event_for_player(self, e):
         """플레이어에게 보여 줄 이벤트 문장(없으면 None). 조우하지 않은 세력 이름은 '미지의 국가'로 가리고,
         플레이어와 상관없는 사건에 모르는 세력이 끼어 있으면 아예 감춘다(승리·연말 랭킹 제외)."""
         pid = self.player_id
-        unknown = [f for f in e["fids"] if f is not None and f != NEUTRAL and 0 <= f < len(self.factions)
-                   and not self.has_met(pid, f)]
-        if unknown and pid not in e["fids"] and e["kind"] not in ("victory", "ranking"):
-            return None
+        involved = [f for f in e["fids"] if f is not None and f != NEUTRAL and 0 <= f < len(self.factions)]
+        if any(not self.has_met(pid, f) for f in involved) and pid not in e["fids"] \
+                and e["kind"] not in ("victory", "ranking"):
+            return None                         # 조우하지 않은 세력들의 일은 모른다
+        unknown = [f for f in involved if not self.knows_name(pid, f)]
         text = e["text"]
         for f in sorted(unknown, key=lambda x: -len(self.factions[x].name)):
             text = text.replace(self.factions[f].name, self.UNKNOWN_NAME)
