@@ -108,6 +108,42 @@ VICTORY_TIPS = {
 }
 
 
+# ------------------------------------------------------------------ 시작 페이지
+_logo = {}
+
+
+def draw_title(app):
+    """시작 페이지: 가운데 로고, 아래 [새로 시작]·[이어하기]."""
+    import os
+    gui = app.gui
+    sw, sh = gui.size()
+    if "src" not in _logo:
+        try:
+            _logo["src"] = pygame.image.load(os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                                          "assets", "ui", "logo.png"))
+        except Exception:
+            _logo["src"] = None
+    src = _logo["src"]
+    bw, bh, gap = 220, 54, 20
+    lw = min(sw * 0.72, (sh - bh - 120) * 0.9 * (src.get_width() / src.get_height()) if src else 600, 1100)
+    lh = lw * src.get_height() / src.get_width() if src else 120
+    top = (sh - (lh + 48 + bh)) / 2
+    lr = pygame.Rect(int((sw - lw) / 2), int(top), int(lw), int(lh))
+    if src:
+        pr = gui.R(lr)
+        if _logo.get("size") != pr.size:
+            _logo["size"], _logo["img"] = pr.size, pygame.transform.smoothscale(src, pr.size)
+        gui.screen.blit(_logo["img"], pr.topleft)
+    else:
+        gui.text(lr.center, "한반도의 문명", 48, weight="bold", anchor="center")
+    by = lr.bottom + 48
+    bx = sw / 2 - bw - gap / 2
+    if gui.button((bx, by, bw, bh), "새로 시작", "primary", size=18, weight="bold"):
+        app.scene = "setup"
+    if gui.button((bx + bw + gap, by, bw, bh), "이어하기", size=18, weight="bold"):
+        app.open_slots("load")
+
+
 # ------------------------------------------------------------------ 게임 설정
 def draw_setup(app):
     gui = app.gui
@@ -216,7 +252,10 @@ def draw_setup(app):
     gui.text((x2, y + 8), "시드", 13, t.muted)
     s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
     # 하단 버튼
-    if gui.button((r.right - 360, r.bottom - 64, 150, 44), "불러오기"):
+    if gui.button((r.right - 524, r.bottom - 64, 150, 44), "이전", tooltip="시작 페이지로"):
+        app.scene = "title"
+        return
+    if gui.button((r.right - 360, r.bottom - 64, 150, 44), "이어하기", tooltip="저장한 게임 불러오기"):
         app.open_slots("load")
     if gui.button((r.right - 196, r.bottom - 64, 170, 44), "게임 시작", "primary", size=16, weight="bold",
                   enabled=any(s.victories.values())):
@@ -649,7 +688,7 @@ def draw_save_slots(app):
                 if mode == "save_exit":
                     app.game = None
                     app.reset_ui()
-                    app.scene = "setup"
+                    app.scene = "title"
                 return
         y += 76
     if mode == "save_exit":
@@ -658,7 +697,7 @@ def draw_save_slots(app):
             close(app)
             app.game = None
             app.reset_ui()
-            app.scene = "setup"
+            app.scene = "title"
             return
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "취소"):
         close(app)
@@ -1029,7 +1068,7 @@ def draw_gameover(app):
         gui.text((r.centerx, r.y + 100), "모든 영토를 잃었습니다.", 15, anchor="center")
     if gui.button((r.x + 24, r.bottom - 64, 240, 44), "새 게임", "primary"):
         app.game = None
-        app.scene = "setup"
+        app.scene = "title"
         app.reset_ui()
     if gui.button((r.right - 264, r.bottom - 64, 240, 44), "지도 계속 보기"):
         close(app)

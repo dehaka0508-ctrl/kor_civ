@@ -71,7 +71,7 @@ class App:
         self.world = load_world()
         self.map = MapView(self.world)
         self.game: Game | None = None
-        self.scene = "setup"
+        self.scene = "title"
         self.setup = modals.SetupState()
         self.running = True
         self.screenshot = screenshot
@@ -221,7 +221,14 @@ class App:
 
     def frame(self):
         self.screen.fill(self.theme.bg)
-        if self.scene == "setup":
+        if self.scene == "title":
+            slots_open = bool(self.modal and self.modal[0] == "saveslots")
+            self.gui.input_enabled = not slots_open
+            modals.draw_title(self)
+            self.gui.input_enabled = True
+            if slots_open:
+                modals.draw_save_slots(self)
+        elif self.scene == "setup":
             slots_open = bool(self.modal and self.modal[0] == "saveslots")
             flag_open = self.setup.flag_draft is not None
             self.gui.input_enabled = not (slots_open or flag_open)
