@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import csv
 import json
 import math
@@ -39,6 +40,10 @@ SK_URL = ("https://raw.githubusercontent.com/vuski/admdongkor/master/"
           "ver20260701/HangJeongDong_ver20260701.geojson")
 NK_URL = ("https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/main/"
           "releaseData/gbOpen/PRK/ADM2/geoBoundaries-PRK-ADM2_simplified.geojson")
+NE_RIVERS_URL = ("https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/"
+                 "ne_10m_rivers_lake_centerlines.geojson")
+# 나라 밖과 맞닿은 국경 하천: terrain-borders.csv 에서 구역B 가 빈 '외곽' 행으로 쓴다
+BORDER_RIVERS = {"압록강": "Yalu", "두만강": "Tumen"}
 
 SIDO_ABBR = {
     "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천",
@@ -193,7 +198,39 @@ def polygons_of(geom):
     return [g for g in getattr(geom, "geoms", []) if isinstance(g, Polygon)]
 
 
-def build():
+@functools.lru_cache(maxsize=None)
+def border_river_line(ko_name):
+    """국경 하천 물길(Natural Earth 10m, 한반도 부근만)."""
+    from shapely.geometry import box
+    with open(fetch(NE_RIVERS_URL, "ne_10m_rivers_lake_centerlines.geojson"), encoding="utf-8") as f:
+        feats = json.load(f)["features"]
+    en = BORDER_RIVERS[ko_name]
+    return unary_union([shape(ft["geometry"]) for ft in feats
+                        if ft["properties"].get("name") == en]).intersection(box(124.0, 33.0, 131.0, 43.2))
+
+
+@functools.lru_cache(maxsize=None)
+def border_river_band(ko_name):
+    return border_river_line(ko_name).buffer(0.04)
+
+
+def outer_river_lines(geom, name, ko_river):
+    """지역 경계 가운데 국경 하천 가까이 있고 다른 지역과 맞닿지 않은 부분(외곽 하천 선)."""
+    from shapely.ops import linemerge
+    g = geom[name]
+    band = border_river_band(ko_river)
+    if not g.intersects(band):
+        return []
+    others = unary_union([h for m, h in geom.items() if m != name and h.intersects(g.buffer(0.01))]).buffer(0.006)
+    part = g.boundary.intersection(band).difference(others)
+    if part.is_empty:
+        return []
+    merged = linemerge(part) if part.geom_type == "MultiLineString" else part
+    return [ln for ln in getattr(merged, "geoms", [merged]) if ln.geom_type == "LineString" and ln.length >= 0.002]
+
+
+def load_geometry():
+    """표기명 -> shapely 도형(geom: 그리기용, adj_geom: 인접 계산용), 표기명 -> CSV 행."""
     regions = load_regions()
     by_name = {r["표기명"]: r for r in regions}
 
@@ -265,6 +302,11 @@ def build():
             f.write("\n## CSV에 없음\n")
             f.writelines(f"- {n}\n" for n in extra)
         raise SystemExit(f"매칭 실패: missing={missing} extra={extra} (see {report})")
+    return geom, adj_geom, by_name
+
+
+def build():
+    geom, adj_geom, by_name = load_geometry()
 
     # ---- 인접
     names = list(by_name)
@@ -331,6 +373,14 @@ def build():
         with open(tpath, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 a, b = row["구역A_ID"], row["구역B_ID"]
+                if not b:   # 국경 하천(외곽): 짝 없이 그 지역 바깥 경계 선만
+                    if id2name.get(a) != row["구역A"]:
+                        raise SystemExit(f"지형 경계 ID·이름 불일치: {row}")
+                    lines = [[(round(x, 4), round(y, 4)) for x, y in ln.simplify(0.0015).coords]
+                             for ln in outer_river_lines(geom, id2name[a], row["지형"])]
+                    terrain.append({"a": a, "b": "", "kind": row["구분"], "name": row["지형"], "note": row["근거"],
+                                    "mult": float(row["공격배수"]), "connector": False, "lines": lines})
+                    continue
                 if id2name.get(a) != row["구역A"] or id2name.get(b) != row["구역B"]:
                     raise SystemExit(f"지형 경계 ID·이름 불일치: {row}")
                 ga, gb = geom[id2name[a]], geom[id2name[b]]

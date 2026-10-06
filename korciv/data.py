@@ -145,6 +145,7 @@ class World:
                 self.bridges[frozenset((a, b))] = r["연결수단"]
         # 지형 경계(도하·산악 돌파). 맞닿지 않은 하구 등도 도하 경로로 인접 처리한다.
         self.terrain: dict[frozenset, dict] = {}
+        self.outer_rivers: set = set()         # 국경 하천을 바깥 경계로 가진 지역
         self.terrain_lines = geo.get("terrain", [])
         tpath = os.path.join(data_dir, "terrain-borders.csv")
         if os.path.exists(tpath):
@@ -152,6 +153,11 @@ class World:
                 for r in csv.DictReader(f):
                     a, b = r["구역A_ID"], r["구역B_ID"]
                     kind = "도하" if r["구분"] == "도하" else "돌파"
+                    if not b:
+                        # 국경 하천(압록강·두만강) 외곽 행: 건너는 경계는 아니고 그리기·하천 어장용
+                        if kind == "도하":
+                            self.outer_rivers.add(a)
+                        continue
                     if b not in self.land_adj[a]:
                         # 경계가 실제로 맞닿지 않은 쌍: 강 하구·수로(도하)만 건너는 경로로 인정하고,
                         # 산악 돌파는 인접이 아니므로 무시한다(예: 북청군–김형권군 후치령)
@@ -162,9 +168,11 @@ class World:
                     self.terrain[frozenset((a, b))] = {
                         "kind": kind, "label": r["구분"],
                         "name": r["지형"], "note": r["근거"], "mult": float(r["공격배수"])}
-        self.terrain_lines = [t for t in self.terrain_lines if frozenset((t["a"], t["b"])) in self.terrain]
-        # 도하 경계를 가진 지역(하천 어장 가능)
+        self.terrain_lines = [t for t in self.terrain_lines if frozenset((t["a"], t["b"])) in self.terrain
+                              or (not t["b"] and t["a"] in self.outer_rivers)]
+        # 도하 경계·국경 하천을 가진 지역(하천 어장 가능)
         self.river_regions = {rid for fp, t in self.terrain.items() if t["kind"] == "도하" for rid in fp}
+        self.river_regions |= self.outer_rivers
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":
