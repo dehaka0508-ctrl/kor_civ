@@ -22,7 +22,7 @@ BANK_OUTPUT = 600
 LANDMARK_OUTPUT = 9000
 LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
 FOOD_PER_G = 15            # 농장·바다 어장 식량 15 × 단계(단계에 비례), 산출은 그 10배
-FOOD_BUILD_COST_TURN = (200, 400, 800, 1400, 2000)   # 농장·어장 단계별 턴당 건설비
+FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000)   # 농장·어장 단계별 턴당 건설비
 FOOD_PER_POP = 1           # 인구 1만 명당 식량 소비/턴
 START_FOOD_TURNS = 5       # 시작 식량 = 인구 * 5
 COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전부 보유) 시 바다 어장 식량·산출 +20%

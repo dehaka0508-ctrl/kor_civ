@@ -25,9 +25,9 @@ def test_start_outputs_match_design_doc():
 
 
 def test_building_costs():
-    # 농장·어장: 턴당 200/400/800/1400/2000 × 소요 턴(2L)
+    # 농장·어장: 턴당 200/400/600/800/1000 × 소요 턴(2L)
     costs = [R.prod_building_cost(k, l) / R.prod_building_turns(l) for k in ("farm", "fishery") for l in range(1, 6)]
-    assert costs == [200, 400, 800, 1400, 2000] * 2
+    assert costs == [200, 400, 600, 800, 1000] * 2
     assert C.BUILD_COST_MULT == 0.5
     assert round(R.prod_building_cost("factory", 5) / C.BUILD_COST_MULT, -1) == 16770
     assert round(R.def_building_cost("line", 3) / C.BUILD_COST_MULT) == 1559
