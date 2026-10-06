@@ -29,7 +29,7 @@ class SetupState:
         self.max_turns = C.TIME_VICTORY_TURNS
         self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "star5"})
         self.flag_draft = None        # 국기 편집 창이 열려 있으면 편집 중인 사본
-        self.flag_target = 0          # 0 배경 색1, 1 배경 색2, 2 문양 색
+        self.flag_target = 0          # FLAG_TARGETS 순번: 배경 색 1·2, 문양 색 1·2
 
 
 def modal_frame(app, w, h, title=None):
@@ -225,7 +225,8 @@ def draw_setup(app):
              12, t.muted)
 
 
-FLAG_TARGETS = (("c1", "배경 색 1"), ("c2", "배경 색 2"), ("ec", "문양 색"))
+FLAG_TARGETS = (("c1", "배경 색 1"), ("c2", "배경 색 2"), ("ec", "문양 색 1"), ("ec2", "문양 색 2"))
+FLAG_TARGET_USED = {"c1": lambda fl: True, "c2": FL.uses_c2, "ec": FL.uses_ec, "ec2": FL.uses_ec2}
 
 
 def draw_flag_editor(app):
@@ -239,8 +240,15 @@ def draw_flag_editor(app):
     x, y = r.x + 24, r.y + 64
     draw_flag(gui, (x, y, 300, 200), fl)
     y += 220
-    s.flag_target = gui.segmented((x, y, 300, 32), [lb for _, lb in FLAG_TARGETS], s.flag_target, size=12,
-                                  enabled=not preset)
+    # 색 고르기 대상: 단색 배경이면 배경 색 2, 한 색 문양이면 문양 색 2(문양 없음이면 문양 색 1·2)는 꺼진다
+    used = [not preset and FLAG_TARGET_USED[k](fl) for k, _ in FLAG_TARGETS]
+    if not used[s.flag_target]:
+        s.flag_target = 0
+    tw = (300 - 3 * 4) / 4
+    for i, (k, lb) in enumerate(FLAG_TARGETS):
+        if gui.button((x + i * (tw + 4), y, tw, 32), lb, selected=used[i] and s.flag_target == i, size=11,
+                      enabled=used[i]):
+            s.flag_target = i
     ck = FLAG_TARGETS[s.flag_target][0]
     col = list(fl[ck])
     y += 46

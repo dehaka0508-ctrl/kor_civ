@@ -178,6 +178,13 @@ def test_flags_and_diplo_detail(app):
     for pk in FL.PRESET_KEYS:             # 역사 국기(이미지·그림)
         assert render_flag({"preset": pk}, 30, 20).get_size() == (30, 20)
     assert FL.normalize({"bg": "nordic", "em": "star6"}) ["bg"] == "cross"   # 예전 저장 키
+    assert FL.normalize({"em": "bolt"})["em"] == "cloud"
+    # 단색 배경은 배경 색 2, 한 색 문양은 문양 색 2를 쓰지 않는다
+    assert not FL.uses_c2({"bg": "solid"}) and FL.uses_c2({"bg": "h2"})
+    assert FL.uses_ec2({"em": "taegeuk"}) and FL.uses_ec2({"em": "flower"}) and not FL.uses_ec2({"em": "star5"})
+    a = render_flag({"em": "taegeuk", "ec": (255, 0, 0), "ec2": (0, 0, 255)}, 60, 40)
+    b = render_flag({"em": "taegeuk", "ec": (255, 0, 0), "ec2": (0, 255, 0)}, 60, 40)
+    assert a.get_at((30, 26)) != b.get_at((30, 26))   # 문양 색 2가 태극 아래쪽 색
     a = FL.default_flag("#3366cc", "1:x")
     assert a == FL.default_flag("#3366cc", "1:x")   # 기본 국기는 결정적
     s = app.setup

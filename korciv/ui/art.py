@@ -17,7 +17,7 @@ PORTRAIT_DIR = os.path.join(ASSETS, "portraits")
 _masks: dict = {}
 _presets: dict = {}
 # 마스크 문양의 크기(문양 반지름 R 대비 상자 한 변)
-MASK_BOX = {"pine": 2.2, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
+MASK_BOX = {"pine": 2.2, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
 PORTRAIT_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -38,14 +38,6 @@ def _star(cx, cy, r, n=5, inner=0.382, rot=-math.pi / 2):
 def _ngon(cx, cy, r, n, rot=-math.pi / 2):
     return [(cx + r * math.cos(rot + 2 * math.pi * i / n), cy + r * math.sin(rot + 2 * math.pi * i / n))
             for i in range(n)]
-
-
-def _contrast(fl):
-    """문양 보조 색: 배경 색2가 배경 색1과 같으면 문양 색을 어둡게/밝게 바꾼 색."""
-    c1, c2, ec = fl["c1"], fl["c2"], fl["ec"]
-    if c2 != c1 and c2 != ec:
-        return c2
-    return _mix(ec, (0, 0, 0) if sum(ec) > 380 else (255, 255, 255), 0.6)
 
 
 def _mask(key):
@@ -94,15 +86,15 @@ def draw_emblem(s, key, cx, cy, R, fl):
         pygame.draw.circle(s, ec, (int(x0), cy), int(R * 0.8))
         pygame.draw.circle(s, hole, (int(x0 + R * 0.3), cy), int(R * 0.66))
         pygame.draw.polygon(s, ec, _star(cx + R * 0.55, cy, R * 0.32))
-    elif key == "taegeuk":                     # 태극기의 태극: 위 문양 색, 아래 보조 색
-        b = _contrast(fl)
+    elif key == "taegeuk":                     # 태극기의 태극: 위 문양 색 1, 아래 문양 색 2
+        b = fl["ec2"]
         r = int(R * 0.85)
         pygame.draw.circle(s, b, (cx, cy), r)
         pygame.draw.circle(s, ec, (cx, cy), r, draw_top_left=True, draw_top_right=True)
         pygame.draw.circle(s, ec, (cx - r // 2, cy), r // 2)
         pygame.draw.circle(s, b, (cx + r // 2, cy), r // 2)
     elif key == "yinyang":                     # 도교 태극(음양): 좌우로 나뉘고 점이 박힌다
-        b = _contrast(fl)
+        b = fl["ec2"]
         r = int(R * 0.85)
         pygame.draw.circle(s, b, (cx, cy), r)
         pygame.draw.circle(s, ec, (cx, cy), r, draw_top_left=True, draw_bottom_left=True)
@@ -161,14 +153,11 @@ def draw_emblem(s, key, cx, cy, R, fl):
             pts = [(cx - R + k * 2 * R / 24, cy + j * R * 0.55 + R * 0.18 * math.sin(k / 24 * 4 * math.pi))
                    for k in range(25)]
             pygame.draw.lines(s, ec, False, pts, W)
-    elif key == "bolt":
-        pygame.draw.polygon(s, ec, [(cx + R * 0.15, cy - R), (cx - R * 0.55, cy + R * 0.12), (cx - R * 0.02, cy + R * 0.12),
-                                    (cx - R * 0.2, cy + R), (cx + R * 0.55, cy - R * 0.15), (cx + R * 0.02, cy - R * 0.15)])
     elif key == "flower":
         for i in range(5):
             a = -math.pi / 2 + i * 2 * math.pi / 5
             pygame.draw.circle(s, ec, (int(cx + R * 0.5 * math.cos(a)), int(cy + R * 0.5 * math.sin(a))), int(R * 0.42))
-        pygame.draw.circle(s, _contrast(fl), (cx, cy), int(R * 0.25))
+        pygame.draw.circle(s, fl["ec2"], (cx, cy), int(R * 0.25))
 
 
 def _draw_ingonggi(s, W, H):
@@ -186,7 +175,7 @@ def render_flag(flag, w, h) -> pygame.Surface:
     """국기를 w×h 픽셀 Surface 로."""
     fl = normalize(flag)
     preset = fl.get("preset")
-    key = (preset, fl["bg"], fl["c1"], fl["c2"], fl["em"], fl["ec"], w, h)
+    key = (preset, fl["bg"], fl["c1"], fl["c2"], fl["em"], fl["ec"], fl["ec2"], w, h)
     surf = _flag_cache.get(key)
     if surf is not None:
         return surf

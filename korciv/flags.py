@@ -1,6 +1,7 @@
 """국기: 배경 무늬 + 문양 + 색 세 가지(배경 색1·색2, 문양 색). pygame 없이 쓰는 데이터 부분.
 
-국기 = {"bg": 배경 키, "c1": (r,g,b), "c2": (r,g,b), "em": 문양 키, "ec": (r,g,b)[, "preset": 역사 국기 키]}
+국기 = {"bg": 배경 키, "c1": (r,g,b), "c2": (r,g,b), "em": 문양 키, "ec": (r,g,b), "ec2": (r,g,b)[, "preset": 역사 국기 키]}
+배경 색 2는 단색이 아닌 배경에, 문양 색 2는 두 색 문양(TWO_TONE_EMBLEMS)에만 쓰인다.
 플레이어는 시작 화면에서 직접 만들고, AI·반란 세력은 세력 색으로 정해진 기본 국기를 쓴다.
 """
 from __future__ import annotations
@@ -26,14 +27,15 @@ EMBLEMS = (
     # 도형
     ("none", "없음"), ("disc", "원"), ("ring", "고리"), ("taegeuk", "태극"), ("star5", "오각별"),
     ("shield", "방패"), ("crown", "왕관"), ("flower", "꽃"), ("pine", "소나무"), ("saltire", "X자"),
-    ("diamond", "마름모"), ("wave", "물결"), ("mountain", "산"), ("bolt", "번개"),
+    ("diamond", "마름모"), ("wave", "물결"), ("mountain", "산"), ("cloud", "구름"),
     # 종교
     ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "초승달과 별"),
     ("om", "옴(ॐ)"), ("yinyang", "도교 태극"),
     # 동물
     ("tiger", "호랑이 머리"), ("dragon", "용"), ("cheonma", "천마(천마도)"), ("samjogo", "삼족오"),
 )
-MASK_EMBLEMS = {"pine", "om", "tiger", "dragon", "cheonma", "samjogo"}   # assets/emblems/<키>.png
+MASK_EMBLEMS = {"pine", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
+TWO_TONE_EMBLEMS = {"taegeuk", "yinyang", "flower"}      # 문양 색 2를 쓰는 문양   # assets/emblems/<키>.png
 
 # 역사 국기: 고르면 배경·문양·색 대신 그대로 쓴다
 PRESETS = (("taegeukgi", "태극기"), ("ingonggi", "인공기"), ("eogi", "조선 어기"), ("goryeo", "고려 의장기"))
@@ -44,7 +46,7 @@ PRESET_KEYS = [k for k, _ in PRESETS]
 # 예전 저장 파일의 키
 ALIASES = {"star6": "hexagram", "diag": "diag_up", "nordic": "cross", "canton": "quarters", "chevron": "v2",
            "crescent": "crescent_star", "samtaegeuk": "taegeuk", "triangle": "mountain", "hexagon": "diamond",
-           "arrow": "bolt"}
+           "arrow": "cloud", "bolt": "cloud"}
 
 
 def hex2rgb(h: str):
@@ -67,7 +69,7 @@ def normalize(flag) -> dict:
         f["bg"] = "solid"
     if f.get("em") not in EMBLEM_KEYS:
         f["em"] = "none"
-    for k, d in (("c1", (40, 90, 200)), ("c2", (255, 255, 255)), ("ec", (255, 255, 255))):
+    for k, d in (("c1", (40, 90, 200)), ("c2", (255, 255, 255)), ("ec", (255, 255, 255)), ("ec2", (0, 71, 160))):
         c = f.get(k, d)
         f[k] = tuple(max(0, min(255, int(v))) for v in (list(c) + [0, 0, 0])[:3])
     return f
@@ -81,7 +83,20 @@ def default_flag(color_hex: str, seed) -> dict:
     white, dark = (255, 255, 255), (30, 30, 40)
     return {"bg": rng.choice(["solid", "solid", "h2", "v3", "h3", "border", "quarters", "cross", "diag_up"]),
             "c1": c1, "c2": dark if light else white,
-            "em": rng.choice(EMBLEM_KEYS[1:]), "ec": dark if light else white}
+            "em": rng.choice(EMBLEM_KEYS[1:]), "ec": dark if light else white,
+            "ec2": (0, 71, 160) if c1[0] > max(c1[1], c1[2]) + 40 else (205, 46, 58)}
+
+
+def uses_c2(fl) -> bool:
+    return fl.get("bg") != "solid"
+
+
+def uses_ec(fl) -> bool:
+    return fl.get("em") != "none"
+
+
+def uses_ec2(fl) -> bool:
+    return fl.get("em") in TWO_TONE_EMBLEMS
 
 
 def faction_flag(f) -> dict:
