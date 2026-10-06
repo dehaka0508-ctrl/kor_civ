@@ -743,20 +743,17 @@ class App:
         if node is None:
             self.sel_army = None
             return
-        mine = sorted(g.armies_at(node, g.player_id), key=lambda a: a.id)
+        mine = sorted(g.armies_at(node, g.player_id), key=lambda a: (-g.army_power(a), a.id))
         cur = g.armies.get(self.sel_army) if self.sel_army else None
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
-        elif prev == node and len(mine) > 1:
-            # 같은 지역을 한 번 더 누르면 그 지역의 다음 부대
-            i = next((k for k, a in enumerate(mine) if a.id == cur.id), -1)
-            self.sel_army = mine[(i + 1) % len(mine)].id
-            self.toast(f"{self.world.node_name(node)}: 부대 {(i + 1) % len(mine) + 1}/{len(mine)} 선택 "
-                       f"({g.armies[self.sel_army].label()})")
+        if prev == node and self.left_open and self.left_tab == "region":
+            self.left_open = False          # 이미 선택한 지역을 다시 누르면 메뉴를 닫는다
+            return
         self.left_open = True
         if g.regions.get(node) is None:
-            # 해역: 내 함대가 있으면 [군사], 없으면 해역 정보
-            self.left_tab, self.tab = ("army", self.tab) if mine else ("region", "info")
+            # 해역: 내 함대가 있으면 [부대], 없으면 해역 정보
+            self.left_tab, self.tab = "region", ("army" if mine else "info")
         else:
             # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보])
             self.left_tab, self.tab = "region", ("action" if g.regions[node].owner == g.player_id else "info")

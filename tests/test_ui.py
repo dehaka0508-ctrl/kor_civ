@@ -149,3 +149,18 @@ def test_priority_arrow_keys_reorder(app):
     app.gui.begin([down])
     app.frame()
     assert [r.id for r in g.projects_by_priority(pid)] == [ids[1], ids[0]] + ids[2:]
+
+
+def test_reselect_region_closes_panel(app):
+    g = app.game
+    cap = g.player.capital
+    app.left_open = False
+    app.select(cap)
+    assert app.left_open and app.left_tab == "region"
+    sel = app.sel_army
+    app.select(cap)                       # 같은 지역 다시 클릭 → 닫힘, 부대 선택은 그대로
+    assert not app.left_open and app.sel_army == sel
+    app.left_tab, app.tab, app.left_open = "army", "action", True
+    frame(app)                            # 군사 요약
+    app.left_tab, app.tab = "region", "army"
+    frame(app)                            # 지역 부대 탭

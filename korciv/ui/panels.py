@@ -62,7 +62,7 @@ def kv(gui, x, y, w, k, v, vcol=None):
 # ------------------------------------------------------------------ 좌측 패널
 # 좌측 세로 탭(위에서부터): 키, 이름, 설명
 SIDE_TABS = (("nation", "국가", "세율·자원 시장·특산물"), ("diplo", "외교", "세력별 관계·외교 창"),
-             ("army", "군사", "선택한 부대·분리·합치기·공격 방식"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
+             ("army", "군사", "전체 군사 유닛 수·유지비"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
              ("status", "국가\n현황", "국가 통계·재정·지출 우선순위"))
 RAIL_W = 64
 
@@ -91,8 +91,8 @@ def draw_side(app, rail, panel_rect):
     gui.panel(panel_rect)
     k = app.left_tab
     if k == "region":
-        tabs = (("action", "행동"), ("info", "지역 정보"))
-        tw = (panel_rect.w - 24 - 36) / 2
+        tabs = (("action", "행동"), ("army", "부대"), ("info", "지역 정보"))
+        tw = (panel_rect.w - 24 - 36 - 8) / 3
         for i, (tk, label) in enumerate(tabs):
             if gui.button((panel_rect.x + 12 + i * (tw + 4), panel_rect.y + 10, tw, 32), label,
                           selected=app.tab == tk, size=14):
@@ -111,13 +111,15 @@ def draw_side(app, rail, panel_rect):
     elif k == "diplo":
         draw_diplo_tab(app, body)
     elif k == "army":
-        draw_army_tab(app, body)
+        draw_military_tab(app, body)
     elif k == "energy":
         draw_energy_tab(app, body)
     elif k == "status":
         draw_nation_status(app, body)
     elif app.tab == "action":
         draw_action_tab(app, body)
+    elif app.tab == "army":
+        draw_army_tab(app, body)
     elif not app.sel:
         gui.text((body.x + 16, body.y + 10), "지도에서 지역을 선택하세요.", 13, t.muted)
     else:
@@ -304,7 +306,7 @@ def draw_region_info(app, rect):
         if a.owner == pid and gui.hover(rr) and gui.clicked:
             gui.clicked = False
             app.sel_army = a.id
-            app.left_open, app.left_tab = True, "army"
+            app.left_open, app.left_tab, app.tab = True, "region", "army"
         y += 26
     # 슬롯
     if owner == pid:
@@ -401,7 +403,7 @@ def draw_sea_info(app, rect, sid):
             if a.owner == g.player_id and gui.hover(r) and gui.clicked:
                 gui.clicked = False
                 app.sel_army = a.id
-                app.left_open, app.left_tab = True, "army"
+                app.left_open, app.left_tab, app.tab = True, "region", "army"
             y += 24
 
 
@@ -537,15 +539,73 @@ def auto_slot_controls(app, x, y, w):
     return y + 30
 
 
+def draw_military_tab(app, body):
+    """세로 탭 [군사]: 전체 군사 유닛 수와 유지비 지출만."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    x, w = body.x + 14, body.w - 28
+    y = body.y + 4
+    counts = {}
+    for a in g.armies.values():
+        if a.owner == pid:
+            for k, n in a.units.items():
+                counts[k] = counts.get(k, 0) + n
+    up = g.upkeep_breakdown(pid)
+    total = sum(up.values())
+    n_all = sum(counts.values())
+    n_army = sum(1 for a in g.armies.values() if a.owner == pid)
+    y = kv(gui, x, y, w, "전체 유닛", f"{n_all:,}개 (부대 {n_army}개)")
+    y = kv(gui, x, y, w, "유지비 지출", f"{total:,.0f} /턴", t.bad if total else None)
+    last = g.player.last
+    if last.get("tax"):
+        y = kv(gui, x, y, w, "세수 대비", f"{total / last['tax'] * 100:.0f}%")
+    y = section(gui, x, y + 10, w, "유닛 종류별")
+    cols = (x + w - 150, x + w)
+    gui.text((cols[0], y), "수", 11, t.muted, anchor="topright")
+    gui.text((cols[1], y), "유지비/턴", 11, t.muted, anchor="topright")
+    y += 18
+    for kind, title in (("land", "육군"), ("naval", "해군"), ("air", "공군")):
+        keys = [k for k in C.UNIT_ORDER if C.UNITS[k]["kind"] == kind and counts.get(k)]
+        if not keys:
+            continue
+        gui.text((x, y), title, 12, t.muted, "semibold")
+        y += 20
+        for k in keys:
+            gui.icon(k, (x + 10, y + 9), t.text)
+            gui.text((x + 26, y), C.UNITS[k]["name"], 13)
+            gui.text((cols[0], y), f"{counts[k]:,}", 13, anchor="topright")
+            gui.text((cols[1], y), f"{up.get(k, 0):,.0f}", 13, anchor="topright")
+            y += 22
+    if not n_all:
+        gui.text((x, y), "군사 유닛이 없습니다.", 13, t.muted)
+        y += 22
+    gui.text((x, y + 10), "부대 조종: 지도에서 지역을 눌러 [부대] 탭", 11, t.muted)
+
+
 def draw_army_tab(app, body):
+    """지역 패널 [부대]: 선택한 지역에 있는 내 부대만 고르고 조종한다."""
     gui = app.gui
     g = app.game
     t = app.theme
     pid = g.player_id
     x, w = body.x + 14, body.w - 28
     y = body.y
+    node = app.sel
+    here = sorted([a for a in g.armies_at(node, pid)], key=lambda a: (-g.army_power(a), a.id)) if node else []
+    if here and (app.sel_army not in {a.id for a in here}):
+        app.sel_army = here[0].id
+    if len(here) > 1:
+        for a in here:
+            lab = a.label() + (" ▶" if a.order or a.goto else "")
+            if gui.button((x, y, w, 26), lab, "ghost", selected=a.id == app.sel_army, weight="regular", size=12):
+                app.sel_army = a.id
+                app.split = {}
+            y += 28
+        y += 4
     army = g.armies.get(app.sel_army) if app.sel_army else None
-    if army and army.owner != pid:
+    if army and (army.owner != pid or army.loc != node):
         army = None
     if army:
         loc = app.world.node_name(army.loc)
@@ -621,25 +681,7 @@ def draw_army_tab(app, body):
                      w, 12, t.muted)
             y += 78
     else:
-        gui.text((x, y), "부대를 선택하세요.", 13, t.muted)
-        y += 26
-    # 내 모든 부대
-    # 위치 이름 가나다순(같은 곳이면 전력 큰 순)
-    mine = sorted([a for a in g.armies.values() if a.owner == pid],
-                  key=lambda a: (app.world.node_name(a.loc), -g.army_power(a), a.id))
-    y = section(gui, x, y + 4, w, f"내 부대 {len(mine)}개 · 유지비 {g.upkeep(pid):,.0f}/턴")
-    area = pygame.Rect(body.x, y, body.w, body.bottom - y)
-    off = gui.begin_scroll("armies", area, len(mine) * 28)
-    yy = y - off
-    for a in mine:
-        lab = f"{app.world.node_name(a.loc)} · {a.label()}" + (" ▶" if a.order or a.goto else "")
-        if gui.button((x, yy, w, 26), lab, "ghost", selected=a.id == app.sel_army, weight="regular", size=12):
-            app.sel_army = a.id
-            app.sel = a.loc
-            app.map.center_on(a.loc)
-            app.split = {}
-        yy += 28
-    gui.end_scroll("armies", area, len(mine) * 28)
+        gui.text((x, y), "이 지역에 내 부대가 없습니다.", 13, t.muted)
 
 
 def draw_nation_tab(app, body):

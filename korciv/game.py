@@ -2625,7 +2625,11 @@ class Game:
 
     # ---- 9. 세수·유지비
     def upkeep(self, fid) -> float:
-        total = 0.0
+        return sum(self.upkeep_breakdown(fid).values())
+
+    def upkeep_breakdown(self, fid) -> dict:
+        """유닛 종류별 턴당 유지비(바다 위 해군 2배·지도자 효과·보급로 차단 반영)."""
+        out = {}
         m = self.mods(fid)
         cut = m.value("cut_supply", 0)
         linked = self.supply_linked(fid) if cut else None
@@ -2642,8 +2646,8 @@ class Game:
                     c *= m.mult("upkeep_land")
                 if cut and a.loc not in linked:
                     c *= 1 + cut                     # 히데요시 '보급로 차단'
-                total += c
-        return total * C.MONEY_SCALE
+                out[k] = out.get(k, 0.0) + c * C.MONEY_SCALE
+        return out
 
     def supply_linked(self, fid) -> set:
         """수도에서 자국 영토를 따라 육로로 닿는 지역 + 그 육상 인접 지역(전선)."""
