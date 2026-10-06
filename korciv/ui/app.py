@@ -868,17 +868,18 @@ class App:
                 if pv["defenders"] == 0:
                     lines.append("방어 병력 없음 → 진입 후 점령 시작")
                 else:
-                    lines.append(f"공격력 A {pv['A']:.0f} / 방어력 D {pv['D']:.0f} (방어선 {pv['line']}단계)")
+                    sc = C.UNIT_STAT_SCALE
+                    lines.append(f"공격력 A {pv['A'] / sc:.1f} / 방어력 D {pv['D'] / sc:.1f} (방어선 {pv['line']}단계)")
                     if pv.get("terrain"):
                         tr = pv["terrain"]
                         lines.append(f"{tr['label']}({tr['name']}·{tr['note']}) 공격 ×{tr['mult']}")
                     if mode == "surprise":
                         lines.append(f"기습 성공률 {pv['surprise_p']*100:.0f}%")
-                        lines.append(f"성공 시 적 피해 {pv['def_dmg_win']:.0f} / 아군 {pv['att_dmg_win']:.0f}")
-                        lines.append(f"실패 시 적 피해 {pv['def_dmg_fail']:.0f} / 아군 {pv['att_dmg_fail']:.0f}")
+                        lines.append(f"성공 시 적 피해 {pv['def_dmg_win'] / sc:.1f} / 아군 {pv['att_dmg_win'] / sc:.1f}")
+                        lines.append(f"실패 시 적 피해 {pv['def_dmg_fail'] / sc:.1f} / 아군 {pv['att_dmg_fail'] / sc:.1f}")
                     else:
-                        lines.append(f"기대 피해: 적 {pv['def_dmg']:.0f} / 아군 {pv['att_dmg']:.0f} (체력 기준)")
-                    lines.append(f"적 총 체력 {pv['def_hp']:.0f}")
+                        lines.append(f"기대 피해: 적 {pv['def_dmg'] / sc:.1f} / 아군 {pv['att_dmg'] / sc:.1f} (체력 기준)")
+                    lines.append(f"적 총 체력 {pv['def_hp'] / sc:.1f}")
         self.gui.tooltip = "\n".join(lines)
 
     PAN_SPEED = 900          # 방향키를 누르고 있을 때 초당 이동(화면 픽셀)

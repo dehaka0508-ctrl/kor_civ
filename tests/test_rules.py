@@ -55,8 +55,9 @@ def test_battle_example_10_vs_10_infantry():
     a = 10 * C.UNITS["inf"]["atk"]
     d = 10 * C.UNITS["inf"]["df"]
     dd, ad = R.battle_damage(a, d, 1.0)
-    assert dd / C.UNITS["inf"]["hp"] == pytest.approx(2.27, abs=0.01)
-    assert ad / C.UNITS["inf"]["hp"] == pytest.approx(3.27, abs=0.01)
+    # 보병 공격력 = 방어력(1/1): 보정 없는 보병 10 대 10은 양쪽 모두 보병 2.5개분 피해
+    assert dd / C.UNITS["inf"]["hp"] == pytest.approx(2.5, abs=0.01)
+    assert ad / C.UNITS["inf"]["hp"] == pytest.approx(2.5, abs=0.01)
 
 
 def test_pop_growth_and_tax_happiness():

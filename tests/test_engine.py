@@ -1612,3 +1612,72 @@ def test_dangun_war_weary_recovery():
         g.player.war_weary = 10.0
         g._phase_happiness()
         assert g.player.war_weary == pytest.approx(10.0 - rec)
+
+
+def test_unit_table_v14():
+    s = C.UNIT_STAT_SCALE
+    spec = {"inf": (250, 1, 0, 1, 1), "art": (500, 2, 0, 1.5, 1), "tank": (750, 3, 1, 2, 5),
+            "lst": (500, 2, 1, 0, 2), "dd": (1000, 3, 1, 2, 5), "cv": (1500, 4, 2, 0, 10),
+            "ftr": (750, 3, 1, 3, 3), "bmb": (1000, 3, 1, 4, 2)}
+    for k, (cost, turns, oil, atk, hp) in spec.items():
+        u = C.UNITS[k]
+        power = max(u["atk"], u["bomb"], u.get("intercept", 0))
+        assert (u["cost"], u["turns"], u["oil"], power / s, u["hp"] / s) == (cost, turns, oil, atk, hp), k
+    assert "stl" not in C.UNITS
+    assert C.UNITS["ftr"]["atk"] == 0                     # 전투기는 공격 불가(방어·요격만)
+    from korciv.state import Army
+    lst = Army(1, 0, "x", {"lst": 1, "inf": 2, "art": 1, "tank": 1}, {})
+    assert lst.cargo_used() == 8 and lst.cargo_cap() == 8
+    cv = Army(2, 0, "x", {"cv": 1, "ftr": 2, "bmb": 2}, {})
+    assert cv.air_used() == 4 and cv.air_cap() == 4
+
+
+def test_assault_damage_order_and_random_bombard():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for x in g.armies_at(tgt):
+        g.remove_army(x)
+    d = g.new_army(1, tgt, {"tank": 2, "inf": 3, "art": 1})
+    lost = g.apply_damage([d], 60, order=C.ASSAULT_DAMAGE_ORDER)
+    assert lost == {"tank": 1} and d.units["inf"] == 3 and d.dmg["tank"] == pytest.approx(10)
+    lost = g.apply_damage([d], 60, order=C.ASSAULT_DAMAGE_ORDER)
+    assert lost == {"tank": 1, "inf": 2}
+    # 폭격: 무작위 분배(총 피해는 보존)
+    e = g.new_army(1, tgt, {"inf": 10, "tank": 2})
+    hp0 = sum(e.hp_left(k) for k in e.units)
+    g.apply_damage([e], 37, spread="random")
+    assert sum(e.hp_left(k) for k in e.units) == pytest.approx(hp0 - 37)
+
+
+def test_bombard_ranges_and_interception():
+    g = new_game(player_start="S002", n_enemies=1)
+    two = next(v for v in g.land_within("S002", 2) if v not in g.world.land_adj["S002"])
+    _own(g, 1, [two])
+    D.declare_war(g, 0, 1)
+    art = g.new_army(0, "S002", {"art": 2})
+    assert g._can_bombard(art, two)                       # 포병은 2칸까지
+    # 요격: 대공포 3단계 + 전투기 1대 → 폭격기 피해 0.5 × r × (30 + 30)
+    g.regions[two].b["aa"] = 3
+    g.new_army(1, two, {"ftr": 1})
+    ad, aa, ftr = g.air_defense(0, two)
+    assert (ad, aa, ftr) == (60, 3, 1)
+    g.regions["S002"].b["airport"] = 1
+    b = g.new_army(0, "S002", {"bmb": 5})
+    assert g._can_bombard(b, two)
+    g._bombard(b, two, g._bombard_units(b, two))
+    lost_hp = 5 * C.UNITS["bmb"]["hp"] - b.hp_left("bmb") if b.id in g.armies else 5 * C.UNITS["bmb"]["hp"]
+    assert 0.5 * 0.85 * 60 - 1e-6 <= lost_hp <= 0.5 * 1.15 * 60 + 1e-6
+
+
+def test_econ_share_counts_neutral_and_rebel_weary_mult():
+    g = new_game(player_start="S002", n_enemies=1)
+    assert g.world_gdp() == pytest.approx(sum(g.gdp(f) for f in g.alive_ids()) + g.neutral_gdp())
+    assert g.neutral_gdp() > 10 * g.gdp(0)                # 초반엔 중립 땅이 대부분
+    near = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [near])
+    r = g.regions[near]
+    r.happy, r.resist = -10.0, None
+    g.player.war_weary, g.player.war_weary_def = 20.0, 5.0
+    assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + 20 - 15 * 1.2)
+    assert C.SCIENCE_COST_PER_TURN == 120_000

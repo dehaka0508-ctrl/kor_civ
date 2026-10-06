@@ -39,14 +39,11 @@ def unit_icon(surf, key, center, color, s=1.0):
             pygame.draw.rect(surf, color, (x - w, y - 2 * k, 2 * w, 2 * k))
         if key == "lst":
             pygame.draw.rect(surf, color, (x - 3 * k, y - 3 * k, 6 * k, 3 * k), 1)
-    elif key in ("ftr", "bmb", "stl"):
-        wing = {"ftr": 5, "bmb": 7, "stl": 7}[key] * k
-        if key == "stl":
-            pygame.draw.polygon(surf, color, [(x, y - 5 * k), (x + wing, y + 4 * k), (x, y + 2 * k), (x - wing, y + 4 * k)])
-        else:
-            pygame.draw.line(surf, color, (x, y - 5 * k), (x, y + 5 * k), max(1, int(2 * k)))
-            pygame.draw.line(surf, color, (x - wing, y), (x + wing, y), max(1, int(2 * k)))
-            pygame.draw.line(surf, color, (x - 3 * k, y + 4 * k), (x + 3 * k, y + 4 * k), 1)
+    elif key in ("ftr", "bmb"):
+        wing = {"ftr": 5, "bmb": 7}[key] * k
+        pygame.draw.line(surf, color, (x, y - 5 * k), (x, y + 5 * k), max(1, int(2 * k)))
+        pygame.draw.line(surf, color, (x - wing, y), (x + wing, y), max(1, int(2 * k)))
+        pygame.draw.line(surf, color, (x - 3 * k, y + 4 * k), (x + 3 * k, y + 4 * k), 1)
 
 
 def section(gui, x, y, w, title):
@@ -635,8 +632,10 @@ def draw_army_tab(app, body):
             u = C.UNITS[k]
             gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
             left, full = army.hp_left(k), army.hp_max(k)
-            gui.text((x + 22, y + 20), f"공{u['atk'] or u.get('naval', 0) or u.get('air', 0)} 방{u['df']} "
-                     f"체 {left:.0f}/{full}", 11, t.bad if left < full * 0.5 else t.muted)
+            sc = C.UNIT_STAT_SCALE
+            stat = f"공{u['atk'] / sc:g} 방{u['df'] / sc:g}" + (f" 폭{u['bomb'] / sc:g}" if u.get("bomb") else "")
+            gui.text((x + 22, y + 20), f"{stat} 체 {left / sc:.1f}/{full / sc:g}", 11,
+                     t.bad if left < full * 0.5 else t.muted)
             app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)
             y += 40
         if army.domain() == "naval":
@@ -954,10 +953,10 @@ def draw_victory_progress(app, x, y, w, pid):
         y = kv(gui, x, y, w, "과학승리", txt)
     if "economic" in vs:
         alive = g.alive_ids()
-        total = sum(g.gdp(a) for a in alive) or 1
+        total = g.world_gdp() or 1
         share = g.gdp(pid) / total
         need = g.econ_share_needed()
-        y = kv(gui, x, y, w, "경제승리(GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
+        y = kv(gui, x, y, w, "경제승리(중립 포함 GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
                                               f"{C.ECON_VICTORY_TURNS}턴", t.good if share >= need else None)
     if "diplomatic" in vs:
         alive = g.alive_ids()

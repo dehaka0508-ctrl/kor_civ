@@ -105,7 +105,7 @@ VICTORY_TIPS = {
                "로켓 발사대 → ④ 공장 5단계 지역에서 로켓 추진체 → ⑤ 공장 5단계 지역에서 탑승 모듈 →\n"
                "⑥ 석유 생산 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
                f"(단계마다 턴당 {C.SCIENCE_COST_PER_TURN:,} × {C.SCIENCE_TURNS}턴, 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})",
-    "economic": f"경제승리: 전체 GDP 중 내 몫이 기준 이상인 상태로 {C.ECON_VICTORY_TURNS}턴 유지하면 승리\n"
+    "economic": f"경제승리: 전체 GDP(중립 지역 산출 포함) 중 내 몫이 기준 이상인 상태로 {C.ECON_VICTORY_TURNS}턴 유지하면 승리\n"
                 f"(기준은 시작 국가 수에 따라: 8개국 50%, 6개국 60%, 한 나라 늘 때마다 −5%p)",
     "diplomatic": "외교승리: 살아 있는 모든 나라가 하나의 연합에 속하면 연합 전원이 함께 승리",
     "time": f"시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 {C.TIME_VICTORY_TURNS}턴)이 되면\n"
@@ -631,10 +631,10 @@ def draw_battle(app):
         st["mode"] = "assault" if idx == 0 else "surprise"
     colw = (r.w - 72) / 2
     for i, (title, units_txt, val, factors, color) in enumerate((
-            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.0f}",
+            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A'] / C.UNIT_STAT_SCALE:,.1f}",
              bd["att_factors"], t.accent),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
-             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.0f}",
+             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D'] / C.UNIT_STAT_SCALE:,.1f}",
              bd["def_factors"], t.bad))):
         x = r.x + 24 + i * (colw + 24)
         y = r.y + 64
@@ -664,8 +664,8 @@ def draw_battle(app):
         gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "semibold",
                  anchor="topright")
         gui.text((row.x + 12, row.y + 32),
-                 f"적 피해 {oc['def_dmg']:,.0f} (예상 손실 {_units_text(oc['def_lost'])}) · "
-                 f"아군 피해 {oc['att_dmg']:,.0f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
+                 f"적 피해 {oc['def_dmg'] / C.UNIT_STAT_SCALE:,.1f} (예상 손실 {_units_text(oc['def_lost'])}) · "
+                 f"아군 피해 {oc['att_dmg'] / C.UNIT_STAT_SCALE:,.1f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
                  max_w=row.w - 24)
         y += 64
     if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):

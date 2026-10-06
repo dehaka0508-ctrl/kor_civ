@@ -94,7 +94,7 @@ def choose_victory_goal(g, f):
     # 정복: 2/3 목표 대비 진척
     c_prog = len(regs) / max(1, len(g.regions)) / C.CONQUEST_SHARE
     # 경제: 필요한 GDP 몫 대비 진척
-    total = sum(g.gdp(x) for x in alive) or 1
+    total = g.world_gdp() or 1
     e_prog = g.gdp(fid) / total / g.econ_share_needed()
     # 과학: 완료 단계, 다음 단계 비용을 감당할 재정, 필요한 땅(석유·공장 5단계·해안·산맥)
     k_done = len(f.science)
@@ -982,7 +982,7 @@ def _air_orders(g, f, threat):
         return
     hot = max(threat, key=threat.get)
     for a in [a for a in g.armies.values() if a.owner == fid and a.domain() == "air" and not a.order
-              and a.units.get("ftr") and not (a.units.get("bmb") or a.units.get("stl"))]:
+              and a.units.get("ftr") and not a.units.get("bmb")]:
         reach = g.reachable(a)
         bases = [v for v, o in reach.items() if o["action"] == "move"]
         if not bases:
@@ -1235,10 +1235,10 @@ def _slots(g, f, threat, military=True):
                           cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
     if military and at_war and airports:
         ap_idle = [r for r in airports if r.id in idle_ids]
-        if ap_idle and g.can_pay_oil(fid, 2) and f.money > 8000 and n_ftr < 2 + len(regs) // 25:
+        if ap_idle and g.can_pay_oil(fid, C.UNITS["ftr"]["oil"]) and f.money > 3000 and n_ftr < 2 + len(regs) // 25:
             r0 = ap_idle[0]
             cands.append((2.2 * bias("air"), r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
-        elif ap_idle and g.can_pay_oil(fid, 4) and f.money > 15000 and n_bmb < 1 + len(regs) // 40:
+        elif ap_idle and g.can_pay_oil(fid, C.UNITS["bmb"]["oil"]) and f.money > 4000 and n_bmb < 1 + len(regs) // 40:
             r0 = ap_idle[0]
             cands.append((1.8 * bias("air"), r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
     # 해군: 육로로 불리하거나 닿지 않는 적 해안을 노린다(상륙함), 적 항구가 있으면 구축함
@@ -1258,11 +1258,11 @@ def _slots(g, f, threat, military=True):
                 cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
                 cands.append((2.3 * bias("naval"), coast[0].id, "build", "port", None,
                               cost / C.SINGLE_BUILDINGS["port"]["turns"]))
-        if sea_t and ports_idle and g.can_pay_oil(fid, 3) and f.money > 6000:
+        if sea_t and ports_idle and g.can_pay_oil(fid, C.UNITS["lst"]["oil"]) and f.money > 2000:
             if n_lst < 1 + len(regs) // 40 and (not land_contact or unfavorable or g.rng.random() < 0.15):
                 r0 = ports_idle[0]
                 cands.append((2.4 * bias("naval"), r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
-            elif enemy_ports and n_dd < n_lst + 1 and g.can_pay_oil(fid, 4) and f.money > 10000:
+            elif enemy_ports and n_dd < n_lst + 1 and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000:
                 r0 = ports_idle[-1]
                 cands.append((2.0 * bias("naval"), r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
     # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
@@ -1281,7 +1281,7 @@ def _slots(g, f, threat, military=True):
         for r in order[:mil_need]:
             key = "inf"
             # 지도자 성향: 유리한 병종은 조금 더 자주(보병 대비 상대 배수)
-            if g.can_pay_oil(fid, 2) and f.money > 8000 and g.rng.random() < 0.35 * bias("tank") / bias("inf"):
+            if g.can_pay_oil(fid, C.UNITS["tank"]["oil"]) and f.money > 3000 and g.rng.random() < 0.35 * bias("tank") / bias("inf"):
                 key = "tank"
             elif g.rng.random() < (0.28 if at_war else 0.15) * bias("art") / bias("inf") and f.money > 3000:
                 key = "art"                    # 전쟁 중엔 선제 폭격용 포병을 더

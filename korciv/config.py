@@ -47,8 +47,8 @@ SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행�
 SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5
 
 # ---- 과학승리: 6단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
-# 단계마다 턴당 10만 × 15턴, 단계 k(0부터)는 비용 ×1.2^k (마지막 6단계는 1.2^5 ≈ 2.5배)
-SCIENCE_COST_PER_TURN = 100_000
+# 단계마다 턴당 12만 × 15턴, 단계 k(0부터)는 비용 ×1.2^k (마지막 6단계는 1.2^5 ≈ 2.5배)
+SCIENCE_COST_PER_TURN = 120_000
 SCIENCE_TURNS = 15
 SCIENCE_COST_GROWTH = 1.2
 SCIENCE_STEPS = ("lab", "observatory", "pad", "booster", "module", "propellant")
@@ -143,6 +143,7 @@ REBEL_SUPPRESS_LOSS = 0.10
 REBEL_ACCEPT_TURNS = 4     # 요구 수용: 산출 4턴분
 REBEL_ACCEPT_TAX_CUT = 0.05
 REBEL_THRESHOLD = -50
+REBEL_WEARY_MULT = 1.2      # 반란 판정: (선포한 전쟁의) 전쟁 피로를 ×1.2로 반영
 # 진압 실패 시 반란 지역이 그 지역을 수도로 하는 새 국가로 독립한다(건물·인구·산출·진행 중 공사 계승).
 REBEL_MAX_PER_PARENT = 3   # 한 국가에서 분리독립한 반란 세력(생존) 최대 수. 넘으면 기존 반란 세력에 합류
 REBEL_HAPPY_FLOOR_TURNS = 24   # 신생 국가는 이 기간 동안 행복도가 0 아래로 내려가지 않는다
@@ -150,29 +151,35 @@ REBEL_SIBLING_OPINION = 40     # 같은 국가에서 독립한 세력끼리: 체
 MAX_FACTIONS = 30          # 안전장치: 세력 수 상한. 넘으면 독립 지역은 중립이 된다
 
 # ---------------------------------------------------------------- 군사 (6절)
+# 전투력·체력은 '보병 하나가 아무 보정 없이 보병 하나를 공격할 때의 공격력 / 보병 하나의 체력'을 1/1로 둔 비율을
+# 10배로 저장한다(보병 공격 10·체력 10). 화면에는 1/10로 표시한다(UNIT_STAT_SCALE).
+# atk: 돌격·조우전 공격력(=방어력 df), bomb: 폭격 피해, hp: 체력. 비용은 턴당 비용 × 턴.
+UNIT_STAT_SCALE = 10
 UNITS = {
     #        이름      턴당비용 턴 석유 유지 공격 방어 폭격 체력 종류      수송칸
-    "inf":  dict(name="보병", cost=300, turns=1, oil=0, upkeep=5, atk=10, df=12, bomb=0, hp=10, kind="land", cargo=1, weight="light"),
-    "art":  dict(name="포병", cost=900, turns=2, oil=0, upkeep=15, atk=4, df=6, bomb=25, hp=8, kind="land", cargo=2, weight="light"),
-    "tank": dict(name="전차", cost=2500, turns=3, oil=2, upkeep=40, atk=40, df=30, bomb=0, hp=30, kind="land", cargo=4, weight="heavy"),
-    "lst":  dict(name="상륙함", cost=3000, turns=4, oil=3, upkeep=50, atk=5, df=10, bomb=0, hp=20, kind="naval", capacity=12, weight="heavy"),
-    "dd":   dict(name="구축함", cost=5000, turns=5, oil=4, upkeep=80, atk=0, naval=30, df=25, bomb=30, hp=30, kind="naval", weight="heavy"),
-    "cv":   dict(name="항공모함", cost=25000, turns=15, oil=15, upkeep=400, atk=0, df=20, bomb=0, hp=60, kind="naval", air_capacity=8, weight="heavy"),
-    "ftr":  dict(name="전투기", cost=3500, turns=3, oil=2, upkeep=60, atk=0, air=30, df=20, bomb=0, hp=15, kind="air", weight="heavy"),
-    "bmb":  dict(name="폭격기", cost=7000, turns=5, oil=4, upkeep=110, atk=0, df=5, bomb=60, hp=20, kind="air", weight="heavy"),
-    "stl":  dict(name="스텔스폭격기", cost=20000, turns=10, oil=8, upkeep=300, atk=0, df=5, bomb=60, hp=20, kind="air", weight="heavy", stealth=True),
+    "inf":  dict(name="보병", cost=250, turns=1, oil=0, upkeep=5, atk=10, df=10, bomb=0, hp=10, kind="land", cargo=1, weight="light"),
+    "art":  dict(name="포병", cost=500, turns=2, oil=0, upkeep=20, atk=15, df=15, bomb=15, hp=10, kind="land", cargo=2, weight="light"),
+    "tank": dict(name="전차", cost=750, turns=3, oil=1, upkeep=45, atk=20, df=20, bomb=0, hp=50, kind="land", cargo=4, weight="heavy"),
+    "lst":  dict(name="상륙함", cost=500, turns=2, oil=1, upkeep=20, atk=0, df=0, bomb=0, hp=20, kind="naval", capacity=8, weight="heavy"),
+    "dd":   dict(name="구축함", cost=1000, turns=3, oil=1, upkeep=60, atk=20, df=20, bomb=20, hp=50, kind="naval", weight="heavy"),
+    "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=4, weight="heavy"),
+    # 전투기: 공격 불가. 돌격 방어와 폭격기 요격에만 쓰인다(방어 30)
+    "ftr":  dict(name="전투기", cost=750, turns=3, oil=1, upkeep=45, atk=0, df=30, bomb=0, hp=30, kind="air", weight="heavy", intercept=30),
+    "bmb":  dict(name="폭격기", cost=1000, turns=3, oil=1, upkeep=60, atk=0, df=0, bomb=40, hp=20, kind="air", weight="heavy"),
     # 과학승리 유닛: 전투력 없음, 자국(연합) 영토 안에서만 이동. 생산은 과학 단계(행동 탭 '특수')로만
     "booster":    dict(name="로켓 추진체", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
     "module":     dict(name="탑승 모듈", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
     "propellant": dict(name="발사체 연료", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
 }
-UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "stl", "booster", "module", "propellant"]
+UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "booster", "module", "propellant"]
 BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science")]   # 일반 생산 목록
 NAVAL_AT_SEA_UPKEEP = 2.0
 ASSAULT_UNITS = ("inf", "tank", "lst")
 SURPRISE_UNITS = ("inf", "tank")
-ART_RANGE = 1
-AIR_RANGE = 3
+ART_RANGE = 2              # 포병 폭격: 육상 2칸(2차 인접)까지
+NAVAL_BOMB_RANGE = 2       # 구축함 함포: 해역에서 2칸(해안 지역과 그 인접 지역)까지
+BOMB_RANGE = 2             # 폭격기: 공항·항공모함에서 2칸까지
+AIR_RANGE = 3              # 공군 재배치(공항 간 이동) 거리
 AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 2
 LAND_STEPS_OWN = 2
@@ -196,24 +203,24 @@ ASSAULT_LINE_BREAK = 0.25
 DAMAGE_K = 0.5
 RAND_LO, RAND_HI = 0.85, 1.15
 SHELTER_K = 0.2
-AA_DMG_K = 0.1
-AA_SHOOT_K = 0.05
-STEALTH_AA_SHOOT = 0.10
-STEALTH_AA_DMG = 0.8
-INTERCEPT_PER_FIGHTER = 0.3
-FIGHTER_LOSS = 0.2
-# 전투기 지상전 지원: 전투 지역에서 2칸 이내(육상 인접) 자국 공항에 주둔한 전투기는 그 지역의 돌격·기습(공격 측)과
-# 방어(방어 측)에 대당 15씩 더한다. 받은 피해는 기여한 전력 비율만큼 지원 전투기도 나눠 입는다.
+# 요격: 폭격당하는 지역의 대공포(단계당 10, 최대 5단계)와 그 지역·인접 지역의 전투기(대당 30)가
+# 폭격기에 DAMAGE_K × r × 요격력 만큼 피해를 준다(폭격 전에). 전투기는 반격받지 않는다.
+AA_PER_LEVEL = 10
+AA_MAX_LEVEL = 5
+# 전투기 지상전 지원(방어만): 전투 지역에서 2칸 이내(육상 인접) 자국 공항에 주둔한 전투기는 그 지역의
+# 돌격 방어에 대당 30을 더한다. 공격 지원은 없다.
 FTR_SUPPORT_RANGE = 2
-FTR_SUPPORT_ATK = 15
-FTR_SUPPORT_DEF = 15
-# 폭격의 건물 피해: 포병(구축함 함포 포함)이 참여하면 30%, 폭격기·스텔스폭격기 60%, 둘 다 90% 확률로
+FTR_SUPPORT_ATK = 0
+FTR_SUPPORT_DEF = 30
+# 돌격으로 방어측이 입는 피해는 이 순서로 먼저 채운다(전차 > 보병 > 포병 > 공군). 폭격 피해는 모든 부대에 무작위
+ASSAULT_DAMAGE_ORDER = ("tank", "inf", "art", "ftr", "bmb")
+# 폭격의 건물 피해: 포병(구축함 함포 포함)이 참여하면 30%, 폭격기 60%, 둘 다 90% 확률로
 # 대상 지역의 생산·방어 건물(방어선 포함) 중 무작위 하나를 1단계 낮춘다.
 BOMB_HIT_GUN = 0.30
 BOMB_HIT_AIR = 0.60
 BOMB_HIT_BOTH = 0.90
-NAVAL_DD_POWER = 30
-NAVAL_BMB_POWER = 40
+NAVAL_DD_POWER = 20       # 해전: 구축함 공격력
+NAVAL_BMB_POWER = 40      # 해전: 항공모함에 실린 폭격기 공격력
 CAPTURE_CHANCE = 0.05
 
 # 점령·편입

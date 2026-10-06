@@ -24,7 +24,7 @@ def faction_name_from(short: str) -> str:
 
 def unit_power(key: str) -> float:
     u = C.UNITS[key]
-    return max(u.get("atk", 0), u.get("naval", 0), u.get("air", 0), u.get("bomb", 0) / 2)
+    return max(u.get("atk", 0), u.get("df", 0), u.get("bomb", 0) / 2)
 
 
 class Game:
@@ -470,7 +470,7 @@ class Game:
             else:
                 break
         while a.air_used() > a.air_cap():
-            for k in ("stl", "bmb", "ftr"):
+            for k in ("bmb", "ftr"):
                 if a.units.get(k, 0) > 0:
                     a.units[k] -= 1
                     break
@@ -529,7 +529,7 @@ class Game:
                         continue
                     out[v] = {"action": "attack" if hostile_units else "move", "path": [v], "strong": False}
             if army.units.get("art"):
-                for v in w.land_adj[start]:
+                for v in self.land_within(start, C.ART_RANGE):
                     if self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
         elif dom == "naval":
@@ -570,11 +570,12 @@ class Game:
                                 seen.add(v)
                 frontier = nxt
             if army.units.get("dd") and w.is_sea(start):
-                for v in w.seas[start].coast:
-                    if self.hostile(fid, self.regions[v].owner) and out.get(v, {}).get("action") != "attack":
+                for v in w.distances_from(start, C.NAVAL_BOMB_RANGE):
+                    if not w.is_sea(v) and self.hostile(fid, self.regions[v].owner) \
+                            and out.get(v, {}).get("action") != "attack":
                         out.setdefault(v, {"action": "bombard", "path": [], "strong": False})
-            if (army.units.get("bmb") or army.units.get("stl")) and army.units.get("cv"):
-                for v, d in w.distances_from(start, C.AIR_RANGE).items():
+            if army.units.get("bmb") and army.units.get("cv"):
+                for v, d in w.distances_from(start, C.BOMB_RANGE).items():
                     if not w.is_sea(v) and self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
         elif dom == "air":
@@ -587,7 +588,7 @@ class Game:
                 rr = self.regions[v]
                 if rr.owner == fid and rr.b["airport"]:
                     out[v] = {"action": "move", "path": [v], "strong": True}
-                elif (army.units.get("bmb") or army.units.get("stl")) and self.hostile(fid, rr.owner):
+                elif army.units.get("bmb") and d <= C.BOMB_RANGE and self.hostile(fid, rr.owner):
                     out[v] = {"action": "bombard", "path": [], "strong": False}
         if any(army.units.get(k) for k in C.SCIENCE_UNITS):
             # 과학승리 유닛은 싸우거나 남의 땅을 차지할 수 없다: 자국(연합) 영토로의 이동·상륙만
@@ -749,6 +750,15 @@ class Game:
                                region=a.loc, fids=(a.owner,))
                 a.goto = None
 
+    def land_within(self, rid, k) -> set:
+        """육상으로 k칸 이내 지역(자기 제외)."""
+        seen, frontier = {rid}, {rid}
+        for _ in range(k):
+            frontier = {v for u in frontier for v in self.world.land_adj[u]} - seen
+            seen |= frontier
+        seen.discard(rid)
+        return seen
+
     def _can_bombard(self, a, target):
         if self.world.is_sea(target) or not self.hostile(a.owner, self.regions[target].owner):
             return False
@@ -757,16 +767,15 @@ class Game:
     def _bombard_units(self, a, target):
         w = self.world
         out = {}
-        if a.units.get("art") and not w.is_sea(a.loc) and target in w.land_adj[a.loc]:
+        if a.units.get("art") and not w.is_sea(a.loc) and target in self.land_within(a.loc, C.ART_RANGE):
             out["art"] = a.units["art"]
-        if a.units.get("dd") and w.is_sea(a.loc) and target in w.seas[a.loc].coast:
+        if a.units.get("dd") and w.is_sea(a.loc) and w.distances_from(a.loc, C.NAVAL_BOMB_RANGE).get(target):
             out["dd"] = a.units["dd"]
-        bombers = {k: a.units.get(k, 0) for k in ("bmb", "stl") if a.units.get(k)}
-        if bombers:
+        if a.units.get("bmb"):
             base_ok = (not w.is_sea(a.loc) and self.regions[a.loc].b["airport"]
                        and self.regions[a.loc].owner == a.owner) or a.units.get("cv")
-            if base_ok and w.distances_from(a.loc, C.AIR_RANGE).get(target) is not None:
-                out.update(bombers)
+            if base_ok and w.distances_from(a.loc, C.BOMB_RANGE).get(target) is not None:
+                out["bmb"] = a.units["bmb"]
         return out
 
     # ------------------------------------------------------------------ 전투 예측
@@ -947,11 +956,22 @@ class Game:
             if dp:
                 df.append((f"전투기 {sum(x.units['ftr'] for x in da)}대 지원 (+{dp:.0f})", 1 + dp / max(1.0, pv["D"] - dp)))
 
-        def losses(units_by_army, dmg):
+        def losses(units_by_army, dmg, order=None):
             pool = [(k, n) for k, n in units_by_army.items() if n > 0]
             total = sum(C.UNITS[k]["hp"] * n for k, n in pool)
             out = {}
             if total <= 0:
+                return out
+            if order is not None:            # 방어측: 전차 > 보병 > 포병 > 공군 순서로
+                rank = {k: i for i, k in enumerate(order)}
+                left = dmg
+                for k, n in sorted(pool, key=lambda x: rank.get(x[0], len(order))):
+                    dead = min(n, int(left // C.UNITS[k]["hp"]))
+                    if dead:
+                        out[k] = dead
+                    left -= min(left, C.UNITS[k]["hp"] * n)
+                    if left <= 0:
+                        break
                 return out
             for k, n in pool:
                 share = dmg * C.UNITS[k]["hp"] * n / total
@@ -972,7 +992,7 @@ class Game:
             outcomes.append(("예상", pv["def_dmg"], pv["att_dmg"]))
         res = []
         for label, dd, ad in outcomes:
-            res.append({"label": label, "def_dmg": dd, "att_dmg": ad, "def_lost": losses(all_def, dd),
+            res.append({"label": label, "def_dmg": dd, "att_dmg": ad, "def_lost": losses(all_def, dd, C.ASSAULT_DAMAGE_ORDER if mode == "assault" else None),
                         "att_lost": losses(att_units, ad), "capture": dd >= pv["def_hp"] * 0.95})
         return {"preview": pv, "att_units": att_units, "def_units": def_units, "att_factors": af,
                 "def_factors": df, "outcomes": res, "target_owner": rr.owner}
@@ -1004,8 +1024,10 @@ class Game:
         return res
 
     # ------------------------------------------------------------------ 피해 적용
-    def apply_damage(self, armies, dmg, unit_filter=None, rng_round=True):
-        """피해를 (수 x 체력) 비율로 나눠 적용. 잃은 유닛 {키: 수} 반환."""
+    def apply_damage(self, armies, dmg, unit_filter=None, rng_round=True, order=None, spread="share"):
+        """피해 적용. 잃은 유닛 {키: 수} 반환.
+        spread="share": (수 x 체력) 비율로 나눔 / order=(키, ...): 그 순서로 먼저 채움(돌격 방어측) /
+        spread="random": 유닛 하나하나에 무작위로 나눔(폭격)."""
         pool = []
         acted = self.__dict__.setdefault("_acted", set())
         for a in armies:
@@ -1017,14 +1039,36 @@ class Game:
         lost = {}
         if total_hp <= 0 or dmg <= 0:
             return lost
+        shares = {}
+        if order is not None:
+            rank = {k: i for i, k in enumerate(order)}
+            left = dmg
+            for a, k, n in sorted(pool, key=lambda x: (rank.get(x[1], len(order)), x[0].id)):
+                cap = C.UNITS[k]["hp"] * n - a.dmg.get(k, 0.0)
+                take = min(left, max(0.0, cap))
+                shares[(a.id, k)] = take
+                left -= take
+                if left <= 1e-9:
+                    break
+        elif spread == "random":
+            units = [(a.id, k) for a, k, n in pool for _ in range(n)]
+            chunks = max(1, min(400, int(math.ceil(dmg / 2.5))))
+            for _ in range(chunks):
+                key = units[self.rng.randrange(len(units))]
+                shares[key] = shares.get(key, 0.0) + dmg / chunks
+        else:
+            for a, k, n in pool:
+                shares[(a.id, k)] = dmg * (C.UNITS[k]["hp"] * n) / total_hp
         for a, k, n in pool:
+            share = shares.get((a.id, k), 0.0)
+            if share <= 0:
+                continue
             hp = C.UNITS[k]["hp"]
-            share = dmg * (hp * n) / total_hp
             acc = a.dmg.get(k, 0.0) + share
-            dead = min(n, int(acc // hp))
+            dead = min(n, int(acc // hp + 1e-9))
             acc -= dead * hp
             a.units[k] = n - dead
-            a.dmg[k] = acc if a.units[k] > 0 else 0.0
+            a.dmg[k] = max(0.0, acc) if a.units[k] > 0 else 0.0
             if dead:
                 lost[k] = lost.get(k, 0) + dead
         for a in armies:
@@ -1342,7 +1386,8 @@ class Game:
         if key == "shelter":
             return f"폭격 피해 ÷{1 + C.SHELTER_K * lv:.1f}"
         if key == "aa":
-            return f"폭격기 피해 x{1 - C.AA_DMG_K * lv:.1f}, 격추 {int(C.AA_SHOOT_K * lv * 100)}%"
+            return (f"이 지역을 폭격하는 폭격기 요격력 {min(lv, C.AA_MAX_LEVEL) * C.AA_PER_LEVEL / C.UNIT_STAT_SCALE:g}"
+                    f"(단계당 1, 최대 {C.AA_MAX_LEVEL})")
         if key == "academy":
             return "이 지역 유닛 생산비 −25%, 인접 −10%"
         if key == "airport":
@@ -2097,8 +2142,7 @@ class Game:
                         self._naval_battle(sid, x, fx, y, fy)
 
     def _naval_power(self, fid, fleets, sid):
-        p = sum(C.NAVAL_DD_POWER * a.units.get("dd", 0)
-                + C.NAVAL_BMB_POWER * (a.units.get("bmb", 0) + a.units.get("stl", 0)) for a in fleets)
+        p = sum(C.NAVAL_DD_POWER * a.units.get("dd", 0) + C.NAVAL_BMB_POWER * a.units.get("bmb", 0) for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
         return p * self.morale(fid) * self.lead_mult(fid, "naval_power")   # 이순신: 해전 +30%
@@ -2183,57 +2227,36 @@ class Game:
             if units:
                 self._bombard(a, tgt, units)
 
+    def air_defense(self, fid_att, tgt):
+        """폭격기를 요격하는 힘: 대상 지역 대공포(단계당 10, 최대 5단계) + 대상·인접 지역의 적 전투기(대당 30)."""
+        rr = self.regions[tgt]
+        aa = min(C.AA_MAX_LEVEL, rr.b["aa"]) if rr.owner != NEUTRAL else 0
+        ftr = sum(x.units.get("ftr", 0) for loc in [tgt] + list(self.world.land_adj[tgt])
+                  for x in self.hostile_units_at(fid_att, loc))
+        return aa * C.AA_PER_LEVEL + ftr * C.UNITS["ftr"]["intercept"], aa, ftr
+
     def _bombard(self, a, tgt, units):
         rr = self.regions[tgt]
         m = self.mods(a.owner)
-        aa = rr.b["aa"] if rr.owner != NEUTRAL else 0
-        bombers = {k: units.get(k, 0) for k in ("bmb", "stl")}
-        n_bomb = sum(bombers.values())
         notes = []
-        if n_bomb:
-            # 공중전: 방어측 전투기 - 호위 전투기
-            def_armies = [x for loc in [tgt] + list(self.world.land_adj[tgt])
-                          for x in self.hostile_units_at(a.owner, loc) if x.units.get("ftr")]
-            def_ftr = sum(x.units["ftr"] for x in def_armies)
-            esc = a.units.get("ftr", 0)
-            net = max(0, def_ftr - esc)
-            shot = min(bombers["bmb"], int(net * C.INTERCEPT_PER_FIGHTER + self.rng.random()))
-            fl = int(min(def_ftr, esc) * C.FIGHTER_LOSS + self.rng.random() * 0.999) if min(def_ftr, esc) else 0
-            if fl:
-                a.units["ftr"] = max(0, a.units.get("ftr", 0) - fl)
-                left = fl
-                for x in def_armies:
-                    t = min(left, x.units["ftr"])
-                    x.units["ftr"] -= t
-                    left -= t
-                    self._prune_army(x)          # 전투기를 모두 잃으면 항목(·빈 부대)을 정리
-            # 대공포
-            for k in ("bmb", "stl"):
-                for _ in range(bombers[k]):
-                    if k == "bmb":
-                        p = C.AA_SHOOT_K * aa
-                    else:
-                        p = C.STEALTH_AA_SHOOT if aa >= 5 else 0.0
-                    if self.rng.random() < p:
-                        shot += 1 if k == "bmb" else 0
-                        if k == "stl":
-                            bombers["stl"] -= 1
-                            a.units["stl"] -= 1
-            shot = min(shot, a.units.get("bmb", 0))
-            if shot:
-                a.units["bmb"] -= shot
-                bombers["bmb"] = max(0, bombers["bmb"] - shot)
-                notes.append(f"폭격기 {shot}대 격추")
-            a.units = {k: v for k, v in a.units.items() if v > 0}
-            a.dmg = {k: min(d, a.hp_max(k)) for k, d in a.dmg.items() if k in a.units}
+        n_bmb = units.get("bmb", 0)
+        if n_bmb:
+            # 요격: 대공포·전투기가 폭격 전에 폭격기에 피해(전투기는 반격받지 않는다)
+            ad, aa, ftr = self.air_defense(a.owner, tgt)
+            if ad > 0:
+                hit = C.DAMAGE_K * self.rng.uniform(C.RAND_LO, C.RAND_HI) * ad
+                shot = self.apply_damage([a], hit, unit_filter=("bmb",)).get("bmb", 0)
+                if shot:
+                    notes.append(f"폭격기 {shot}대 격추(대공포 {aa}단계·전투기 {ftr}대)")
+            n_bmb = a.units.get("bmb", 0) if a.id in self.armies else 0
         dmg = units.get("art", 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
         dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * self.lead_mult(a.owner, "naval_bomb")
-        dmg += bombers.get("bmb", 0) * C.UNITS["bmb"]["bomb"] * (1 - C.AA_DMG_K * aa)
-        dmg += bombers.get("stl", 0) * C.UNITS["stl"]["bomb"] * (C.STEALTH_AA_DMG if aa >= 5 else 1.0)
+        dmg += n_bmb * C.UNITS["bmb"]["bomb"]
+        bombers = {"bmb": n_bmb}
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
         dmg *= self.morale(a.owner)
         defenders = self.hostile_units_at(a.owner, tgt)
-        lost = self.apply_damage(defenders, dmg) if defenders else {}
+        lost = self.apply_damage(defenders, dmg, spread="random") if defenders else {}
         self._score_units(a.owner, rr.owner, lost)
         # 건물 피해: 포병·함포 30%, 폭격기 60%, 둘 다 90%로 생산·방어 건물(방어선 포함) 하나 −1단계
         guns = units.get("art", 0) + units.get("dd", 0) > 0
@@ -2255,10 +2278,10 @@ class Game:
         if not rr.bombed:
             rr.h_delta += C.BOMBED_HAPPY
             rr.bombed = True
-        if a.empty():
+        if a.id in self.armies and a.empty():
             self.remove_army(a)
         self.battle_regions.append(tgt)
-        self.event("bomb", f"{self.fname(a.owner)} → {self.info(tgt).name} 폭격: 피해 {dmg:.0f}"
+        self.event("bomb", f"{self.fname(a.owner)} → {self.info(tgt).name} 폭격: 피해 {dmg / C.UNIT_STAT_SCALE:.1f}"
                    + (f", 격파 {sum(lost.values())}" if lost else "") + ("; " + ", ".join(notes) if notes else ""),
                    region=tgt, fids=(a.owner, rr.owner))
 
@@ -2392,11 +2415,9 @@ class Game:
         d_air *= self.morale(rr.owner) if rr.owner != NEUTRAL else 1.0
         base_a = A / (1 + C.FLANK_BONUS * (n - 1)) if mode == "assault" else A
         fa = min(0.9, a_air / base_a) if base_a > 0 and a_air_arms else 0.0
-        fd = min(0.9, d_air / Dv) if Dv > 0 and d_air_arms else 0.0
-        lost_d = self.apply_damage(defenders, dd * (1 - fd))
-        if fd:
-            for k, v in self.apply_damage(d_air_arms, dd * fd, unit_filter=("ftr",)).items():
-                lost_d[k] = lost_d.get(k, 0) + v
+        # 돌격의 방어측 피해는 전차 > 보병 > 포병 > 공군(지원 전투기 포함) 순서로 채운다(기습은 비율대로)
+        pool = list(defenders) + [x for x in d_air_arms if x not in defenders]
+        lost_d = self.apply_damage(pool, dd, order=C.ASSAULT_DAMAGE_ORDER if mode == "assault" else None)
         lost_a = self.apply_damage([x for x in attackers if x.id in self.armies], ad * (1 - fa), unit_filter=filt)
         if fa:
             for k, v in self.apply_damage(a_air_arms, ad * fa, unit_filter=("ftr",)).items():
@@ -2405,7 +2426,7 @@ class Game:
         self._score_units(def_owner, fid, lost_a)
         self.battle_regions.append(tgt)
         self.event("battle", f"{'기습' if mode == 'surprise' else '돌격'}: {self.fname(fid)} → {self.info(tgt).name}"
-                   f" (A {A:.0f} / D {Dv:.0f}{', ' + note if note else ''}) 공격측 손실 {sum(lost_a.values())},"
+                   f" (A {A / C.UNIT_STAT_SCALE:.1f} / D {Dv / C.UNIT_STAT_SCALE:.1f}{', ' + note if note else ''}) 공격측 손실 {sum(lost_a.values())},"
                    f" 방어측 손실 {sum(lost_d.values())}", region=tgt, fids=(fid, def_owner, rr.owner))
         # 남은 상륙 병력이 바다에 있으면 함대로 복귀
         survivors = [x for x in attackers if x.id in self.armies]
@@ -2963,11 +2984,13 @@ class Game:
 
     def eff_happy(self, rr, rebel=False) -> float:
         """실질 행복도 = 행복도(저항 반영) − 전쟁 피로도 − 징집 피로. 산출·인구·사기 판정에 쓴다.
-        rebel=True(반란 판정): 선포당한 전쟁에서 쌓인 전쟁 피로는 빼지 않는다."""
+        rebel=True(반란 판정): 선포당한 전쟁에서 쌓인 전쟁 피로는 빼지 않고, 나머지는 ×1.2로 반영한다."""
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
-        weary = f.war_weary - (getattr(f, "war_weary_def", 0.0) if rebel else 0.0)
+        weary = f.war_weary
+        if rebel:
+            weary = (weary - getattr(f, "war_weary_def", 0.0)) * C.REBEL_WEARY_MULT
         h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
              + self.scenic_bonus(rr) + self.crowd_penalty(rr))
         if f.happy_floor_until > self.turn:
@@ -3251,7 +3274,7 @@ class Game:
         if "economic" in st.victories:
             need = self.econ_share_needed()
             gd = {f: self.gdp(f) for f in alive}
-            total = sum(gd.values())
+            total = self.world_gdp(gd)
             for fid in alive:
                 f = self.factions[fid]
                 if total > 0 and gd[fid] >= need * total:
@@ -3271,6 +3294,21 @@ class Game:
             best = max(alive, key=lambda f: (sc[f], self.gdp(f)))
             self._win((best,), "time")
             return
+
+    def neutral_gdp(self) -> float:
+        """중립 지역의 산출 합(경제승리 분모용). 턴마다 한 번 계산해 둔다."""
+        c = getattr(self, "_neutral_gdp", None)
+        if c is None or c[0] != self.turn:
+            v = sum(self.region_output_estimate(r.id) for r in self.regions.values() if r.owner == NEUTRAL)
+            c = (self.turn, v)
+            self._neutral_gdp = c
+        return c[1]
+
+    def world_gdp(self, gd=None) -> float:
+        """경제승리 분모: 살아 있는 모든 세력의 GDP + 중립 지역 산출."""
+        if gd is None:
+            gd = {f: self.gdp(f) for f in self.alive_ids()}
+        return sum(gd.values()) + self.neutral_gdp()
 
     def start_nations(self) -> int:
         """시작할 때의 국가 수(플레이어 포함, 반란국 제외)."""

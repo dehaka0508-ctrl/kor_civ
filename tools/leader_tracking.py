@@ -18,7 +18,7 @@ SPECIAL = {"tax_over10", "tax_over15", "tax_max", "tax_lock", "war_weary_rate", 
            "cost_air", "cost_naval", "cost_tank", "cost_mil", "inf_cost_early", "cost_line", "cost_factory",
            "build_time_prod", "build_time_all", "build_time_factory", "science_turns", "occ_time",
            "war_start_weary"}
-AIR = {"ftr", "bmb", "stl"}
+AIR = {"ftr", "bmb"}
 NAVAL = {"lst", "dd", "cv"}
 
 
@@ -165,7 +165,7 @@ def install(G, D, A):
     def _bombard(self, a, tgt, units):
         n0 = sum(self.regions[tgt].b.get(k, 0) for k in self.regions[tgt].b) + sum(self.regions[tgt].lines.values())
         owner = a.owner
-        kinds = ("gun" if units.get("art") or units.get("dd") else "") + ("air" if units.get("bmb") or units.get("stl") else "")
+        kinds = ("gun" if units.get("art") or units.get("dd") else "") + ("air" if units.get("bmb") else "")
         r = orig_bombard(self, a, tgt, units)
         n1 = sum(self.regions[tgt].b.get(k, 0) for k in self.regions[tgt].b) + sum(self.regions[tgt].lines.values())
         T.beh[owner][f"bomb_{kinds or 'none'}"] += 1
