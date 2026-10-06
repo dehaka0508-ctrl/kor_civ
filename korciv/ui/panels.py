@@ -152,7 +152,7 @@ def draw_region_info(app, rect):
         return
     col = app.faction_rgb(owner)
     gui.rect(col, (x, y + 2, 12, 12), radius=3)
-    oname = g.fname(owner)
+    oname = g.seen_name(owner)
     if owner not in (NEUTRAL,) and owner != pid:
         st = D.stage(g, owner, pid)
         oname += f" · {D.STAGE_NAMES[st]}"
@@ -225,8 +225,8 @@ def draw_region_info(app, rect):
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
     if visible:
-        claims = [f"{g.fname(o['by'])} 점령 {o['progress']}/{o['need']}턴" for o in r.occs.values()]
-        claims += [f"{g.fname(rr2.owner)} 편입 {g.project_left(rr2.id)}턴 남음" for rr2 in g.regions.values()
+        claims = [f"{g.seen_name(o['by'])} 점령 {o['progress']}/{o['need']}턴" for o in r.occs.values()]
+        claims += [f"{g.seen_name(rr2.owner)} 편입 {g.project_left(rr2.id)}턴 남음" for rr2 in g.regions.values()
                    if rr2.project and rr2.project.kind == "annex" and rr2.project.key == node]
         claims = list(dict.fromkeys(claims))
         if claims:
@@ -308,7 +308,7 @@ def draw_region_info(app, rect):
         if a.id == app.sel_army:
             gui.rect(t.panel_alt, rr, radius=6)
         gui.rect(col, (x + 4, y + 6, 10, 12), radius=3)
-        gui.text((x + 20, y + 3), f"{g.fname(a.owner)} · {a.label()}", 13, max_w=w - 24)
+        gui.text((x + 20, y + 3), f"{g.seen_name(a.owner)} · {a.label()}", 13, max_w=w - 24)
         if a.owner == pid and gui.hover(rr) and gui.clicked:
             gui.clicked = False
             app.sel_army = a.id
@@ -326,7 +326,8 @@ def draw_region_info(app, rect):
             y = draw_project(app, x, y, w, node, p, can_cancel=owner == pid)
     if owner not in (NEUTRAL, pid):
         y += 8
-        if gui.button((x, y, w, 32), "외교", "primary"):
+        if gui.button((x, y, w, 32), "외교", "primary", enabled=g.has_met(pid, owner),
+                      tooltip=None if g.has_met(pid, owner) else "조우한 적 없는 국가와는 외교할 수 없습니다."):
             app.open_diplomacy(owner)
         y += 40
     gui.end_scroll("left", scroll_rect, y - y0 + off + 10)
@@ -399,7 +400,7 @@ def draw_sea_info(app, rect, sid):
     mine = sum(1 for r in sea.coast if g.regions[r].owner == g.player_id)
     y = kv(gui, x, y, w, "해안 타일 보유", f"{mine}/{len(sea.coast)}")
     ctrl = g.coast_controller(sid)
-    y = kv(gui, x, y, w, "해안선 점유", g.fname(ctrl) if ctrl is not None else "없음")
+    y = kv(gui, x, y, w, "해안선 점유", g.seen_name(ctrl) if ctrl is not None else "없음")
     gui.wrap((x, y), "점유 효과: 해안 어장 식량·산출 +25%, 이 해역 해전 방어 +25%", w, 12, t.muted)
     y += 40
     y = kv(gui, x, y, w, "인접 해역", ", ".join(app.world.seas[s].name for s in sea.adj))
@@ -408,7 +409,7 @@ def draw_sea_info(app, rect, sid):
         if a.owner == g.player_id or g.is_visible(g.player_id, sid) or app.fog_reveal:
             gui.rect(app.faction_rgb(a.owner), (x, y + 5, 10, 12), radius=3)
             r = pygame.Rect(x, y, w, 24)
-            gui.text((x + 16, y + 2), f"{g.fname(a.owner)} · {a.label()}", 13, max_w=w - 20)
+            gui.text((x + 16, y + 2), f"{g.seen_name(a.owner)} · {a.label()}", 13, max_w=w - 20)
             if a.owner == g.player_id and gui.hover(r) and gui.clicked:
                 gui.clicked = False
                 app.sel_army = a.id
@@ -799,8 +800,13 @@ def draw_diplo_tab(app, body):
             app.dip_view = o.id
             app.war_confirm = None
         draw_flag(gui, (x, y + 9, 42, 28), faction_flag(o))
+        if not g.has_met(pid, o.id):            # 조우하지 않은 국가: 국기만
+            gui.text((x + 52, y + 5), g.UNKNOWN_NAME, 13, t.muted, "semibold", max_w=w - 60)
+            gui.text((x + 52, y + 24), g.UNKNOWN_LEADER, 11, t.muted, max_w=w - 60)
+            y += 50
+            continue
         gui.text((x + 52, y + 5), o.name, 13, weight="semibold", max_w=w - 60)
-        origin = f" · {g.fname(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
+        origin = f" · {g.seen_name(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
         gui.text((x + 52, y + 24), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}{origin}", 11,
                  t.bad if st == -1 else t.muted, max_w=w - 60)
         y += 50
@@ -822,6 +828,7 @@ def draw_diplo_detail(app, body, fid):
     x, w = body.x + 14, body.w - 28
     area = pygame.Rect(body.x, body.y, body.w, body.h)
     others = [f for f in g.factions if f.alive and f.id != fid]
+    known = g.has_met(pid, fid)                  # 조우하지 않았으면 국기 말고는 가린다
     off = gui.begin_scroll("diplo_detail", area, getattr(app, "_dip_h", 600))
     y = body.y - off
     y0 = y
@@ -832,13 +839,13 @@ def draw_diplo_detail(app, body, fid):
     y += 32
     # 상단: 국기 + 국가명
     draw_flag(gui, (x, y, 60, 40), faction_flag(o))
-    gui.text((x + 72, y), o.name, 19, weight="bold", max_w=w - 72)
-    gui.text((x + 72, y + 25), f"{o.leader_name} · {GOV_BY_KEY.get(o.gov, {}).get('name', '체제 미정')}", 12,
-             t.muted, max_w=w - 72)
+    gui.text((x + 72, y), g.seen_name(fid), 19, weight="bold", max_w=w - 72)
+    sub = f"{o.leader_name} · {GOV_BY_KEY.get(o.gov, {}).get('name', '체제 미정')}" if known else g.UNKNOWN_LEADER
+    gui.text((x + 72, y + 25), sub, 12, t.muted, max_w=w - 72)
     y += 52
     # 좌: 초상화(3:4), 우: 수도·관계·우호도
     pw, ph = 120, 160
-    draw_portrait(gui, (x, y, pw, ph), o.leader, t)
+    draw_portrait(gui, (x, y, pw, ph), o.leader if known else "__unknown__", t)
     rx, rw = x + pw + 14, w - pw - 14
     st = D.stage(g, fid, pid)
     op = D.opinion(g, fid, pid)
@@ -849,6 +856,8 @@ def draw_diplo_detail(app, body, fid):
     cap = app.world.regions[o.capital].name if o.capital in app.world.regions else "없음"
     rows = [("수도", cap, None), ("관계", rel, stage_color(t, st)),
             ("우호도 (상대 → 나)", f"{op:+.1f}", t.good if op >= 0 else t.bad)]
+    if not known:
+        rows = [("수도", "알 수 없음", t.muted), ("관계", "조우한 적 없음", t.muted), ("우호도 (상대 → 나)", "?", t.muted)]
     if pl:
         rows.append(("강화 불가침", f"{pl}턴 남음", None))
     ry = y + 2
@@ -859,8 +868,11 @@ def draw_diplo_detail(app, body, fid):
     y += ph + 14
     # 통계
     cw = (w - 16) / 3
-    for i, (k, v) in enumerate((("인구", f"{g.total_pop(fid):,.0f}만"), ("지역 수", f"{g.region_count(fid)}곳"),
-                                ("GDP", f"{o.last.get('gdp', g.gdp(fid)):,.0f}"))):
+    stats = (("인구", f"{g.total_pop(fid):,.0f}만"), ("지역 수", f"{g.region_count(fid)}곳"),
+             ("GDP", f"{o.last.get('gdp', g.gdp(fid)):,.0f}"))
+    if not known:
+        stats = (("인구", "?"), ("지역 수", "?"), ("GDP", "?"))
+    for i, (k, v) in enumerate(stats):
         cell = pygame.Rect(x + i * (cw + 8), y, cw, 48)
         gui.rect(t.panel_alt, cell, radius=6)
         gui.text((cell.centerx, cell.y + 6), k, 11, t.muted, anchor="midtop")
@@ -869,20 +881,27 @@ def draw_diplo_detail(app, body, fid):
     # 타국과의 관계
     gui.text((x, y), "타국과의 관계", 13, weight="bold")
     y += 22
+    if not known:
+        gui.text((x, y), "조우한 적이 없어 알려진 정보가 없습니다.", 12, t.muted)
+        y += 22
+        others = []
     for f in others:
         s2 = D.stage(g, fid, f.id)
         draw_flag(gui, (x, y + 2, 24, 16), faction_flag(f))
-        gui.text((x + 32, y + 1), f.name + (" (나)" if f.id == pid else ""), 12, max_w=w - 140)
+        gui.text((x + 32, y + 1), g.seen_name(f.id) + (" (나)" if f.id == pid else ""), 12, max_w=w - 140)
         gui.text((x + w, y + 1), D.STAGE_NAMES[s2], 12, stage_color(t, s2), "semibold", anchor="topright")
         y += 22
     y += 12
     # 외교 / 선전포고
     bw = (w - 8) / 2
-    if gui.button((x, y, bw, 40), "외교", "primary", size=14):
+    unmet_tip = "조우한 적 없는 국가와는 외교할 수 없습니다." if not known else None
+    if gui.button((x, y, bw, 40), "외교", "primary", size=14, enabled=known, tooltip=unmet_tip):
         app.war_confirm = None
         app.open_diplomacy(fid)
-    can_war = st != -1 and not D.has_nonaggr(g, pid, fid)
-    if st == -1:
+    can_war = st != -1 and not D.has_nonaggr(g, pid, fid) and known
+    if not known:
+        tip = unmet_tip
+    elif st == -1:
         tip = "이미 전쟁 중입니다."
     elif not can_war:
         tip = "불가침·동맹 중에는 먼저 외교 창에서 파기해야 합니다."

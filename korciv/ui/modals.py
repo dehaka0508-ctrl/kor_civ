@@ -27,7 +27,7 @@ class SetupState:
         self.ai_leaders = []          # 빈 칸은 무작위
         self.seed = ""
         self.max_turns = C.TIME_VICTORY_TURNS
-        self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "star5"})
+        self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "disc"})
         self.flag_draft = None        # 국기 편집 창이 열려 있으면 편집 중인 사본
         self.flag_target = 0          # FLAG_TARGETS 순번: 배경 색 1·2, 문양 색 1·2
 
@@ -249,7 +249,14 @@ def draw_setup(app):
         cur = s.ai_leaders[i]
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
         if gui.button((cx, cy, 152, 30), f"AI {i+1}: {lab}", size=12):
-            s.ai_leaders[i] = keys[(keys.index(cur) + 1) % len(keys)]
+            # 플레이어·다른 AI가 이미 고른 지도자는 건너뛴다(한 판에 같은 지도자가 둘 나오지 않게)
+            taken = {s.leader} | {k for j, k in enumerate(s.ai_leaders[: s.n_enemies]) if j != i and k}
+            j = keys.index(cur)
+            for _ in range(len(keys)):
+                j = (j + 1) % len(keys)
+                if keys[j] is None or keys[j] not in taken:
+                    break
+            s.ai_leaders[i] = keys[j]
     y += 3 * 36 + 8
     gui.text((x2, y + 8), "시드", 13, t.muted)
     s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
@@ -354,6 +361,16 @@ def draw_flag_editor(app):
             gui.keys.remove(k)
 
 
+def _unique_ai_leaders(s):
+    """지정한 AI 지도자 중 플레이어·앞 칸과 겹치는 것은 빼서(무작위로) 같은 지도자가 둘 나오지 않게 한다."""
+    out, used = [], {s.leader}
+    for k in (s.ai_leaders or [])[: s.n_enemies]:
+        if k and k not in used:
+            out.append(k)
+            used.add(k)
+    return out
+
+
 def start_from_setup(app):
     s = app.setup
     if not any(s.victories.values()):
@@ -362,9 +379,9 @@ def start_from_setup(app):
     settings = Settings(
         n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
-        player_leader_name=s.custom_name.strip() if s.leader == "custom" else "",
+        player_leader_name=(s.custom_name.strip() or "이름 없는 지도자") if s.leader == "custom" else "",
         player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
-        ai_leaders=[k for k in (s.ai_leaders or [])[: s.n_enemies] if k], seed=seed, max_turns=s.max_turns)
+        ai_leaders=_unique_ai_leaders(s), seed=seed, max_turns=s.max_turns)
     app.start_game(settings)
 
 
@@ -754,7 +771,7 @@ def draw_proposal(app):
     r = modal_frame(app, 520, 260, "외교 제안")
     f = g.factions[fid]
     gui.rect(hex2rgb(f.color), (r.x + 24, r.y + 62, 12, 16), radius=3)
-    gui.text((r.x + 44, r.y + 60), f"{f.name}({f.leader_name})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
+    gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "
              f"{D.STAGE_NAMES[D.stage(g, fid, g.player_id)]}", 13, t.muted)
@@ -988,9 +1005,10 @@ def draw_ranking(app):
         for pos, row in enumerate(sorted(rows, key=lambda rr: -rr[k])):
             ranks[(row["fid"], k)] = pos + 1
     for row in sorted(rows, key=lambda rr: -rr["regions"]):
-        gui.rect(hex2rgb(g.factions[row["fid"]].color), (x0, y + 6, 10, 16), radius=3)
+        draw_flag(gui, (x0, y + 5, 24, 16), FL.faction_flag(g.factions[row["fid"]]))
         me = row["fid"] == g.player_id
-        gui.text((x0 + 16, y + 4), row["name"] + (" (나)" if me else ""), 14, weight="bold" if me else "regular")
+        gui.text((x0 + 30, y + 4), g.seen_name(row["fid"]) + (" (나)" if me else ""), 14,
+                 weight="bold" if me else "regular", max_w=150)
         for i, (k, _) in enumerate(cols):
             v = row[k]
             s = f"{v:+.1f}" if k == "happy" else f"{v:,.0f}"
@@ -1008,13 +1026,14 @@ def draw_log(app):
     pid = g.player_id
     evs = [e for e in reversed(g.history) if pid in e["fids"] or e["kind"] in ("war", "peace", "eliminated",
                                                                                 "ranking", "victory", "diplo")]
+    evs = [(e, txt) for e in evs for txt in [g.event_for_player(e)] if txt is not None]   # 미지의 국가는 가림
     area = pygame.Rect(r.x + 16, r.y + 60, r.w - 32, r.h - 130)
     off = gui.begin_scroll("log", area, len(evs) * 24)
     y = area.y - off
-    for e in evs:
+    for e, txt in evs:
         col = {"battle": t.bad, "war": t.bad, "rebel": t.warn, "famine": t.warn, "captured": t.good}.get(e["kind"], t.text)
         gui.text((area.x + 8, y), f"턴 {e['turn']}", 12, t.muted)
-        gui.text((area.x + 64, y), e["text"], 13, col, max_w=area.w - 80)
+        gui.text((area.x + 64, y), txt, 13, col, max_w=area.w - 80)
         y += 24
     gui.end_scroll("log", area, len(evs) * 24)
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):

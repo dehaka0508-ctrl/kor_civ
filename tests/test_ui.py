@@ -320,3 +320,47 @@ def test_save_version_and_slot_visibility(app, tmp_path, monkeypatch):
     assert app.game is not None
     app.game, app.scene = None, "title"
     frame(app)                                              # 시작 화면 버전 표시
+
+
+def test_random_flag_ec2_not_white():
+    """무작위 국기의 문양 색 2는 흰색으로 고정되지 않는다(두 색 문양으로 바꿔도 보이게)."""
+    import random as _r
+    from korciv import flags as FL
+    rng = _r.Random(5)
+    for _ in range(200):
+        f = FL.random_flag(rng)
+        assert f["ec2"] != (255, 255, 255)
+
+
+def test_unmet_factions_hidden_under_fog(app):
+    """전장의 안개에서 조우하지 않은 국가는 '미지의 국가'·'수수께끼의 지도자'로만 보인다."""
+    app.start_game(Settings(seed=7, n_enemies=6, fog=1))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene, app.modal = "main", None
+    g.pending_proposals.clear()
+    pid = g.player_id
+    unmet = [f for f in g.factions if f.id != pid and not g.has_met(pid, f.id)]
+    assert unmet, "시작하자마자 모두 만난 상태면 안 된다"
+    o = unmet[0]
+    assert g.seen_name(o.id) == "미지의 국가" and g.seen_leader(o.id) == "수수께끼의 지도자"
+    # 조우 판정: 그 세력 영토가 시야에 들어오면 만난 것
+    g.new_army(pid, o.capital, {"inf": 1})
+    g._update_fog()
+    assert g.has_met(pid, o.id) and g.seen_name(o.id) == o.name
+    # 이벤트 문장 가리기
+    other = next(f for f in unmet[1:] if not g.has_met(pid, f.id))
+    e = {"turn": 1, "kind": "war", "text": f"{other.name}이(가) {g.player.name}에 선전포고", "fids": (other.id, pid)}
+    assert other.name not in g.event_for_player(e) and "미지의 국가" in g.event_for_player(e)
+    e2 = {"turn": 1, "kind": "war", "text": "x", "fids": (other.id, o.id)}
+    assert g.event_for_player(e2) is None
+    app.left_open, app.left_tab, app.dip_view = True, "diplo", None
+    frame(app)
+    app.dip_view = other.id
+    frame(app)
+    app.modal = ("log", None)
+    frame(app)
+    app.modal = None
+    # 안개가 없으면 모두 안다
+    app.start_game(Settings(seed=7, n_enemies=3, fog=0))
+    assert all(app.game.has_met(app.game.player_id, f.id) for f in app.game.factions)

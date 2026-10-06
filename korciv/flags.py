@@ -99,11 +99,12 @@ def default_flag(color_hex: str, seed) -> dict:
         bg = "border"
     else:
         bg = rng.choice(AI_PATTERN_BGS)
-    fl = {"bg": bg, "c1": c1, "c2": WHITE, "em": "none", "ec": WHITE, "ec2": WHITE}
+    # 문양 색 2는 지금 문양이 한 색이어도 미리 알맞은 값을 넣어 둔다(편집 창에서 두 색 문양으로 바꿔도 보이게)
+    fl = {"bg": bg, "c1": c1, "c2": WHITE, "em": "none", "ec": WHITE, "ec2": _darker(c1)}
     if bg in ("solid", "border"):
         em = rng.choice(EMBLEM_KEYS[1:])
         fl["em"] = em
-        fl["ec2"] = {"flower": c1, "yinyang": BLACK, "taegeuk": _darker(c1)}.get(em, WHITE)
+        fl["ec2"] = {"flower": c1, "yinyang": BLACK}.get(em, _darker(c1))
     return fl
 
 

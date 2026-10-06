@@ -191,6 +191,8 @@ class App:
         if g is None:
             self.toast(f"이 버전({VERSION})에서 이어서 할 수 없는 저장 파일입니다.", self.theme.bad)
             return
+        if any(not hasattr(f, "met") for f in g.factions):
+            g._update_fog()                      # v1.0.0 세이브: 조우 기록을 지금 시야로 채운다
         self.game = g
         self.modal = None
         self.reset_ui()
@@ -826,8 +828,8 @@ class App:
         g = self.gui
         r = pygame.Rect(pos[0], pos[1], 170, 84)
         g.panel(r)
-        g.text((r.x + 12, r.y + 8), self.game.fname(fid), 13, weight="bold")
-        if g.button((r.x + 8, r.y + 30, 154, 22), "외교", "ghost"):
+        g.text((r.x + 12, r.y + 8), self.game.seen_name(fid), 13, weight="bold")
+        if g.button((r.x + 8, r.y + 30, 154, 22), "외교", "ghost", enabled=self.game.has_met(self.game.player_id, fid)):
             self.open_diplomacy(fid)
             self.ctx_menu = None
         if g.button((r.x + 8, r.y + 56, 154, 22), "구역 정보", "ghost"):
@@ -983,12 +985,15 @@ class App:
         for e in g.events:
             if pid not in e["fids"] and e["kind"] not in ("ranking", "victory", "eliminated", "war"):
                 continue
+            text = g.event_for_player(e)
+            if text is None:                    # 조우하지 않은 세력끼리의 일
+                continue
             kinds_count[e["kind"]] = kinds_count.get(e["kind"], 0) + 1
             if shown < 6 and e["kind"] in ("battle", "captured", "complete", "rebel", "war", "peace", "eliminated",
                                              "famine", "capital", "bomb", "victory", "diplo", "info"):
                 col = {"battle": self.theme.bad, "war": self.theme.bad, "rebel": self.theme.warn,
                        "famine": self.theme.warn, "victory": self.theme.good}.get(e["kind"])
-                self.toast(e["text"], col)
+                self.toast(text, col)
                 shown += 1
         if g.new_ranking:
             self.modal = ("ranking", g.new_ranking)

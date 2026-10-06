@@ -236,6 +236,37 @@ class Game:
     def fname(self, fid) -> str:
         return "중립" if fid == NEUTRAL else self.factions[fid].name
 
+    UNKNOWN_NAME, UNKNOWN_LEADER = "미지의 국가", "수수께끼의 지도자"
+
+    def has_met(self, viewer, fid) -> bool:
+        """viewer 가 fid 세력과 조우했는가(전장의 안개가 없으면 항상 참)."""
+        if self.settings.fog == 0 or fid == viewer or fid == NEUTRAL or fid is None:
+            return True
+        return fid in getattr(self.factions[viewer], "met", set())
+
+    def seen_name(self, fid, viewer=None) -> str:
+        """플레이어(또는 viewer)에게 보이는 세력 이름: 조우하지 않았으면 '미지의 국가'."""
+        viewer = self.player_id if viewer is None else viewer
+        return self.fname(fid) if self.has_met(viewer, fid) else self.UNKNOWN_NAME
+
+    def event_for_player(self, e):
+        """플레이어에게 보여 줄 이벤트 문장(없으면 None). 조우하지 않은 세력 이름은 '미지의 국가'로 가리고,
+        플레이어와 상관없는 사건에 모르는 세력이 끼어 있으면 아예 감춘다(승리·연말 랭킹 제외)."""
+        pid = self.player_id
+        unknown = [f for f in e["fids"] if f is not None and f != NEUTRAL and 0 <= f < len(self.factions)
+                   and not self.has_met(pid, f)]
+        if unknown and pid not in e["fids"] and e["kind"] not in ("victory", "ranking"):
+            return None
+        text = e["text"]
+        for f in sorted(unknown, key=lambda x: -len(self.factions[x].name)):
+            text = text.replace(self.factions[f].name, self.UNKNOWN_NAME)
+            text = text.replace(self.factions[f].leader_name, self.UNKNOWN_LEADER)
+        return text
+
+    def seen_leader(self, fid, viewer=None) -> str:
+        viewer = self.player_id if viewer is None else viewer
+        return self.factions[fid].leader_name if self.has_met(viewer, fid) else self.UNKNOWN_LEADER
+
     def alive_ids(self):
         return [f.id for f in self.factions if f.alive]
 
@@ -269,6 +300,20 @@ class Game:
         return [a for a in self.armies.values()
                 if a.loc == loc and (owner is None or a.owner == owner)]
 
+    @staticmethod
+    def _add_to_army(army, key, n):
+        """유닛을 더한다. 그 종류가 없던 부대면 예전에 남은 피해 기록을 지워 새 유닛이 다친 채로 오지 않게 한다."""
+        if army.units.get(key, 0) <= 0:
+            army.dmg.pop(key, None)
+        army.units[key] = army.units.get(key, 0) + n
+
+    def _prune_army(self, army):
+        """수량 0인 유닛 항목과 그 피해 기록을 지우고, 비면 부대를 없앤다."""
+        army.units = {k: v for k, v in army.units.items() if v > 0}
+        army.dmg = {k: min(d, army.hp_max(k)) for k, d in army.dmg.items() if k in army.units}
+        if not army.units and army.id in self.armies:
+            self.remove_army(army)
+
     def remove_army(self, army):
         self.armies.pop(army.id, None)
 
@@ -291,7 +336,7 @@ class Game:
         kind = C.UNITS[key]["kind"]
         for a in self.armies_at(loc, fid):
             if a.domain() == kind and not a.order:
-                a.units[key] = a.units.get(key, 0) + n
+                self._add_to_army(a, key, n)
                 return a
         return self.new_army(fid, loc, {key: n})
 
@@ -930,7 +975,6 @@ class Game:
             res["att_dmg_win"] = ad * win[1]
             res["def_dmg_fail"] = dd * fail[0]
             res["att_dmg_fail"] = ad * fail[1]
-        def_hp = sum(C.UNITS[k]["hp"] * n for a in defenders for k, n in a.units.items())
         res["def_hp"] = sum(a.hp_left(k) for a in defenders for k in a.units)
         return res
 
@@ -1843,6 +1887,9 @@ class Game:
             f.trade_sell = 0.0
             f.spend = {}
             f.refund = 0.0
+        # 전투·폭격·상륙으로 유닛이 줄어든 부대 정리(0대 항목, 없어진 유닛의 피해 기록, 빈 부대)
+        for a in list(self.armies.values()):
+            self._prune_army(a)
         self._phase_heal()
         for a in self.armies.values():
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
@@ -2016,7 +2063,7 @@ class Game:
                         if self.rng.random() < C.CAPTURE_CHANCE:
                             ea = self.armies_at(sid, enemy)
                             if ea:
-                                ea[0].units[key] = ea[0].units.get(key, 0) + 1
+                                self._add_to_army(ea[0], key, 1)
                     else:
                         a.dmg[key] = a.dmg.get(key, 0.0) + dmg
                         dmg = 0
@@ -2066,6 +2113,7 @@ class Game:
                     t = min(left, x.units["ftr"])
                     x.units["ftr"] -= t
                     left -= t
+                    self._prune_army(x)          # 전투기를 모두 잃으면 항목(·빈 부대)을 정리
             # 대공포
             for k in ("bmb", "stl"):
                 for _ in range(bombers[k]):
@@ -2084,6 +2132,7 @@ class Game:
                 bombers["bmb"] = max(0, bombers["bmb"] - shot)
                 notes.append(f"폭격기 {shot}대 격추")
             a.units = {k: v for k, v in a.units.items() if v > 0}
+            a.dmg = {k: min(d, a.hp_max(k)) for k, d in a.dmg.items() if k in a.units}
         dmg = units.get("art", 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
         dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * self.lead_mult(a.owner, "naval_bomb")
         dmg += bombers.get("bmb", 0) * C.UNITS["bmb"]["bomb"] * (1 - C.AA_DMG_K * aa)
@@ -2374,6 +2423,11 @@ class Game:
                 if len(members) > 1:
                     self.event("complete", f"{self.info(rid).name}: {len(members)}개 지역 공동 편입 완료",
                                region=rid, fids=(fid,))
+        # 경쟁에서 진 편입(대상이 이미 다른 세력 땅)은 다음 턴을 기다리지 않고 바로 취소·전액 환급
+        for rr in self.regions.values():
+            p = rr.project
+            if p and p.kind == "annex" and rr.owner != NEUTRAL and self.regions[p.key].owner != NEUTRAL:
+                self._cancel_hijacked(rr, self.regions[p.key].owner)
 
     # ---- 6~7. 슬롯 진행
     def _fund_projects(self):
@@ -2428,7 +2482,7 @@ class Game:
                 D.add_opinion(self, f.id, taker, C.OP_HIJACK)
             self.event("info", f"{self.info(p.key).name}을(를) {self.fname(taker)}이(가) 먼저 차지해 "
                        f"{self.info(rr.id).name}의 편입이 취소되었습니다 (환급 {p.paid:,.0f}).",
-                       region=p.key, fids=(f.id,))
+                       region=p.key, fids=(f.id, taker))
 
     def _phase_projects(self, kinds):
         """진행. 이번 턴 군 유닛 생산에 쓴 지역 ID 집합을 돌려준다."""
@@ -3133,9 +3187,24 @@ class Game:
                 for rid, r in self.regions.items():
                     f.last_seen[rid] = r.owner
             f.explored |= {v for v in vis if v in self.regions}
+            if not hasattr(f, "met"):          # 예전 세이브
+                f.met = set()
             for rid in vis:
                 if rid in self.regions:
-                    f.last_seen[rid] = self.regions[rid].owner
+                    o = self.regions[rid].owner
+                    f.last_seen[rid] = o
+                    if o != NEUTRAL:
+                        f.met.add(o)
+        # 조우: 시야 안에 다른 세력의 군대가 들어온 적이 있어도 만난 것으로 친다
+        if self.settings.fog == 0:
+            return                             # 안개가 없으면 모두 아는 사이(has_met 이 항상 참)
+        vis = {f.id: self.visible(f.id) for f in self.factions if f.alive}
+        for a in self.armies.values():
+            if a.owner == NEUTRAL:
+                continue
+            for fid, v in vis.items():
+                if a.owner != fid and a.loc in v:
+                    self.factions[fid].met.add(a.owner)
 
     def is_visible(self, fid, node) -> bool:
         return self.settings.fog == 0 or node in self.visible(fid)

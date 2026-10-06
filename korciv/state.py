@@ -177,6 +177,7 @@ class Faction:
     happy_floor_until: int = 0      # 신생 독립국: 이 턴까지 행복도 하한 0
     capital_fall_turn: int = -999   # 마지막으로 수도가 함락된 턴
     naval_off_until: int = 0        # 이순신 '백의종군': 이 턴까지 해군 버프 비활성
+    met: set = field(default_factory=set)   # 조우한 세력(시야 안에 그 세력의 영토·군대가 들어온 적이 있음)
     flag: Optional[dict] = None     # 직접 만든 국기(없으면 세력 색으로 만든 기본 국기, flags.faction_flag)
 
 
