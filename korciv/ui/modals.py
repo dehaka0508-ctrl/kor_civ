@@ -229,49 +229,66 @@ FLAG_TARGETS = (("c1", "배경 색 1"), ("c2", "배경 색 2"), ("ec", "문양 �
 
 
 def draw_flag_editor(app):
-    """국기 만들기: 배경 무늬·문양·색(RGB 각 00~FF 슬라이더)."""
+    """국기 만들기: 배경 무늬(5×2)·문양(6×4)·색(RGB 각 00~FF 슬라이더), 또는 역사 국기."""
     gui = app.gui
     t = app.theme
     s = app.setup
     fl = s.flag_draft
-    r = modal_frame(app, 940, 610, "국기 만들기")
+    preset = fl.get("preset")
+    r = modal_frame(app, 960, 660, "국기 만들기")
     x, y = r.x + 24, r.y + 64
     draw_flag(gui, (x, y, 300, 200), fl)
     y += 220
-    s.flag_target = gui.segmented((x, y, 300, 32), [lb for _, lb in FLAG_TARGETS], s.flag_target, size=12)
+    s.flag_target = gui.segmented((x, y, 300, 32), [lb for _, lb in FLAG_TARGETS], s.flag_target, size=12,
+                                  enabled=not preset)
     ck = FLAG_TARGETS[s.flag_target][0]
     col = list(fl[ck])
     y += 46
     gui.rect(tuple(col), (x, y, 44, 30), radius=4)
     gui.rect(t.border, (x, y, 44, 30), 1, radius=4)
-    gui.text((x + 56, y + 15), FL.rgb2hex(col), 18, weight="bold", anchor="midleft")
+    gui.text((x + 56, y + 15), "역사 국기는 색을 바꿀 수 없습니다" if preset else FL.rgb2hex(col),
+             13 if preset else 18, t.muted if preset else t.text, "bold", anchor="midleft")
     y += 44
     for i, (ch, cc) in enumerate((("R", (220, 60, 60)), ("G", (40, 160, 70)), ("B", (50, 100, 220)))):
-        gui.text((x, y + i * 40 + 8), ch, 15, cc, "bold", anchor="midleft")
-        v, _ = gui.slider((x + 26, y + i * 40, 200, 16), col[i], 0, 255, 1, f"flag_{ck}_{i}")
+        gui.text((x, y + i * 40 + 8), ch, 15, cc if not preset else t.muted, "bold", anchor="midleft")
+        v, _ = gui.slider((x + 26, y + i * 40, 200, 16), col[i], 0, 255, 1, f"flag_{ck}_{i}", enabled=not preset)
         col[i] = int(v)
         gui.text((x + 300, y + i * 40 + 8), f"{col[i]:02X} ({col[i]})", 13, t.muted, anchor="midright")
     fl[ck] = tuple(col)
-    # 오른쪽: 배경 무늬·문양 고르기(현재 색으로 미리보기)
+    y += 3 * 40 + 6
+    gui.text((x, y), "역사 국기", 14, weight="bold")
+    y += 24
+    pw = (300 - 3 * 8) / 4
+    for i, (pk, pn) in enumerate(FL.PRESETS):
+        cell = pygame.Rect(x + i * (pw + 8), y, pw, 52)
+        if gui.button(cell, "", selected=preset == pk, tooltip=pn):
+            fl["preset"] = pk
+        draw_flag(gui, cell.inflate(-10, -12), {"preset": pk})
+    # 오른쪽: 배경 무늬·문양 고르기(현재 색으로 미리보기). 고르면 역사 국기는 해제된다.
     x2 = r.x + 360
+    rw = r.right - 24 - x2
     y2 = r.y + 64
     gui.text((x2, y2), "배경", 14, weight="bold")
     y2 += 24
-    cw, chh = 100, 66
+    gap = 10
+    cw, chh = (rw - 4 * gap) / 5, 64
     for i, (bk, bn) in enumerate(FL.BACKGROUNDS):
-        cell = pygame.Rect(x2 + (i % 5) * (cw + 12), y2 + (i // 5) * (chh + 10), cw, chh)
-        if gui.button(cell, "", selected=fl["bg"] == bk, tooltip=bn):
+        cell = pygame.Rect(x2 + (i % 5) * (cw + gap), y2 + (i // 5) * (chh + gap), cw, chh)
+        if gui.button(cell, "", selected=not preset and fl["bg"] == bk, tooltip=bn):
             fl["bg"] = bk
-        draw_flag(gui, cell.inflate(-12, -10), {**fl, "em": "none", "bg": bk})
-    y2 += 2 * (chh + 10) + 12
-    gui.text((x2, y2), f"문양 ({len(FL.EMBLEMS) - 1}종) · {dict(FL.EMBLEMS)[fl['em']]}", 14, weight="bold")
+            fl.pop("preset", None)
+        draw_flag(gui, cell.inflate(-14, -12), {**fl, "preset": None, "em": "none", "bg": bk})
+    y2 += 2 * (chh + gap) + 10
+    gui.text((x2, y2), f"문양 · {dict(FL.EMBLEMS)[fl['em']]}", 14, weight="bold")
     y2 += 24
-    cw, chh = 74, 52
+    gap = 8
+    cw, chh = (rw - 5 * gap) / 6, 58
     for i, (ek, en) in enumerate(FL.EMBLEMS):
-        cell = pygame.Rect(x2 + (i % 7) * (cw + 8), y2 + (i // 7) * (chh + 8), cw, chh)
-        if gui.button(cell, "", selected=fl["em"] == ek, tooltip=en):
+        cell = pygame.Rect(x2 + (i % 6) * (cw + gap), y2 + (i // 6) * (chh + gap), cw, chh)
+        if gui.button(cell, "", selected=not preset and fl["em"] == ek, tooltip=en):
             fl["em"] = ek
-        draw_flag(gui, cell.inflate(-10, -10), {**fl, "bg": "solid", "em": ek})
+            fl.pop("preset", None)
+        draw_flag(gui, cell.inflate(-12, -10), {**fl, "preset": None, "bg": "solid", "em": ek})
     # 하단 버튼
     if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위"):
         rnd = random.Random()

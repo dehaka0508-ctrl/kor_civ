@@ -1,52 +1,50 @@
 """국기: 배경 무늬 + 문양 + 색 세 가지(배경 색1·색2, 문양 색). pygame 없이 쓰는 데이터 부분.
 
-국기 = {"bg": 배경 키, "c1": (r,g,b), "c2": (r,g,b), "em": 문양 키, "ec": (r,g,b)}
+국기 = {"bg": 배경 키, "c1": (r,g,b), "c2": (r,g,b), "em": 문양 키, "ec": (r,g,b)[, "preset": 역사 국기 키]}
 플레이어는 시작 화면에서 직접 만들고, AI·반란 세력은 세력 색으로 정해진 기본 국기를 쓴다.
 """
 from __future__ import annotations
 
 import random
 
-# 배경 무늬: 키, 이름
+# 배경 무늬: 키, 이름 (편집 창에 5×2로 놓인다)
 BACKGROUNDS = (
     ("solid", "단색"),
-    ("h2", "가로 2분할"),
-    ("v2", "세로 2분할"),
-    ("h3", "가로 3줄"),
-    ("v3", "세로 3줄"),
-    ("diag", "대각선"),
-    ("nordic", "북유럽 십자"),
-    ("border", "테두리"),
-    ("canton", "좌상단 칸"),
-    ("chevron", "왼쪽 삼각형"),
+    ("h2", "상하 이등분"),
+    ("v2", "좌우 이등분"),
+    ("v3", "세로 삼등분"),
+    ("h3", "가로 삼등분"),
+    ("diag_up", "우상향 대각선"),
+    ("diag_down", "우하향 대각선"),
+    ("cross", "잉글랜드식 십자"),
+    ("quarters", "가로세로 4등분"),
+    ("border", "윤곽선"),
 )
 
-# 문양 (임시 목록 — 확정 전): 키, 이름. "none" 은 문양 없음으로 20종에 넣지 않는다.
+# 문양: 키, 이름 (편집 창에 6×4로 놓인다). "none" 포함 24칸.
 EMBLEMS = (
-    ("none", "없음"),
-    ("disc", "원(태양)"),
-    ("ring", "고리"),
-    ("star5", "오각별"),
-    ("star6", "육각별"),
-    ("crescent", "초승달"),
-    ("crescent_star", "초승달과 별"),
-    ("taegeuk", "태극"),
-    ("samtaegeuk", "삼태극"),
-    ("cross", "십자"),
-    ("saltire", "X자"),
-    ("diamond", "마름모"),
-    ("triangle", "삼각형"),
-    ("hexagon", "육각형"),
-    ("shield", "방패"),
-    ("crown", "왕관"),
-    ("mountain", "산"),
-    ("wave", "물결"),
-    ("bolt", "번개"),
-    ("flower", "꽃(무궁화)"),
-    ("arrow", "화살표"),
+    # 도형
+    ("none", "없음"), ("disc", "원"), ("ring", "고리"), ("taegeuk", "태극"), ("star5", "오각별"),
+    ("shield", "방패"), ("crown", "왕관"), ("flower", "꽃"), ("pine", "소나무"), ("saltire", "X자"),
+    ("diamond", "마름모"), ("wave", "물결"), ("mountain", "산"), ("bolt", "번개"),
+    # 종교
+    ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "초승달과 별"),
+    ("om", "옴(ॐ)"), ("yinyang", "도교 태극"),
+    # 동물
+    ("tiger", "호랑이 머리"), ("dragon", "용"), ("cheonma", "천마(천마도)"), ("samjogo", "삼족오"),
 )
+MASK_EMBLEMS = {"pine", "om", "tiger", "dragon", "cheonma", "samjogo"}   # assets/emblems/<키>.png
+
+# 역사 국기: 고르면 배경·문양·색 대신 그대로 쓴다
+PRESETS = (("taegeukgi", "태극기"), ("ingonggi", "인공기"), ("eogi", "조선 어기"), ("goryeo", "고려 의장기"))
+
 BG_KEYS = [k for k, _ in BACKGROUNDS]
 EMBLEM_KEYS = [k for k, _ in EMBLEMS]
+PRESET_KEYS = [k for k, _ in PRESETS]
+# 예전 저장 파일의 키
+ALIASES = {"star6": "hexagram", "diag": "diag_up", "nordic": "cross", "canton": "quarters", "chevron": "v2",
+           "crescent": "crescent_star", "samtaegeuk": "taegeuk", "triangle": "mountain", "hexagon": "diamond",
+           "arrow": "bolt"}
 
 
 def hex2rgb(h: str):
@@ -61,6 +59,10 @@ def rgb2hex(c) -> str:
 def normalize(flag) -> dict:
     """빠진 키·잘못된 값을 채워 넣은 국기."""
     f = dict(flag or {})
+    for k in ("bg", "em"):
+        f[k] = ALIASES.get(f.get(k), f.get(k))
+    if f.get("preset") not in PRESET_KEYS:
+        f.pop("preset", None)
     if f.get("bg") not in BG_KEYS:
         f["bg"] = "solid"
     if f.get("em") not in EMBLEM_KEYS:
@@ -77,7 +79,7 @@ def default_flag(color_hex: str, seed) -> dict:
     c1 = hex2rgb(color_hex)
     light = sum(c1) / 3 > 150
     white, dark = (255, 255, 255), (30, 30, 40)
-    return {"bg": rng.choice(["solid", "solid", "h2", "v3", "border", "canton", "chevron", "nordic"]),
+    return {"bg": rng.choice(["solid", "solid", "h2", "v3", "h3", "border", "quarters", "cross", "diag_up"]),
             "c1": c1, "c2": dark if light else white,
             "em": rng.choice(EMBLEM_KEYS[1:]), "ec": dark if light else white}
 
