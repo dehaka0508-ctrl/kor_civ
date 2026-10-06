@@ -243,6 +243,7 @@ def run_game(job):
     g = Game(Settings(n_enemies=N_FAC - 1, seed=seed, all_ai=True, max_turns=turns,
                       player_leader=lineup[0], ai_leaders=list(lineup[1:])))
     g._st = {f.id: Counter() for f in g.factions[:N_FAC]}
+    starts = {f.id: f.capital for f in g.factions[:N_FAC]}
     snaps = {}
     tax_samples = defaultdict(list)
 
@@ -269,6 +270,7 @@ def run_game(job):
             if a.owner == f.id:
                 army.update(a.units)
         rows.append({"leader": f.leader, "gov": f.gov, "alive": f.alive, "eliminated": f.eliminated_turn,
+                     "start": starts[f.id], "do8": g.world.regions[starts[f.id]].do8,
                      "win": (1 / len(winners)) if f.id in winners else 0.0,
                      "regions": {t: snaps[t][f.id][0] for t in SNAPS},
                      "gdp": {t: snaps[t][f.id][1] for t in SNAPS},
@@ -305,10 +307,33 @@ BLD = {"farm": "농장", "fishery": "어장", "factory": "공장", "bank": "은�
        "airport": "공항", "port": "항구"}
 
 
+def backfill_starts(games):
+    """시작 지역이 없는 예전 기록: 같은 시드·지도자 순서로 게임을 처음 만든 상태만 다시 만들어 채운다.
+    시작 위치는 시드로 정해지므로 같아야 하며, 정치체제가 저장된 값과 다르면 그 판은 권역 집계에서 뺀다."""
+    from korciv.game import Game
+    from korciv.state import Settings
+    bad = 0
+    for gm in games:
+        rows = gm["factions"]
+        if all("do8" in r for r in rows):
+            continue
+        lu = [r["leader"] for r in rows]
+        g = Game(Settings(n_enemies=N_FAC - 1, seed=gm["seed"], all_ai=True, max_turns=480,
+                          player_leader=lu[0], ai_leaders=lu[1:]))
+        if [f.gov for f in g.factions[:N_FAC]] != [r["gov"] for r in rows]:
+            bad += 1
+            continue
+        for f, r in zip(g.factions[:N_FAC], rows):
+            r["start"], r["do8"] = f.capital, g.world.regions[f.capital].do8
+    if bad:
+        print(f"(시작 지역 복원 실패 {bad}판 — 권역 집계에서 제외)", file=sys.stderr)
+
+
 def report(path):
     from korciv import config as C
     from korciv.leaders import GOV_BY_KEY, LEADER_BY_KEY, LEADER_CATEGORIES
     games = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+    backfill_starts(games)
     rows = [r for gm in games for r in gm["factions"]]
     by = defaultdict(list)
     for gm in games:
@@ -353,6 +378,35 @@ def report(path):
         p(f"| {i} | {L['name']} | {cat_of.get(k, '')} | {L['aggr']} | {n} | {wr * 100:.1f}% | {vts} | "
           f"{len(el) / n * 100:.1f}% | {et} | {reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | "
           f"{gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} | {reb:.1f} | {ind:.2f} |")
+    p("")
+    # 권역별(조선 8도, 시작 지역 기준)
+    p("## 1-2. 시작 권역(조선 8도)별 결과")
+    p("")
+    p("| 권역 | 시작 세력 수 | 승률 | 승리 유형(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120 / 240 / 480 | GDP 120 / 240 / 480 |")
+    p("|---|---|---|---|---|---|---|---|")
+    by8 = defaultdict(list)
+    for r in rows:
+        if "do8" in r:
+            by8[r["do8"]].append(r)
+    order = ["경기", "충청", "전라", "경상", "강원", "황해", "평안", "함경"]
+    for d in sorted(by8, key=lambda d: -sum(r["win"] for r in by8[d]) / len(by8[d])):
+        rs = by8[d]
+        n = len(rs)
+        el = [r["eliminated"] for r in rs if r["eliminated"] is not None and r["eliminated"] <= 480]
+        vt = Counter()
+        for r in rs:
+            if r["win"]:
+                vt[r["_victory"]] += r["win"]
+        reg = [sum(r["regions"][str(t)] for r in rs) / n for t in SNAPS]
+        gdp = [sum(r["gdp"][str(t)] for r in rs) / n for t in SNAPS]
+        vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
+        et = f"{sum(el) / len(el):.0f}" if el else "–"
+        p(f"| {d}도 | {n} ({n / len(rows) * 100:.0f}%) | {sum(r['win'] for r in rs) / n * 100:.1f}% | {vts} | "
+          f"{len(el) / n * 100:.1f}% | {et} | {reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | "
+          f"{gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} |")
+    missing = [d for d in order if d not in by8]
+    if missing:
+        p(f"(시작 세력 없음: {', '.join(missing)})")
     p("")
     # 행동 분석 — 세력·판 단위 평균
     nf = len(rows)
