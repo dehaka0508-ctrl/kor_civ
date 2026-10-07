@@ -782,6 +782,18 @@ def draw_army_tab(app, body):
                 app.sel_army = None
                 return
         y += 38
+        ship = g.boarding_target(army.id)
+        if ship is not None:
+            what = "상륙함" if army.domain() == "land" else "항공모함"
+            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary",
+                          tooltip=f"이 부대를 같은 지역에 주둔한 {what}에 태웁니다(수송·탑재 칸 안에서)"):
+                ok, msg, fleet = g.board(army.id)
+                app.toast(msg, None if ok else t.bad)
+                if ok:
+                    app.sel_army = fleet.id
+                    app.split = {}
+                    return
+            y += 34
         gui.text((x, y + 6), "공격 방식", 12, t.muted)
         modes = ["assault", "surprise"]
         idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))

@@ -452,9 +452,9 @@ class Game:
         kinds = test.kinds()
         if "naval" in kinds:
             if test.cargo_used() > test.cargo_cap():
-                return False, "상륙함 수송 칸이 부족합니다(보병1·포병2·전차4, 상륙함당 12)."
+                return False, f"상륙함 수송 칸이 부족합니다(보병1·포병2·전차4, 상륙함당 {C.UNITS['lst']['capacity']})."
             if test.air_used() > test.air_cap() and self.world.is_sea(a.loc):
-                return False, "항공모함 탑재 칸이 부족합니다(항모당 8)."
+                return False, f"항공모함 탑재 칸이 부족합니다(항모당 {C.UNITS['cv']['air_capacity']})."
             if test.air_used() > test.air_cap():
                 return False, "항공기는 항공모함 탑재 칸만큼만 합칠 수 있습니다."
         elif "air" in kinds and "land" in kinds:
@@ -465,6 +465,28 @@ class Game:
         a.order = None
         self.remove_army(b)
         return True, ""
+
+    def boarding_target(self, army_id):
+        """[탑승] 대상: 같은 지역에 주둔한 내 함대. 육군은 상륙함이, 공군은 항공모함이 있는 함대."""
+        a = self.armies.get(army_id)
+        if not a or self.world.is_sea(a.loc):
+            return None
+        dom = a.domain()
+        need = {"land": "lst", "air": "cv"}.get(dom)
+        if need is None:
+            return None
+        for f in self.armies_at(a.loc, a.owner):
+            if f.id != a.id and f.domain() == "naval" and f.units.get(need):
+                return f
+        return None
+
+    def board(self, army_id):
+        """육군을 상륙함에, 공군을 항공모함에 태운다(같은 지역의 함대와 합침). (성공, 메시지, 함대)"""
+        f = self.boarding_target(army_id)
+        if f is None:
+            return False, "태울 함대가 없습니다.", None
+        ok, msg = self.merge_armies(f.id, army_id)
+        return ok, (msg or "탑승 완료"), f
 
     def disband(self, army_id, units: dict):
         a = self.armies.get(army_id)
@@ -1142,16 +1164,6 @@ class Game:
                     disc = max(disc, C.ACADEMY_ADJ)
         return c * (1 - disc)
 
-    def landing_ship_in(self, fid, seas) -> bool:
-        """해당 해역(또는 그 해역에 닿은 자국 항구)에 상륙함이 있는가."""
-        w = self.world
-        for a in self.armies.values():
-            if a.owner != fid or not a.units.get("lst"):
-                continue
-            if a.loc in seas or (not w.is_sea(a.loc) and set(w.regions[a.loc].seas) & set(seas)):
-                return True
-        return False
-
     def region_value(self, rid):
         """지역 가치 1~10과 점수 구성 {항목: 점수}."""
         rr = self.regions[rid]
@@ -1173,18 +1185,7 @@ class Game:
 
     def annex_targets(self, fid, rid):
         w = self.world
-        cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)
-        if self.regions[rid].b["port"]:
-            for s in w.regions[rid].seas:
-                for v in w.seas[s].coast:
-                    if self.regions[v].owner == NEUTRAL and not w.island_seas_of(v):
-                        cands.add(v)
-        # 울릉도·제주도: 섬 전용 해역에 상륙함을 보내야 해안 지역에서 편입할 수 있다
-        if w.regions[rid].coastal:
-            for v in w.order:
-                seas = w.island_seas_of(v)
-                if seas and v != rid and self.regions[v].owner == NEUTRAL and self.landing_ship_in(fid, seas):
-                    cands.add(v)
+        cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)   # 육상 인접만(해로 편입 없음)
         joint = {}
         for r in self.regions.values():
             if r.owner == fid and r.project and r.project.kind == "annex":
@@ -1197,7 +1198,7 @@ class Game:
             base = self.neutral_turns(fid, v)
             n = joint.get(v, 0)
             out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
-                        "value": self.region_value(v)[0], "joint": n, "sea": v not in w.land_adj[rid],
+                        "value": self.region_value(v)[0], "joint": n, "sea": False,
                         "eff_turns": R.joint_turns(base, n + 1),
                         # 다른 세력의 점령·편입이 끝나기까지 남은 턴(가장 빠른 것). 경쟁 판단용
                         "rival_left": self.rival_left(fid, v)})
@@ -1274,7 +1275,7 @@ class Game:
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
-            name = f"편입: {self.info(t['target']).name} [{t['value']}]" + (" (해로)" if t["sea"] else "")
+            name = f"편입: {self.info(t['target']).name} [{t['value']}]"
             if t["joint"]:
                 n = t["joint"] + 1
                 name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
@@ -2565,7 +2566,7 @@ class Game:
         return best
 
     def claim_pop(self, fid, rid) -> float:
-        """동시에 완료됐을 때의 우선순위: 대상과 맞닿은(또는 해로로 편입 중인) 내 지역들의 인구 합."""
+        """동시에 완료됐을 때의 우선순위: 대상과 맞닿은 내 지역들의 인구 합."""
         regs = {n: self.regions[n] for n in self.world.land_adj[rid] if self.regions[n].owner == fid}
         regs.update({r.id: r for r in self.regions.values() if r.owner == fid and r.project
                      and r.project.kind == "annex" and r.project.key == rid})

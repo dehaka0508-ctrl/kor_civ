@@ -417,19 +417,16 @@ def test_peace_nonaggression_locked_24_turns():
     assert D.peace_left(g, 0, 1) == 0
 
 
-def test_island_annex_needs_landing_ship_in_island_sea():
+def test_no_sea_annex():
     g = new_game(player_start="S002", n_enemies=1)
     n = g.world.name_to_id
     busan, jeju_s = n["부산 중구"], n["제주 서귀포시"]
     _own(g, 0, [busan])
     g.regions[busan].b["port"] = 1
-    # 항구가 있어도 같은 해역(남동해) 해로만으로는 제주·울릉을 편입할 수 없다
-    assert jeju_s not in {t["target"] for t in g.annex_targets(0, busan)}
-    fleet = g.new_army(0, "SEA4", {"lst": 1})
-    assert jeju_s not in {t["target"] for t in g.annex_targets(0, busan)}
-    fleet.loc = "SEA8"                          # 제주도 연안에 상륙함
-    assert jeju_s in {t["target"] for t in g.annex_targets(0, busan)}
-    assert n["경북 울릉군"] not in {t["target"] for t in g.annex_targets(0, busan)}
+    g.new_army(0, "SEA8", {"lst": 1})                  # 상륙함이 있어도 해로 편입은 없다
+    g.new_army(0, busan, {"lst": 1})
+    targets = {t["target"] for t in g.annex_targets(0, busan)}
+    assert targets <= set(g.world.land_adj[busan]) and jeju_s not in targets
 
 
 def test_multi_turn_route_moves_automatically():
@@ -1800,3 +1797,24 @@ def test_joint_annex_left_turns_shared():
     g.end_turn()
     assert g.start_project(0, src2, "annex", tgt)[0]          # 나중에 합류해도
     assert g.project_left(src2) == g.project_left("S002")      # 공유 진행도·공동 감소율로 같은 남은 턴
+
+
+def test_board_land_on_lst_and_air_on_cv():
+    g = new_game(player_start="S002", n_enemies=1)
+    n = g.world.name_to_id
+    port = n["부산 중구"]
+    _own(g, 0, [port])
+    g.regions[port].b["port"] = 1
+    inf = g.new_army(0, port, {"inf": 2, "tank": 1})
+    assert g.boarding_target(inf.id) is None                     # 상륙함이 없으면 탑승 불가
+    fleet = g.new_army(0, port, {"lst": 1})
+    assert g.boarding_target(inf.id) is fleet
+    ok, msg, f = g.board(inf.id)
+    assert ok and f.units == {"lst": 1, "inf": 2, "tank": 1} and inf.id not in g.armies
+    big = g.new_army(0, port, {"tank": 2})                        # 수송 칸(8) 초과
+    ok, msg, _ = g.board(big.id)
+    assert not ok and "수송 칸" in msg
+    cv = g.new_army(0, port, {"cv": 1})
+    air = g.new_army(0, port, {"ftr": 2, "bmb": 1})
+    assert g.boarding_target(air.id) is cv
+    assert g.board(air.id)[0] and cv.units == {"cv": 1, "ftr": 2, "bmb": 1}

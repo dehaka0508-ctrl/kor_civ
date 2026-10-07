@@ -193,7 +193,7 @@ NAVAL_BOMB_RANGE = 2       # 구축함 함포: 해역에서 2칸(해안 지역�
 BOMB_RANGE = 2             # 폭격기: 공항·항공모함에서 2칸까지
 AIR_RANGE = 3              # 공군 재배치(공항 간 이동) 거리
 AIR_REBASE_RANGE = 3
-NAVAL_STEPS = 2
+NAVAL_STEPS = 1            # 해군: 턴당 한 칸(항구→해역, 해역→해역, 해역→상륙·입항)
 LAND_STEPS_OWN = 2
 
 START_MIN_DIST = 6         # 무작위 수도끼리(와 직접 고른 수도) 육상 최단 거리 최소 칸 수
