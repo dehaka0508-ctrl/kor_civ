@@ -171,7 +171,7 @@ class Gui:
             self.block(r)
         return r
 
-    def text(self, pos, s, size=14, color=None, weight="regular", anchor="topleft", max_w=None):
+    def text(self, pos, s, size=14, color=None, weight="regular", anchor="topleft", max_w=None, tip=True):
         s = str(s)
         col = color or self.t.text
         u = self.u
@@ -185,7 +185,7 @@ class Gui:
         lw, lh = surf.get_width() / u, surf.get_height() / u
         lr = pygame.Rect(0, 0, max(1, int(round(lw))), max(1, int(round(lh))))
         setattr(lr, anchor, (int(round(pos[0])), int(round(pos[1]))))
-        if full is not None and self.hover(lr):
+        if full is not None and tip and self.hover(lr):
             self.tooltip = full               # '…'로 잘린 글자는 마우스를 올리면 전체를 보여 준다
         # 실제 픽셀 위치: 논리 기준점을 변환한 뒤 같은 기준으로 맞춘다
         pr = surf.get_rect()

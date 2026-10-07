@@ -528,7 +528,7 @@ def draw_action_tab(app, body):
                 eff = ("완료하면 유닛 1개 — 발사대 지역으로 옮긴다" if C.SCIENCE[o["key"]]["unit"]
                        else "완료하면 다음 과학 단계가 열린다")
             if eff:
-                gui.text((x, yy + 38), eff, 11, t.good, "semibold", max_w=w - 70)
+                gui.text((x, yy + 38), eff, 11, t.good, "semibold", max_w=w - 70, tip=False)
             if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):

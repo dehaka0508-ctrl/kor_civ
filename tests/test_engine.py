@@ -1867,3 +1867,19 @@ def test_government_v190():
     g._mods.pop(0, None)
     assert y_far == pytest.approx(g.calc_output(far) * 0.95)
     assert y_mid == pytest.approx(g.calc_output(mid))
+
+
+def test_half_year_ranking_schedule():
+    g = new_game(player_start="S002", n_enemies=2)
+    seen = []
+    while g.turn <= 2 * C.TURNS_PER_YEAR + 1:
+        g.end_turn()
+        if g.new_ranking:
+            seen.append(g.new_ranking)
+    # 첫해는 발표 없음, 2년 차 1주차(49턴)·25주차(73턴), 3년 차 1주차(97턴)
+    assert seen == [49, 73, 97]
+    assert g.ranking_label(49) == f"{C.START_YEAR}년 하반기"
+    assert g.ranking_label(73) == f"{C.START_YEAR + 1}년 상반기"
+    row = g.rankings[49][0]
+    assert set(row) >= {"fid", "regions", "pop", "happy", "gdp", "gdp_share", "science"}
+    assert 0 < row["gdp_share"] < 1

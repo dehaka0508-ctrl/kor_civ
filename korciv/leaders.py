@@ -152,7 +152,7 @@ LEADER_BY_KEY = {l["key"]: l for l in LEADERS}
 
 GOVERNMENTS = [
     dict(key="absolute", name="전제군주제", target=7.5,
-         buff=("왕권 통치", "기준 세율 +2%(세율 12%까지 행복도 감소 없음)"),
+         buff=("왕권 통치", "기준 세율 +2%"),
          debuff=("", "수도에서 3칸 밖 지역 산출 -5%"),
          fx={"tax_base": 2, "far_output_gov": 0.05}),
     dict(key="constitutional", name="입헌군주제", target=3.5,

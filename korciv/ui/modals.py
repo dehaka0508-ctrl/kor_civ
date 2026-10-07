@@ -1,4 +1,4 @@
-"""설정 화면과 모달: 정치체제, 반란, 조약 제안, 외교, 연말 랭킹, 로그, 도움말, 게임 종료."""
+"""설정 화면과 모달: 정치체제, 반란, 조약 제안, 외교, 반기 랭킹, 로그, 도움말, 게임 종료."""
 from __future__ import annotations
 
 import random
@@ -8,6 +8,7 @@ import pygame
 from .. import config as C
 from .. import diplomacy as D
 from .. import flags as FL
+from .. import rules as R
 from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES
 from ..state import NEUTRAL, Settings
 from .art import draw_flag, draw_portrait, render_flag
@@ -204,7 +205,7 @@ def draw_setup(app):
     for i, l in enumerate(shown):
         cx = x + (i % cols) * (bw + 6)
         cy = y + (i // cols) * (bh + 6)
-        tip = f"{l['name']} (호전성 {l['aggr']})\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
+        tip = f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
         if gui.button((cx, cy, bw, bh), l["name"], selected=s.leader == l["key"], size=13 if len(l["name"]) <= 7 else 11,
                       tooltip=tip):
             s.leader = l["key"]
@@ -231,7 +232,7 @@ def draw_setup(app):
     gui.text((x2, y), "적 세력 수", 13, t.muted, "semibold")
     s.n_enemies = gui.stepper((x2 + 110, y - 6, 120, 30), s.n_enemies, 1, 9)
     y += 40
-    gui.text((x2, y), "난이도 (AI에만 적용)", 13, t.muted, "semibold")
+    gui.text((x2, y), "난이도", 13, t.muted, "semibold")
     s.difficulty = gui.segmented((x2, y + 22, 468, 32), [d[0] for d in C.DIFFICULTIES], s.difficulty, size=11)
     d = C.DIFFICULTIES[s.difficulty]
     gui.text((x2, y + 58), f"AI 인구 성장률 ×{d[1]:.2f} · 생산 수입 ×{d[2]:.2f}", 12, t.muted)
@@ -266,7 +267,7 @@ def draw_setup(app):
     if gui.button((x2 + 366, y - 6, 100, 30), "무작위"):
         s.start = None
     y += 40
-    gui.text((x2, y), "적 지도자 (눌러서 고르기, 무작위는 게임 시작 때 정함)", 13, t.muted, "semibold")
+    gui.text((x2, y), "적 지도자", 13, t.muted, "semibold")
     y += 24
     while len(s.ai_leaders) < s.n_enemies:
         s.ai_leaders.append(None)
@@ -404,7 +405,7 @@ def draw_ai_leader_picker(app):
             l = LEADER_BY_KEY[k]
             cell = (x + (n % cols) * (bw + gap), y + (n // cols) * (bh + gap), bw, bh)
             mine = k == s.leader
-            tip = (f"{l['name']} (호전성 {l['aggr']})\n버프 {l['buff'][0]}: {l['buff'][1]}\n"
+            tip = (f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n"
                    f"디버프 {l['debuff'][0]}: {l['debuff'][1]}")
             if k in taken:
                 tip = ("내 지도자입니다." if mine else "다른 AI가 이미 골랐습니다.") + "\n" + tip
@@ -586,8 +587,6 @@ def draw_government(app):
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        tgt = f"AI 목표 호전성 {gdef['target']}" if gdef["target"] else "플레이어 전용"
-        gui.text((row.right - 16, row.y + 12), tgt, 11, t.muted, anchor="topright")
         gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
         gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
         if hov and gui.clicked:
@@ -720,7 +719,7 @@ def draw_pause(app):
         ("불러오기 F9", lambda: app.open_slots("load"), True),
         ("도움말 F1", lambda: setattr(app, "modal", ("help", None)), True),
         ("이벤트 로그", lambda: setattr(app, "modal", ("log", None)), True),
-        ("연말 랭킹", lambda: setattr(app, "modal", ("ranking", max(g.rankings) if g.rankings else None)),
+        ("반기 랭킹", lambda: setattr(app, "modal", ("ranking", max(g.rankings) if g.rankings else None)),
          bool(g.rankings)),
     ]
     for i, (label, act, ok) in enumerate(items):
@@ -1049,35 +1048,69 @@ def draw_diplomacy(app):
 
 
 # ------------------------------------------------------------------ 랭킹·로그·도움말·종료
+def ranking_value_text(g, row, key) -> str:
+    v = row[key]
+    if key == "happy":
+        return f"{v:+.1f}"
+    if key == "gdp":
+        return f"{v:,.0f} ({row['gdp_share'] * 100:.1f}%)"
+    if key == "science":
+        return f"{v}/{len(C.SCIENCE_STEPS)}"
+    return f"{v:,.0f}"
+
+
 def draw_ranking(app):
+    """반기 랭킹: 첫 행(머리글)의 열을 누르면 그 항목 순으로 줄을 세운다. 조우하지 않은 국가는 국기와 '미지의 국가'만."""
     g = app.game
     gui = app.gui
     t = app.theme
-    year = app.modal[1]
-    rows = g.rankings.get(year, [])
-    r = modal_frame(app, 860, 120 + 40 * max(1, len(rows)) + 60, f"{year}년 연말 랭킹")
-    cols = [("money", "잔고"), ("net", "턴당 순수익"), ("happy", "평균 행복도"), ("pop", "총인구(만)"), ("regions", "지역 수")]
+    keys = sorted(g.rankings)
+    turn = app.modal[1] if app.modal[1] in g.rankings else (keys[-1] if keys else None)
+    rows = g.rankings.get(turn, [])
+    title = f"{g.ranking_label(turn)} 랭킹" if turn else "반기 랭킹"
+    r = modal_frame(app, 960, 150 + 40 * max(1, len(rows)) + 60, title)
+    pid = g.player_id
+    cols = g.RANKING_COLS
+    sel = getattr(app, "rank_col", "regions")
+    if turn:
+        gui.text((r.right - 24, r.y + 26), f"발표 {R.date_label(turn)}", 12, t.muted, anchor="topright")
     x0 = r.x + 24
     y = r.y + 64
-    gui.text((x0, y), "세력", 13, t.muted, "semibold")
-    cw = (r.w - 48 - 180) / len(cols)
-    for i, (_, nm) in enumerate(cols):
-        gui.text((x0 + 180 + i * cw, y), nm, 13, t.muted, "semibold")
-    y += 28
-    ranks = {}
-    for k, _ in cols:
-        for pos, row in enumerate(sorted(rows, key=lambda rr: -rr[k])):
-            ranks[(row["fid"], k)] = pos + 1
-    for row in sorted(rows, key=lambda rr: -rr["regions"]):
-        draw_flag(gui, (x0, y + 5, 24, 16), FL.faction_flag(g.factions[row["fid"]]))
-        me = row["fid"] == g.player_id
-        gui.text((x0 + 30, y + 4), g.seen_name(row["fid"]) + (" (나)" if me else ""), 14,
-                 weight="bold" if me else "regular", max_w=150)
+    name_w = 230
+    wts = [1.6 if k == "gdp" else 1.0 for k, _ in cols]          # GDP 칸은 '액수(비율%)'라 넓게
+    unit = (r.w - 48 - 50 - name_w) / sum(wts)
+    cx = [x0 + 50 + name_w + unit * sum(wts[:i]) for i in range(len(cols))]
+    gui.text((x0, y + 8), "순위", 13, t.muted, "semibold")
+    gui.text((x0 + 50, y + 8), "국가", 13, t.muted, "semibold")
+    for i, (k, nm) in enumerate(cols):
+        if gui.button((cx[i], y, unit * wts[i] - 6, 32), nm, "primary" if k == sel else "default",
+                      size=12, tooltip="눌러서 이 항목 순으로 보기"):
+            app.rank_col = sel = k
+    y += 42
+    order = sorted(rows, key=lambda rr: (-rr[sel], -rr["regions"]))
+    for pos, row in enumerate(order, 1):
+        fid = row["fid"]
+        me = fid == pid
+        known = g.has_met(pid, fid)
+        if me:
+            gui.rect(t.panel_alt, pygame.Rect(x0 - 8, y - 2, r.w - 32, 36), radius=6)
+        gui.text((x0 + 4, y + 7), f"{pos}", 14, weight="bold")
+        draw_flag(gui, (x0 + 50, y + 7, 30, 20), FL.faction_flag(g.factions[fid]))
+        gui.text((x0 + 90, y + 7), g.seen_name(fid) + (" (나)" if me else ""), 14,
+                 None if known else t.muted, "bold" if me else "regular", max_w=name_w - 46)
         for i, (k, _) in enumerate(cols):
-            v = row[k]
-            s = f"{v:+.1f}" if k == "happy" else f"{v:,.0f}"
-            gui.text((x0 + 180 + i * cw, y + 4), f"{ranks[(row['fid'], k)]}위 · {s}", 13)
+            txt = ranking_value_text(g, row, k) if known else "?"
+            gui.text((cx[i] + 6, y + 7), txt, 13, None if known else t.muted,
+                     "bold" if k == sel and known else "regular", max_w=unit * wts[i] - 12)
         y += 40
+    if not rows:
+        gui.text((x0, y), "아직 발표된 랭킹이 없습니다.", 13, t.muted)
+    # 지난 발표 보기
+    i = keys.index(turn) if turn in keys else -1
+    if gui.button((r.x + 24, r.bottom - 56, 120, 40), "◀ 이전 발표", enabled=i > 0):
+        app.modal = ("ranking", keys[i - 1])
+    if gui.button((r.x + 152, r.bottom - 56, 120, 40), "다음 발표 ▶", enabled=0 <= i < len(keys) - 1):
+        app.modal = ("ranking", keys[i + 1])
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
 

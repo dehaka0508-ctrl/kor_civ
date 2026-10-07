@@ -407,3 +407,21 @@ def test_resisting_region_action_tab(app):
     frame(app)
     assert g.resisting(r)
     assert rid not in [x.id for x in g.regions_of(g.player_id) if not g.resisting(x)]
+
+
+def test_half_ranking_modal(app):
+    app.start_game(Settings(seed=4, n_enemies=3, fog=2))
+    g = app.game
+    g.player.science = ["lab"]
+    g.turn = 49
+    g._half_ranking()
+    app.modal = ("ranking", 49)
+    for col in ("regions", "pop", "happy", "gdp", "science"):
+        app.rank_col = col
+        frame(app)
+    from korciv.ui.modals import ranking_value_text
+    row = next(r for r in g.rankings[49] if r["fid"] == g.player_id)
+    assert ranking_value_text(g, row, "science") == "1/7"
+    assert ranking_value_text(g, row, "gdp").endswith("%)")
+    unmet = [f.id for f in g.factions if not g.has_met(g.player_id, f.id)]
+    assert unmet and all(g.seen_name(f) == g.UNKNOWN_NAME for f in unmet)

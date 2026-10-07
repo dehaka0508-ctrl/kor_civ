@@ -286,7 +286,7 @@ class Game:
 
     def event_for_player(self, e):
         """플레이어에게 보여 줄 이벤트 문장(없으면 None). 조우하지 않은 세력 이름은 '미지의 국가'로 가리고,
-        플레이어와 상관없는 사건에 모르는 세력이 끼어 있으면 아예 감춘다(승리·연말 랭킹 제외)."""
+        플레이어와 상관없는 사건에 모르는 세력이 끼어 있으면 아예 감춘다(승리·반기 랭킹 제외)."""
         pid = self.player_id
         involved = [f for f in e["fids"] if f is not None and f != NEUTRAL and 0 <= f < len(self.factions)]
         if any(not self.has_met(pid, f) for f in involved) and pid not in e["fids"] \
@@ -1410,7 +1410,7 @@ class Game:
                     f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
-            return f"연료 최대 {lv}개/턴, 1개당 산출 {per:,.0f} → 최대 {per * lv:,.0f}/턴"
+            return f"연료 최대 {lv}개/턴, 1개당 산출 {per:,.0f}"
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
@@ -2072,9 +2072,6 @@ class Game:
         self._phase_happiness()
         D.update_turn(self)
         self._update_power()
-        # 연말 랭킹
-        if self.turn % C.TURNS_PER_YEAR == 0:
-            self._year_ranking()
         self._check_victory()
         for f in self.factions:
             f.buy_count = {}
@@ -2090,6 +2087,9 @@ class Game:
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
                 a.order = None
         self.turn += 1
+        # 반기 랭킹: 해마다 1주차·25주차(첫해 제외, 첫 발표는 2년 차 1주차)
+        if self.turn > C.TURNS_PER_YEAR and (self.turn - 1) % C.TURNS_PER_YEAR in C.RANKING_WEEKS:
+            self._half_ranking()
         # 12. 다음 턴 시작: 반란 판정
         self._phase_rebellion()
         self._update_fog()
@@ -3406,18 +3406,27 @@ class Game:
         names = ", ".join(self.fname(f) for f in fids)
         self.event("victory", f"{C.VICTORY_TYPES[kind]}: {names}", fids=fids)
 
-    def _year_ranking(self):
+    RANKING_COLS = (("regions", "지역 수"), ("pop", "인구(만)"), ("happy", "행복도"),
+                    ("gdp", "턴당 GDP(전국 비율)"), ("science", "과학승리"))
+
+    def ranking_label(self, turn) -> str:
+        """발표 턴 → '2026년 하반기'(1주차 발표는 지난해 하반기, 25주차 발표는 올해 상반기)."""
+        y, m, w = R.date_of_turn(turn)
+        return f"{y - 1}년 하반기" if (turn - 1) % C.TURNS_PER_YEAR == 0 else f"{y}년 상반기"
+
+    def _half_ranking(self):
+        world = self.world_gdp() or 1
         rows = []
         for f in self.factions:
             if not f.alive:
                 continue
-            rows.append({"fid": f.id, "name": f.name, "money": f.money, "net": f.last.get("net", 0),
-                         "happy": self.avg_happiness(f.id), "pop": self.total_pop(f.id),
-                         "regions": self.region_count(f.id)})
-        year = R.date_of_turn(self.turn)[0]
-        self.rankings[year] = rows
-        self.new_ranking = year
-        self.event("ranking", f"{year}년 연말 랭킹이 발표되었습니다.")
+            gdp = self.gdp(f.id)
+            rows.append({"fid": f.id, "regions": self.region_count(f.id), "pop": self.total_pop(f.id),
+                         "happy": self.avg_happiness(f.id), "gdp": gdp, "gdp_share": gdp / world,
+                         "science": len(f.science)})
+        self.rankings[self.turn] = rows
+        self.new_ranking = self.turn
+        self.event("ranking", f"{self.ranking_label(self.turn)} 랭킹이 발표되었습니다.")
 
     # ------------------------------------------------------------------ 전장의 안개
     def visible(self, fid) -> set:
