@@ -1738,8 +1738,13 @@ def test_new_dams_and_power_text():
     w = load_world()
     n = w.name_to_id
     assert power_text(w.regions[n["충북 충주"]]) == "수력(충주댐) 1/턴"
-    assert power_text(w.regions[n["부산 기장"]]) == "원자력(고리) 3/턴"
-    assert w.regions[n["강원 춘천"]].power_self == 3
+    assert power_text(w.regions[n["부산 기장"]]) == "원자력(고리) 2/턴"
+    assert power_text(w.regions[n["강원 춘천"]]) == "수력(소양강댐) 1/턴"
+    for info in w.regions.values():                 # 수력 1, 원자력 2
+        if info.power_source.startswith("수력"):
+            assert info.power_self == 1
+        elif info.power_source.startswith("원자력"):
+            assert info.power_self == 2
     for nm, dam in (("경기 가평", "청평댐"), ("경기 남양주", "팔당댐"), ("경북 안동", "안동댐"), ("경남 합천", "합천댐"),
                     ("전북 임실", "섬진강댐"), ("대전 대덕", "대청댐")):
         assert dam in w.regions[n[nm]].power_source

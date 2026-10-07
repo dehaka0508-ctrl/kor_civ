@@ -29,7 +29,7 @@ MAP_MODES = [("political", "정치"), ("happy", "행복도"), ("pop", "인구"),
 # (키, 이름, 색, 최대 단계 또는 None=단계 없음)
 SUB_MODES = {
     "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#000000", 6),
-                 ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", 3), ("nuclear", "원전", "#F08C00", 3)],
+                 ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", None), ("nuclear", "원전", "#F08C00", None)],
     "building": [("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
                  ("bank", "은행", "#2F9E44", 5), ("power", "발전소", "#FAB005", 5)],
     "military": [("line", "방어선", "#C92A2A", 5), ("aa", "대공포", "#7048E8", 5), ("shelter", "방공호", "#5C940D", 5),
