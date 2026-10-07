@@ -395,8 +395,8 @@ def report(path):
     p("")
     p("지역·GDP의 240·480 칸은 그 전에 게임이 끝났으면 종료 시점 값입니다.")
     p("")
-    p("| 순위 | 지도자 | 분류 | 호전 | 판 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120/240/480 | GDP 120/240/480 | 당한 반란(판당) | 반란 독립(판당) |")
-    p("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    p("| 순위 | 지도자 | 분류 | 호전 | 주 정치체제(비율) | 판 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120/240/480 | GDP 120/240/480 | 당한 반란(판당) | 반란 독립(판당) |")
+    p("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     stats = []
     for k, rs in by.items():
         n = len(rs)
@@ -417,7 +417,9 @@ def report(path):
         vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
         et = f"{sum(el) / len(el):.0f}" if el else "–"
         L = LEADER_BY_KEY[k]
-        p(f"| {i} | {L['name']} | {cat_of.get(k, '')} | {L['aggr']} | {n} | {wr * 100:.1f}% | {win_turn(rs)} | {vts} | "
+        gk, gc = Counter(r["gov"] for r in rs).most_common(1)[0]
+        gov = f"{GOV_BY_KEY.get(gk, {}).get('name', gk)} {gc / n * 100:.0f}%"
+        p(f"| {i} | {L['name']} | {cat_of.get(k, '')} | {L['aggr']} | {gov} | {n} | {wr * 100:.1f}% | {win_turn(rs)} | {vts} | "
           f"{len(el) / n * 100:.1f}% | {et} | {reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | "
           f"{gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} | {reb:.1f} | {ind:.2f} |")
     p("")
