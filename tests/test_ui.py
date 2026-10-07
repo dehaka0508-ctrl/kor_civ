@@ -394,3 +394,16 @@ def test_portrait_codes():
     for key in ("dan", "jum", "onz"):
         p = portrait_path(key)
         assert p and os.path.basename(p).startswith(key + ".")
+
+
+def test_resisting_region_action_tab(app):
+    app.start_game(Settings(seed=4, n_enemies=1))
+    g = app.game
+    rid = g.player.capital
+    r = g.regions[rid]
+    r.resist = {"turn": g.turn, "from": 1, "h0": 0, "resist": 4, "recover": 20}
+    app.select(rid)
+    app.tab = "action"
+    frame(app)
+    assert g.resisting(r)
+    assert rid not in [x.id for x in g.regions_of(g.player_id) if not g.resisting(x)]

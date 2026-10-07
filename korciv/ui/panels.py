@@ -433,7 +433,7 @@ def draw_action_tab(app, body):
     rid = app.sel
     if not rid or rid in app.world.seas or g.regions[rid].owner != pid:
         gui.text((x, body.y), "내 구역을 선택하면 슬롯을 지정할 수 있습니다.", 13, t.muted)
-        idle = [r for r in g.regions_of(pid) if not r.project and not r.occ]
+        idle = [r for r in g.regions_of(pid) if not r.project and not r.occ and not g.resisting(r)]
         yb = auto_slot_controls(app, x, body.y + 26, w)
         y = section(gui, x, yb, w, f"빈 슬롯 {len(idle)}곳")
         area = pygame.Rect(body.x, y, body.w, body.bottom - y)
@@ -450,6 +450,11 @@ def draw_action_tab(app, body):
     y = body.y
     gui.text((x, y), app.world.regions[rid].name, 15, weight="bold")
     y += 26
+    # 점령 저항 중에는 산출·생산이 없으니 다른 명령은 보이지 않는다
+    phase, k = g.resist_phase(r)
+    if phase == "resist":
+        gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음)", w, 14, t.bad)
+        return
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
     on = gui.checkbox((x, y, w, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
     if on != r.focus:
@@ -480,11 +485,6 @@ def draw_action_tab(app, body):
         y = section(gui, x, y, w, "슬롯 사용 중 — 완료 후 새 작업 지정")
     if r.occ:
         gui.text((x, y), "점령당하는 중이라 슬롯을 쓸 수 없습니다.", 13, t.bad)
-        return
-    phase, k = g.resist_phase(r)
-    if phase == "resist":
-        gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음): 산출이 없고 아무것도 생산할 수 없습니다.",
-                 w, 13, t.bad)
         return
     if r.b["factory"] or r.b["power"]:
         if gui.button((x, y, w, 28), "연료 배정 (국가 현황 › 자원 배정)", size=12):
@@ -859,7 +859,7 @@ def draw_nation_tab(app, body):
         app.toast(msg if ok else msg, None if ok else t.bad)
     y += 34
     gdp = sum(g.region_output_estimate(r.id) for r in g.regions_of(pid))
-    eff = 0.1 * (10 - val)
+    eff = g.tax_happy(pid, val)
     gui.text((x, y), f"예상 세수 {gdp * val / 100:,.0f}/턴 · 행복도 {eff:+.1f}/턴" + (" · 잠김" if locked else ""), 12, t.muted)
     y += 24
     # 자원 시장
@@ -1085,14 +1085,14 @@ def power_text(info) -> str:
 
 
 def science_progress_text(g, pid) -> str:
-    """'0/7 · 항공우주연구소 건설(수도)' 형식. 7단계는 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결."""
+    """'0/8 · 항공우주연구소 건설(수도)' 형식. 8단계는 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결."""
     f = g.factions[pid]
     total = len(C.SCIENCE_STEPS) + 1
     done = sum(1 for st in C.SCIENCE_STEPS if st in f.science)
     nxt = next((st for st in C.SCIENCE_STEPS if st not in f.science), None)
     if nxt is not None:
         spec = C.SCIENCE[nxt]
-        return f"{done}/{total} · {spec['name']} {'생산' if spec['unit'] else '건설'}({spec['where']})"
+        return f"{done}/{total} · {spec['name']} {spec.get('verb') or ('생산' if spec['unit'] else '건설')}({spec['where']})"
     lost = [C.SCIENCE[k]["name"] for k in C.SCIENCE_UNITS if not g.science_units_alive(pid).get(k)]
     if lost:
         return f"{done}/{total} · 잃은 부품 다시 생산: " + ", ".join(lost)

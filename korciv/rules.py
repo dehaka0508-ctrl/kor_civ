@@ -155,14 +155,14 @@ def pop_growth_rate(h: float, g_max: float = C.G_MAX) -> float:
     return g_max * (0.1 + 0.9 * x)
 
 
-def tax_happiness(t_pct: float, over10_mult=1.0, over15_mult=1.0) -> float:
-    """0.1 (10 - t%). 감소분에 체제·지도자 배수 적용."""
-    base = C.TAX_HAPPY_K * (10 - t_pct)
+def tax_happiness(t_pct: float, over10_mult=1.0, over15_mult=1.0, base_pct=10.0) -> float:
+    """0.1 (기준 − t%). 기준 세율은 10%(전제군주제 12%). 감소분에 체제·지도자 배수 적용."""
+    base = C.TAX_HAPPY_K * (base_pct - t_pct)
     if base >= 0:
         return base
-    # 감소분을 10~15%, 15% 초과 구간으로 나눠 배수 적용
-    part_10_15 = max(0.0, min(t_pct, 15) - 10) * C.TAX_HAPPY_K
-    part_15 = max(0.0, t_pct - 15) * C.TAX_HAPPY_K
+    # 감소분을 기준~기준+5%, 그 초과 구간으로 나눠 배수 적용
+    part_10_15 = max(0.0, min(t_pct, base_pct + 5) - base_pct) * C.TAX_HAPPY_K
+    part_15 = max(0.0, t_pct - base_pct - 5) * C.TAX_HAPPY_K
     return -(part_10_15 * over10_mult + part_15 * over10_mult * over15_mult)
 
 

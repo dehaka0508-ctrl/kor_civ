@@ -47,19 +47,21 @@ SPECIALTY_MAX_TYPES = 5
 SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행복도 턴당 +0.1
 SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5
 
-# ---- 과학승리: 6단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
-# 단계마다 턴당 12만 × 15턴, 단계 k(0부터)는 비용 ×1.2^k (마지막 6단계는 1.2^5 ≈ 2.5배)
+# ---- 과학승리: 7단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
+# 단계마다 턴당 12만 × 15턴, 비용 배수 ×1.2^tier (tier: 연구소 0 ~ 연료 5)
+# 예외: '예산 편성'은 옛 랜드마크와 같은 턴당 10만 × 15턴(배수 없음)
 SCIENCE_COST_PER_TURN = 120_000
 SCIENCE_TURNS = 15
 SCIENCE_COST_GROWTH = 1.2
-SCIENCE_STEPS = ("lab", "observatory", "pad", "booster", "module", "propellant")
+SCIENCE_STEPS = ("lab", "observatory", "budget", "pad", "booster", "module", "propellant")
 SCIENCE = {
-    "lab":        dict(name="항공우주연구소", unit=False, where="수도"),
-    "observatory": dict(name="천체관측소", unit=False, where="산맥과 맞닿은 지역"),
-    "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역"),
-    "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역"),
-    "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역"),
-    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역"),
+    "lab":        dict(name="항공우주연구소", unit=False, where="수도", tier=0),
+    "observatory": dict(name="천체관측소", unit=False, where="산맥과 맞닿은 지역", tier=1),
+    "budget":     dict(name="예산 편성", unit=False, where="은행 5단계 지역", per_turn=100_000, verb="진행"),
+    "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역", tier=2),
+    "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역", tier=3),
+    "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역", tier=4),
+    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역", tier=5),
 }
 SCIENCE_UNITS = ("booster", "module", "propellant")
 CAPITAL_MOVE_TURNS = 4

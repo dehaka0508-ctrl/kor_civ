@@ -101,7 +101,7 @@ def choose_victory_goal(g, f):
     step = g.science_next(fid)
     afford = step is not None and f.money > 0.5 * g.science_step_cost(fid, step)
     has_oil = any(g.info(r.id).is_oil for r in regs)
-    has_f5 = any(r.b["factory"] >= 5 for r in regs)
+    has_f5 = any(r.b["factory"] >= 5 for r in regs) + any(r.b["bank"] >= 5 for r in regs)
     has_coast = any(g.info(r.id).coastal for r in regs)
     has_mtn = any(r.id in g.world.mountain_regions for r in regs)
     # 외교: 내 연합이 살아 있는 세력 중 차지하는 비율
@@ -1305,15 +1305,16 @@ def _slots(g, f, threat, military=True):
                 dist = g.world.distances_from(f.capital, 30)
                 best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
                 g.start_project(fid, best.id, "science", step)
-            elif sci_goal and step in ("booster", "module"):
-                # 공장 5단계 지역이 없으면 가장 높은 공장부터 올린다
-                pool_f = [r for r in idle if r.b["factory"] < 5]
+            elif sci_goal and step in ("booster", "module", "budget"):
+                # 공장(예산 편성은 은행) 5단계 지역이 없으면 가장 높은 곳부터 올린다
+                bk = "bank" if step == "budget" else "factory"
+                pool_f = [r for r in idle if r.b[bk] < 5]
                 if pool_f:
-                    r0 = max(pool_f, key=lambda r: (r.b["factory"], r.pop))
-                    lv = r0.b["factory"] + 1
-                    cost = R.prod_building_cost("factory", lv) * g.mods(fid).mult("cost_factory")
-                    turns = g.build_time(fid, "factory", R.prod_building_turns(lv))
-                    cands.append((3.0, r0.id, "build", "factory", None, cost / turns))
+                    r0 = max(pool_f, key=lambda r: (r.b[bk], r.pop))
+                    lv = r0.b[bk] + 1
+                    cost = R.prod_building_cost(bk, lv) * (g.mods(fid).mult("cost_factory") if bk == "factory" else 1)
+                    turns = g.build_time(fid, bk, R.prod_building_turns(lv))
+                    cands.append((3.0, r0.id, "build", bk, None, cost / turns))
     cands.sort(key=lambda c: -c[0])
     used = set()
     for u, rid, kind, key, border, per in cands:

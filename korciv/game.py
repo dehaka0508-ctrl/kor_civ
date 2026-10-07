@@ -1299,10 +1299,10 @@ class Game:
         return int(self.mods(fid).value("science_turns", C.SCIENCE_TURNS))
 
     def science_step_cost(self, fid, step) -> float:
-        """과학 단계 총비용: 턴당 10만 × 턴 수 × 1.2^단계(0부터) × 지도자 보정."""
-        k = C.SCIENCE_STEPS.index(step)
-        return (C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE * R.science_cost_mult(k)
-                * self.mods(fid).mult("cost_science") * self.science_turns(fid))
+        """과학 단계 총비용: 턴당 12만 × 턴 수 × 1.2^tier × 지도자 보정('예산 편성'은 턴당 10만, 배수 없음)."""
+        spec = C.SCIENCE[step]
+        per = spec["per_turn"] if "per_turn" in spec else C.SCIENCE_COST_PER_TURN * R.science_cost_mult(spec["tier"])
+        return per * C.MONEY_SCALE * self.mods(fid).mult("cost_science") * self.science_turns(fid)
 
     def science_units_alive(self, fid) -> dict:
         out = {}
@@ -1345,6 +1345,8 @@ class Game:
             return self.factions[fid].capital == rid
         if step == "observatory":
             return rid in self.world.mountain_regions
+        if step == "budget":
+            return rr.b["bank"] >= 5
         if step == "pad":
             return info.coastal
         if step in ("booster", "module"):
@@ -1357,7 +1359,7 @@ class Game:
         return [r.id for r in self.regions_of(fid) if self.science_site_ok(fid, r.id, step)]
 
     def launch_ready(self, fid):
-        """과학승리 판정: 6단계를 모두 마치고, 내 발사대 지역 한 곳에 세 유닛이 모두 있으면 그 지역 ID."""
+        """과학승리 판정: 7단계를 모두 마치고, 내 발사대 지역 한 곳에 세 유닛이 모두 있으면 그 지역 ID."""
         f = self.factions[fid]
         if any(st not in f.science for st in C.SCIENCE_STEPS):
             return None
@@ -1484,7 +1486,7 @@ class Game:
 
     def idle_slots(self, fid) -> int:
         return sum(1 for r in self.regions.values() if r.owner == fid and not r.project and not r.occ
-                   and not getattr(r, "focus", False))
+                   and not self.resisting(r) and not getattr(r, "focus", False))
 
     def projects_by_priority(self, fid):
         """자금 지출 우선순위 순서의 (지역, 작업) 목록."""
@@ -1512,6 +1514,15 @@ class Game:
         self.proj_counter = max(getattr(self, "proj_counter", 0), len(rids) + 1)
 
     # ------------------------------------------------------------------ 국가 명령
+    def tax_base(self, fid) -> float:
+        """행복도가 오르지도 내리지도 않는 기준 세율(%). 기본 10, 전제군주제 12."""
+        return 10.0 + self.mods(fid).add("tax_base")
+
+    def tax_happy(self, fid, t_pct) -> float:
+        """세율 t%일 때 턴당 행복도 변화."""
+        m = self.mods(fid)
+        return R.tax_happiness(t_pct, m.value("tax_over10", 1.0), m.value("tax_over15", 1.0), self.tax_base(fid))
+
     def tax_max(self, fid):
         return self.mods(fid).value("tax_max", C.TAX_MAX)
 
@@ -1781,6 +1792,9 @@ class Game:
             far = m.value("far_output", 0)
             if far and rid not in self.near_capital(owner):
                 y *= 1 - far                                  # 왕건 '호족 연합': 수도에서 먼 지역
+            far = m.value("far_output_gov", 0)
+            if far and rid not in self.near_capital(owner, 3):
+                y *= 1 - far                                  # 전제군주제: 수도에서 3칸 밖 지역
         return y
 
     def near_capital(self, fid, dist=2) -> set:
@@ -2960,7 +2974,7 @@ class Game:
             if not f.alive:
                 continue
             m = self.mods(f.id)
-            t = R.tax_happiness(f.tax * 100, m.value("tax_over10", 1.0), m.value("tax_over15", 1.0))
+            t = self.tax_happy(f.id, f.tax * 100)
             t += m.add("happy_turn")
             # 전쟁 피로도: 전쟁 중이면 쌓이고(선포한 쪽 1, 당한 쪽 0.5/턴), 평시엔 턴당 1 회복
             rate = D.war_weary_rate(self, f.id)

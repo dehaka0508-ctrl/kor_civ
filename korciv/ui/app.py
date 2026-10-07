@@ -1004,7 +1004,7 @@ class App:
 
     def next_idle(self):
         g = self.game
-        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ]
+        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ and not g.resisting(r)]
         if not idle:
             self.toast("빈 슬롯이 없습니다.")
             return
@@ -1093,7 +1093,7 @@ class App:
              + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
              f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
             ("tax", "세율", f"{snap['tax']}%", None,
-             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {0.1 * (10 - f.tax * 100):+.1f}/턴"
+             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"
              "\n바꾸기: 좌측 [내정] 탭"),
             ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소(석탄 1→2, 석유 1→4)·자체 발전으로 생산, 공장 연료\n"
              "석유·석탄은 살 수 없고 팔 수만 있습니다(전기는 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),

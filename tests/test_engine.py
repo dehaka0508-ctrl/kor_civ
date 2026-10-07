@@ -311,8 +311,21 @@ def test_science_victory_chain():
     _own(g, 0, [mtn, flat])
     assert [o["key"] for o in sci(mtn)] == ["observatory"] and not sci(flat)
     assert sci(mtn)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2)
-    # 4·5단계는 공장 5단계, 6단계는 석유 지역
-    f.science = ["lab", "observatory", "pad"]
+    # 3단계 예산 편성은 은행 5단계(금융 단지) 지역에서만, 턴당 10만(배수 없음)
+    f.science = ["lab", "observatory"]
+    assert not sci(flat)
+    g.regions[flat].b["bank"] = 5
+    assert [o["key"] for o in sci(flat)] == ["budget"]
+    assert sci(flat)[0]["per_turn"] == pytest.approx(100_000)
+    ok, _ = g.start_project(0, flat, "science", "budget")
+    assert ok
+    p = g.regions[flat].project
+    g.regions[flat].project = None
+    g._complete_project(f, g.regions[flat], p)
+    assert "budget" in g.regions[flat].sci and f.science[-1] == "budget"
+    g.regions[flat].b["bank"] = 0
+    # 5·6단계는 공장 5단계, 7단계는 석유 지역
+    f.science = ["lab", "observatory", "budget", "pad"]
     assert not sci(flat)
     g.regions[flat].b["factory"] = 5
     assert [o["key"] for o in sci(flat)] == ["booster"]
@@ -822,7 +835,8 @@ def test_wanggeon_far_output():
 def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
     costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
-    assert costs[-1] == pytest.approx(costs[0] * 1.2 ** 5)    # 6단계 ≈ 2.5배
+    assert costs[-1] == pytest.approx(costs[0] * 1.2 ** 5)    # 연료 ≈ 2.5배
+    assert costs[C.SCIENCE_STEPS.index("budget")] == pytest.approx(100_000 * C.SCIENCE_TURNS)
 
 
 def test_no_peace_victory():
@@ -1713,13 +1727,15 @@ def test_display_names_and_flag_number_input():
 def test_science_progress_text():
     from korciv.ui.panels import science_progress_text
     g = new_game(player_start="S002", n_enemies=1)
-    assert science_progress_text(g, 0) == "0/7 · 항공우주연구소 건설(수도)"
-    g.player.science = ["lab", "observatory", "pad"]
-    assert science_progress_text(g, 0) == "3/7 · 로켓 추진체 생산(공장 5단계 지역)"
+    assert science_progress_text(g, 0) == "0/8 · 항공우주연구소 건설(수도)"
+    g.player.science = ["lab", "observatory"]
+    assert science_progress_text(g, 0) == "2/8 · 예산 편성 진행(은행 5단계 지역)"
+    g.player.science = ["lab", "observatory", "budget", "pad"]
+    assert science_progress_text(g, 0) == "4/8 · 로켓 추진체 생산(공장 5단계 지역)"
     g.player.science = list(C.SCIENCE_STEPS)
     for k in C.SCIENCE_UNITS:
         g.add_units(0, "S002", k, 1)
-    assert science_progress_text(g, 0) == "6/7 · 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결"
+    assert science_progress_text(g, 0) == "7/8 · 발사대에 부품 3종(추진체·탑승 모듈·연료) 집결"
 
 
 
@@ -1827,3 +1843,27 @@ def test_production_level_names():
     assert g.build_label("S002", "fishery", 1) == "낚시터 건설"
     assert g.build_label("S002", "bank", 4) == "은행 본사 건설"
     assert g.build_label("S002", "power", 2) == "발전소 2단계"
+
+
+def test_government_v190():
+    from korciv.leaders import GOV_BY_KEY
+    assert GOV_BY_KEY["fascist"]["fx"]["start_opinion"] == -5
+    assert GOV_BY_KEY["socialist"]["fx"]["output_bank"] == -0.20
+    assert GOV_BY_KEY["presidential"]["fx"]["war_weary_rate"] == 0.20
+    g = new_game(player_start="S002", n_enemies=1)
+    g.set_player_government("absolute")
+    # 기준 세율 12%: 12%에서 행복도 변화 없음, 10%면 +0.2
+    assert g.tax_base(0) == 12
+    assert g.tax_happy(0, 12) == pytest.approx(0.0)
+    assert g.tax_happy(0, 10) == pytest.approx(0.2)
+    assert g.tax_happy(0, 22) == pytest.approx(-1.0)
+    # 수도에서 3칸 밖 지역 산출 −5%
+    near3 = g.near_capital(0, 3)
+    far = next(r for r in g.world.order if r not in near3 and g.world.land_adj[r])
+    mid = next(r for r in near3 - g.near_capital(0, 2))
+    _own(g, 0, [far, mid])
+    y_far, y_mid = g.calc_output(far), g.calc_output(mid)
+    g.set_player_government("philosopher")
+    g._mods.pop(0, None)
+    assert y_far == pytest.approx(g.calc_output(far) * 0.95)
+    assert y_mid == pytest.approx(g.calc_output(mid))

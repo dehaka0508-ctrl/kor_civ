@@ -152,23 +152,24 @@ LEADER_BY_KEY = {l["key"]: l for l in LEADERS}
 
 GOVERNMENTS = [
     dict(key="absolute", name="전제군주제", target=7.5,
-         buff=("왕권 통치", "세율 10% 초과분의 행복도 감소 -30%"), debuff=("", "은행 산출 -10%"),
-         fx={"tax_over10": 0.7, "output_bank": -0.10}),
+         buff=("왕권 통치", "기준 세율 +2%(세율 12%까지 행복도 감소 없음)"),
+         debuff=("", "수도에서 3칸 밖 지역 산출 -5%"),
+         fx={"tax_base": 2, "far_output_gov": 0.05}),
     dict(key="constitutional", name="입헌군주제", target=3.5,
          buff=("", "전 지역 행복도 +0.1/턴"), debuff=("", "개전 전쟁 피로 x1.5"),
          fx={"happy_turn": 0.1, "war_start_weary": 0.5}),
     dict(key="presidential", name="대통령제", target=5.5,
-         buff=("", "모든 건물 건설 시간 -10%"), debuff=("", "전쟁 중 전쟁 피로 증가 +25%"),
-         fx={"build_time_all": -0.10, "war_weary_rate": 0.25}),
+         buff=("", "모든 건물 건설 시간 -10%"), debuff=("", "전쟁 중 전쟁 피로 증가 +20%"),
+         fx={"build_time_all": -0.10, "war_weary_rate": 0.20}),
     dict(key="parliamentary", name="의원내각제", target=1.5,
          buff=("", "은행 산출 +10%"), debuff=("", "선전포고 후 2턴간 공격 불가(의회 동의)"),
          fx={"output_bank": 0.10, "parliament_delay": 2}),
     dict(key="socialist", name="사회주의", target=6.0,
-         buff=("", "공장 건설비 -15%"), debuff=("", "은행 산출 -25%"),
-         fx={"cost_factory": -0.15, "output_bank": -0.25}),
+         buff=("", "공장 건설비 -15%"), debuff=("", "은행 산출 -20%"),
+         fx={"cost_factory": -0.15, "output_bank": -0.20}),
     dict(key="fascist", name="파시즘", target=9.5,
-         buff=("", "군 생산비 -15%"), debuff=("", "모든 AI 시작 우호도 -10"),
-         fx={"cost_mil": -0.15, "start_opinion": -10}),
+         buff=("", "군 생산비 -15%"), debuff=("", "모든 AI 시작 우호도 -5"),
+         fx={"cost_mil": -0.15, "start_opinion": -5}),
     dict(key="philosopher", name="철인통치", target=None,
          buff=("", "없음"), debuff=("", "없음"), fx={}),
 ]
@@ -182,7 +183,7 @@ MULT_KEYS = {
     "ally_war_atk", "defense_small", "war_weary_rate", "war_start_weary", "def_coast", "naval_power", "naval_bomb",
     "start_pop", "cost_science", "output_prod", "war_weary_recovery", "multi_attack", "atk_vs_line", "resist_time", "build_time_industry",
 }
-ADD_KEYS = {"happy_turn", "surprise", "trade_m", "treaty_threshold", "start_opinion",
+ADD_KEYS = {"tax_base", "happy_turn", "surprise", "trade_m", "treaty_threshold", "start_opinion",
             "ai_opinion_turn", "suppress", "occupied_happy_extra"}
 
 
