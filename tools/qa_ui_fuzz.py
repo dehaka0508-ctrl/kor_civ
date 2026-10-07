@@ -270,6 +270,8 @@ def force_state(app, rng):
             app.select(a.loc)
             app.sel_army = a.id
             app.left_open, app.left_tab, app.tab = True, "region", "army"
+            if rng.random() < 0.4:                 # 합치기 고르기 모드
+                app.merge_pick, app.merge_node = {x.id for x in g.armies_at(a.loc, pid)}, a.loc
             near = list(app.world.node_neighbors(a.loc))
             if near and rng.random() < 0.5:
                 app.right_click(rng.choice(near), (300, 300))

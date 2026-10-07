@@ -640,7 +640,7 @@ class Game:
             if not self._goto_step(a):
                 a.goto = None
                 return False, "이번 턴에 경로를 따라 움직일 수 없습니다."
-            return True, f"자동 이동: {self.world.node_name(target)}까지 {len(route)}칸 (매 턴 자동 진행)"
+            return True, f"자동 이동: {self.world.node_name(target)}까지 {len(route)}칸"
         if force_bombard:
             if not self._can_bombard(a, target):
                 return False, "폭격할 수 없는 대상입니다."
@@ -1237,7 +1237,7 @@ class Game:
             cost = R.prod_building_cost(key, lv, info.power_site)
             if key == "factory":
                 cost *= m.mult("cost_factory")
-            add("build", key, spec["name"], cost, self.build_time(fid, key, R.prod_building_turns(lv)),
+            add("build", key, self.building_name(rid, key), cost, self.build_time(fid, key, R.prod_building_turns(lv)),
                 ok, why, lv)
         for key in ("shelter", "aa"):
             lv = rr.b[key] + 1
@@ -1274,7 +1274,7 @@ class Game:
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
-            name = f"편입: {self.info(t['target']).name} (가치 {t['value']})" + (" (해로)" if t["sea"] else "")
+            name = f"편입: {self.info(t['target']).name} [{t['value']}]" + (" (해로)" if t["sea"] else "")
             if t["joint"]:
                 n = t["joint"] + 1
                 name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
@@ -1376,6 +1376,12 @@ class Game:
             return "교대 계승(12월 4주)"
         return ""
 
+    def building_name(self, rid, key) -> str:
+        """건물 이름. 채굴 시설은 지역에 따라 '정유공장 증설'·'탄광 증설'."""
+        if key == "extract":
+            return "정유공장 증설" if self.info(rid).is_oil else "탄광 증설"
+        return BUILDING_NAMES.get(key, key)
+
     def building_effect(self, fid, rid, opt) -> str:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
         rr = self.regions[rid]
@@ -1384,14 +1390,15 @@ class Game:
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
         if key == "farm":
-            return f"완공 시 턴당 식량 +{C.FOOD_PER_G:.0f}, 산출 +{C.FARM_OUTPUT * m.mult('output_prod'):.0f}"
+            return f"턴당 식량 +{C.FOOD_PER_G:.0f}, 산출 +{C.FARM_OUTPUT * m.mult('output_prod'):.0f}"
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{C.FOOD_PER_G * fm:.1f}, 산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
+            return (f"{kind} 어장: 턴당 식량 +{round(C.FOOD_PER_G * fm, 1):g}, "
+                    f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
-            return f"연료 최대 {lv}개/턴(석탄·석유·전기 무관), 1개당 산출 {per:,.0f} → 최대 {per * lv:,.0f}/턴"
+            return f"연료 최대 {lv}개/턴, 1개당 산출 {per:,.0f} → 최대 {per * lv:,.0f}/턴"
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
@@ -1402,18 +1409,16 @@ class Game:
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
         if key == "extract":
             if info.is_oil:
-                return f"석유 턴당 +1 (합계 {info.oil + lv}개)"
-            return f"석탄 턴당 +1 (합계 {lv}개)" + (" — 탄광 건설" if lv == 1 else "")
+                return f"석유 {info.oil + lv - 1}+1/턴"
+            return f"석탄 {lv - 1}+1/턴"
         if key == "line":
             k = m.value("line_k", C.LINE_BONUS)
-            fail = R.surprise_mults(lv)[1][0]
-            return (f"이 경계 돌격 방어 x{1 + k * lv:.2f}, 적 기습 성공률 {R.surprise_chance(lv) * 100:.0f}%"
-                    f"(실패 시 공격 x{fail:.2f})")
+            return f"돌격 방어 +{k * lv * 100:.0f}%"
         if key == "shelter":
-            return f"폭격 피해 ÷{1 + C.SHELTER_K * lv:.1f}"
+            return f"폭격 방어 +{C.SHELTER_K * lv * 100:.0f}%"
         if key == "aa":
-            return (f"이 지역을 폭격하는 폭격기 요격력 {min(lv, C.AA_MAX_LEVEL) * C.AA_PER_LEVEL / C.UNIT_STAT_SCALE:g}"
-                    f"(단계당 1, 최대 {C.AA_MAX_LEVEL})")
+            per = C.AA_PER_LEVEL / C.UNIT_STAT_SCALE
+            return f"요격 데미지 {min(lv - 1, C.AA_MAX_LEVEL) * per:g}+{per:g}"
         if key == "academy":
             return "이 지역 유닛 생산비 −25%, 인접 −10%"
         if key == "airport":
@@ -2561,15 +2566,15 @@ class Game:
         return best
 
     def claim_pop(self, fid, rid) -> float:
-        """동시에 완료됐을 때의 우선순위: 대상과 맞닿은(또는 해로로 편입 중인) 내 지역 중 가장 큰 인구."""
-        regs = [self.regions[n] for n in self.world.land_adj[rid] if self.regions[n].owner == fid]
-        regs += [r for r in self.regions.values() if r.owner == fid and r.project
-                 and r.project.kind == "annex" and r.project.key == rid]
-        return max((r.pop for r in regs), default=0.0)
+        """동시에 완료됐을 때의 우선순위: 대상과 맞닿은(또는 해로로 편입 중인) 내 지역들의 인구 합."""
+        regs = {n: self.regions[n] for n in self.world.land_adj[rid] if self.regions[n].owner == fid}
+        regs.update({r.id: r for r in self.regions.values() if r.owner == fid and r.project
+                     and r.project.kind == "annex" and r.project.key == rid})
+        return sum(r.pop for r in regs.values())
 
     def _phase_claims(self):
         """6. 점령·편입: 무력 점령과 편입 게이지가 함께 차고, 먼저 다 채운 쪽이 그 지역을 차지한다.
-        같은 턴에 둘 이상이 다 채우면 대상과 맞닿은 지역의 인구가 많은 쪽이 차지한다."""
+        같은 턴에 둘 이상이 다 채우면 대상과 맞닿은 지역의 인구 합이 많은 쪽이 차지한다."""
         claims = {}
         for rid, fid in self._advance_occupations():
             claims.setdefault(rid, []).append(("occ", fid, None))
@@ -2580,7 +2585,7 @@ class Game:
                 cl.sort(key=lambda c: (-self.claim_pop(c[1], rid), c[1]))
                 names = ", ".join(self.fname(c[1]) for c in cl)
                 self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
-                           f"맞닿은 지역 인구가 가장 많은 {self.fname(cl[0][1])}이(가) 차지합니다.",
+                           f"맞닿은 지역 인구 합이 가장 많은 {self.fname(cl[0][1])}이(가) 차지합니다.",
                            region=rid, fids=tuple(c[1] for c in cl))
             kind, fid, extra = cl[0]
             if kind == "occ":
@@ -2684,7 +2689,11 @@ class Game:
             return 0
         rest = max(0.0, p.turns - p.progress)
         if p.kind == "annex":
-            n = self.joint_count(rr.owner, p.key)
+            # 공동 편입: 함께하는 지역들의 진행도는 공유된다(막 합류한 지역도 가장 앞선 진행도 기준)
+            members = [r.project for r in self.regions.values() if r.owner == rr.owner and r.project
+                       and r.project.kind == "annex" and r.project.key == p.key]
+            n = len(members)
+            rest = max(0.0, max(m.turns for m in members) - max(m.progress for m in members))
             rest *= 1 - R.joint_reduction(n)
         return max(1, math.ceil(rest - 1e-9)) if rest > 0 else 0
 
@@ -2724,7 +2733,7 @@ class Game:
                 text = f"{name} 방어선({nm}) {p.level}단계 완공"
             else:
                 rr.b[p.key] = p.level
-                text = f"{name} {BUILDING_NAMES[p.key]} {p.level}단계 완공"
+                text = f"{name} {self.building_name(rr.id, p.key)} {p.level}단계 완공"
         elif p.kind == "unit":
             self.add_units(f.id, rr.id, p.key, 1)
             text = f"{name}에서 {C.UNITS[p.key]['name']} 생산 완료"

@@ -177,6 +177,12 @@ UPKEEP_RATIO = UNITS["inf"]["upkeep"] / (UNITS["inf"]["cost"] * UNITS["inf"]["tu
 for _k, _u in UNITS.items():
     if not _u.get("science"):
         _u["upkeep"] = round(_u["cost"] * _u["turns"] * UPKEEP_RATIO, 2)
+def unit_weight(key):
+    """대표 병종 고르기용 무게(전투력·생산비 큰 쪽)."""
+    u = UNITS[key]
+    return u["cost"] * u["turns"] + 1
+
+
 UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "booster", "module", "propellant"]
 BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science")]   # 일반 생산 목록
 NAVAL_AT_SEA_UPKEEP = 2.0

@@ -1770,3 +1770,32 @@ def test_allies_share_met():
     g.dip.alliance[D.pair(0, 1)] = g.turn
     g._update_fog()
     assert 3 in g.player.met
+
+
+def test_claim_pop_is_sum_of_touching_regions():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    near = [n for n in sorted(g.world.land_adj[tgt]) if n != "S002"][:1]
+    _own(g, 0, near)
+    mine = [n for n in g.world.land_adj[tgt] if g.regions[n].owner == 0]
+    assert len(mine) >= 2
+    assert g.claim_pop(0, tgt) == pytest.approx(sum(g.regions[n].pop for n in mine))
+
+
+def test_joint_annex_left_turns_shared():
+    g = new_game(player_start="S002", n_enemies=1)
+    src2 = tgt = None
+    for t in sorted(g.world.land_adj["S002"]):
+        nb = [n for n in sorted(g.world.land_adj[t]) if n in g.world.land_adj["S002"] and g.regions[n].owner == NEUTRAL]
+        if g.regions[t].owner == NEUTRAL and nb:
+            src2, tgt = t, nb[0]
+            break
+    _own(g, 0, [src2])
+    g.regions[src2].resist = None
+    for a in g.armies_at(src2):
+        g.remove_army(a)
+    g.player.money = 1e9
+    assert g.start_project(0, "S002", "annex", tgt)[0]
+    g.end_turn()
+    assert g.start_project(0, src2, "annex", tgt)[0]          # 나중에 합류해도
+    assert g.project_left(src2) == g.project_left("S002")      # 공유 진행도·공동 감소율로 같은 남은 턴

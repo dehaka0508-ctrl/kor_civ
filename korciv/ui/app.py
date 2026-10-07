@@ -831,16 +831,18 @@ class App:
         if prev == node and self.left_open and showing:
             self.left_open = False          # 이미 선택한 지역을 다시 누르면 메뉴를 닫는다
             return
+        # 지역 메뉴의 [부대]·[지역 정보]를 보던 중이면 다른 지역을 눌러도 같은 탭으로 연다
+        keep = self.tab if (self.left_open and self.left_tab == "region" and self.tab in ("army", "info")) else None
         self.left_open = True
         if hidden is not None:
             # 시야 밖 타국 영토: 외교 탭의 그 세력 상세 화면
             self.left_tab, self.dip_view, self.war_confirm = "diplo", hidden, None
         elif g.regions.get(node) is None:
             # 해역: 내 함대가 있으면 [부대], 없으면 해역 정보
-            self.left_tab, self.tab = "region", ("army" if mine else "info")
+            self.left_tab, self.tab = "region", (keep or ("army" if mine else "info"))
         else:
-            # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보])
-            self.left_tab, self.tab = "region", ("action" if g.regions[node].owner == g.player_id else "info")
+            # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보]). 보던 탭이 있으면 그대로
+            self.left_tab, self.tab = "region", (keep or ("action" if g.regions[node].owner == g.player_id else "info"))
 
     def hidden_owner(self, node):
         """탐색했지만 지금 시야 밖인 타국 영토면 마지막으로 본 주인 세력, 아니면 None."""
@@ -1016,7 +1018,7 @@ class App:
         f = self.game.player
         return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "oil": f.res["oil"],
                 "coal": f.res["coal"], "elec": f.res["elec"], "happy": round(self.game.avg_happiness(f.id)),
-                "weary": round(f.war_weary)}
+                "weary": round(f.war_weary), "tax": round(f.tax * 100)}
 
     def end_turn(self):
         g = self.game
@@ -1090,6 +1092,9 @@ class App:
                 else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
              + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
              f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
+            ("tax", "세율", f"{snap['tax']}%", None,
+             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {0.1 * (10 - f.tax * 100):+.1f}/턴"
+             "\n바꾸기: 좌측 [내정] 탭"),
             ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소(석탄 1→2, 석유 1→4)·자체 발전으로 생산, 공장 연료\n"
              "석유·석탄은 살 수 없고 팔 수만 있습니다(전기는 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),
             ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전소 연료, 석유 대신 군 생산(석유 1 = 석탄 2)"),
