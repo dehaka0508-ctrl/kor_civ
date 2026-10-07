@@ -80,6 +80,7 @@ class MapView:
         self.sea_polys = {sid: [(proj_arr(p["ext"]), [proj_arr(h) for h in p["holes"]]) for p in parts]
                           for sid, parts in world.sea_shapes.items()}
         self.label.update({sid: proj(*p) for sid, p in SEA_LABELS.items()})
+        self.world_outlines_open = getattr(world, "outlines_open", False)
         self.province_lines = [proj_arr(r) for rings in world.province_outlines.values() for r in rings]
         self.do8_lines = [proj_arr(r) for rings in world.do8_outlines.values() for r in rings]
         # 지형 경계: (종류, [선...], 연결선 여부)
@@ -301,11 +302,14 @@ class MapView:
             else:
                 pygame.draw.aalines(surf, line, True, pts)
         pw = max(1, int((2 if self.z >= 2.5 else 1) * ui_scale()))
+        closed = not self.world_outlines_open
         for span in self.province_span:
-            pygame.draw.lines(surf, theme.province_line, True, sp(span), pw)
+            if span[1] - span[0] >= 2:
+                pygame.draw.lines(surf, theme.province_line, closed, sp(span), pw)
         if mode == "do8":
             for span in self.do8_span:
-                pygame.draw.lines(surf, theme.do8_line, True, sp(span), 2)
+                if span[1] - span[0] >= 2:
+                    pygame.draw.lines(surf, theme.do8_line, closed, sp(span), 2)
         if show_terrain:
             tw = max(2, int((3 if self.z < 2 else (4 if self.z < 4 else 5)) * ui_scale()))
             for kind, spans, connector in self.terrain_span:

@@ -229,6 +229,46 @@ def outer_river_lines(geom, name, ko_river):
     return [ln for ln in getattr(merged, "geoms", [merged]) if ln.geom_type == "LineString" and ln.length >= 0.002]
 
 
+DMZ_GAP_EPS = 0.03       # 남북 자료 사이 이 폭(약 5km) 아래의 틈(비무장지대)은 메운다. 바다에 닿는 틈(한강 하구 등)은 그대로
+DMZ_MIN_LON = 126.75     # 이보다 서쪽(한강·임진강 하구)은 메우지 않는다
+
+
+def _sea_union():
+    path = os.path.join(DATA, "map_geometry.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        seas = json.load(f).get("seas", {})
+    return unary_union([Polygon(p["ext"]).buffer(0) for polys in seas.values() for p in polys]) if seas else None
+
+
+def reconcile_dmz(sk_geom, nk_geom):
+    """휴전선 부근 남북 자료 맞추기. 두 자료가 따로 만들어져 경계가 어긋난다:
+    ① 북한 도형이 남한 쪽으로 넘어온 부분은 잘라 낸다(남한 경계 기준) → 겹친 두 줄 경계 제거
+    ② 남북 사이에 남은 좁은 틈은 맞닿은 북측 지역에 붙인다 → 바다색 틈 제거, 경계가 한 줄로 일치."""
+    S = unary_union(list(sk_geom.values()))
+    for n, g in list(nk_geom.items()):
+        if g.intersects(S):
+            nk_geom[n] = g.difference(S).buffer(0)
+    N = unary_union(list(nk_geom.values()))
+    allu = unary_union([S, N])
+    closed = allu.buffer(DMZ_GAP_EPS).buffer(-DMZ_GAP_EPS)
+    gaps = closed.difference(allu)
+    sea = _sea_union()
+    sea_in = sea.buffer(-0.001) if sea is not None else None
+    filled = 0
+    for piece in polygons_of(gaps):
+        if piece.area < 1e-9 or piece.distance(S) > 1e-6 or piece.distance(N) > 1e-6:
+            continue                       # 남북 양쪽에 다 닿는 틈만(해안의 만은 한쪽에만 닿는다)
+        if piece.centroid.x < DMZ_MIN_LON or (sea_in is not None and piece.intersects(sea_in)):
+            continue                       # 하구·바다에 닿는 틈은 물이다
+        near = [n for n, g in nk_geom.items() if g.distance(piece) < 1e-6]
+        best = max(near, key=lambda n: piece.boundary.intersection(nk_geom[n].buffer(1e-6)).length)
+        nk_geom[best] = unary_union([nk_geom[best], piece]).buffer(0)
+        filled += 1
+    print(f"휴전선 경계 맞춤: 틈 {filled}곳 메움", file=sys.stderr)
+
+
 def load_geometry():
     """표기명 -> shapely 도형(geom: 그리기용, adj_geom: 인접 계산용), 표기명 -> CSV 행."""
     regions = load_regions()
@@ -271,6 +311,7 @@ def load_geometry():
         nk_geom[NK_NAMES[n]] = g
     unsan.sort(key=lambda g: g.centroid.y, reverse=True)
     nk_geom["평북 운산군"], nk_geom["평남 은산군"] = unsan  # 북쪽이 운산(평북)
+    reconcile_dmz(sk_geom, nk_geom)
 
     # ---- 병합: 남북 고성·철원, 황남 옹진 + 인천 옹진
     geom = {}

@@ -17,7 +17,7 @@ from shapely.ops import unary_union
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "korciv", "data")
-EPS = 0.0004      # 이웃 지역 사이 미세한 틈만 메운다(휴전선 폭보다 훨씬 작다)
+OUT_D = 0.002     # 이 거리 안의 이웃 변은 같은 경계로 본다(지역마다 따로 단순화해 생긴 어긋남 흡수)
 
 
 def polygons_of(g):
@@ -34,26 +34,38 @@ def main():
         shapes[rid] = unary_union(polys)
 
     def outlines(key_fn):
-        groups = defaultdict(list)
-        for rid, g in shapes.items():
-            groups[key_fn(rows[rid])].append(g.buffer(EPS, join_style="mitre", quad_segs=1))
+        """광역(도) 경계를 지역 다각형의 변 그대로 열린 선으로: 같은 광역 안쪽 경계는 빼고, 두 광역이 맞닿은 경계는
+        키가 작은 쪽 지역의 변 하나만 남긴다(양쪽 변이 미세하게 달라 두 줄로 보이지 않게)."""
+        from shapely.ops import linemerge
+        group = {rid: key_fn(rows[rid]) for rid in shapes}
+        keys = sorted(set(group.values()))
+        by_key = {k: [rid for rid in shapes if group[rid] == k] for k in keys}
+        done = None                         # 이미 그린 광역들의 합집합(경계 중복 제거용)
         out = {}
-        for k, gs in groups.items():
-            # 지역 다각형 꼭짓점을 그대로 쓰도록 아주 작게만 단순화(버퍼가 만든 잔 꼭짓점 정리)
-            u = unary_union(gs).buffer(-EPS, join_style="mitre", quad_segs=1).simplify(0.0002)
-            rings = []
-            for p in polygons_of(u):
-                if p.area < 3e-5:
+        for k in keys:
+            mine = unary_union([shapes[rid] for rid in by_key[k]])
+            parts = []
+            for rid in by_key[k]:
+                ln = shapes[rid].boundary
+                others = [shapes[o] for o in by_key[k] if o != rid and shapes[o].distance(shapes[rid]) < OUT_D]
+                if others:
+                    ln = ln.difference(unary_union(others).buffer(OUT_D))
+                if done is not None:
+                    ln = ln.difference(done.buffer(OUT_D))
+                parts.extend(g for g in getattr(ln, "geoms", [ln]) if not g.is_empty)
+            merged = linemerge(unary_union(parts)) if parts else None
+            lines = []
+            for g in (getattr(merged, "geoms", [merged]) if merged is not None else []):
+                if g.is_empty or g.length < 0.003:
                     continue
-                rings.append([(round(x, 4), round(y, 4)) for x, y in p.exterior.coords])
-                for hole in p.interiors:
-                    if Polygon(hole).area > 3e-5:
-                        rings.append([(round(x, 4), round(y, 4)) for x, y in hole.coords])
-            out[k] = rings
+                lines.append([(round(x, 4), round(y, 4)) for x, y in g.coords])
+            out[k] = lines
+            done = mine if done is None else unary_union([done, mine])
         return out
 
     geo["provinces"] = outlines(lambda r: r["광역"] + ("·북" if r["남북"] == "북" and r["광역"] == "강원" else ""))
     geo["do8"] = outlines(lambda r: r["조선8도"])
+    geo["outline_open"] = True             # 광역·8도 경계는 닫힌 고리가 아니라 열린 선 목록
     with open(path, "w", encoding="utf-8") as f:
         json.dump(geo, f, ensure_ascii=False, separators=(",", ":"))
     print("provinces", len(geo["provinces"]), "do8", len(geo["do8"]))

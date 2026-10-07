@@ -140,6 +140,7 @@ class World:
         self.geometry = geo["regions"]
         self.province_outlines = geo.get("provinces", {})
         self.do8_outlines = geo.get("do8", {})
+        self.outlines_open = bool(geo.get("outline_open", False))   # 열린 선(새 형식)인가
 
         self.land_adj: dict[str, set] = {rid: set() for rid in self.order}
         for a, b in geo["adjacency"]:
