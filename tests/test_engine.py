@@ -1506,7 +1506,8 @@ def test_assign_energy_command_priority():
     g.regions[other].resist = None
     r.b["factory"], r.b["power"] = 3, 1
     g.regions[other].b["factory"], g.regions[other].b["power"] = 5, 0
-    f.res.update(coal=3, oil=1, elec=0)
+    f.res.update(coal=50, oil=50, elec=50)                     # 재고는 배정에 쓰지 않는다
+    g.energy_mined = lambda fid: {"coal": 3, "oil": 1, "elec": 0}   # 턴당 생산량 기준
     units, cap = g.assign_energy(0)
     # ① 발전소에 석유 1 → 전기 4 ③ 전기는 단계 높은 공장(5단계)부터 ④ 석탄 ⑤ 석유(남은 것 없음)
     assert r.energy["p"] == {"coal": 0, "oil": 1}

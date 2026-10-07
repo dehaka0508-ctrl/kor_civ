@@ -1325,7 +1325,7 @@ def draw_energy_tab(app, body):
     if f.auto_energy:
         g.set_auto_energy(pid, False)        # 예전 세이브: 지금 자동안을 수동 배정으로 옮긴다
     if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12,
-                  tooltip="지금 재고와 이번 턴 채굴량으로 한 번 배정합니다(다음에 누를 때까지 유지).\n"
+                  tooltip="턴마다 생산되는 양(채굴·자체 발전) 기준으로 배정합니다(다음에 누를 때까지 유지).\n"
                           "우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 → "
                           "⑤ 공장에 석유\n발전소·공장 모두 단계가 높은 곳부터 채웁니다."):
         units, cap = g.assign_energy(pid)

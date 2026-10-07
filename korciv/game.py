@@ -1645,12 +1645,11 @@ class Game:
         return {"p": plan, "f": fplan}
 
     def assign_energy(self, fid):
-        """[자동 배정] 명령: 지금 재고와 이번 턴 채굴량으로 우선순위대로 배정해 수동 배정에 적어 둔다
-        (다음에 누를 때까지 그대로). 석유를 따로 남기지 않는다."""
+        """[자동 배정] 명령: 턴마다 생산되는 양(채굴·자체 발전)을 기준으로 우선순위대로 배정해 수동 배정에
+        적어 둔다(다음에 누를 때까지 그대로, 재고는 쓰지 않으니 매 턴 같은 배정을 유지할 수 있다)."""
         f = self.factions[fid]
-        stock = {k: float(f.res.get(k, 0)) for k in C.ENERGY}
         mined = self.energy_mined(fid)
-        want = self.auto_energy_plan(fid, {k: stock[k] + mined[k] for k in C.ENERGY}, oil_reserve=0)
+        want = self.auto_energy_plan(fid, {k: float(mined[k]) for k in C.ENERGY}, oil_reserve=0)
         for r in self.regions_of(fid):
             r.energy = {}
         for rid, a in want["p"].items():
