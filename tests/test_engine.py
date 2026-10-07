@@ -1818,3 +1818,12 @@ def test_board_land_on_lst_and_air_on_cv():
     air = g.new_army(0, port, {"ftr": 2, "bmb": 1})
     assert g.boarding_target(air.id) is cv
     assert g.board(air.id)[0] and cv.units == {"cv": 1, "ftr": 2, "bmb": 1}
+
+
+def test_production_level_names():
+    g = new_game(player_start="S002", n_enemies=1)
+    assert g.build_label("S002", "factory", 5) == "공업 단지 건설"
+    assert g.build_label("S002", "farm", 3) == "농장 건설"
+    assert g.build_label("S002", "fishery", 1) == "낚시터 건설"
+    assert g.build_label("S002", "bank", 4) == "은행 본사 건설"
+    assert g.build_label("S002", "power", 2) == "발전소 2단계"

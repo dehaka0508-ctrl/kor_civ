@@ -1377,11 +1377,20 @@ class Game:
             return "교대 계승(12월 4주)"
         return ""
 
-    def building_name(self, rid, key) -> str:
-        """건물 이름. 채굴 시설은 지역에 따라 '정유공장 증설'·'탄광 증설'."""
+    def building_name(self, rid, key, level=None) -> str:
+        """건물 이름. 채굴 시설은 지역에 따라 '정유공장 증설'·'탄광 증설',
+        농장·어장·공장·은행은 단계별 이름(level 을 주면, 예: 공장 5단계 → 공업 단지)."""
         if key == "extract":
             return "정유공장 증설" if self.info(rid).is_oil else "탄광 증설"
+        if level and key in C.PROD_LEVEL_NAMES:
+            return C.PROD_LEVEL_NAMES[key][min(level, 5) - 1]
         return BUILDING_NAMES.get(key, key)
+
+    def build_label(self, rid, key, level) -> str:
+        """'공업 단지 건설'(단계 이름이 있는 생산 건물) 또는 '발전소 2단계'."""
+        if key in C.PROD_LEVEL_NAMES:
+            return f"{self.building_name(rid, key, level)} 건설"
+        return f"{self.building_name(rid, key)} {level}단계"
 
     def building_effect(self, fid, rid, opt) -> str:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
@@ -2733,7 +2742,8 @@ class Game:
                 text = f"{name} 방어선({nm}) {p.level}단계 완공"
             else:
                 rr.b[p.key] = p.level
-                text = f"{name} {self.building_name(rr.id, p.key)} {p.level}단계 완공"
+                text = (f"{name} {self.building_name(rr.id, p.key, p.level)} 완공" if p.key in C.PROD_LEVEL_NAMES
+                        else f"{name} {self.building_name(rr.id, p.key)} {p.level}단계 완공")
         elif p.kind == "unit":
             self.add_units(f.id, rr.id, p.key, 1)
             text = f"{name}에서 {C.UNITS[p.key]['name']} 생산 완료"

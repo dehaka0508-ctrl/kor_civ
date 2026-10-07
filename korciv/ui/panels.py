@@ -238,6 +238,9 @@ def draw_region_info(app, rect):
     chips = []
     for k in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa"):
         if r.b[k]:
+            if k in C.PROD_LEVEL_NAMES:
+                chips.append(f"{g.building_name(node, k, r.b[k])}({r.b[k]})")   # 예: 공업 단지(5)
+                continue
             nm = ("정유공장" if app.world.regions[node].is_oil else "탄광") if k == "extract" else BUILDING_NAMES[k]
             chips.append(f"{nm} {r.b[k]}")
     for k in ("academy", "airport", "port"):
@@ -352,8 +355,9 @@ def project_name(app, p, rid=None):
         if p.key == "line":
             nm = "해안선" if p.border == "coast" else app.world.regions[p.border].short
             return f"방어선({nm}) {p.level}단계"
-        nm = app.game.building_name(rid, p.key) if rid else BUILDING_NAMES[p.key]
-        return f"{nm} {p.level}단계"
+        if rid:
+            return app.game.build_label(rid, p.key, p.level)
+        return f"{BUILDING_NAMES[p.key]} {p.level}단계"
     if p.kind == "unit":
         return f"{C.UNITS[p.key]['name']} 생산"
     if p.kind == "annex":
@@ -508,6 +512,8 @@ def draw_action_tab(app, body):
             row = pygame.Rect(x, yy, w, 40)
             label = o["name"] + (f" {o['level']}단계" if o["kind"] == "build" and o["key"] != "line"
                                  and o["key"] not in C.SINGLE_BUILDINGS else "")
+            if o["kind"] == "build" and o["key"] in C.PROD_LEVEL_NAMES:
+                label = g.build_label(rid, o["key"], o["level"])          # 예: '공업 단지 건설'
             if o["kind"] == "build" and o["key"] == "line":
                 label = o["name"] + f" {o['level']}단계"
             gui.text((x, yy + 2), label, 13, t.text if o["ok"] else t.muted, "semibold", max_w=w - 70)
