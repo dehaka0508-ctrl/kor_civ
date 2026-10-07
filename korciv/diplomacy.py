@@ -424,8 +424,6 @@ def friendship_effects(g, a, b) -> list:
     for x, y in ((b, a), (a, b)):
         if g.factions[x].is_ai:
             out.append((x, y, C.DECL_FRIEND_BONUS, True))
-    if g.mods(a).value("friend_no_backlash"):        # 김대중 '햇볕정책'
-        return out
     for x in g.alive_ids():
         if x not in (a, b) and g.factions[x].is_ai and hostile_to(g, x, b):
             out.append((x, a, C.DECL_FRIEND_ENEMY, False))

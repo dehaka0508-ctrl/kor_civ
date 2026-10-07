@@ -509,8 +509,6 @@ def _social(g, f):
             # 선언하면 x 와 적대하는 세력이 나를 싫어하게 된다(−5): 그 손실을 따진다
             cost = sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x)
                        and not D.at_war(g, fid, y))
-            if g.mods(fid).value("friend_no_backlash"):
-                cost = 0
             score = D.opinion(g, fid, x) / 20 + len(my_enemies & set(D.enemies(g, x))) - C.AI_FRIEND_BACKLASH_W * cost
             if D.allied(g, fid, x):
                 score -= 0.5                 # 이미 동맹이면 덜 급하다

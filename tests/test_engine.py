@@ -94,10 +94,10 @@ def test_jeongjo_industry_build_time():
     assert g.build_time(0, "bank", 10) == 10 and base > 0
 
 
-def test_kimdj_friendship_no_backlash():
+def test_kimdj_friendship_backlash():
     g = new_game(player_start="S002", n_enemies=3, player_leader="kdj")
     g.dip.op[(3, 1)] = -60
-    assert all(e[2] > 0 for e in D.friendship_effects(g, 0, 1))
+    assert any(e[2] < 0 for e in D.friendship_effects(g, 0, 1))      # '노벨 평화상'에는 반감 면제 없음
 
 
 def _neutral_ai(g, *fids):
@@ -368,7 +368,7 @@ def test_science_units_cannot_fight():
 
 def test_science_leaders():
     g = new_game(player_start="S002", n_enemies=1, player_leader="sen")
-    assert g.science_turns(0) == 10                                                # 첨성대
+    assert g.science_turns(0) == 12                                                # 첨성대
     g = new_game(player_start="S002", n_enemies=1, player_leader="gon")
     assert g.science_step_cost(0, "lab") == pytest.approx(
         C.SCIENCE_COST_PER_TURN * C.SCIENCE_TURNS * 1.25)                          # 영전 공사
