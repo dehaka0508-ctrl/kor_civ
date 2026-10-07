@@ -1484,24 +1484,37 @@ def _energy_setup():
 def test_energy_plan_auto_and_flow():
     g, r, f = _energy_setup()
     assert R.factory_output(5) == 10000 and R.factory_output(3, 2) == 2800
+    f.auto_energy = True                                       # AI 방식: 매 턴 자동, 군 생산용 석유는 남긴다
     f.res.update(coal=3, oil=C.AUTO_OIL_RESERVE + 1)
     plan = g.energy_plan(0)
-    p = plan["plants"]["S002"]
-    assert p == {"coal": 2, "oil": 0, "elec_out": 4}           # 석탄부터 발전소에(석유는 아낀다)
+    assert plan["plants"]["S002"] == {"coal": 1, "oil": 1, "elec_out": 6}   # 발전소에 석유 먼저, 그다음 석탄
     fu = plan["factories"]["S002"]
-    assert fu["units"] == 3                                    # 공장 3단계 = 연료 3개
-    # 발전소 용량이 모자라면 석탄 칸을 석유로 바꿔 전기를 더 만든다
-    r.b["power"] = 1
-    plan2 = g.energy_plan(0)
-    assert plan2["plants"]["S002"]["oil"] == 1 and plan2["factories"]["S002"]["units"] == 3
-    assert plan2["after"]["oil"] == C.AUTO_OIL_RESERVE         # 군 생산용 석유는 남긴다
-    r.b["power"] = 2
-    plan = g.energy_plan(0)
+    assert fu["units"] == 3 and fu["elec"] == 3                # 공장은 전기부터
+    assert plan["after"]["oil"] == C.AUTO_OIL_RESERVE
     after = dict(plan["after"])
     g._phase_resources(f)
     assert {k: f.res[k] for k in C.ENERGY} == pytest.approx(after)    # 미리보기 = 실제 처리
     assert r.fuel_used == 3
     assert r.output == pytest.approx(g.calc_output("S002", full=True))
+
+
+def test_assign_energy_command_priority():
+    g, r, f = _energy_setup()
+    assert not f.auto_energy                                   # 플레이어는 명령 버튼으로 배정
+    other = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [other])
+    g.regions[other].resist = None
+    r.b["factory"], r.b["power"] = 3, 1
+    g.regions[other].b["factory"], g.regions[other].b["power"] = 5, 0
+    f.res.update(coal=3, oil=1, elec=0)
+    units, cap = g.assign_energy(0)
+    # ① 발전소에 석유 1 → 전기 4 ③ 전기는 단계 높은 공장(5단계)부터 ④ 석탄 ⑤ 석유(남은 것 없음)
+    assert r.energy["p"] == {"coal": 0, "oil": 1}
+    assert g.regions[other].energy["f"] == {"coal": 1, "oil": 0, "elec": 4}
+    assert r.energy["f"] == {"coal": 2, "oil": 0, "elec": 0}
+    assert (units, cap) == (7, 8) and not f.auto_energy
+    f.res.update(coal=0, oil=0, elec=0)                        # 배정은 다음에 누를 때까지 그대로(재고만큼만 쓰임)
+    assert g.regions[other].energy["f"]["elec"] == 4
 
 
 def test_energy_manual_assignment():

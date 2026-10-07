@@ -238,6 +238,9 @@ class Game:
                       "food_prod": sum(r.food for r in regs), "food_cons": sum(r.pop for r in regs)}
         self._update_power()
         self._update_fog(initial=True)
+        for f in self.factions:
+            if not f.is_ai:
+                self.assign_energy(f.id)          # 플레이어: 시작 배정을 한 번 해 둔다(이후는 [자동 배정] 명령)
         self.setup_done = True
 
     def set_player_government(self, gov_key: str):
@@ -1609,48 +1612,51 @@ class Game:
         facts = sorted([r for r in act if r.b["factory"] > 0], key=lambda r: (-r.b["factory"], r.id))
         return plants, facts
 
-    def auto_energy_plan(self, fid, stock) -> dict:
-        """자동 배정: 공장 산출이 가장 커지도록. 석유는 발전소(전기 4)가 공장 직접 투입(1)보다 이득이라
-        발전소에 먼저, 그다음 석탄(전기 2). 공장은 1개당 산출이 높은(단계 높은) 곳부터 전기 → 석탄 → 석유.
-        군 생산용 석유는 AUTO_OIL_RESERVE 만큼 남긴다. 반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
+    def auto_energy_plan(self, fid, stock, oil_reserve=None) -> dict:
+        """자원 자동 배정 우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 →
+        ⑤ 공장에 석유. 발전소·공장 모두 단계가 높은 곳부터 채운다.
+        oil_reserve: 남겨 둘 석유(AI는 군 생산용 AUTO_OIL_RESERVE, 플레이어 명령은 0).
+        반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
         plants, facts = self.energy_sites(fid)
-        s = dict(stock)
-        oil_free = max(0, int(s["oil"]) - C.AUTO_OIL_RESERVE)
-        coal = int(s["coal"])
-        need = sum(r.b["factory"] for r in facts) - int(s["elec"])
-        plan, fplan = {}, {}
-        # 1) 석탄부터 발전소에(석유 1 = 석탄 2라 같은 값어치, 석유는 군 생산에 아낀다)
-        for r in plants:
-            cap = r.b["power"]
-            a = {"coal": 0, "oil": 0, "elec": 0}
-            while cap > 0 and need > 0 and coal > 0:
-                a["coal"] += 1; coal -= 1; cap -= 1; need -= C.POWER_ELEC["coal"]
-            while cap > 0 and need > 0 and oil_free > 0:
-                a["oil"] += 1; oil_free -= 1; cap -= 1; need -= C.POWER_ELEC["oil"]
-            plan[r.id] = a
-        # 2) 발전소 용량이 모자라 공장이 빈다면 석탄 칸을 석유로 바꾼다(칸당 전기 2 → 4, 석탄은 공장에 직접)
-        for a in plan.values():
-            while need > 0 and oil_free > 0 and a["coal"] > 0:
-                a["coal"] -= 1; a["oil"] += 1; coal += 1; oil_free -= 1
-                need -= C.POWER_ELEC["oil"] - C.POWER_ELEC["coal"] + 1
-        elec = int(s["elec"]) + sum(C.POWER_ELEC["oil"] * a["oil"] + C.POWER_ELEC["coal"] * a["coal"]
-                                    for a in plan.values())
-        for r in facts:
-            a = {"coal": 0, "oil": 0, "elec": 0}
-            room = r.b["factory"]
-            for key in ("elec", "coal", "oil"):
-                avail = elec if key == "elec" else (coal if key == "coal" else oil_free)
-                k = min(room, avail)
-                a[key] += k
-                room -= k
-                if key == "elec":
-                    elec -= k
-                elif key == "coal":
-                    coal -= k
-                else:
-                    oil_free -= k
-            fplan[r.id] = a
+        reserve = C.AUTO_OIL_RESERVE if oil_reserve is None else oil_reserve
+        left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": int(stock["coal"]), "elec": int(stock["elec"])}
+        plan = {r.id: {"coal": 0, "oil": 0} for r in plants}
+        room = {r.id: r.b["power"] for r in plants}
+        for key in ("oil", "coal"):                       # ①② 발전소: 석유 먼저, 그다음 석탄
+            for r in plants:
+                k = min(room[r.id], left[key])
+                plan[r.id][key] += k
+                room[r.id] -= k
+                left[key] -= k
+        left["elec"] += sum(C.POWER_ELEC["oil"] * a["oil"] + C.POWER_ELEC["coal"] * a["coal"] for a in plan.values())
+        fplan = {r.id: {"coal": 0, "oil": 0, "elec": 0} for r in facts}
+        froom = {r.id: r.b["factory"] for r in facts}
+        for key in ("elec", "coal", "oil"):               # ③④⑤ 공장: 전기 → 석탄 → 석유, 단계 높은 공장부터
+            for r in facts:
+                k = min(froom[r.id], left[key])
+                fplan[r.id][key] += k
+                froom[r.id] -= k
+                left[key] -= k
         return {"p": plan, "f": fplan}
+
+    def assign_energy(self, fid):
+        """[자동 배정] 명령: 지금 재고와 이번 턴 채굴량으로 우선순위대로 배정해 수동 배정에 적어 둔다
+        (다음에 누를 때까지 그대로). 석유를 따로 남기지 않는다."""
+        f = self.factions[fid]
+        stock = {k: float(f.res.get(k, 0)) for k in C.ENERGY}
+        mined = self.energy_mined(fid)
+        want = self.auto_energy_plan(fid, {k: stock[k] + mined[k] for k in C.ENERGY}, oil_reserve=0)
+        for r in self.regions_of(fid):
+            r.energy = {}
+        for rid, a in want["p"].items():
+            self.regions[rid].energy["p"] = dict(a)
+        for rid, a in want["f"].items():
+            self.regions[rid].energy["f"] = dict(a)
+        f.auto_energy = False
+        plan = self.energy_plan(fid)
+        units = sum(a["units"] for a in plan["factories"].values())
+        cap = sum(self.regions[rid].b["factory"] for rid in plan["factories"])
+        return units, cap
 
     def energy_plan(self, fid) -> dict:
         """이번 턴 에너지 흐름(실제 처리와 같은 순서): 채굴 → 발전소 투입 → 전기 생산 → 공장 투입.

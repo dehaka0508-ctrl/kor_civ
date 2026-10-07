@@ -60,9 +60,9 @@ def kv(gui, x, y, w, k, v, vcol=None):
 
 # ------------------------------------------------------------------ 좌측 패널
 # 좌측 세로 탭(위에서부터): 키, 이름, 설명
-SIDE_TABS = (("nation", "국가", "세율·자원 시장·특산물"), ("diplo", "외교", "세력별 관계·외교 창"),
+SIDE_TABS = (("nation", "내정", "세율·자원 시장·특산물·지출 우선순위"), ("diplo", "외교", "세력별 관계·외교 창"),
              ("army", "군사", "전체 군사 유닛 수·유지비"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
-             ("status", "국가\n현황", "국가 통계·재정·지출 우선순위"))
+             ("status", "국가\n현황", "국가 통계·재정·승리 조건 진행"))
 RAIL_W = 64
 
 
@@ -740,7 +740,7 @@ def draw_nation_tab(app, body):
     pid = f.id
     x, w = body.x + 14, body.w - 28
     area = pygame.Rect(body.x, body.y, body.w, body.h)
-    content = 1500
+    content = getattr(app, "_nation_tab_h", 1500)
     off = gui.begin_scroll("nation", area, content)
     y = body.y - off
     y0 = y
@@ -808,9 +808,23 @@ def draw_nation_tab(app, body):
         app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
         app.modal = ("specialty", None)
     y += 30
-    gui.text((x, y), "국가 통계·재정·특산물 재고는 [국가 현황] 탭에 있습니다.", 11, t.muted)
-    y += 18
-    y += 10
+    # 지출 우선순위 (드래그)
+    items = g.projects_by_priority(pid)
+    y = section(gui, x, y + 6, w, "지출 우선순위 (드래그, 또는 클릭 후 ↑↓)")
+    bw2 = (w - 4) / 2
+    for i, (mode, lab) in enumerate(g.PRIORITY_SORTS.items()):
+        if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, enabled=bool(items),
+                      tooltip=f"{lab}으로 자동 정렬"):
+            g.sort_priority(pid, mode)
+            items = g.projects_by_priority(pid)
+            app.toast(f"지출 우선순위: {lab}")
+    y += 68
+    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted)
+    y += 20
+    y = draw_priority_list(app, x, y, w, items)
+    gui.text((x, y + 6), "국가 통계·재정·특산물 재고는 [국가 현황] 탭에 있습니다.", 11, t.muted)
+    y += 34
+    app._nation_tab_h = y - y0
     gui.end_scroll("nation", area, y - y0)
 
 
@@ -1108,19 +1122,6 @@ def draw_nation_status(app, body):
            f"{last.get('food_cons', 0):,.0f})")
     y = kv(gui, x, y, w, "석유 / 석탄 / 전기",
            f"{f.res.get('oil', 0):,.0f} / {f.res.get('coal', 0):,.0f} / {f.res.get('elec', 0):,.0f}")
-    # 지출 우선순위 (드래그)
-    y = section(gui, x, y + 6, w, "지출 우선순위 (드래그, 또는 클릭 후 ↑↓)")
-    bw2 = (w - 4) / 2
-    for i, (mode, lab) in enumerate(g.PRIORITY_SORTS.items()):
-        if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, enabled=bool(items),
-                      tooltip=f"{lab}으로 자동 정렬"):
-            g.sort_priority(pid, mode)
-            items = g.projects_by_priority(pid)
-            app.toast(f"지출 우선순위: {lab}")
-    y += 68
-    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted)
-    y += 20
-    y = draw_priority_list(app, x, y, w, items)
     # 특산물 재고
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     kinds = sorted(set(stock) | set(g.specialty_kinds(pid)))
@@ -1240,14 +1241,16 @@ def draw_energy_tab(app, body):
     f = g.player
     x, w = body.x + 14, body.w - 28
     y = body.y + 4
-    auto = gui.checkbox((x, y, w, 24), "자동 배정", f.auto_energy, size=12)
-    if gui.hover(pygame.Rect(x, y, w, 24)):
-        gui.tooltip = ("공장 산출이 가장 커지게 배정합니다: 석탄을 먼저 발전소에(석탄 1 → 전기 2),\n"
-                       "발전소 용량이 모자라면 석유로(석유 1 → 전기 4). 공장은 1개당 산출이 높은 곳부터 채웁니다.\n"
-                       "끄면 지금 배정이 수동 배정의 출발점이 됩니다.")
-    if auto != f.auto_energy:
-        g.set_auto_energy(pid, auto)
+    if f.auto_energy:
+        g.set_auto_energy(pid, False)        # 예전 세이브: 지금 자동안을 수동 배정으로 옮긴다
+    if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12,
+                  tooltip="지금 재고와 이번 턴 채굴량으로 한 번 배정합니다(다음에 누를 때까지 유지).\n"
+                          "우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 → "
+                          "⑤ 공장에 석유\n발전소·공장 모두 단계가 높은 곳부터 채웁니다."):
+        units, cap = g.assign_energy(pid)
+        app.toast(f"자원 자동 배정: 공장 연료 {units}/{cap}")
         app.changed()
+    gui.text((x + 130, y + 12), "배정은 아래에서 직접 고칠 수 있습니다", 11, t.muted, anchor="midleft", max_w=w - 130)
     y += 30
     plan = g.energy_plan(pid)
     plants, facts = g.energy_sites(pid)

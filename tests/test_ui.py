@@ -141,7 +141,7 @@ def test_priority_arrow_keys_reorder(app):
         g.transfer_region(r, pid)
     for r in [g.player.capital] + near:
         assert g.start_project(pid, r, "build", "farm")[0]
-    app.left_open, app.left_tab = True, "status"
+    app.left_open, app.left_tab = True, "nation"           # 지출 우선순위는 [내정] 탭
     frame(app)
     ids = [r.id for r in g.projects_by_priority(pid)]
     app.prio_sel = ids[0]
