@@ -339,6 +339,26 @@ def backfill_starts(games):
         print(f"(시작 지역 복원 실패 {bad}판 — 권역 집계에서 제외)", file=sys.stderr)
 
 
+def alive_at(r, t) -> bool:
+    """t턴 시점에 아직 멸망하지 않았는가(멸망한 세력은 그 뒤 스냅숏 표본에서 뺀다)."""
+    return r["eliminated"] is None or r["eliminated"] > t
+
+
+def snap_cells(rs) -> tuple:
+    """(지역 '120 / 240 / 480', GDP '…', 표본 '…'): 각 시점에 살아 있는 세력만 평균."""
+    reg, gdp, ns = [], [], []
+    for t in SNAPS:
+        live = [r for r in rs if alive_at(r, t)]
+        ns.append(str(len(live)))
+        if live:
+            reg.append(f"{sum(r['regions'][str(t)] for r in live) / len(live):.1f}")
+            gdp.append(f"{sum(r['gdp'][str(t)] for r in live) / len(live):,.0f}")
+        else:
+            reg.append("–")
+            gdp.append("–")
+    return " / ".join(reg), " / ".join(gdp), " / ".join(ns)
+
+
 def win_turn(rs) -> str:
     """이긴 판들의 평균 종료 턴(공동 승리 포함)."""
     ts = [r["_turns"] for r in rs if r["win"]]
@@ -398,10 +418,11 @@ def report(path):
     # 표 1: 지도자별 결과
     p("## 1. 지도자별 결과")
     p("")
-    p("지역·GDP의 240·480 칸은 그 전에 게임이 끝났으면 종료 시점 값입니다.")
+    p("지역·GDP는 그 시점에 살아 있는 세력만 평균합니다(이미 멸망한 세력은 표본에서 빼고, 표본 수를 따로 적음). "
+      "그 전에 게임이 끝났으면 종료 시점 값입니다.")
     p("")
-    p("| 순위 | 지도자 | 분류 | 호전 | 주 정치체제(비율) | 판 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120/240/480 | GDP 120/240/480 | 당한 반란(판당) | 반란 독립(판당) |")
-    p("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    p("| 순위 | 지도자 | 분류 | 호전 | 주 정치체제(비율) | 판 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120/240/480 | GDP 120/240/480 | 표본 120/240/480 | 당한 반란(판당) | 반란 독립(판당) |")
+    p("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     stats = []
     for k, rs in by.items():
         n = len(rs)
@@ -415,8 +436,7 @@ def report(path):
     stats.sort(key=lambda x: -x[0])
     for i, (wr, k, rs, el, vt) in enumerate(stats, 1):
         n = len(rs)
-        reg = [sum(r["regions"][str(t)] for r in rs) / n for t in SNAPS]
-        gdp = [sum(r["gdp"][str(t)] for r in rs) / n for t in SNAPS]
+        reg, gdp, ns = snap_cells(rs)
         reb = sum(r["stats"].get("rebel:outbreak", 0) for r in rs) / n
         ind = sum(r["stats"].get("rebel:independence", 0) for r in rs) / n
         vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
@@ -425,13 +445,12 @@ def report(path):
         gk, gc = Counter(r["gov"] for r in rs).most_common(1)[0]
         gov = f"{GOV_BY_KEY.get(gk, {}).get('name', gk)} {gc / n * 100:.0f}%"
         p(f"| {i} | {L['name']} | {cat_of.get(k, '')} | {L['aggr']} | {gov} | {n} | {wr * 100:.1f}% | {win_turn(rs)} | {vts} | "
-          f"{len(el) / n * 100:.1f}% | {et} | {reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | "
-          f"{gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} | {reb:.1f} | {ind:.2f} |")
+          f"{len(el) / n * 100:.1f}% | {et} | {reg} | {gdp} | {ns} | {reb:.1f} | {ind:.2f} |")
     p("")
     # 정치체제별
     p("## 1-3. 정치체제별 결과 (AI가 고른 체제)")
     p("")
-    p("| 정치체제 | 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120 / 240 / 480 | GDP 120 / 240 / 480 | 당한 반란(판당) |")
+    p("| 정치체제 | 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120 / 240 / 480 | GDP 120 / 240 / 480 | 표본 120 / 240 / 480 | 당한 반란(판당) |")
     p("|---|---|---|---|---|---|---|---|---|---|")
     byg = defaultdict(list)
     for r in rows:
@@ -444,19 +463,18 @@ def report(path):
         for r in rs:
             if r["win"]:
                 vt[r["_victory"]] += r["win"]
-        reg = [sum(r["regions"][str(t)] for r in rs) / n for t in SNAPS]
-        gdp = [sum(r["gdp"][str(t)] for r in rs) / n for t in SNAPS]
+        reg, gdp, ns = snap_cells(rs)
         vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
         et = f"{sum(el) / len(el):.0f}" if el else "–"
         reb = sum(r["stats"].get("rebel:outbreak", 0) for r in rs) / n
         p(f"| {GOV_BY_KEY.get(gk, {}).get('name', gk)} | {n} ({n / len(rows) * 100:.0f}%) | "
           f"{sum(r['win'] for r in rs) / n * 100:.1f}% | {win_turn(rs)} | {vts} | {len(el) / n * 100:.1f}% | {et} | "
-          f"{reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | {gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} | {reb:.1f} |")
+          f"{reg} | {gdp} | {ns} | {reb:.1f} |")
     p("")
     # 호전성 묶음별
     p("## 1-4. 지도자 호전성별 결과")
     p("")
-    p("| 호전성 | 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 선전포고(판당) | 지역 480 |")
+    p("| 호전성 | 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 선전포고(판당) | 지역 480(생존) |")
     p("|---|---|---|---|---|---|---|---|")
     bya = defaultdict(list)
     for r in rows:
@@ -474,12 +492,12 @@ def report(path):
         vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
         el = sum(1 for r in rs if r["eliminated"] is not None)
         p(f"| {ak} | {n} | {sum(r['win'] for r in rs) / n * 100:.1f}% | {win_turn(rs)} | {vts} | {el / n * 100:.1f}% | "
-          f"{sum(r['stats'].get('war:declare', 0) for r in rs) / n:.2f} | {sum(r['regions']['480'] for r in rs) / n:.1f} |")
+          f"{sum(r['stats'].get('war:declare', 0) for r in rs) / n:.2f} | {snap_cells(rs)[0].split(' / ')[-1]} |")
     p("")
     # 권역별(조선 8도, 시작 지역 기준)
     p("## 1-2. 시작 권역(조선 8도)별 결과")
     p("")
-    p("| 권역 | 시작 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120 / 240 / 480 | GDP 120 / 240 / 480 |")
+    p("| 권역 | 시작 세력 수 | 승률 | 평균 승리 턴 | 주 승리 방법(횟수) | 멸망률 | 평균 멸망 턴 | 지역 120 / 240 / 480 | GDP 120 / 240 / 480 | 표본 120 / 240 / 480 |")
     p("|---|---|---|---|---|---|---|---|---|")
     by8 = defaultdict(list)
     for r in rows:
@@ -494,13 +512,11 @@ def report(path):
         for r in rs:
             if r["win"]:
                 vt[r["_victory"]] += r["win"]
-        reg = [sum(r["regions"][str(t)] for r in rs) / n for t in SNAPS]
-        gdp = [sum(r["gdp"][str(t)] for r in rs) / n for t in SNAPS]
+        reg, gdp, ns = snap_cells(rs)
         vts = ", ".join(f"{VNAME.get(v, v)} {c:g}" for v, c in vt.most_common()) or "–"
         et = f"{sum(el) / len(el):.0f}" if el else "–"
         p(f"| {d}도 | {n} ({n / len(rows) * 100:.0f}%) | {sum(r['win'] for r in rs) / n * 100:.1f}% | {win_turn(rs)} | {vts} | "
-          f"{len(el) / n * 100:.1f}% | {et} | {reg[0]:.1f} / {reg[1]:.1f} / {reg[2]:.1f} | "
-          f"{gdp[0]:,.0f} / {gdp[1]:,.0f} / {gdp[2]:,.0f} |")
+          f"{len(el) / n * 100:.1f}% | {et} | {reg} | {gdp} | {ns} |")
     missing = [d for d in order if d not in by8]
     if missing:
         p(f"(시작 세력 없음: {', '.join(missing)})")
