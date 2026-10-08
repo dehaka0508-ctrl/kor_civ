@@ -1328,9 +1328,9 @@ class Game:
         return int(self.mods(fid).value("science_turns", C.SCIENCE_TURNS))
 
     def science_step_cost(self, fid, step) -> float:
-        """과학 단계 총비용: 턴당 12만 × 턴 수 × 1.2^tier × 지도자 보정('예산 편성'은 턴당 10만, 배수 없음)."""
+        """과학 단계 총비용: 턴당 10만 × 1.2^단계 × 턴 수 × 지도자 보정."""
         spec = C.SCIENCE[step]
-        per = spec["per_turn"] if "per_turn" in spec else C.SCIENCE_COST_PER_TURN * R.science_cost_mult(spec["tier"])
+        per = C.SCIENCE_COST_PER_TURN * R.science_cost_mult(spec["tier"])
         return per * C.MONEY_SCALE * self.mods(fid).mult("cost_science") * self.science_turns(fid)
 
     def science_units_alive(self, fid) -> dict:

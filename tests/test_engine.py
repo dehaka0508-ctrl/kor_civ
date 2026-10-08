@@ -312,12 +312,12 @@ def test_science_victory_chain():
     _own(g, 0, [mtn, flat])
     assert [o["key"] for o in sci(mtn)] == ["observatory"] and not sci(flat)
     assert sci(mtn)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2)
-    # 3단계 예산 편성은 은행 5단계(금융 단지) 지역에서만, 턴당 10만(배수 없음)
+    # 3단계 예산 편성은 은행 5단계(금융 단지) 지역에서만, 다른 단계처럼 ×1.2^2
     f.science = ["lab", "observatory"]
     assert not sci(flat)
     g.regions[flat].b["bank"] = 5
     assert [o["key"] for o in sci(flat)] == ["budget"]
-    assert sci(flat)[0]["per_turn"] == pytest.approx(C.SCIENCE["budget"]["per_turn"])
+    assert sci(flat)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2 ** 2)
     ok, _ = g.start_project(0, flat, "science", "budget")
     assert ok
     p = g.regions[flat].project
@@ -838,8 +838,8 @@ def test_wanggeon_far_output():
 def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
     costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
-    assert costs[-1] == pytest.approx(costs[0] * 1.2 ** 5)    # 연료 ≈ 2.5배
-    assert costs[C.SCIENCE_STEPS.index("budget")] == pytest.approx(C.SCIENCE["budget"]["per_turn"] * C.SCIENCE_TURNS)
+    assert costs == pytest.approx([costs[0] * 1.2 ** k for k in range(len(C.SCIENCE_STEPS))])   # 연료 ≈ 3배
+    assert costs[0] == pytest.approx(100_000 * C.SCIENCE_TURNS)
 
 
 def test_no_peace_victory():
@@ -1708,7 +1708,7 @@ def test_econ_share_counts_neutral_and_rebel_weary_mult():
     r.happy, r.resist = -10.0, None
     g.player.war_weary, g.player.war_weary_def = 20.0, 5.0
     assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + 20 - 15 * 1.2)
-    assert C.SCIENCE_COST_PER_TURN == 96_000                 # v1.18.0: 20% 인하
+    assert C.SCIENCE_COST_PER_TURN == 100_000
 
 
 def test_display_names_and_flag_number_input():

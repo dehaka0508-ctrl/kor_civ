@@ -49,20 +49,19 @@ SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행�
 SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5
 
 # ---- 과학승리: 7단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
-# 단계마다 턴당 9.6만 × 15턴, 비용 배수 ×1.2^tier (tier: 연구소 0 ~ 연료 5)
-# 예외: '예산 편성'은 턴당 8만 × 15턴(배수 없음). v1.18.0에서 과학·경제 비용 모두 20% 인하
-SCIENCE_COST_PER_TURN = 96_000
+# 단계마다 15턴, 턴당 10만 × 1.2^단계(0부터, 예산 편성 포함 7단계): 10만 → 12만 → 14.4만 → … → 약 29.9만
+SCIENCE_COST_PER_TURN = 100_000
 SCIENCE_TURNS = 15
 SCIENCE_COST_GROWTH = 1.2
 SCIENCE_STEPS = ("lab", "observatory", "budget", "pad", "booster", "module", "propellant")
 SCIENCE = {
     "lab":        dict(name="항공우주연구소", unit=False, where="수도", tier=0),
     "observatory": dict(name="천체관측소", unit=False, where="산맥과 맞닿은 지역", tier=1),
-    "budget":     dict(name="예산 편성", unit=False, where="은행 5단계 지역", per_turn=80_000, verb="진행"),
-    "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역", tier=2),
-    "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역", tier=3),
-    "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역", tier=4),
-    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역", tier=5),
+    "budget":     dict(name="예산 편성", unit=False, where="은행 5단계 지역", tier=2, verb="진행"),
+    "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역", tier=3),
+    "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역", tier=4),
+    "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역", tier=5),
+    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역", tier=6),
 }
 SCIENCE_UNITS = ("booster", "module", "propellant")
 CAPITAL_MOVE_TURNS = 4
@@ -394,9 +393,9 @@ ECON_CURRENCY_FRIENDS = 3
 ECON_CURRENCY_ALLIES = 1
 ECON_STEPS = ("exchange", "sez", "ifc", "currency")
 ECON = {
-    "exchange": dict(name="증권거래소", where="금융 권역", per_turn=120_000, turns=10),
-    "sez":      dict(name="경제특구", where="수도", per_turn=160_000, turns=15),
-    "ifc":      dict(name="국제금융센터", where="증권거래소가 있는 지역", per_turn=240_000, turns=15),
+    "exchange": dict(name="증권거래소", where="금융 권역", per_turn=100_000, turns=10),
+    "sez":      dict(name="경제특구", where="수도", per_turn=200_000, turns=15),
+    "ifc":      dict(name="국제금융센터", where="증권거래소가 있는 지역", per_turn=250_000, turns=15),
     "currency": dict(name="기축통화 지정", where="수도", per_turn=400_000, turns=20),
 }
 ECON_STAGES = 5                # 진척도 n/5: 금융 권역, 증권거래소 3곳, 경제특구, 국제금융센터, 기축통화
