@@ -1604,7 +1604,7 @@ class Game:
         if key == "shelter":
             return f"폭격 방어 +{C.SHELTER_K * lv * 100:.0f}%"
         if key == "aa":
-            per = C.AA_PER_LEVEL / C.UNIT_STAT_SCALE
+            per = C.AA_PER_LEVEL
             return f"요격 데미지 {min(lv - 1, C.AA_MAX_LEVEL) * per:g}+{per:g}"
         if key == "academy":
             return "이 지역 유닛 생산비 −25%, 인접 −10%"
@@ -2524,7 +2524,7 @@ class Game:
         if a.id in self.armies and a.empty():
             self.remove_army(a)
         self.battle_regions.append(tgt)
-        self.event("bomb", f"{self.fname(a.owner)} → {self.info(tgt).name} 폭격: 피해 {dmg / C.UNIT_STAT_SCALE:.1f}"
+        self.event("bomb", f"{self.fname(a.owner)} → {self.info(tgt).name} 폭격: 피해 {dmg:.1f}"
                    + (f", 격파 {sum(lost.values())}" if lost else "") + ("; " + ", ".join(notes) if notes else ""),
                    region=tgt, fids=(a.owner, rr.owner))
 
@@ -2672,7 +2672,7 @@ class Game:
         self._score_units(def_owner, fid, lost_a)
         self.battle_regions.append(tgt)
         self.event("battle", f"{'기습' if mode == 'surprise' else '돌격'}: {self.fname(fid)} → {self.info(tgt).name}"
-                   f" (A {A / C.UNIT_STAT_SCALE:.1f} / D {Dv / C.UNIT_STAT_SCALE:.1f}{', ' + note if note else ''}) 공격측 손실 {sum(lost_a.values())},"
+                   f" (A {A:.1f} / D {Dv:.1f}{', ' + note if note else ''}) 공격측 손실 {sum(lost_a.values())},"
                    f" 방어측 손실 {sum(lost_d.values())}", region=tgt, fids=(fid, def_owner, rr.owner))
         # 남은 상륙 병력이 바다에 있으면 함대로 복귀
         survivors = [x for x in attackers if x.id in self.armies]
@@ -2704,11 +2704,11 @@ class Game:
             ad *= am.mult("outnumbered_dmg")
         if dm is not None and n_att > n_def:
             dd *= dm.mult("outnumbered_dmg")
-        # 스탈린 '대숙청': 전투에서 지면(준 피해보다 받은 피해가 크면) 받는 피해 +3
+        # 스탈린 '대숙청': 전투에서 지면(준 피해보다 받은 피해가 크면) 받는 피해 +3(보병 체력 10 기준)
         if ad > dd and am.value("loss_dmg"):
-            ad += am.value("loss_dmg") * C.UNIT_STAT_SCALE
+            ad += am.value("loss_dmg")
         elif dd > ad and dm is not None and dm.value("loss_dmg"):
-            dd += dm.value("loss_dmg") * C.UNIT_STAT_SCALE
+            dd += dm.value("loss_dmg")
         return dd, ad
 
     def _sabotage(self, rr) -> str:

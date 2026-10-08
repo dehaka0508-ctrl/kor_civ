@@ -730,9 +730,8 @@ def draw_army_tab(app, body):
             u = C.UNITS[k]
             gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
             left, full = army.hp_left(k), army.hp_max(k)
-            sc = C.UNIT_STAT_SCALE
-            stat = f"공{u['atk'] / sc:g} 방{u['df'] / sc:g}" + (f" 폭{u['bomb'] / sc:g}" if u.get("bomb") else "")
-            gui.text((x + 22, y + 20), f"{stat} 체 {left / sc:.1f}/{full / sc:g}", 11,
+            stat = f"공{u['atk']:g} 방{u['df']:g}" + (f" 폭{u['bomb']:g}" if u.get("bomb") else "")
+            gui.text((x + 22, y + 20), f"{stat} 체 {left:.0f}/{full:g}", 11,
                      t.bad if left < full * 0.5 else t.muted)
             app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)
             y += 40

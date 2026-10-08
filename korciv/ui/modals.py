@@ -657,10 +657,10 @@ def draw_battle(app):
         st["mode"] = "assault" if idx == 0 else "surprise"
     colw = (r.w - 72) / 2
     for i, (title, units_txt, val, factors, color) in enumerate((
-            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A'] / C.UNIT_STAT_SCALE:,.1f}",
+            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
              bd["att_factors"], t.accent),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
-             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D'] / C.UNIT_STAT_SCALE:,.1f}",
+             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.1f}",
              bd["def_factors"], t.bad))):
         x = r.x + 24 + i * (colw + 24)
         y = r.y + 64
@@ -690,8 +690,8 @@ def draw_battle(app):
         gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "semibold",
                  anchor="topright")
         gui.text((row.x + 12, row.y + 32),
-                 f"적 피해 {oc['def_dmg'] / C.UNIT_STAT_SCALE:,.1f} (예상 손실 {_units_text(oc['def_lost'])}) · "
-                 f"아군 피해 {oc['att_dmg'] / C.UNIT_STAT_SCALE:,.1f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
+                 f"적 피해 {oc['def_dmg']:,.1f} (예상 손실 {_units_text(oc['def_lost'])}) · "
+                 f"아군 피해 {oc['att_dmg']:,.1f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
                  max_w=row.w - 24)
         y += 64
     if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):

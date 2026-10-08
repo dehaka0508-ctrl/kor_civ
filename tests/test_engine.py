@@ -317,7 +317,7 @@ def test_science_victory_chain():
     assert not sci(flat)
     g.regions[flat].b["bank"] = 5
     assert [o["key"] for o in sci(flat)] == ["budget"]
-    assert sci(flat)[0]["per_turn"] == pytest.approx(100_000)
+    assert sci(flat)[0]["per_turn"] == pytest.approx(C.SCIENCE["budget"]["per_turn"])
     ok, _ = g.start_project(0, flat, "science", "budget")
     assert ok
     p = g.regions[flat].project
@@ -839,7 +839,7 @@ def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
     costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
     assert costs[-1] == pytest.approx(costs[0] * 1.2 ** 5)    # 연료 ≈ 2.5배
-    assert costs[C.SCIENCE_STEPS.index("budget")] == pytest.approx(100_000 * C.SCIENCE_TURNS)
+    assert costs[C.SCIENCE_STEPS.index("budget")] == pytest.approx(C.SCIENCE["budget"]["per_turn"] * C.SCIENCE_TURNS)
 
 
 def test_no_peace_victory():
@@ -1708,7 +1708,7 @@ def test_econ_share_counts_neutral_and_rebel_weary_mult():
     r.happy, r.resist = -10.0, None
     g.player.war_weary, g.player.war_weary_def = 20.0, 5.0
     assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + 20 - 15 * 1.2)
-    assert C.SCIENCE_COST_PER_TURN == 120_000
+    assert C.SCIENCE_COST_PER_TURN == 96_000                 # v1.18.0: 20% 인하
 
 
 def test_display_names_and_flag_number_input():
@@ -1986,7 +1986,7 @@ def test_econ_victory_chain():
     assert far not in g.finance_cluster(0) and not g.econ_site_ok(0, far, "exchange")
     # ② 증권거래소: 금융 권역에서, 수도 포함 3곳이면 경제특구
     opts = [o for o in g.options(0, cap) if o["kind"] == "econ"]
-    assert [o["key"] for o in opts] == ["exchange"] and opts[0]["per_turn"] == pytest.approx(150_000)
+    assert [o["key"] for o in opts] == ["exchange"] and opts[0]["per_turn"] == pytest.approx(C.ECON["exchange"]["per_turn"])
     g.player.money = 1e9
     for rid in plan[:2]:
         _finish(g, 0, rid, "econ", "exchange")
@@ -2162,7 +2162,7 @@ def test_new_leader_combat_effects():
     assert (dd, ad) == (10.0, pytest.approx(12.0))
     _lead(g, 0, "sta")
     dd, ad = g._leader_battle_mods(0, 1, [small], big, "S002", tgt, 5.0, 10.0)
-    assert ad == pytest.approx(10.0 + 3 * C.UNIT_STAT_SCALE)
+    assert ad == pytest.approx(10.0 + 3)
     # 강감찬 '귀주대첩': 강을 건너 온 적 피해 +50% (방어측)
     river = next(((a, b) for k, t in g.world.terrain.items() if t["kind"] == "도하" for a, b in [tuple(k)]), None)
     _lead(g, 1, "kgc")
