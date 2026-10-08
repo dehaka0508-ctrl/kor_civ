@@ -2471,6 +2471,40 @@ def test_ai_p2_path_scores_follow_situation():
     assert ST.path_scores(g, f, scary)["scores"]["conquest"] < s1
 
 
+def test_ai_p2_econ_follows_gdp_rank():
+    """경제 점수는 '돈'(반기 랭킹 GDP 순위)을 따른다: 1위 ×1.2 → 꼴찌 ×0.4, 1~2위가 다음 단계를 감당하면 ×1.25."""
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+
+    def ranked(top):
+        g.rankings = {g.turn: [{"fid": x.id, "gdp": (1000 if x.id == 0 else 10 * (x.id + 1)) if top
+                                else (1 if x.id == 0 else 100 * (x.id + 1)), "science": 0, "econ": 0}
+                               for x in g.factions if x.alive]}
+    ranked(False)
+    f.last["tax"], f.last["upkeep"] = 0, 0
+    last = ST.path_scores(g, f, {})["scores"]["economic"]
+    ranked(True)
+    first = ST.path_scores(g, f, {})["scores"]["economic"]
+    assert first > 3 * last                          # 순위 배수 1.2/0.4 = 3배에 계단 가점까지
+    f.last["tax"] = 10 ** 7                         # 다음 단계를 순수입으로 감당할 수 있다
+    assert ST.path_scores(g, f, {})["scores"]["economic"] == pytest.approx(first * C.AI_P2_ECON_RICH, rel=0.01)
+    assert "감당 가능" in ST.path_scores(g, f, {})["why"]["economic"]
+
+
+def test_ai_unhappy_loss_penalty():
+    """행복도 때문에 산출·전투력이 떨어질수록 전쟁을 덜 한다. 적자면 2배."""
+    from korciv import ai
+    g = _p2_game()
+    f = g.factions[0]
+    f.last["net"] = 10
+    assert ai._unhappy_loss_penalty(g, f, 0, C.AI_WAR_LOSS_K) == 0
+    p = ai._unhappy_loss_penalty(g, f, -50, C.AI_WAR_LOSS_K)
+    assert p == pytest.approx(C.AI_WAR_LOSS_K * 0.075)
+    f.last["net"] = -10
+    assert ai._unhappy_loss_penalty(g, f, -50, C.AI_WAR_LOSS_K) == pytest.approx(p * C.AI_UNHAPPY_SHAKY)
+
+
 def test_ai_p2_path_inertia_and_log():
     from korciv import ai_strategy as ST
     g = _p2_game()
@@ -2573,7 +2607,7 @@ def test_ai_p2_hopeless_turns_to_diplomacy_with_strongest(monkeypatch):
     g = _p2_game()
     f = g.factions[0]
     why = {k: "" for k in ST.PATHS}
-    low = {"scores": {"conquest": 0.1, "science": 0.2, "economic": 0.15, "diplomatic": 0.0}, "why": why}
+    low = {"scores": {"conquest": 0.1, "science": 0.15, "economic": 0.12, "diplomatic": 0.0}, "why": why}
     monkeypatch.setattr(ST, "path_scores", lambda *a, **k: low)
     for o, n in ((1, 2), (2, 3), (3, 30)):               # 3번이 가장 강하다
         g.new_army(o, g.factions[o].capital, {"inf": n})
@@ -2586,9 +2620,9 @@ def test_ai_p2_hopeless_turns_to_diplomacy_with_strongest(monkeypatch):
     monkeypatch.setattr(ST, "path_scores", lambda *a, **k: hi)
     g.turn += C.AI_P2_HOPELESS_MIN - 1
     assert ST.choose_path(g, f, {}) == "diplomatic"
-    # 그 뒤, 최고점이 0.25를 넘어도 0.3125(×1.25)를 넘기 전에는 그대로
+    # 그 뒤, 최고점이 문턱(0.18)을 넘어도 ×1.25(0.225)를 넘기 전에는 그대로
     g.turn += 1
-    mid = {"scores": {"conquest": 0.3, "science": 0.2, "economic": 0.1, "diplomatic": 0.0}, "why": why}
+    mid = {"scores": {"conquest": 0.21, "science": 0.15, "economic": 0.1, "diplomatic": 0.0}, "why": why}
     monkeypatch.setattr(ST, "path_scores", lambda *a, **k: mid)
     assert ST.choose_path(g, f, {}) == "diplomatic"
     monkeypatch.setattr(ST, "path_scores", lambda *a, **k: hi)

@@ -409,6 +409,16 @@ def front_analysis(g, fid, o, by_loc=None):
             "targets": sorted(targets), "border": sorted(enemy_border)}
 
 
+def _unhappy_loss_penalty(g, f, h, k):
+    """행복도 h 일 때 산출·전투력 손실(같은 곡선, −50에서 7.5%)에 비례한 감점.
+    적자이거나(2페이즈) 군사력이 위협에 못 미치면 나라가 흔들리는 중이라 2배."""
+    loss = 1 - R.unhappy_output_mult(h)
+    if loss <= 0:
+        return 0.0
+    shaky = f.last.get("net", 0) < 0 or (f.is_ai and PH.phase(f) >= 2 and ST.state(f).get("mil_ok") is False)
+    return k * loss * (C.AI_UNHAPPY_SHAKY if shaky else 1.0)
+
+
 def war_assessment(g, fid, e):
     """전쟁을 계속할지 판단. desire 가 클수록 강화를 원한다. reasons 는 사람이 읽는 판단 근거."""
     f = g.factions[fid]
@@ -449,6 +459,11 @@ def war_assessment(g, fid, e):
     if f.money < 0:
         d += 0.4
         pro.append("재정 적자")
+    loss = _unhappy_loss_penalty(g, f, avg_h, C.AI_PEACE_LOSS_K)
+    if loss > 0:
+        d += loss                              # 민심 때문에 산출·전투력이 떨어져 나라가 흔들린다
+        if loss >= 0.2:
+            pro.append("산출·사기 저하")
     if other_wars:
         d += 0.3 * other_wars
         pro.append("다른 전선")
@@ -741,6 +756,7 @@ def _consider_war(g, f):
             s -= 0.3
         if proj_h < -15:
             s -= min(1.2, (-15 - proj_h) / 40)              # 전쟁 피로로 민심이 무너질 전망
+        s -= _unhappy_loss_penalty(g, f, proj_h, C.AI_WAR_LOSS_K)   # 산출·사기 손실로 나라가 흔들릴 전망
         s -= (rep_pen - 10) / 25 + 0.03 * ties * rep_pen / 10   # 전쟁광 평판
         if g.hegemon == o:
             s += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
@@ -748,7 +764,11 @@ def _consider_war(g, f):
         if PH.phase(f) == 1:
             s -= C.AI_P1_WAR_PENALTY * f.ai.get("free", 0.0)   # 1페이즈: 전쟁보다 빈 땅부터
         elif p2 is not None:
-            s += C.AI_P2_PATH_WAR if p2.get("path") == "conquest" else C.AI_P2_OTHER_WAR
+            if p2.get("path") == "conquest":
+                # 정복 방향이라고 맹목적으로 치지 않는다: 전력 우위와 얻을 땅이 있을 때만 가점
+                s += C.AI_P2_PATH_WAR * min(1.0, max(0.0, ratio - need)) * min(1.0, prize / 15)
+            else:
+                s += C.AI_P2_OTHER_WAR
         if s > best_s:
             best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:

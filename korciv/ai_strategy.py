@@ -156,7 +156,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     has_oil = any(i.is_oil for i in infos)
     has_coast = any(i.coastal for i in infos)
     has_mtn = any(r.id in g.world.mountain_regions for r in regs)
-    fac = sum(1 for r in regs if r.b["factory"] >= 3)
+    fac = sum(1 for r in regs if r.b["factory"] >= 4)
     bank_hi = any(r.b["bank"] >= 4 for r in regs)
     if rows and me_row:
         order = sorted(rows, key=lambda r: -r["gdp"])
@@ -165,24 +165,34 @@ def path_scores(g, f, sc, rng=None) -> dict:
     else:
         rank, n = None, 0
     rank_k = (1 - (rank - 1) / max(1, n - 1)) if rank else 0.5
-    feas = (0.1 + 0.25 * has_oil + 0.12 * has_coast + 0.12 * has_mtn + 0.15 * min(1.0, fac / 2)
+    # 해안·산맥은 거의 모든 나라에 있어 가점이 작다. 석유(6곳, 흩어져 있음)는 조금 더. 공장·은행은 4단계 이상부터
+    feas = (0.1 + 0.25 * has_oil + C.AI_P2_SCI_GEO * (has_coast + has_mtn) + 0.15 * min(1.0, fac / 2)
             + 0.08 * bank_hi + 0.25 * rank_k)
     k_sci = len(f.science)
     ahead = max((r["science"] for r in others), default=0) - k_sci >= 2
     science = (0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
     why["science"] = ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
-    # 경제: 턴당 GDP 순위(반기 랭킹), 수도 주변 금융 권역 가능성, 우호 관계, 모아 둔 돈, 진척
+    # 경제: '돈만 있으면 된다' — 반기 랭킹 GDP 순위(계단 + 연속), 수도 주변 금융 권역 가능성,
+    # 수도 2칸 안 은행 4단계(과학보다 큰 가점), 우호 관계, 진척
     inc = 0.35 if rank and rank <= 2 else 0.2 if rank and rank <= max(2, n // 2) else 0.05
     near = sum(1 for rid in g.near_capital(fid, 1) if rid in g.regions and g.regions[rid].owner == fid)
     cluster = 0.25 if near >= C.ECON_CLUSTER else 0.15 if near >= 3 else 0.05
+    near2 = g.near_capital(fid, 2)
+    bank_cap = any(r.b["bank"] >= 4 for r in regs if r.id in near2)
     partners, _ = D.econ_partners(g, fid)
     stage = g.econ_stage(fid)
-    remaining = sum(C.ECON[s]["per_turn"] * C.ECON[s]["turns"] * (C.ECON_EXCHANGES if s == "exchange" else 1)
-                    for s in C.ECON_STEPS[max(0, stage - 1):]) * C.MONEY_SCALE
-    feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + 0.15 * min(1.0, f.money / max(1.0, remaining))
+    feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap
+    feas *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.2 → 꼴찌 ×0.4
     ahead = max((r["econ"] for r in others), default=0) - stage >= 2
     economic = (0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
-    why["economic"] = f"GDP {rank or '?'}위, 수도 주변 {near}곳, 관계 {partners}" + (", 앞선 나라 있음" if ahead else "")
+    # GDP 1~2위가 다음 단계를 순수입으로 감당할 수 있으면 경제를 확실히 노린다(과학보다 돈은 더 들어도 최소 턴 수가 적다)
+    step = C.ECON[C.ECON_STEPS[max(0, min(len(C.ECON_STEPS) - 1, stage - 1))]]
+    net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
+    rich = bool(rank and rank <= 2 and net >= C.AI_P2_ECON_RICH_NET * step["per_turn"] * C.MONEY_SCALE)
+    if rich:
+        economic *= C.AI_P2_ECON_RICH
+    why["economic"] = (f"GDP {rank or '?'}위" + ("(감당 가능)" if rich else "") + f", 수도 주변 {near}곳, 관계 {partners}"
+                       + (", 앞선 나라 있음" if ahead else ""))
     # 외교: 지금 규칙(생존국 전원 한 연합)은 어렵다. 우호적인 나라가 많을 때만
     if g.mods(fid).value("no_alliance"):
         diplomatic = 0.0
