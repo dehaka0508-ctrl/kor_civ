@@ -860,9 +860,14 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
     goal = f.ai.get("victory_goal") == "economic"
     sm, si = ((2.0, 0.3) if goal else (4, 0.6))
     sm, si = sm / bias("bank"), si / bias("bank")
-    for step in g.econ_available(fid):
+    cap = f.capital
+    ex = g.econ_buildings(fid, "exchange")
+    ex_busy = [r.id for r in regs if r.project and r.project.kind == "econ" and r.project.key == "exchange"]
+    for step in reversed(g.econ_available(fid)):        # 뒤 단계부터: 증권거래소만 계속 짓지 않게
         if step != "exchange" and g.econ_busy(fid, step) is not None:
             continue
+        if step == "exchange" and len(ex) + len(ex_busy) >= C.ECON_EXCHANGES and (cap in ex or cap in ex_busy):
+            continue                                  # 경제특구 조건(수도 포함 3곳)만큼만
         spec = C.ECON[step]
         per = spec["per_turn"] * C.MONEY_SCALE
         if not ((f.money > per * sm and income - upkeep > per * si)
@@ -870,6 +875,8 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
             continue
         sites = [r for r in regs if g.econ_site_ok(fid, r.id, step) and not r.project and not r.occ
                  and not g.resisting(r)]
+        if step == "exchange" and cap not in ex and cap not in ex_busy:
+            sites = [r for r in sites if r.id == cap] or ([] if len(ex) + len(ex_busy) >= C.ECON_EXCHANGES - 1 else sites)
         if sites:
             best = min(sites, key=lambda r: (threat.get(r.id, 0), -r.pop))
             if g.start_project(fid, best.id, "econ", step)[0]:
