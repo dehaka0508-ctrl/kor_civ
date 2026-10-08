@@ -2765,3 +2765,21 @@ def test_ai_phase3_sprint_when_ahead():
     g.factions[1].science = list(C.SCIENCE_STEPS)          # 남이 훨씬 앞서면 질주하지 않는다
     p["eval"] = -99
     assert not EG.assess(g, f)["sprint"]
+
+
+def test_ai_harass_imminent_winner():
+    """승리가 임박한 나라(ETA 150턴 안)가 나보다 앞서면 견제 대상(2페이즈도). 6턴마다 위급도를 다시 계산."""
+    from korciv import ai_endgame as EG
+    g = _p2_game(n=3)
+    f = g.factions[0]
+    leader = g.factions[1]
+    leader.science = list(C.SCIENCE_STEPS[:6])
+    leader.money = 10 ** 8
+    w = EG.watch(g, f)
+    assert w["harass"] == 1 and w["urgency"] > 0.5
+    assert EG.harass(g, f) == (1, w["urgency"])
+    leader.science = []
+    leader.money = 0
+    assert EG.watch(g, f)["harass"] == 1                       # 6턴 안에는 다시 계산하지 않는다
+    g.turn += C.AI_P3_EVAL_TURNS
+    assert EG.watch(g, f)["harass"] is None

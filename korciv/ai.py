@@ -178,7 +178,16 @@ def _posture_weights(f):
     w = dict(f.ai.get("weights_base") or f.ai.get("weights") or {})
     for k, dv in C.AI_P2_POSTURE_W.get(ST.posture_of(f), {}).items():
         w[k] = max(0.2, w.get(k, 1.0) + dv)
+    urg = _harass_urg(f)
+    if urg:
+        w["military"] = w.get("military", 1.0) + C.AI_P3_HARASS_MIL * urg   # 견제: 군사를 늘리되 내정은 그대로
     f.ai["weights"] = w
+
+
+def _harass_urg(f) -> float:
+    ph = f.ai.get("phase", 1)
+    rec = f.ai.get("p3") if ph >= 3 else f.ai.get("watch") if ph == 2 else None
+    return rec.get("urgency", 0.0) if rec and rec.get("harass") is not None else 0.0
 
 
 def plan_turn(g, fid):
@@ -189,8 +198,8 @@ def plan_turn(g, fid):
     p2 = PH.phase(f) >= 2
     if p2:
         ST.update(g, f, threat_map(g, fid))
-    if PH.phase(f) >= 3:
-        EG.assess(g, f)                       # 3페이즈: 6턴마다 승리까지 남은 턴을 비교해 질주 여부
+    if p2:
+        EG.watch(g, f)                        # 6턴마다 승리까지 남은 턴을 비교: 3페이즈는 질주 여부, 모두 견제 위급도
     if ("weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD
             or (p2 and f.ai.get("goal") != ST.path_of(f))):
         set_strategy(g, f)
@@ -505,6 +514,10 @@ def war_assessment(g, fid, e):
             pro.append("국가 위기")
         if ST.path_of(f) not in (None, "conquest"):
             d += C.AI_P2_NONCONQ_PEACE     # 정복을 노리지 않으면 전쟁을 오래 끌지 않는다
+        h_tgt, urg = EG.harass(g, f)
+        if e == h_tgt and ST.posture_of(f) != "crisis":
+            d -= C.AI_P3_HARASS_PEACE * urg  # 견제 전쟁: 쉽게 접지 않는다
+            con.append("승리 저지")
         if EG.sprint(f) == "conquest" and ST.posture_of(f) != "crisis":
             d -= C.AI_P3_SPRINT_PEACE      # 3페이즈 정복 질주: 이기고 있는 전쟁은 끝까지
             con.append("정복 질주")
@@ -553,6 +566,8 @@ def _diplomacy(g, f):
         _p2_anchor(g, f)
     _social(g, f)
     _consider_war(g, f)
+    if PH.phase(f) >= 2:
+        _p3_harass_war(g, f)
 
 
 def _p2_anchor(g, f):
@@ -725,6 +740,7 @@ def _consider_war(g, f):
     my_total = g.mil_power(fid) * g.morale(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
     best, best_s, best_goals = None, 1.0, []
     spr = EG.sprint(f)
+    h_tgt, urg = EG.harass(g, f)
     site_regions = EG.missing_science_site(g, fid) if spr == "science" else []
     site_owners = {g.regions[n].owner for n in site_regions}
     for o in sorted(neighbors):
@@ -759,7 +775,8 @@ def _consider_war(g, f):
         thr = war_op_threshold(g, f, o, ratio, can_expand)
         if op > thr:
             continue                      # 아직 참을 만하다
-        need = 1.5 - 0.07 * aggr - (C.AI_P3_SPRINT_NEED if spr == "conquest" else 0.0)
+        need = (1.5 - 0.07 * aggr - (C.AI_P3_SPRINT_NEED if spr == "conquest" else 0.0)
+                - (C.AI_P3_HARASS_NEED * urg if o == h_tgt else 0.0))
         if ratio < need:
             continue
         fr = front_analysis(g, fid, o, by_loc)
@@ -793,7 +810,9 @@ def _consider_war(g, f):
         goals = fr["targets"][:4] or fr["border"][:2]
         if spr == "conquest":
             s += C.AI_P3_SPRINT_WAR                         # 3페이즈 정복 질주: 땅을 넓힐 전쟁을 더 적극적으로
-        elif spr == "science" and o in site_owners:
+        if o == h_tgt:
+            s += C.AI_P3_HARASS_WAR * urg                   # 3페이즈 견제: 승리가 임박한 나라를 늦춘다
+        if spr == "science" and o in site_owners:
             s += C.AI_P3_SITE_WAR                           # 과학 질주: 다음 단계를 지을 땅(산맥·해안·석유)을 가진 이웃
             goals = [n for n in site_regions if g.regions[n].owner == o][:2] + goals[:2]
         if s > best_s:
@@ -811,6 +830,67 @@ def _consider_war(g, f):
                 p2["target"] = best
 
 
+def _p3_harass_war(g, f):
+    """3페이즈 견제 선포(6턴마다): 승리가 임박한 나라를 늦추려는 전쟁이라 이길 필요는 없다(우호도 문턱 없음).
+    대신 나라가 흔들리지 않고(적자·민심·피로·위기·전쟁 2곳), 땅·바다·하늘로 닿으며, 그 나라와 이미 싸우는 나라들의
+    힘을 합쳐 상대의 0.6배 이상이고(맹목적으로 덤비지 않는다), 위급도만큼의 확률로."""
+    fid = f.id
+    t, urg = EG.harass(g, f)
+    if t is None or g.turn - f.ai.get("harass_eval", -99) < C.AI_P3_EVAL_TURNS:
+        return
+    f.ai["harass_eval"] = g.turn
+    why = _harass_block(g, f, t, urg)
+    st = f.ai.setdefault("p3s", {})
+    if why:
+        b = st.setdefault("harass_block", {})
+        b[why] = b.get(why, 0) + 1
+        return
+    if D.has_nonaggr(g, fid, t):
+        D.break_nonaggr(g, fid, t)           # 승리가 아주 임박하면 불가침을 깨고서라도
+    ok, _ = D.declare_war(g, fid, t, reason="승리 저지 선전포고")
+    if ok:
+        st["harass_war"] = st.get("harass_war", 0) + 1
+
+
+def _harass_block(g, f, t, urg):
+    """견제 선포를 하지 않는 이유(없으면 None)."""
+    fid = f.id
+    if D.at_war(g, fid, t):
+        return "이미 전쟁"
+    if D.peace_left(g, fid, t) > 0 or (D.has_nonaggr(g, fid, t) and urg < C.AI_P3_HARASS_BREAK):
+        return "조약·휴전"
+    if (f.money < 0 or f.last.get("tax", 0) - f.last.get("upkeep", 0) < 0 or g.avg_happiness(fid) < -20
+            or f.war_weary > 45 or ST.posture_of(f) == "crisis"):
+        return "내정"
+    if len(D.enemies(g, fid)) >= C.AI_MAX_WARS:
+        return "전쟁 2곳"
+    s2 = ST.state(f)
+    if t in (s2.get("anchor"), s2.get("patron")):
+        return "우방"
+    if D.coalition_of(g, fid) is not None and D.coalition_consent(g, fid, t)[1]:
+        return "연합 반대"
+    w = g.world
+    regs = g.regions_of(fid)
+    t_regs = {r.id for r in g.regions_of(t)}
+    by_land = any(n in t_regs for r in regs for n in w.land_adj[r.id])
+    by_air = any(r.b["airport"] and any(v in t_regs for v in w.distances_from(r.id, C.BOMB_RANGE)) for r in regs)
+    seas = {s_ for r in regs if w.regions[r.id].coastal for s_ in w.regions[r.id].seas}
+    seas |= {s2_ for s_ in list(seas) for s2_ in w.seas[s_].adj}
+    by_sea = any(v in t_regs for s_ in seas for v in w.seas[s_].coast)
+    if not (by_land or by_air or by_sea):
+        return "닿지 않음"
+    alive = g.alive_ids()
+    joint = g.mil_power(fid) * g.morale(fid) + 0.5 * sum(
+        g.mil_power(x) for x in alive if x not in (fid, t) and D.at_war(g, x, t))
+    their = perceived_power(g, fid, t) * g.morale(t) / (1 + 0.5 * len(D.enemies(g, t)))
+    # 국경이 닿으면 반격을 견딜 만큼(0.6배), 바다·하늘로만 닿으면 반격이 어려워 0.3배면 된다
+    if joint < (C.AI_P3_HARASS_RATIO if by_land else C.AI_P3_HARASS_RATIO_FAR) * max(10.0, their):
+        return "전력 부족"
+    if g.rng.random() >= urg:
+        return "확률"
+    return None
+
+
 def coalition_war_consent(g, c, a, b) -> bool:
     """연합 회원 c 가 a 의 b 에 대한 선전포고에 동의하는가: b 와 따로 동맹이 아니고, 나라가 흔들리지 않으며
     (적자·민심·전쟁 피로·위기·이미 전쟁 2곳), b 가 패권국·승리 근접국이거나 c 가 b 를 좋게 보지 않을 때."""
@@ -822,8 +902,8 @@ def coalition_war_consent(g, c, a, b) -> bool:
         return False
     if PH.phase(fc) >= 2 and ST.posture_of(fc) == "crisis":
         return False
-    if g.hegemon == b or g.victory_threat(b) >= 0.5:
-        return True
+    if g.hegemon == b or g.victory_threat(b) >= 0.5 or EG.best_eta(g, b)[1] < C.AI_P3_URGENT_ETA:
+        return True                           # 패권국·승리가 임박한 나라를 막는 전쟁에는 동의
     return D.opinion(g, c, b) <= C.AI_COALITION_WAR_OP
 
 
@@ -1064,16 +1144,41 @@ def _army_orders(g, f, threat):
                 cap = f.capital
                 home.sort(key=lambda n: (w.distances_from(n, 30).get(cap, 99), n))
                 g.order_army(a.id, home[0])
-    # 폭격기
-    for a in g.armies.values():
-        if a.owner != fid or a.domain() != "air" or not at_war:
+    # 폭격기(3페이즈 견제 대상의 수도·과학·경제 시설을 먼저)
+    h_tgt, _urg = EG.harass(g, f) if f.is_ai else (None, 0.0)
+    for a in list(g.armies.values()):
+        if a.id not in g.armies or a.owner != fid or a.domain() != "air" or not at_war or a.order:
+            continue
+        if h_tgt is not None and a.units.get("bmb") and _board_carrier(g, a):
             continue
         reach = g.reachable(a)
-        tg = [(visible_hostile_power(g, fid, n) + 2 * _building_levels(g, n), n) for n, o in reach.items()
+        tg = [(_bomb_value(g, fid, n, h_tgt), n) for n, o in reach.items()
               if o["action"] == "bombard" and g.regions[n].owner != NEUTRAL]
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def _bomb_value(g, fid, rid, h_tgt):
+    v = visible_hostile_power(g, fid, rid) + 2 * _building_levels(g, rid)
+    if h_tgt is not None and g.regions[rid].owner == h_tgt:
+        v += 3 + (8 if EG.key_region(g, rid) else 0)     # 견제: 승리에 중요한 지역을 늦춘다
+    return v
+
+
+def _board_carrier(g, a) -> bool:
+    """폭격기를 항공모함에 태운다: 같은 지역(공항·항구)이면 탑승, 빈 칸이 있는 항모가 항구(공항)에서 기다리면
+    그리로 이동. 태웠거나 움직였으면 True."""
+    fl = g.boarding_target(a.id)
+    if fl is not None:
+        return fl.air_used() + a.count() <= fl.air_cap() and g.board(a.id)[0]
+    w = g.world
+    for cv in g.armies.values():
+        if (cv.owner == a.owner and cv.units.get("cv") and not w.is_sea(cv.loc) and not cv.units.get("bmb")
+                and cv.air_used() + a.count() <= cv.air_cap()):
+            if g.reachable(a).get(cv.loc, {}).get("action") == "move":
+                return g.order_army(a.id, cv.loc)[0]
+    return False
 
 
 def _p1_rally(g, fid, annexing):
@@ -1216,10 +1321,14 @@ def _naval_orders(g, f, threat):
     if not D.enemies(g, fid):
         return
     cap_min = capital_min_garrison(g, f, threat)
+    h_tgt, _urg = EG.harass(g, f) if f.is_ai else (None, 0.0)
     for fl in [a for a in list(g.armies.values()) if a.owner == fid and a.domain() == "naval"]:
         if fl.id not in g.armies or fl.order:
             continue
         at_port = not w.is_sea(fl.loc)
+        if fl.units.get("cv"):
+            _carrier_orders(g, f, fl, h_tgt, at_port)
+            continue
         if fl.units.get("lst") and at_port:
             # 태우기: 같은 항구의 육군(수도 방위군은 남김)
             for la in [a for a in g.armies_at(fl.loc, fid) if a.domain() == "land" and not a.order]:
@@ -1262,6 +1371,8 @@ def _naval_orders(g, f, threat):
                     continue
                 rr = g.regions[v]
                 s_ = g.region_value(v)[0] + (4 if rr.b["port"] else 0)        # 항구가 있는 곳을 우선
+                if rr.owner == h_tgt:
+                    s_ += 3 + (4 if EG.key_region(g, v) else 0)               # 견제: 방어선을 우회한 상륙
                 defs = g.hostile_units_at(fid, v)
                 if defs:
                     pv = g.preview_attack(fl, v, "assault")
@@ -1276,7 +1387,8 @@ def _naval_orders(g, f, threat):
         if fl.units.get("dd") and not at_port:
             bt = [v for v, o in reach.items() if o["action"] == "bombard"]
             if bt:
-                bt.sort(key=lambda v: (-g.regions[v].b["port"], -visible_hostile_power(g, fid, v)))
+                bt.sort(key=lambda v: (-(g.regions[v].owner == h_tgt) * (1 + EG.key_region(g, v)),
+                                       -g.regions[v].b["port"], -visible_hostile_power(g, fid, v)))
                 g.order_army(fl.id, bt[0], force_bombard=True)
                 continue
         if fl.units.get("dd") and at_port:
@@ -1290,6 +1402,39 @@ def _naval_orders(g, f, threat):
             home = [v for v, o in reach.items() if o["action"] == "move" and not w.is_sea(v)]
             if home:
                 g.order_army(fl.id, home[0])
+
+
+def _carrier_orders(g, f, fl, h_tgt, at_port):
+    """항공모함 함대: 폭격기를 태우면 견제 대상 앞바다로 나가 폭격하고, 폭격기가 없으면 항구에서 기다린다."""
+    fid = f.id
+    w = g.world
+    if not fl.units.get("bmb"):
+        if not at_port:
+            home = [v for v, o in g.reachable(fl).items() if o["action"] == "move" and not w.is_sea(v)]
+            if home:
+                g.order_army(fl.id, home[0])
+        return
+    reach = g.reachable(fl)
+    bt = [v for v, o in reach.items() if o["action"] == "bombard" and g.regions[v].owner != NEUTRAL]
+    if bt and not at_port:
+        best = max(bt, key=lambda v: (_bomb_value(g, fid, v, h_tgt), v))
+        g.order_army(fl.id, best, force_bombard=True)
+        return
+    if h_tgt is None:
+        return
+    # 대상 해안에 폭격 거리로 닿는 해역으로
+    t_regs = {r.id for r in g.regions_of(h_tgt)}
+    seas = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)
+            and any(u in t_regs for u in w.distances_from(v, C.BOMB_RANGE))]
+    if seas:
+        g.order_army(fl.id, max(seas, key=lambda v: (sum(1 for u in w.distances_from(v, C.BOMB_RANGE)
+                                                         if u in t_regs and EG.key_region(g, u)), v)))
+        return
+    far = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)]
+    if far:
+        tgt = min(t_regs, key=lambda u: (not EG.key_region(g, u), u)) if t_regs else None
+        if tgt is not None:
+            g.order_army(fl.id, min(far, key=lambda v: (w.distances_from(v, 40).get(tgt, 99), v)))
 
 
 def _science_orders(g, f):
@@ -1655,6 +1800,10 @@ def _slots(g, f, threat, military=True):
             cands.append((1.6, coast_idle[0].id, "build", "port", None, cost / C.SINGLE_BUILDINGS["port"]["turns"]))
         elif ports_idle and n_dd < 1 + len(regs) // 40 and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000:
             cands.append((1.6, ports_idle[0].id, "unit", "dd", None, g.unit_cost(fid, ports_idle[0].id, "dd")))
+    # 3페이즈 견제(승리가 임박한 나라와 전쟁 중): 폭격기·구축함·상륙함, 낮은 가중치로 항공모함
+    h_tgt, urg = EG.harass(g, f) if f.is_ai else (None, 0.0)
+    if military and h_tgt is not None and D.at_war(g, fid, h_tgt):
+        _harass_production(g, f, regs, idle, idle_ids, airports, cands, urg, h_tgt)
     # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
     if military and at_war:
         for fl in g.armies.values():
@@ -1727,6 +1876,44 @@ def _slots(g, f, threat, military=True):
             break
     if f.is_ai and PH.phase(f) >= 2:
         _fill_slots(g, f, [r for r in idle if r.id not in used and not r.project], post, reserve, income, upkeep, spr)
+
+
+def _harass_production(g, f, regs, idle, idle_ids, airports, cands, urg, t):
+    """견제 전쟁의 생산 후보: 폭격기(공항), 구축함·상륙함(항구, 대상 해안이 바다로 닿으면),
+    공항과 항구가 함께 있는 지역에 항공모함(낮은 가중치, 폭격기를 태워 대상 앞바다에서 폭격)."""
+    fid = f.id
+    w = g.world
+    units = lambda k: sum(a.units.get(k, 0) for a in g.armies.values() if a.owner == fid)
+    n_bmb, n_dd, n_lst, n_cv = units("bmb"), units("dd"), units("lst"), units("cv")
+    ap_idle = [r for r in airports if r.id in idle_ids]
+    if ap_idle and n_bmb < 2 + len(regs) // 20 and g.can_pay_oil(fid, C.UNITS["bmb"]["oil"]) and f.money > 4000:
+        cands.append((2.0 * urg + 0.5, ap_idle[0].id, "unit", "bmb", None, g.unit_cost(fid, ap_idle[0].id, "bmb")))
+    t_regs = {r.id for r in g.regions_of(t)}
+    seas = {s_ for r in regs if w.regions[r.id].coastal for s_ in w.regions[r.id].seas}
+    seas |= {s2 for s_ in list(seas) for s2 in w.seas[s_].adj}
+    if not any(v in t_regs for s_ in seas for v in w.seas[s_].coast):
+        return                                    # 바다로 닿지 않는다
+    ports = [r for r in regs if r.b["port"]]
+    ports_idle = [r for r in ports if r.id in idle_ids]
+    if not ports:
+        coast = [r for r in idle if w.regions[r.id].coastal]
+        if coast and f.money > 6000:
+            cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
+            cands.append((1.5 * urg + 0.5, coast[0].id, "build", "port", None, cost / C.SINGLE_BUILDINGS["port"]["turns"]))
+        return
+    if ports_idle and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000 and n_dd < 2 + len(regs) // 30:
+        cands.append((1.8 * urg + 0.4, ports_idle[0].id, "unit", "dd", None, g.unit_cost(fid, ports_idle[0].id, "dd")))
+    elif ports_idle and g.can_pay_oil(fid, C.UNITS["lst"]["oil"]) and f.money > 2000 and n_lst < 1 + len(regs) // 30:
+        cands.append((1.6 * urg + 0.4, ports_idle[-1].id, "unit", "lst", None, g.unit_cost(fid, ports_idle[-1].id, "lst")))
+    # 항공모함: 폭격기가 있고 공항·항구가 함께 있는 지역(없으면 항구 지역에 공항)
+    if n_cv == 0 and n_bmb >= 1 and f.money > 8000:
+        both = [r for r in ports if r.b["airport"] and r.id in idle_ids]
+        if both and g.can_pay_oil(fid, C.UNITS["cv"]["oil"]):
+            cands.append((C.AI_P3_HARASS_CV * urg, both[0].id, "unit", "cv", None, g.unit_cost(fid, both[0].id, "cv")))
+        elif not any(r.b["airport"] for r in ports) and ports_idle:
+            cost = C.SINGLE_BUILDINGS["airport"]["cost"] * C.BUILD_COST_MULT
+            cands.append((0.8 * C.AI_P3_HARASS_CV * urg, ports_idle[0].id, "build", "airport", None,
+                          cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
 
 
 def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
