@@ -144,8 +144,9 @@ def set_strategy(g, f):
         w["military"] += k
         w["expansion"] += k / 2
     elif goal == "economic":
-        w["economy"] += k
+        w["economy"] += 2 * k
         w["expansion"] += k / 4
+        w["military"] = max(0.2, w["military"] - k / 2)
     elif goal == "science":
         w["economy"] += k
     elif goal == "diplomatic":
@@ -263,6 +264,8 @@ def _tax(g, f):
     reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
+    if f.ai.get("victory_goal") == "economic":
+        hi += C.AI_ECON_TAX_BONUS                    # 경제승리를 노리면 돈을 더 거둔다
     hi = min(g.tax_max(f.id), hi, 0.20)
     # 비축이 아주 넉넉한데 실질 행복도가 낮으면(전쟁 피로 등) 세율을 0%까지 내려 민심을 산다
     lo = 0.0 if f.money > reserve * 20 and avg < 0 else 0.05
@@ -838,6 +841,18 @@ def _army_orders(g, f, threat):
             g.order_army(a.id, tg[0][1], force_bombard=True)
 
 
+def econ_saving_target(g, fid) -> float:
+    """경제승리 목표일 때 모아 둘 돈: 다음에 지을 경제 단계(경제특구·국제금융센터·기축통화) 총비용의 1.1배."""
+    st = g.econ_stage(fid)
+    if st < 2 or st >= C.ECON_STAGES:
+        return 0.0
+    step = C.ECON_STEPS[st - 1]
+    if g.econ_busy(fid, step) is not None:
+        return 0.0
+    spec = C.ECON[step]
+    return spec["per_turn"] * C.MONEY_SCALE * spec["turns"] * 1.1
+
+
 def finance_plan(g, fid) -> set:
     """금융 권역 계획: 수도에서 시작해 맞닿은 자국 지역을 은행이 높은(같으면 인구가 많은) 곳부터 붙여 5곳."""
     cap = g.factions[fid].capital
@@ -1143,6 +1158,12 @@ def _slots(g, f, threat, military=True):
     committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
     reserve = 200 + upkeep * 3
     avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
+    eco = f.is_ai and f.ai.get("victory_goal") == "economic" and g.econ_enabled()
+    if eco:
+        save = econ_saving_target(g, fid)
+        if save and f.money < save:
+            # 다음 경제 단계 비용을 모으는 중: 비축은 헐지 않고 순수입의 절반만 다른 공사에 쓴다
+            avail = min(avail, (income - upkeep) * C.AI_ECON_SAVE_SPEND - committed)
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     at_war = bool(D.enemies(g, fid))
@@ -1200,6 +1221,8 @@ def _slots(g, f, threat, military=True):
                 up = (pu[lv - 1] - pu[lv - 2]) * getattr(r, "fuel_used", 0) if lv >= 2 else 0
                 gain = up * tax * horizon * wts.get("economy", 1)
             gain *= bias(key)
+            if eco and key in ("factory", "bank"):
+                gain *= C.AI_ECON_PROD_MULT
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             lv = r.b["extract"] + 1
@@ -1209,14 +1232,16 @@ def _slots(g, f, threat, military=True):
             # 연료가 모자라면 1개 더 캐는 만큼 공장이 돈다(발전소가 남으면 석탄 1 → 전기 2), 남으면 판매가 정도
             per = (unit_val * (2 if fuel["plant_room"] > 0 else 1) if fuel["spare"] < 0
                    else C.MARKET_SELL["oil" if info.is_oil else "coal"])
-            cands.append((per * horizon / cost * bias("extract"), r.id, "build", "extract", None, cost / turns))
+            cands.append((per * horizon / cost * bias("extract") * (C.AI_ECON_FUEL_MULT if eco else 1.0),
+                          r.id, "build", "extract", None, cost / turns))
         if r.b["power"] < 5 and fuel["spare"] < 0 and fuel["raw_left"] > 0:
             # 발전소: 공장 연료가 모자라고 발전소에 못 넣은 석탄·석유가 남을 때(석탄 1 → 공장 연료 2)
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
             turns = g.build_time(fid, "power", R.prod_building_turns(lv))
             gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns)
-            cands.append((gain / cost * bias("power"), r.id, "build", "power", None, cost / turns))
+            cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0),
+                          r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
             lv = r.b["specialty"] + 1
             cost = R.prod_building_cost("specialty", lv)

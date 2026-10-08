@@ -92,9 +92,9 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False), ("econ", None), ("econ_paused", None)):
-                if attr in ("econ", "econ_paused") and not hasattr(r, attr):
-                    setattr(r, attr, set() if attr == "econ" else {})
+                            ("pop_focus", False), ("econ", None)):
+                if attr == "econ" and not hasattr(r, attr):
+                    r.econ = set()
                     continue
                 if not hasattr(r, attr):
                     setattr(r, attr, v)
@@ -1296,10 +1296,9 @@ class Game:
             if not self.econ_site_ok(fid, rid, step):
                 continue
             spec = C.ECON[step]
-            saved = rr.econ_paused.get(step, 0)
-            turns = max(1, spec["turns"] - saved)
+            turns = spec["turns"]
             k = C.ECON_STEPS.index(step) + 2
-            name = f"경제 {k}단계: {spec['name']}" + (f" (이어서 {saved}/{spec['turns']}턴)" if saved else "")
+            name = f"경제 {k}단계: {spec['name']}"
             busy = self.econ_busy(fid, step) if step != "exchange" else None
             add("econ", step, name, spec["per_turn"] * C.MONEY_SCALE * turns, turns,
                 busy is None, "" if busy is None else f"{self.info(busy).name}에서 진행 중", level=k)
@@ -1507,16 +1506,15 @@ class Game:
         return cache[key]
 
     def _pause_econ(self, rr, why):
-        """건설 중 조건이 깨짐: 중단하고 낸 돈의 50% 환급, 진행도는 보존(조건이 돌아오면 이어서)."""
+        """건설 중 조건이 깨짐: 중단하고 낸 돈의 50% 환급. 진행도는 사라져 조건이 돌아오면 처음부터 다시 짓는다."""
         p = rr.project
         f = self.factions[rr.owner]
         refund = p.paid * C.ECON_PAUSE_REFUND
         f.money += refund
-        rr.econ_paused[p.key] = rr.econ_paused.get(p.key, 0) + p.progress
         rr.project = None
         spec = C.ECON[p.key]
-        self.event("info", f"{self.info(rr.id).name} {spec['name']} 건설 중단: {why} — {refund:,.0f} 환급, "
-                   f"진행 {rr.econ_paused[p.key]}/{spec['turns']}턴 보존", region=rr.id, fids=(f.id,))
+        self.event("info", f"{self.info(rr.id).name} {spec['name']} 건설 중단: {why} — {refund:,.0f} 환급 "
+                   f"(다시 지으려면 처음부터)", region=rr.id, fids=(f.id,))
 
     def _check_econ_projects(self, f):
         for rr in self.regions_of(f.id):
@@ -1629,7 +1627,6 @@ class Game:
         rr.project.priority = self.proj_counter
         label = opt["name"]
         if kind == "econ":
-            rr.econ_paused.pop(key, None)
             if key == "currency":
                 self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
                                      f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
@@ -2054,7 +2051,6 @@ class Game:
         rr.owner = new_owner
         rr.project = None
         rr.econ = set()                  # 경제승리 시설은 점령당하면 사라진다
-        rr.econ_paused = {}
         prev_occs = dict(rr.occs)
         rr.occs = {}
         rr.supplied = set()

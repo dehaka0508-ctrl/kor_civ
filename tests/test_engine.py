@@ -2020,7 +2020,7 @@ def test_econ_victory_chain():
     assert g.game_over and g.winner == ((0,), "economic")
 
 
-def test_econ_pause_refund_resume_and_capture():
+def test_econ_pause_refund_restart_and_capture():
     g = new_game(player_start="S002", n_enemies=1)
     plan = _finance_setup(g)
     cap = g.player.capital
@@ -2032,16 +2032,15 @@ def test_econ_pause_refund_resume_and_capture():
     p = g.regions[cap].project
     p.progress, p.paid = 5, 5 * p.per_turn
     money = g.player.money
-    g.regions[plan[1]].econ.discard("exchange")          # 조건이 깨짐 → 중단·50% 환급·진행 보존
+    g.regions[plan[1]].econ.discard("exchange")          # 조건이 깨짐 → 중단·50% 환급, 진행도는 사라짐
     g._check_econ_projects(g.player)
     assert g.regions[cap].project is None
     assert g.player.money == pytest.approx(money + 0.5 * 5 * p.per_turn)
-    assert g.regions[cap].econ_paused["sez"] == 5
     assert not [o for o in g.options(0, cap) if o["kind"] == "econ" and o["key"] == "sez"]
-    g.regions[plan[1]].econ.add("exchange")              # 조건이 돌아오면 이어서
+    g.regions[plan[1]].econ.add("exchange")              # 조건이 돌아오면 처음부터
     opt = next(o for o in g.options(0, cap) if o["kind"] == "econ" and o["key"] == "sez")
-    assert opt["turns"] == C.ECON["sez"]["turns"] - 5 and "이어서" in opt["name"]
-    assert g.start_project(0, cap, "econ", "sez")[0] and not g.regions[cap].econ_paused
+    assert opt["turns"] == C.ECON["sez"]["turns"]
+    assert g.start_project(0, cap, "econ", "sez")[0] and g.regions[cap].project.progress == 0
     # 완공한 건물은 조건이 깨져도 남지만, 점령당하면 사라진다
     g.regions[plan[2]].b["bank"] = 0
     assert "exchange" in g.regions[plan[2]].econ
@@ -2084,3 +2083,16 @@ def test_declared_friendship_persists_until_broken():
     assert not D.declared_friends(g, 0, 1)
     D.declare_war(g, 2, 0)
     assert not D.declared_friends(g, 0, 2)
+
+
+def test_ai_econ_goal_saves_for_next_step():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    plan = _finance_setup(g)
+    assert AI.econ_saving_target(g, 0) == 0.0                       # 1단계: 증권거래소는 바로 짓는다
+    for rid in plan[:3]:
+        g.regions[rid].econ.add("exchange")
+    spec = C.ECON["sez"]
+    assert AI.econ_saving_target(g, 0) == pytest.approx(spec["per_turn"] * spec["turns"] * 1.1)
+    g.regions[g.player.capital].econ.add("sez")
+    assert AI.econ_saving_target(g, 0) == pytest.approx(C.ECON["ifc"]["per_turn"] * C.ECON["ifc"]["turns"] * 1.1)

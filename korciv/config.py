@@ -398,13 +398,19 @@ ECON = {
 ECON_STAGES = 5                # 진척도 n/5: 금융 권역, 증권거래소 3곳, 경제특구, 국제금융센터, 기축통화
 EXCHANGE_BANK_BONUS = 0.10     # 증권거래소: 그 지역 은행 산출 +10%
 IFC_GIFT_BONUS = 0.10          # 국제금융센터: 내 선물이 올리는 우호도 +10%
-ECON_PAUSE_REFUND = 0.5        # 건설 중 조건이 깨지면 중단하고 낸 돈의 50% 환급(진행도는 보존, 조건이 돌아오면 이어서)
+ECON_PAUSE_REFUND = 0.5        # 건설 중 조건이 깨지면 중단하고 낸 돈의 50% 환급(진행도는 사라져 처음부터 다시)
 # 승리에 가까워지는 나라 견제(패권 견제와 같은 방식): 과학·경제 진척이 절반을 넘으면 0 → 완성 직전 1.
 # 우호 선언·조약·동맹 관계가 없는 AI는 그 나라에 대한 우호도가 매 턴 최대 −0.3, 선전포고 문턱이 최대 +15 쉬워진다.
 VICTORY_THREAT_FROM = 0.5
 VICTORY_THREAT_OP = 0.3
 VICTORY_THREAT_WAR = 15
 VICTORY_THREAT_SCORE = 0.3     # 전쟁 대상 고를 때 점수 가산(최대)
+# AI가 경제승리를 목표로 삼으면: 생산 건물(공장·은행) 증축 가치 ×1.3, 연료(광산·유전·발전소) ×1.5,
+# 다음 경제 단계 비용을 모을 때까지 다른 공사에는 순수입의 절반만 쓰고(비축을 헐지 않음), 세율 상한 +2%p
+AI_ECON_PROD_MULT = 1.3
+AI_ECON_FUEL_MULT = 1.5
+AI_ECON_SAVE_SPEND = 0.5
+AI_ECON_TAX_BONUS = 0.02
 # 정복승리: 전체 지역의 2/3 이상 + 반란이 일어날 수 있는 지역(반란 판정 행복도 −50 이하) 없음
 CONQUEST_SHARE = 2 / 3
 VICTORY_TYPES = {"conquest": "정복승리", "science": "과학승리", "economic": "경제승리",
