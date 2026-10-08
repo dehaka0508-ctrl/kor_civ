@@ -3709,12 +3709,29 @@ class Game:
             q.append({"kind": kind, "fid": speaker, "turn": self.turn})
 
     def _update_fog(self, initial=False):
-        """시야·탐색·조우 갱신. 플레이어가 새로 만난 지도자는 '첫 만남' 대사 팝업(게임 시작 때는 제외)."""
-        pl = self.factions[self.player_id] if self.factions else None
-        before = set(getattr(pl, "met", set())) if pl is not None else set()
+        """시야·탐색·조우 갱신 후 '첫 만남' 대사 팝업 판정."""
         self._update_fog_inner(initial)
-        if pl is not None and not initial and pl.alive:
-            for o in sorted(getattr(pl, "met", set()) - before - {pl.id}):
+        self._update_greetings(initial)
+
+    def _update_greetings(self, initial=False):
+        """첫 만남 인사: 안개 설정과 관계없이 '미탐색'(안개 최대)과 같은 판정 — 실제 시야(동맹 시야 포함)에
+        그 나라의 영토나 군대가 들어와야 만난다. 다 보이는 설정이라도 가까이 와야 인사한다(게임 시작 때는 인사 없음)."""
+        if not self.factions or self.settings.all_ai:
+            return
+        pl = self.factions[self.player_id]
+        if not pl.alive:
+            return
+        vis = self._compute_visible(pl.id)
+        seen = {self.regions[n].owner for n in vis if n in self.regions}
+        seen |= {a.owner for a in self.armies.values() if a.loc in vis}
+        seen -= {NEUTRAL, pl.id}
+        first = not hasattr(pl, "contact")         # 예전 세이브: 지금 보이는 나라는 인사 없이 만난 것으로
+        if first:
+            pl.contact = set()
+        new = sorted(x for x in seen - pl.contact if self.factions[x].alive)
+        pl.contact |= set(new)
+        if not (initial or first):
+            for o in new:
                 self.queue_dialogue("meet", o)
 
     def _update_fog_inner(self, initial=False):

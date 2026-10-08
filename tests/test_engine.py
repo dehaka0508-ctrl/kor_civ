@@ -2228,10 +2228,13 @@ def test_dialogue_triggers():
     g.dialogues.clear()
     kinds = lambda: [(d["kind"], d["fid"]) for d in g.dialogues]
     # 조우: 시야에 새 세력이 들어오면(게임 시작 때 제외)
-    g.player.met.discard(1)
+    g.player.contact.discard(1)
     g.new_army(1, g.player.capital, {"inf": 1})
     g._update_fog()
     assert ("meet", 1) in kinds()
+    n = len(g.dialogues)
+    g._update_fog()
+    assert len(g.dialogues) == n                    # 한 번만 인사
     g.dialogues.clear()
     g.player.met |= {1, 2, 3}
     g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
@@ -2250,3 +2253,18 @@ def test_dialogue_triggers():
     g2 = new_game(player_start="S002", n_enemies=2, all_ai=True)
     D.declare_war(g2, 1, 0)
     assert not g2.dialogues
+
+
+def test_greeting_needs_contact_even_without_fog():
+    """안개 '없음'·'지도 공개'여도 인사는 실제 시야(안개 최대와 같은 판정)에 들어와야."""
+    for fog in (0, 1):
+        g = new_game(player_start="S002", n_enemies=2, fog=fog)
+        far = [f.id for f in g.factions[1:] if f.capital not in g._compute_visible(0)
+               and not any(a.loc in g._compute_visible(0) for a in g.armies.values() if a.owner == f.id)]
+        assert far
+        g.dialogues.clear()
+        g._update_fog()
+        assert not [d for d in g.dialogues if d["kind"] == "meet"]   # 다 보여도 멀면 인사 없음
+        g.new_army(far[0], g.player.capital, {"inf": 1})
+        g._update_fog()
+        assert ("meet", far[0]) in [(d["kind"], d["fid"]) for d in g.dialogues], fog
