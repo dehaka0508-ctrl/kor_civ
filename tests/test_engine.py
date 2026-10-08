@@ -2544,3 +2544,64 @@ def test_ai_gift_raises_opinion():
     need = D.gift_needed(g, 1, 10, 0)
     v = D.ai_gift(g, 0, 1, need)
     assert v == pytest.approx(10, abs=0.1) and D.opinion(g, 1, 0) == pytest.approx(before + v)
+
+
+def test_ai_p2_hopeless_turns_to_diplomacy_with_strongest(monkeypatch):
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    why = {k: "" for k in ST.PATHS}
+    low = {"scores": {"conquest": 0.1, "science": 0.2, "economic": 0.15, "diplomatic": 0.0}, "why": why}
+    monkeypatch.setattr(ST, "path_scores", lambda *a, **k: low)
+    for o, n in ((1, 2), (2, 3), (3, 30)):               # 3번이 가장 강하다
+        g.new_army(o, g.factions[o].capital, {"inf": n})
+    g.settings.fog = 0                                    # 모두 만나 본 것으로
+    assert ST.choose_path(g, f, {}) == "diplomatic"
+    s = ST.state(f)
+    assert s["hopeless"] and s["patron"] == 3 and s["log"][-1][2] == "diplomatic"
+    # 48턴 안에는 점수가 좋아져도 외교에 전념
+    hi = {"scores": {"conquest": 0.5, "science": 0.2, "economic": 0.1, "diplomatic": 0.0}, "why": why}
+    monkeypatch.setattr(ST, "path_scores", lambda *a, **k: hi)
+    g.turn += C.AI_P2_HOPELESS_MIN - 1
+    assert ST.choose_path(g, f, {}) == "diplomatic"
+    # 그 뒤, 최고점이 0.25를 넘어도 0.3125(×1.25)를 넘기 전에는 그대로
+    g.turn += 1
+    mid = {"scores": {"conquest": 0.3, "science": 0.2, "economic": 0.1, "diplomatic": 0.0}, "why": why}
+    monkeypatch.setattr(ST, "path_scores", lambda *a, **k: mid)
+    assert ST.choose_path(g, f, {}) == "diplomatic"
+    monkeypatch.setattr(ST, "path_scores", lambda *a, **k: hi)
+    assert ST.choose_path(g, f, {}) == "conquest" and not s["hopeless"] and "patron" not in s
+    # 동맹을 맺을 수 없는 지도자(장보고)는 외교로 가지 않는다
+    s.clear()
+    _lead(g, 0, "jan")
+    monkeypatch.setattr(ST, "path_scores", lambda *a, **k: low)
+    assert ST.choose_path(g, f, {}) != "diplomatic"
+
+
+def test_ai_choose_patron_is_strongest_known_not_at_war():
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    for o, n in ((1, 2), (2, 30), (3, 5)):
+        g.new_army(o, g.factions[o].capital, {"inf": n})
+    g.settings.fog = 0                                   # 모두 보인다(만나 본 것으로)
+    assert ST.choose_patron(g, f) == 2
+    D.declare_war(g, 2, 0)
+    assert ST.choose_patron(g, f) in (1, 3)              # 싸우는 나라는 빼고
+
+
+def test_ai_p2_court_builds_relation():
+    from korciv import ai
+    g = _p2_game()
+    f = g.factions[0]
+    f.money = 10 ** 7
+    f.last.update(tax=50_000.0, upkeep=0.0)
+    before = D.opinion(g, 0, 1)
+    ai._p2_court(g, f, 1, "coalition", C.AI_P2_PATRON_OP)
+    assert D.opinion(g, 0, 1) >= before + C.AI_P2_PATRON_OP - 1e-9
+    assert D.declared_friends(g, 0, 1)                   # 첫 단계: 우호 선언
+    g.turn += 1
+    op = D.opinion(g, 1, 0)
+    ai._p2_court(g, f, 1, "coalition", C.AI_P2_PATRON_OP)
+    assert D.opinion(g, 1, 0) > op                       # 다음 단계 문턱까지 선물
+

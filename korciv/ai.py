@@ -156,7 +156,8 @@ def set_strategy(g, f):
         w["economy"] += k
     elif goal == "diplomatic":
         w["defense"] += k / 2
-        w["military"] -= k / 2
+        if not (PH.phase(f) >= 2 and ST.state(f).get("hopeless")):
+            w["military"] -= k / 2             # 강국에 기대는 약소국은 군사를 줄이지 않는다(살아남는 게 먼저)
     elif goal == "time":
         w["economy"] += k / 2
         w["expansion"] += k / 2
@@ -534,17 +535,26 @@ def _diplomacy(g, f):
 
 
 def _p2_anchor(g, f):
-    """2페이즈 우방(전선 이중화 방지): 우호 선언 → 선물로 우호도를 불가침 문턱까지 → 불가침(AI 끼리는 조건이 맞으면
-    _diplomacy 에서 자동 체결, 플레이어에게는 제안). 선언이 안 될 만큼 사이가 나쁘면 선물로 먼저 −20까지 올린다.
-    우방에 대한 내 우호도도 매 턴 조금씩 올린다(관계를 맺기로 한 결정)."""
+    """2페이즈 관계 만들기. 어느 쪽도 유리하지 않은 나라는 먼저 '의지할 강국'과 연합까지(외교승리),
+    그다음(또는 그 밖의 나라는) '우방'과 불가침까지(전선 이중화 방지)."""
+    s = ST.state(f)
+    if s.get("hopeless") and s.get("patron") is not None:
+        _p2_court(g, f, s["patron"], "coalition", C.AI_P2_PATRON_OP)
+    a = s.get("anchor")
+    if a is not None and a != s.get("patron"):
+        _p2_court(g, f, a, "treaty", C.AI_P2_ANCHOR_OP)
+
+
+def _p2_court(g, f, o, goal, drift):
+    """o 와 관계를 goal(treaty: 우호 선언 + 불가침, coalition: 동맹을 거쳐 연합)까지 끌어올린다.
+    내 우호도를 매 턴 drift 만큼 올리고(관계를 맺기로 한 결정), 우호 선언을 하고, 다음 단계 문턱까지 모자란
+    상대 우호도는 선물로 채운다(선물 간격은 우방·강국 공통). 조약·동맹·연합은 AI 끼리는 양쪽 조건이 맞으면
+    _diplomacy 에서 자동 체결, 상대가 플레이어면 제안으로 간다."""
     fid = f.id
     s = ST.state(f)
-    o = s.get("anchor")
     if o is None or not g.factions[o].alive or D.at_war(g, fid, o):
         return
-    D.add_opinion(g, fid, o, C.AI_P2_ANCHOR_OP)
-    if ST.secured(g, fid, o):
-        return
+    D.add_opinion(g, fid, o, drift)
     if not D.declared_friends(g, fid, o):
         ok, _ = D.friendship_check(g, fid, o)
         if ok:
@@ -554,16 +564,27 @@ def _p2_anchor(g, f):
                 _queue_player(g, fid, "friendship")
             return
         target = C.DECL_FRIEND_MIN + 10            # 선언을 받아들일 만큼
-    else:
+    elif not (D.has_nonaggr(g, fid, o) or D.has_passage(g, fid, o) or D.allied(g, fid, o)):
         target = D.threshold(g, o, fid, C.TREATY_MIN) + C.AI_P2_GIFT_MARGIN
+    elif goal == "treaty":
+        return                                    # 우방은 불가침까지면 충분하다
+    elif not D.allied(g, fid, o):
+        target = D.threshold(g, o, fid, C.ALLIANCE_MIN) + C.AI_P2_GIFT_MARGIN
+    else:
+        target = D.threshold(g, o, fid, C.COALITION_MIN) + C.AI_P2_GIFT_MARGIN   # 연합(동맹 24턴 뒤)·유지
     if not g.factions[o].is_ai:
         return                                    # 플레이어에게는 조약 제안(propose_to_player)으로
+    post = s.get("posture", "normal")
+    if post == "crisis" or (post == "defend" and not s.get("mil_ok")):
+        return                                    # 살아남는 게 먼저: 위기·군사력이 모자란 경계 중에는 선물하지 않는다
     gap = target - D.opinion(g, o, fid)
     if gap <= 0 or g.turn - s.get("gift_turn", -99) < C.AI_P2_GIFT_EVERY:
         return
     reserve = 300 + g.upkeep(fid) * 5
     net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
-    budget = min(max(0.0, f.money - reserve) * C.AI_P2_GIFT_SHARE, max(0.0, net) * C.AI_P2_GIFT_NET)
+    share, turns = ((C.AI_P2_PATRON_GIFT_SHARE, C.AI_P2_PATRON_GIFT_NET) if goal == "coalition"
+                    else (C.AI_P2_GIFT_SHARE, C.AI_P2_GIFT_NET))
+    budget = min(max(0.0, f.money - reserve) * share, max(0.0, net) * turns)
     amount = min(budget, D.gift_needed(g, o, gap, fid))
     if amount >= 50:
         v = D.ai_gift(g, fid, o, amount)
@@ -588,10 +609,13 @@ def _social(g, f):
     if alive and g.rng.random() < p_friend:
         my_enemies = set(D.enemies(g, fid))
         cands = []
+        patron = ST.state(f).get("patron") if PH.phase(f) >= 2 else None
         for x in alive:
             ok, _ = D.friendship_check(g, fid, x)
             if not ok or D.opinion(g, fid, x) < 0:
                 continue
+            if patron is not None and x != patron and D.hostile_to(g, patron, x):
+                continue                     # 의지할 강국의 적과는 가까워지지 않는다
             # 선언하면 x 와 적대하는 세력이 나를 싫어하게 된다(−5): 그 손실을 따진다
             cost = sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x)
                        and not D.at_war(g, fid, y))
@@ -615,9 +639,9 @@ def _social(g, f):
     if not alive or g.rng.random() >= p_den:
         return
     cands = []
-    anchor = ST.state(f).get("anchor") if PH.phase(f) >= 2 else None
+    keep = {ST.state(f).get("anchor"), ST.state(f).get("patron")} if PH.phase(f) >= 2 else set()
     for x in alive:
-        if x == anchor or not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
+        if x in keep or not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
             continue
         if not g.factions[x].is_ai and g.rng.random() >= C.AI_DENOUNCE_PLAYER:
             continue                         # 플레이어는 낮은 확률로만
@@ -669,8 +693,8 @@ def _consider_war(g, f):
     for o in sorted(neighbors):
         if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o) or D.peace_left(g, fid, o) > 0:
             continue
-        if p2 is not None and o == p2.get("anchor"):
-            continue                          # 우방은 치지 않는다
+        if p2 is not None and o in (p2.get("anchor"), p2.get("patron")):
+            continue                          # 우방·의지할 강국은 치지 않는다
         their = perceived_power(g, fid, o) * g.morale(o) + sum(perceived_power(g, fid, x) for x in alive
                                                                if x not in (fid, o) and D.allied(g, x, o))
         their /= 1 + 0.5 * len(D.enemies(g, o))       # 상대도 다른 전쟁에 병력이 묶여 있다

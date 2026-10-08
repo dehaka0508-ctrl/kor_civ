@@ -203,13 +203,36 @@ def choose_path(g, f, sc, reason="정기") -> str:
     scores = res["scores"]
     best = max(PATHS, key=lambda k: scores[k])
     cur = s.get("path")
+    # 어느 쪽도 유리하지 않으면 자포자기하지 않고 강국에 기대 외교승리를 노린다(동맹을 맺을 수 있는 지도자만)
+    other = max(scores[k] for k in ("conquest", "science", "economic"))
+    limit = C.AI_P2_HOPELESS * (C.AI_P2_HOPELESS_EXIT if s.get("hopeless") else 1.0)
+    # 강국에 기대기로 했으면 최소 48턴은 그대로(관계를 쌓을 시간). 그 뒤 최고점이 0.25×1.25를 넘으면 벗어난다
+    committed = s.get("hopeless") and g.turn - s.get("hopeless_turn", -999) < C.AI_P2_HOPELESS_MIN
+    if (other < limit or committed) and not g.mods(f.id).value("no_alliance"):
+        if not s.get("hopeless") or cur != "diplomatic":
+            log = s.setdefault("log", [])
+            log.append([g.turn, cur, "diplomatic", reason, "어느 방향도 유리하지 않음: 강국에 기대 외교"])
+            del log[:-C.AI_P2_LOG]
+            s["path_turn"] = g.turn
+            s["hopeless_turn"] = g.turn
+        s.update(hopeless=True, path="diplomatic", scores=scores, last_eval=g.turn)
+        p = s.get("patron")
+        if p is None or not g.factions[p].alive or D.at_war(g, f.id, p):
+            s["patron"] = choose_patron(g, f)       # 정한 강국은 바꾸지 않는다(멸망·전쟁이면 다시)
+        return "diplomatic"
+    was_hopeless = s.get("hopeless", False)
+    s["hopeless"] = False
+    s.pop("patron", None)
+    prev = cur
+    if was_hopeless:
+        cur = None                                 # 기댈 이유가 사라졌다: 관성 없이 다시 고른다
     # 바꾼 지 24턴이 안 됐으면 정기 재검토로는 바꾸지 않는다(선전포고를 받았거나 위기면 예외)
     settled = reason == "정기" and g.turn - s.get("path_turn", -99) < C.AI_P2_MIN_DWELL
     if cur is None or (not settled and (scores[best] >= C.AI_P2_SWITCH * scores.get(cur, 0.0)
                                         or scores.get(cur, 0.0) < C.AI_P2_MIN_SCORE)):
-        if cur != best:
+        if prev != best:
             log = s.setdefault("log", [])
-            log.append([g.turn, cur, best, reason, res["why"][best]])
+            log.append([g.turn, prev, best, reason, res["why"][best]])
             del log[:-C.AI_P2_LOG]
             s["path_turn"] = g.turn
         cur = best
@@ -244,6 +267,20 @@ def choose_anchor(g, f, sc):
                                      + 0.4 * min(2.0, sc[o]["p"] / mine) - sc[o]["host"], -o))
 
 
+def choose_patron(g, f):
+    """의지할 강국: 만나 본(시야에 들어온 영토의 주인이거나 국경을 맞댄) 나라 가운데 전쟁 중이 아니고 동맹을 맺을 수 있는,
+    추정 군사력이 가장 큰 나라."""
+    AI = _ai()
+    fid = f.id
+    known = {g.regions[v].owner for v in g.visible(fid) if v in g.regions}
+    known |= set(state(f).get("scan", {}))
+    cands = [x for x in known - {NEUTRAL, fid}
+             if g.factions[x].alive and not D.at_war(g, fid, x) and not g.mods(x).value("no_alliance")]
+    if not cands:
+        return None
+    return max(cands, key=lambda x: (AI.perceived_power(g, fid, x), -x))
+
+
 def secured(g, fid, o) -> bool:
     return D.declared_friends(g, fid, o) and (D.has_nonaggr(g, fid, o) or D.allied(g, fid, o))
 
@@ -273,6 +310,9 @@ def update(g, f, threat=None):
     if reason:
         choose_path(g, f, sc, reason)
         s["anchor"] = choose_anchor(g, f, sc)
+    p = s.get("patron")
+    if p is not None and (not g.factions[p].alive or D.at_war(g, f.id, p)):
+        s["patron"] = choose_patron(g, f) if s.get("hopeless") else None
     cnt = s.setdefault("posture_n", {})
     cnt[s["posture"]] = cnt.get(s["posture"], 0) + 1
     return s
