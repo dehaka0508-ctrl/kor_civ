@@ -606,6 +606,9 @@ def _social(g, f):
         p_friend = max(p_friend, C.AI_FRIEND_DECL_P * (10 - C.AI_TRIBUTE_FRIEND_AGGR) / 10) * C.AI_TRIBUTE_FRIEND_MULT
     if f.ai.get("victory_goal") in ("diplomatic", "economic"):
         p_friend *= 1.5                    # 외교·경제승리는 우호 관계가 필요하다
+    # 포위 방지: 국경을 맞댄 나라가 많을수록(강약과 상관없이) 이웃과 우호 관계를 맺으려 한다
+    borders = {g.regions[n].owner for r in g.regions_of(fid) for n in g.world.land_adj[r.id]} - {NEUTRAL, fid}
+    p_friend *= 1 + min(0.5, C.AI_FRIEND_ENCIRCLE_P * max(0, len(borders) - 2))
     if alive and g.rng.random() < p_friend:
         my_enemies = set(D.enemies(g, fid))
         cands = []
@@ -624,6 +627,10 @@ def _social(g, f):
                 score += 0.5                 # 공물: 관계 하나하나가 수입이다
             if D.allied(g, fid, x):
                 score -= 0.5                 # 이미 동맹이면 덜 급하다
+            if x in borders:
+                # 이웃 하나를 우방으로 돌리면 둘러싸일 걱정이 준다: 아직 우방이 아닌 다른 이웃이 많을수록 가점
+                rest = sum(1 for y in borders if y != x and not (D.declared_friends(g, fid, y) or D.allied(g, fid, y)))
+                score += C.AI_FRIEND_ENCIRCLE_W * min(3, rest)
             cands.append((score, x))
         if cands:
             score, x = max(cands)

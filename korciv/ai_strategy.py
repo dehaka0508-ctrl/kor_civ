@@ -244,11 +244,11 @@ def choose_path(g, f, sc, reason="정기") -> str:
 
 # ------------------------------------------------------------------ 우방(전선 이중화 방지)
 def choose_anchor(g, f, sc):
-    """국경을 맞댄 나라가 3곳 이상이거나, 2곳 이상인데 위협도 0.8 이상인 이웃이 있으면 우방 1곳을 둔다.
+    """국경을 맞댄 나라가 2곳 이상이면(약소국이 아니어도) 우방 1곳을 둔다: 적에게 둘러싸이지 않는 것 자체가 이득.
     이미 우호 선언 + 불가침(또는 동맹)인 이웃이 있으면 그 나라. 없으면 강하고(뒤를 맡길 만하고) 나를 덜 싫어하는 이웃."""
     fid = f.id
     s = state(f)
-    if not (len(sc) >= 3 or (len(sc) >= 2 and any(v["T"] >= C.AI_P2_ANCHOR_T for v in sc.values()))):
+    if len(sc) < C.AI_P2_ANCHOR_BORDERS:
         return None
     secured = [o for o in sc if D.declared_friends(g, fid, o) and (D.has_nonaggr(g, fid, o) or D.allied(g, fid, o))]
     if s.get("anchor") in secured:

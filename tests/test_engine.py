@@ -2495,9 +2495,31 @@ def test_ai_p2_anchor_for_three_borders():
     sc = {o: {"p": 50.0 * o, "ratio": 1.0, "host": 0.2, "share": 0.33, "mass": 0, "T": 0.2, "regions": 20} for o in (1, 2, 3)}
     a = ST.choose_anchor(g, f, sc)
     assert a in (1, 2, 3)
-    assert ST.choose_anchor(g, f, {1: sc[1], 2: sc[2]}) is None        # 국경 2곳·위협 없음: 우방 불필요
-    two = {1: sc[1], 2: dict(sc[2], T=1.0)}
-    assert ST.choose_anchor(g, f, two) in (1, 2)                        # 2곳이라도 위협이 있으면
+    assert ST.choose_anchor(g, f, {1: sc[1], 2: sc[2]}) in (1, 2)      # 국경 2곳이면 위협이 없어도(포위 방지)
+    assert ST.choose_anchor(g, f, {1: sc[1]}) is None                   # 이웃이 하나뿐이면 둘러싸일 일이 없다
+
+
+def test_ai_friendship_prefers_neighbor_when_encircled():
+    """국경을 맞댄 나라가 여럿이면 강약과 상관없이 이웃과의 우호 선언에 가점."""
+    from korciv import ai
+    g = _p2_game(n=4)
+    f = g.factions[0]
+    adj = [n for n in g.world.land_adj[f.capital] if g.regions[n].owner == NEUTRAL]
+    g.transfer_region(adj[0], 1, "편입")
+    g.transfer_region(adj[1], 2, "편입")
+    far = next(x for x in (3, 4) if x not in
+               {g.regions[n].owner for r in g.regions_of(0) for n in g.world.land_adj[r.id]})
+    for x in (1, 2, far):
+        g.dip.op[(0, x)] = 40.0
+        g.dip.op[(x, 0)] = 40.0
+    g.dip.op[(0, 2)] = 39.0                    # 이웃 둘 중에서는 1을 고르게
+    old = C.AI_FRIEND_DECL_P
+    try:
+        C.AI_FRIEND_DECL_P = 10.0
+        ai._social(g, f)
+    finally:
+        C.AI_FRIEND_DECL_P = old
+    assert D.declared_friends(g, 0, 1) and not D.declared_friends(g, 0, far)
 
 
 def test_ai_p2_posture_and_crisis_stops_big_projects():
