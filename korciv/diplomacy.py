@@ -652,7 +652,8 @@ def evaluate_offer(g, ai, proposer, offer):
     if is_empty(take) and is_empty(give):
         return "reject", None, "빈 제안입니다."
     if is_empty(take):
-        return "accept", None, f"선물 (가치 {recv:,.0f})"
+        return "accept", None, (f"선물 (가치 {recv:,.0f}) → 우호도 +{gift_opinion(g, ai, recv):.1f}"
+                                f" (상대 턴당 세수 {gift_income(g, ai):,.0f}마다 +1, 최대 +{C.OP_GIFT_MAX})")
     if is_empty(give):
         only_passage = take.get("passage") and not take.get("regions") and not any(
             take.get(k, 0) for k in TRADE_KEYS)
@@ -698,6 +699,17 @@ def execute_offer(g, proposer, ai, offer):
                 g.transfer_region(rid, dst.id, reason="거래")
 
 
+def gift_income(g, fid) -> float:
+    """선물 환산 기준 세수: 지난 턴 실제 세수와 GDP × 기준 세율 중 큰 값(지출은 따지지 않는다)."""
+    f = g.factions[fid]
+    return max(1.0, f.last.get("tax", 0.0), g.gdp(fid) * C.TAX_DEFAULT * f.income_mult)
+
+
+def gift_opinion(g, ai, value) -> float:
+    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 +1, 1회 최대 +25."""
+    return min(C.OP_GIFT_MAX, C.GIFT_OP_PER_INCOME * value / gift_income(g, ai))
+
+
 def respond_offer(g, ai, proposer, offer, execute=True):
     """AI 판정 후 수락이면 실행. (결과, 수정안, 설명)"""
     res, counter, info = evaluate_offer(g, ai, proposer, offer)
@@ -705,8 +717,7 @@ def respond_offer(g, ai, proposer, offer, execute=True):
     if res == "accept" and execute:
         value = items_value(g, give, False, ai, proposer)
         if is_empty(take):
-            net = max(1.0, g.factions[ai].last.get("net", 100))
-            add_opinion(g, ai, proposer, min(C.OP_GIFT_MAX, 10 * value / (net * 2)))
+            add_opinion(g, ai, proposer, gift_opinion(g, ai, value))
         elif is_empty(give):
             only_passage = take.get("passage") and not take.get("regions") and not any(
                 take.get(k, 0) for k in TRADE_KEYS)

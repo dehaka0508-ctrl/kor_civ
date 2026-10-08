@@ -249,10 +249,10 @@ CAPTURE_CHANCE = 0.05
 
 # 점령·편입
 OCC_MAX_TURNS = 15         # 적 지역 점령 T(P) 상한
-# 점령 저항: 다른 세력에게서 빼앗은 지역은 첫 3턴 '저항'(산출 0·생산 불가·행복도 −100 고정),
+# 점령 저항: 다른 세력에게서 빼앗은 지역은 첫 4턴 '저항'(산출 0·생산 불가·행복도 −100 고정),
 # 이어서 20턴 동안 점령 직전 행복도로 점차 회복. 점령 후 36턴 동안은 반란이 일어나지 않는다.
 # 저항 중에는 그 지역의 원래 주인이 그 지역을 공격할 때 공격력 +10%(비어 있으면 들어서는 즉시 되찾는다).
-RESIST_TURNS = 3
+RESIST_TURNS = 4
 RESIST_RECOVER_TURNS = 20
 RESIST_NO_REBEL_TURNS = 36
 RESIST_HAPPY = -100.0
@@ -291,6 +291,9 @@ OP_WARMONGER = -10
 OP_WARMONGER_STEP = -5
 WARMONGER_WINDOW = 48
 OP_GIFT_MAX = 25
+# 선물: 받는 나라의 턴당 세수 1턴분마다 우호도 +1(1회 최대 OP_GIFT_MAX).
+# 세수는 지난 턴 실제 세수와 GDP × 기준 세율(10%) 중 큰 값(세율을 0%로 내린 나라에 푼돈으로 우호도를 사지 못하게).
+GIFT_OP_PER_INCOME = 1.0
 OP_DEMAND_ACCEPT = -15
 OP_DEMAND_REJECT = -10
 OP_TRADE_DONE = 2

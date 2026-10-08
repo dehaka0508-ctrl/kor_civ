@@ -1995,7 +1995,7 @@ class Game:
                    region=rid, fids=(fid, rr.owner))
 
     def complete_occupation(self, fid, rid):
-        """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(3턴 산출·생산 없음·행복도 −100,
+        """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(4턴 산출·생산 없음·행복도 −100,
         이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음)."""
         rr = self.regions[rid]
         old = rr.owner

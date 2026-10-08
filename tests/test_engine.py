@@ -1274,7 +1274,7 @@ def test_unique_debuffs_combat():
     # 광개토대왕: 저항 기간 +50%
     _lead(g, 1, "ggt")
     g.complete_occupation(1, "S002")
-    assert g.regions["S002"].resist["resist"] == 5           # 3 × 1.5 = 4.5 → 5
+    assert g.regions["S002"].resist["resist"] == 6           # 4 × 1.5
 
 
 def test_unique_debuffs_occupation_upkeep_naval():
@@ -1883,3 +1883,20 @@ def test_half_year_ranking_schedule():
     row = g.rankings[49][0]
     assert set(row) >= {"fid", "regions", "pop", "happy", "gdp", "gdp_share", "science"}
     assert 0 < row["gdp_share"] < 1
+
+
+def test_gift_opinion_follows_income():
+    g = new_game(n_enemies=2)
+    inc = D.gift_income(g, 1)
+    assert inc >= g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult - 1e-6
+    g.factions[1].last["net"] = -500              # 적자여도 푼돈 선물로 우호도가 크게 오르지 않는다
+    assert D.gift_opinion(g, 1, 5) < 0.1
+    assert D.gift_opinion(g, 1, inc * 10) == pytest.approx(10)
+    assert D.gift_opinion(g, 1, inc * 100) == C.OP_GIFT_MAX
+    g.factions[1].last["tax"] = 0                 # 세율 0%여도 GDP × 10% 기준
+    assert D.gift_income(g, 1) == pytest.approx(max(1.0, g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult))
+    op0 = D.opinion(g, 1, 0)
+    offer = D.empty_offer()
+    offer["give"]["money"] = round(D.gift_income(g, 1) * 3)
+    D.respond_offer(g, 1, 0, offer)
+    assert D.opinion(g, 1, 0) == pytest.approx(op0 + 3, abs=0.01)
