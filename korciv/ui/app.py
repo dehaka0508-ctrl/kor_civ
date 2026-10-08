@@ -339,6 +339,8 @@ class App:
         g = self.game
         if not g:
             return None
+        if getattr(g, "dialogues", None):
+            return "dialogue"                     # 지도자 대사 팝업이 가장 먼저(게임 종료 화면보다도)
         if g.pending_rebellions:
             return "rebellion"
         if g.pending_proposals:

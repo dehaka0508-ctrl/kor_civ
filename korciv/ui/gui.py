@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import pygame
 
 from .theme import UI, measure, mix, render_text
@@ -193,19 +195,38 @@ class Gui:
         self.screen.blit(surf, pr)
         return lr
 
-    def wrap(self, pos, s, width, size=13, color=None, weight="regular", line_h=None):
+    def wrap(self, pos, s, width, size=13, color=None, weight="regular", line_h=None, words=False, center=False):
+        """폭에 맞춰 줄바꿈. words=True 면 띄어쓰기 단위로 끊고(외국어 대사), 한 낱말이 폭보다 길 때만 글자 단위.
+        center=True 면 줄마다 가운데 정렬. 다음 줄의 y 를 돌려준다."""
         x, y = pos
         line_h = line_h or int(size * 1.5 * 1.2)
+
+        def put(line):
+            if center:
+                self.text((x + width / 2, y), line, size, color, weight, anchor="midtop")
+            else:
+                self.text((x, y), line, size, color, weight)
+
         for para in str(s).split("\n"):
+            tokens = re.findall(r"\S+\s*", para) if words else list(para)
             line = ""
-            for ch in para:
-                if measure(line + ch, size, weight)[0] > width and line:
-                    self.text((x, y), line, size, color, weight)
-                    y += line_h
-                    line = ch
+            for tok in tokens:
+                if measure(line + tok.rstrip(), size, weight)[0] <= width or not line:
+                    if words and measure(tok.rstrip(), size, weight)[0] > width:
+                        for ch in tok:                   # 폭보다 긴 낱말(띄어쓰기 없는 한문 등)은 글자 단위
+                            if measure(line + ch, size, weight)[0] > width and line:
+                                put(line)
+                                y += line_h
+                                line = ch
+                            else:
+                                line += ch
+                    else:
+                        line += tok
                 else:
-                    line += ch
-            self.text((x, y), line, size, color, weight)
+                    put(line.rstrip())
+                    y += line_h
+                    line = tok
+            put(line.rstrip())
             y += line_h
         return y
 

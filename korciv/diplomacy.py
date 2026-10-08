@@ -220,6 +220,7 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     p = pair(a, b)
     _clear_treaties(g, a, b)
     _dip_attr(g, "declared").pop(p, None)          # 전쟁하면 우호 선언 관계도 끝난다
+    _player_dialogue(g, "war", a, b)
     g.dip.wars[p] = {"start": g.turn, "declarer": a, "aggressor": aggressor if happiness else None,
                      "score": {a: 0.0, b: 0.0},
                      "regs0": {a: g.region_count(a), b: g.region_count(b)}, "taken": {a: 0, b: 0}}
@@ -319,6 +320,7 @@ def make_peace(g, a, b, _done=None):
             if g.regions[army.loc].owner == other:
                 g.teleport_home(army)
     g.event("peace", f"{g.fname(a)}와(과) {g.fname(b)}이(가) 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
+    _player_dialogue(g, "peace", a, b)
     for side, other in ((a, b), (b, a)):
         _peace_cede(g, side, other)
     for side, other in ((a, b), (b, a)):
@@ -464,7 +466,14 @@ def declare_friendship(g, a, b, force=False):
     _dip_attr(g, "decl_cd")[("friend", a, b)] = g.turn
     _dip_attr(g, "declared")[pair(a, b)] = g.turn
     g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
+    _player_dialogue(g, "friend", a, b)
     return True, f"우호 선언 성립: {C.DECL_FRIEND_TURNS}턴 동안 우호도 +{C.DECL_FRIEND_BONUS}"
+
+
+def _player_dialogue(g, kind, a, b):
+    """플레이어와 AI 사이의 일이면 AI 지도자의 대사 팝업을 쌓는다."""
+    if g.player_id in (a, b):
+        g.queue_dialogue(kind, b if a == g.player_id else a)
 
 
 def declared_friends(g, a, b) -> bool:
@@ -525,6 +534,8 @@ def denounce(g, a, b):
         add_opinion(g, x, y, v)
     _dip_attr(g, "decl_cd")[("denounce", a, b)] = g.turn
     _dip_attr(g, "declared").pop(pair(a, b), None)   # 비난하면 우호 선언 관계도 끝난다
+    if b == g.player_id:
+        g.queue_dialogue("denounce", a)                 # AI가 플레이어를 비난
     log = _dip_attr(g, "denounce_log").setdefault(a, [])
     log.append(g.turn)
     del log[:-8]
@@ -615,6 +626,7 @@ def sign_treaty(g, a, b, kind):
         g.dip.passage[p] = g.turn + C.TREATY_TURNS
     elif kind == "alliance":
         g.dip.alliance[p] = g.turn
+        _player_dialogue(g, "alliance", a, b)
     elif kind == "coalition":
         ca, cb = coalition_of(g, a), coalition_of(g, b)
         if ca is None and cb is None:

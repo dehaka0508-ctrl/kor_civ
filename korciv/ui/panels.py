@@ -1104,7 +1104,7 @@ def econ_progress_text(g, pid) -> str:
     st = g.econ_stage(pid)
     head = f"{st}/{C.ECON_STAGES}"
     if st == 0:
-        return f"{head} · 금융 단지 {len(g.finance_cluster(pid))}/{C.ECON_CLUSTER}곳(수도와 맞닿은 한 덩어리)"
+        return f"{head} · 금융 단지 {len(g.finance_cluster(pid))}/{C.ECON_CLUSTER}곳"
     if st == 1:
         return f"{head} · {g.econ_ready(pid, 'sez')[1]}"
     if st >= C.ECON_STAGES:
@@ -1146,7 +1146,7 @@ def draw_victory_progress(app, x, y, w, pid):
     if "science" in vs:
         y = kv(gui, x, y, w, "과학승리", science_progress_text(g, pid))
     if "economic" in vs:
-        y = kv(gui, x, y, w, "경제승리(기축통화)", econ_progress_text(g, pid))
+        y = kv(gui, x, y, w, "경제승리", econ_progress_text(g, pid))
     if "diplomatic" in vs:
         alive = g.alive_ids()
         cid = D.coalition_of(g, pid)

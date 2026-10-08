@@ -475,3 +475,26 @@ def test_econ_progress_text_each_stage(app):
     assert texts[1].startswith("3/5") and "국제금융센터" in texts[1]
     assert texts[2].startswith("4/5") and "기축통화" in texts[2]
     assert texts[3].startswith("5/5")
+
+
+def test_dialogue_popup_enter_and_cjk(app):
+    from korciv.ui import theme
+    assert theme.is_cjk("星") and not theme.is_cjk("가")
+    w_cjk = theme.measure("星星之火", 16)[0]
+    assert w_cjk > 0 and theme.render_text("星星之火 가나", 16, (0, 0, 0)).get_width() > 0
+    app.start_game(Settings(seed=4, n_enemies=2, ai_leaders=["mao", "sta"]))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.dialogues = [{"kind": "war", "fid": 1, "turn": 1}, {"kind": "peace", "fid": 2, "turn": 1}]
+    assert app.active_modal() == "dialogue"
+    frame(app)
+    ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r")
+    app.gui.begin([ev])
+    app.frame()
+    assert len(g.dialogues) == 1 and g.dialogues[0]["fid"] == 2
+    g.game_over = True
+    app.modal = ("gameover", None)
+    app.gui.begin([ev])
+    app.frame()
+    assert not g.dialogues and app.active_modal() == "gameover"     # 대사를 닫으면 게임 종료 화면

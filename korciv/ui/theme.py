@@ -103,10 +103,53 @@ def font(size: int, weight: str = "regular") -> pygame.font.Font:
     return f
 
 
+# Pretendard 에는 한자가 없어서, 한자(외국 지도자 대사)만 보조 글꼴(Noto Sans CJK SC 부분집합)로 그린다.
+CJK_FALLBACK = "NotoSansCJKsc-Subset.otf"
+_CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2FA1F))
+
+
+def is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return any(a <= o <= b for a, b in _CJK_RANGES)
+
+
+def _cjk_font(size: int):
+    px = font_px(size)
+    key = (px, "cjk")
+    f = _fonts.get(key)
+    if f is None:
+        path = os.path.join(FONT_DIR, CJK_FALLBACK)
+        f = pygame.font.Font(path, px) if os.path.exists(path) else None
+        _fonts[key] = f
+    return f
+
+
+def _runs(text: str):
+    """(한자 여부, 문자열) 구간들."""
+    out = []
+    for ch in text:
+        c = is_cjk(ch)
+        if out and out[-1][0] == c:
+            out[-1][1] += ch
+        else:
+            out.append([c, ch])
+    return out
+
+
+def _needs_fallback(text: str) -> bool:
+    return any(is_cjk(ch) for ch in text) and _cjk_font(14) is not None
+
+
 def measure(text: str, size: int, weight: str = "regular"):
     """글자 폭·높이(논리 좌표)."""
-    w, h = font(size, weight).size(text)
     u = UI["u"]
+    if not _needs_fallback(text):
+        w, h = font(size, weight).size(text)
+        return w / u, h / u
+    w = h = 0
+    for c, part in _runs(text):
+        pw, ph = (_cjk_font(size) if c else font(size, weight)).size(part)
+        w, h = w + pw, max(h, ph)
     return w / u, h / u
 
 
@@ -115,7 +158,19 @@ def render_text(text: str, size: int, color, weight="regular"):
     key = (text, font_px(size), tuple(color), weight)
     s = _text_cache.get(key)
     if s is None:
-        s = font(size, weight).render(text, True, color)
+        if _needs_fallback(text):
+            base = font(size, weight)
+            parts = [((_cjk_font(size) if c else base), part) for c, part in _runs(text)]
+            surfs = [(f, f.render(part, True, color)) for f, part in parts]
+            asc = max(f.get_ascent() for f, _ in surfs)
+            desc = max(-f.get_descent() for f, _ in surfs)
+            s = pygame.Surface((sum(t.get_width() for _, t in surfs), asc + desc), pygame.SRCALPHA)
+            x = 0
+            for f, t in surfs:
+                s.blit(t, (x, asc - f.get_ascent()))     # 기준선 맞춤
+                x += t.get_width()
+        else:
+            s = font(size, weight).render(text, True, color)
         if len(_text_cache) > 6000:
             _text_cache.clear()
         _text_cache[key] = s

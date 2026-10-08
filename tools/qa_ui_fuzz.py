@@ -235,6 +235,10 @@ def force_state(app, rng):
                                 ("saveslots", "load"), ("saveslots", "save_exit")])
         if app.modal[0] == "saveslots":
             app.open_slots(app.modal[1])
+        others = [f.id for f in g.factions if f.alive and f.id != pid]
+        if others and rng.random() < 0.3:
+            from korciv import dialogue as DLG
+            g.dialogues.append({"kind": rng.choice(DLG.KINDS), "fid": rng.choice(others), "turn": g.turn})
         if app.modal[0] == "specialty":
             mine = [r.id for r in g.regions_of(pid)]
             app.spec_sel = rng.choice(mine) if mine else None

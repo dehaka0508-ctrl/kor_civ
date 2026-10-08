@@ -602,7 +602,9 @@ def draw_government(app):
 # ------------------------------------------------------------------ 모달 분기
 def draw_active_modal(app):
     name = app.active_modal()
-    if name == "rebellion":
+    if name == "dialogue":
+        draw_dialogue(app)
+    elif name == "rebellion":
         draw_rebellion(app)
     elif name == "proposal":
         draw_proposal(app)
@@ -1171,6 +1173,48 @@ def draw_help(app):
     app.gui.wrap((r.x + 24, r.y + 60), HELP, r.w - 48, 13)
     if app.gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+
+
+def draw_dialogue(app):
+    """지도자 대사 팝업: 초상화와 대사. 우상단 X 또는 Enter로 닫고, 쌓인 다음 팝업으로 넘어간다."""
+    from .. import dialogue as DLG
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    q = g.dialogues
+    d = q[0]
+    f = g.factions[d["fid"]]
+    text = DLG.line(f.leader, d["kind"])
+    if not text:                                  # 대사가 없는 지도자(직접 입력 등)는 건너뛴다
+        q.pop(0)
+        return
+    r = modal_frame(app, 780, 380)
+    ph = 260
+    draw_portrait(gui, (r.x + 28, r.y + 56, ph * 3 // 4, ph), f.leader, t)
+    x = r.x + 28 + ph * 3 // 4 + 28
+    w = r.right - 28 - x
+    gui.text((x, r.y + 24), DLG.TITLES.get(d["kind"], ""), 14,
+             t.bad if d["kind"] in ("war", "denounce", "victory") else t.accent, "bold")
+    gui.text((x, r.y + 56), f.leader_name, 22, weight="bold", max_w=w)
+    draw_flag(gui, (x, r.y + 94, 36, 24), FL.faction_flag(f))
+    lang = DLG.language(f.leader)
+    sub = f.name + (f" · {lang}" if lang and not lang.startswith("한국어") else "")
+    gui.text((x + 46, r.y + 96), sub, 14, t.muted, max_w=w - 46)
+    i = text.rfind("(")
+    if i > 0 and text.rstrip().endswith(")"):           # 외국어 대사: 괄호 속 우리말 뜻은 다음 줄
+        body = f"“{text[:i].rstrip()}”\n{text[i:].strip()}"
+    else:
+        body = f"“{text}”"
+    gui.wrap((x, r.y + 140), body, w, 17, line_h=32, words=True, center=True)
+    gui.text((r.right - 28, r.bottom - 34), "Enter 또는 X로 닫기" + (f" · 다음 {len(q) - 1}건" if len(q) > 1 else ""),
+             12, t.muted, anchor="topright")
+    done = gui.button((r.right - 52, r.y + 14, 36, 36), "×", "ghost", size=18, tooltip="닫기 (Enter)")
+    for k in list(gui.keys):
+        if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            gui.keys.remove(k)
+            done = True
+    if done and q:
+        q.pop(0)
 
 
 def draw_gameover(app):

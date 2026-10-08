@@ -15,3 +15,10 @@
 | 인공기 | 코드로 그림(`ui/art.py`) | — |
 
 game-icons.net 아이콘(호랑이 머리)은 Creative Commons Attribution 3.0 (https://creativecommons.org/licenses/by/3.0/) 에 따라 사용합니다.
+
+# 글꼴
+
+| 파일 | 출처 | 라이선스 |
+|---|---|---|
+| `fonts/Pretendard-*.ttf` | Pretendard (길형진) | SIL OFL 1.1 (`fonts/LICENSE-Pretendard.txt`) |
+| `fonts/NotoSansCJKsc-Subset.otf` | Noto Sans CJK SC(Adobe·Google)에서 지도자 대사의 한자만 뽑은 부분집합(`tools/build_cjk_font.py`) | SIL OFL 1.1 (`fonts/LICENSE-NotoSansCJK.txt`) |

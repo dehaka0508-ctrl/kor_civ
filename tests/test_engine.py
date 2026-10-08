@@ -2207,3 +2207,46 @@ def test_yelu_tribute_and_cession():
     n0 = g.region_count(0)
     D.make_peace(g, 0, 1)
     assert g.region_count(0) == n0 - 1 and g.regions[cap].owner == 0
+
+
+def test_leader_lines_complete():
+    from korciv import dialogue as DLG
+    from korciv.leaders import LEADERS
+    for l in LEADERS:
+        if l["key"] == "cus":
+            continue
+        for k in DLG.KINDS:
+            assert DLG.line(l["key"], k), (l["name"], k)
+
+
+def test_dialogue_triggers():
+    g = new_game(player_start="S002", n_enemies=3, fog=2)
+    _neutral_ai(g, 1, 2, 3)
+    for f in g.factions[1:]:
+        f.leader = "sta"                          # 대사가 있는 지도자
+    g._mods.clear()
+    g.dialogues.clear()
+    kinds = lambda: [(d["kind"], d["fid"]) for d in g.dialogues]
+    # 조우: 시야에 새 세력이 들어오면(게임 시작 때 제외)
+    g.player.met.discard(1)
+    g.new_army(1, g.player.capital, {"inf": 1})
+    g._update_fog()
+    assert ("meet", 1) in kinds()
+    g.dialogues.clear()
+    g.player.met |= {1, 2, 3}
+    g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
+    D.declare_friendship(g, 0, 1)
+    D.sign_treaty(g, 0, 2, "alliance")
+    D.declare_war(g, 3, 0)
+    D.make_peace(g, 0, 3)
+    g.turn += C.DECL_COOLDOWN
+    D.denounce(g, 2, 0)
+    assert kinds() == [("friend", 1), ("alliance", 2), ("war", 3), ("peace", 3), ("denounce", 2)]
+    g.dialogues.clear()
+    g.eliminate(3, by=0)
+    g.eliminate(0, by=1)
+    assert kinds() == [("defeated", 3), ("victory", 1)]
+    # AI끼리의 일·전원 AI 게임에서는 쌓지 않는다
+    g2 = new_game(player_start="S002", n_enemies=2, all_ai=True)
+    D.declare_war(g2, 1, 0)
+    assert not g2.dialogues

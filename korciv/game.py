@@ -59,6 +59,7 @@ class Game:
         self.battle_regions: list[str] = []
         self.pending_rebellions: list[str] = []   # 플레이어 대응 대기
         self.pending_proposals: list[dict] = []   # AI → 플레이어 제안
+        self.dialogues: list[dict] = []           # 지도자 대사 팝업 대기 {kind, fid, turn}
         self.rankings: dict[int, list] = {}
         self.new_ranking = None
         self.power: dict[int, float] = {}
@@ -2158,6 +2159,10 @@ class Game:
             r.occs.pop(fid, None)
         who = f" ({self.fname(by)}에 의해)" if by not in (None, NEUTRAL) else ""
         self.event("eliminated", f"{f.name}이(가) 멸망했습니다{who}.", fids=(fid,))
+        if by == self.player_id and fid != self.player_id:
+            self.queue_dialogue("defeated", fid)          # 플레이어에게 멸망하는 지도자의 마지막 말
+        elif fid == self.player_id and by not in (None, NEUTRAL):
+            self.queue_dialogue("victory", by)            # 플레이어를 멸망시킨 지도자
 
     def begin_occupation(self, fid, rid):
         rr = self.regions[rid]
@@ -3692,7 +3697,27 @@ class Game:
             vis.update(w.node_neighbors(s))
         return vis
 
+    def queue_dialogue(self, kind, speaker):
+        """플레이어에게 보일 지도자 대사 팝업을 쌓는다(전원 AI 시뮬레이션에서는 쌓지 않음)."""
+        from . import dialogue as DLG
+        if self.settings.all_ai or speaker in (None, NEUTRAL) or speaker == self.player_id:
+            return
+        if not (0 <= speaker < len(self.factions)) or not DLG.line(self.factions[speaker].leader, kind):
+            return
+        q = self.__dict__.setdefault("dialogues", [])
+        if not any(d["kind"] == kind and d["fid"] == speaker for d in q):
+            q.append({"kind": kind, "fid": speaker, "turn": self.turn})
+
     def _update_fog(self, initial=False):
+        """시야·탐색·조우 갱신. 플레이어가 새로 만난 지도자는 '첫 만남' 대사 팝업(게임 시작 때는 제외)."""
+        pl = self.factions[self.player_id] if self.factions else None
+        before = set(getattr(pl, "met", set())) if pl is not None else set()
+        self._update_fog_inner(initial)
+        if pl is not None and not initial and pl.alive:
+            for o in sorted(getattr(pl, "met", set()) - before - {pl.id}):
+                self.queue_dialogue("meet", o)
+
+    def _update_fog_inner(self, initial=False):
         self._visible = {}
         for f in self.factions:
             if not f.alive:
