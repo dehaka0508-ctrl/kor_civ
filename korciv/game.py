@@ -167,14 +167,21 @@ class Game:
             self.finalize_setup()
 
     def _pick_starts(self, n, requested):
-        """시작 수도: 직접 고른 곳은 그대로, 무작위 수도는 다른 모든 수도와 육상 최단 거리 START_MIN_DIST(6)칸 이상.
+        """시작 수도: 직접 고른 곳은 그대로, 무작위 수도는 다른 모든 수도와 육상 최단 거리 START_MIN_DIST(6)칸 이상
+        (5칸 안에 다른 수도 없음). 황해·강원 수도는 한 칸 더(6칸 안에 다른 수도 없음).
+        무연륙 섬(제주·서귀포·울릉)은 무작위로 뽑지 않는다(직접 고를 때만).
         여러 번 섞어 보아도 안 되면(국가가 아주 많을 때) 거리를 1칸씩 줄인다."""
         chosen = []
         for rid in requested:
             if rid and rid in self.regions and rid not in chosen:
                 chosen.append(rid)
         base = list(chosen)
-        cands = list(self.world.order)
+        w = self.world
+        cands = [r for r in w.order
+                 if not (C.START_NO_RANDOM_ISLAND and w.regions[r].island == "무연륙 섬")]
+
+        def need(a, b, d):
+            return d + (1 if (w.regions[a].do8 in C.START_WIDE_DO8 or w.regions[b].do8 in C.START_WIDE_DO8) else 0)
         for min_d in range(C.START_MIN_DIST, 0, -1):
             for _ in range(C.START_PICK_TRIES):
                 picked = list(base)
@@ -184,7 +191,7 @@ class Game:
                         break
                     if rid in picked:
                         continue
-                    if all(self._land_dist(rid, c, min_d) >= min_d for c in picked):
+                    if all(self._land_dist(rid, c, need(rid, c, min_d)) >= need(rid, c, min_d) for c in picked):
                         picked.append(rid)
                 if len(picked) >= n:
                     return picked[:n]
@@ -945,7 +952,7 @@ class Game:
         lead = LEADER_BY_KEY.get(f.leader, {})
         fx = lead.get("fx", {})
         if key in fx:
-            dkeys = lead.get("dkeys") or [list(fx)[-1]]
+            dkeys = lead["dkeys"] if "dkeys" in lead else [list(fx)[-1]]
             nm = lead["debuff"][0] if key in dkeys else lead["buff"][0]
             return f"{lead['name']} '{nm}'"
         gov = GOV_BY_KEY.get(f.gov or "", {})
@@ -1174,6 +1181,8 @@ class Game:
             c *= m.mult("cost_naval")
         if u["kind"] == "air":
             c *= m.mult("cost_air")
+        if key != "inf":
+            c *= m.mult("cost_noninf")                # 단군왕검 '신화 시대'
         disc = 0.0
         if self.regions[rid].b["academy"] and self.regions[rid].owner == fid:
             disc = C.ACADEMY_LOCAL
@@ -1968,6 +1977,10 @@ class Game:
                             m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
                             m.mult("output_prod"), m.mult("output_farm"))
+        pb = m.value("port_bank", 0)
+        if pb and rr.b["port"] and owner != NEUTRAL:
+            # 근초고왕 '해상 왕국': 항구가 있는 지역은 은행 3단계만큼 산출이 더 난다
+            y += C.BANK_OUTPUT * R.g(pb) * m.mult("output_bank") * m.mult("output_prod")
         if owner != NEUTRAL and owner == rr.owner:
             y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
             if rid == self.factions[owner].capital:
@@ -1978,6 +1991,9 @@ class Game:
             far = m.value("far_output_gov", 0)
             if far and rid not in self.near_capital(owner, 3):
                 y *= 1 - far                                  # 전제군주제: 수도에서 3칸 밖 지역
+            if self.turn <= m.value("early_output_turns", 0):
+                y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 12턴
+            y *= 1 + C.HAEDONG_OUTPUT * self.haedong_steps(owner)   # 발해 선왕 '해동성국'
         return y
 
     def near_capital(self, fid, dist=2) -> set:
@@ -2047,7 +2063,7 @@ class Game:
             return rr.happy
         f = self.factions[rr.owner]
         h = (self.base_happy(rr) - rr.conscript - self.minority_penalty(rr.owner) + self.scenic_bonus(rr)
-             + self.crowd_penalty(rr) + self.haedong_bonus(rr.owner))
+             + self.crowd_penalty(rr))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
@@ -2132,6 +2148,8 @@ class Game:
         f = self.factions[fid]
         if not f.alive:
             return
+        if self._provisional_government(fid, by):
+            return                                        # 김구 '임시정부': 멸망 대신 부활
         f.alive = False
         f.eliminated_turn = self.turn
         for r in self.regions.values():
@@ -2163,6 +2181,43 @@ class Game:
             self.queue_dialogue("defeated", fid)          # 플레이어에게 멸망하는 지도자의 마지막 말
         elif fid == self.player_id and by not in (None, NEUTRAL):
             self.queue_dialogue("victory", by)            # 플레이어를 멸망시킨 지도자
+
+    def _provisional_government(self, fid, by=None) -> bool:
+        """김구 '임시정부': 멸망하면 한 번, 직전에 우호도가 가장 높던 나라(전쟁 중이 아닌)의
+        국경 지역(수도 제외) 한 곳에서 그 나라와 동맹으로 부활한다. 부활하면 True."""
+        f = self.factions[fid]
+        if not self.mods(fid).value("provisional_gov") or getattr(f, "provisional_used", False):
+            return False
+        hosts = [x for x in self.alive_ids() if x not in (fid, by) and not D.at_war(self, fid, x)]
+        hosts.sort(key=lambda x: (-D.opinion(self, fid, x), x))
+        foes = set(D.enemies(self, fid))
+        for host in hosts:
+            cap = self.factions[host].capital
+            border = [r.id for r in self.regions_of(host) if r.id != cap and not r.occ
+                      and any(self.regions[n].owner != host for n in self.world.land_adj[r.id])]
+            if not border:
+                continue
+            # 지금 싸우는 적과 맞닿지 않은 곳을 먼저 고른다(부활하자마자 다시 무너지지 않게)
+            safe = [rid for rid in border if not any(self.regions[n].owner in foes for n in self.world.land_adj[rid])]
+            rid = self.rng.choice(sorted(safe or border))
+            f.provisional_used = True
+            self.transfer_region(rid, fid, reason="임시정부")
+            rr = self.regions[rid]
+            f.capital = rid
+            rr.happy = max(rr.happy, 0.0)
+            f.happy_floor_until = self.turn + C.REBEL_HAPPY_FLOOR_TURNS
+            self.new_army(fid, rid, {"inf": C.PROVISIONAL_INF})
+            p = D.pair(fid, host)
+            D._dip_attr(self, "declared")[p] = self.turn
+            self.dip.nonaggr[p] = max(self.dip.nonaggr.get(p, 0), self.turn + C.TREATY_TURNS)
+            self.dip.alliance[p] = self.turn
+            for a, b in ((fid, host), (host, fid)):
+                self.dip.op[(a, b)] = max(D.opinion(self, a, b), C.ALLIANCE_MIN)
+            self._mods.pop(fid, None)
+            self.event("capital", f"임시정부: {f.name}이(가) {self.fname(host)}의 {self.info(rid).name}에서 "
+                                  f"다시 일어나 {self.fname(host)}와(과) 동맹을 맺었습니다.", region=rid, fids=(fid, host))
+            return True
+        return False
 
     def begin_occupation(self, fid, rid):
         rr = self.regions[rid]
@@ -2345,6 +2400,10 @@ class Game:
     def _score_units(self, winner, loser, lost):
         if winner != NEUTRAL and loser != NEUTRAL:
             D.add_war_score(self, winner, loser, self.units_value(lost) / 1000)
+            w = self.dip.wars.get(D.pair(winner, loser))
+            if w is not None and lost:
+                kills = w.setdefault("kills", {})            # 강화 성과 판정용: 처치한 유닛 수
+                kills[winner] = kills.get(winner, 0) + sum(lost.values())
             k = self.mods(loser).value("bounty")
             if k and lost:                       # 김원봉 '현상금': 잃은 유닛 생산비의 50%를 상대가 얻는다
                 self.factions[winner].money += self.units_value(lost) * k * C.MONEY_SCALE
@@ -3301,7 +3360,7 @@ class Game:
         if rebel:
             weary = (weary - getattr(f, "war_weary_def", 0.0)) * C.REBEL_WEARY_MULT
         h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
-             + self.scenic_bonus(rr) + self.crowd_penalty(rr) + self.haedong_bonus(rr.owner))
+             + self.scenic_bonus(rr) + self.crowd_penalty(rr))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
@@ -3316,9 +3375,9 @@ class Game:
             return 0.0
         return C.SCENIC_HAPPY * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
 
-    def haedong_bonus(self, fid) -> float:
-        """발해 선왕 '해동성국': 영토가 20곳을 넘을 때마다 전 지역 행복도 +1(최대 +5)."""
-        if not self.mods(fid).value("haedong"):
+    def haedong_steps(self, fid) -> float:
+        """발해 선왕 '해동성국': 영토가 20곳을 넘을 때마다 1단계(최대 5). 단계마다 전 지역 산출 +2%."""
+        if fid == NEUTRAL or not self.mods(fid).value("haedong"):
             return 0.0
         cache = self.__dict__.setdefault("_haedong", {})
         stamp = getattr(self, "acq_counter", 0)

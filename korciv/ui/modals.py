@@ -9,7 +9,7 @@ from .. import config as C
 from .. import diplomacy as D
 from .. import flags as FL
 from .. import rules as R
-from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES
+from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_void
 from ..state import NEUTRAL, Settings
 from .art import draw_flag, draw_portrait, render_flag
 from .theme import hex2rgb, measure, mix
@@ -258,6 +258,8 @@ def draw_setup(app):
     y += 34
     gui.text((x2, y), "시작 구역", 13, t.muted, "semibold")
     st_name = app.world.regions[s.start].name if s.start else "무작위"
+    if s.start and app.world.regions[s.start].island == "무연륙 섬":
+        st_name += " (섬 도전)"             # 무작위로는 나오지 않는 섬 시작
     gui.text((x2 + 80, y), st_name, 14, weight="semibold")
     if gui.button((x2 + 250, y - 6, 110, 30), "지도에서 선택"):
         app.scene = "pick_start"
@@ -588,7 +590,11 @@ def draw_government(app):
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
+        if gov_buff_void(app.game.player.leader) and gdef.get("buff_keys"):
+            lead = LEADER_BY_KEY[app.game.player.leader]
+            gui.text((row.x + 16, row.y + 36), f"＋ 없음({lead['debuff'][0]})", 12, t.muted)
+        else:
+            gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
         gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
         if hov and gui.clicked:
             gui.clicked = False

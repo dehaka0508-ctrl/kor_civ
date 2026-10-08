@@ -18,11 +18,11 @@ from .state import NEUTRAL
 # 특수 키는 _bias_term 에서 기준값과의 차이로 바꾼다.
 LEADER_BIAS_KEYS = {
     "inf": [("atk_inf", 1), ("cost_mil", -1), ("inf_cost_early", -1), ("inf_wave", 1)],
-    "tank": [("cost_tank", -1), ("cost_mil", -1)],
-    "art": [("bomb_art", 1), ("cost_mil", -1)],
+    "tank": [("cost_tank", -1), ("cost_mil", -1), ("cost_noninf", -1)],
+    "art": [("bomb_art", 1), ("cost_mil", -1), ("cost_noninf", -1)],
     "naval": [("cost_naval", -1), ("naval_power", 1), ("naval_bomb", 1), ("amphib_extra", 1), ("cut_supply", -1),
-              ("amphib_atk", 1)],
-    "air": [("cost_air", -1)],
+              ("amphib_atk", 1), ("cost_noninf", -1)],
+    "air": [("cost_air", -1), ("cost_noninf", -1)],
     "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1), ("output_farm", 1)],
     "fishery": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
     "factory": [("output_factory", 1), ("output_prod", 1), ("cost_factory", -1), ("build_time_factory", -1),
@@ -508,6 +508,9 @@ def _social(g, f):
     alive = [x for x in g.alive_ids() if x != fid]
     # 우호 선언: 나를 좋게 보는(또는 적의 적인) 세력과 가까워진다
     p_friend = C.AI_FRIEND_DECL_P * (10 - aggr) / 10 * leader_bias(g, fid, "ally")
+    if g.mods(fid).value("tribute"):
+        # 야율융서 '전연의 맹약': 우호 선언 관계마다 공물이 들어오니, 호전적이어도 온건형만큼 우호 선언을 한다
+        p_friend = max(p_friend, C.AI_FRIEND_DECL_P * (10 - C.AI_TRIBUTE_FRIEND_AGGR) / 10) * C.AI_TRIBUTE_FRIEND_MULT
     if f.ai.get("victory_goal") in ("diplomatic", "economic"):
         p_friend *= 1.5                    # 외교·경제승리는 우호 관계가 필요하다
     if alive and g.rng.random() < p_friend:
@@ -521,6 +524,8 @@ def _social(g, f):
             cost = sum(1 for y in alive if y != x and g.factions[y].is_ai and D.hostile_to(g, y, x)
                        and not D.at_war(g, fid, y))
             score = D.opinion(g, fid, x) / 20 + len(my_enemies & set(D.enemies(g, x))) - C.AI_FRIEND_BACKLASH_W * cost
+            if g.mods(fid).value("tribute"):
+                score += 0.5                 # 공물: 관계 하나하나가 수입이다
             if D.allied(g, fid, x):
                 score -= 0.5                 # 이미 동맹이면 덜 급하다
             cands.append((score, x))
@@ -1235,6 +1240,14 @@ def _slots(g, f, threat, military=True):
                    else C.MARKET_SELL["oil" if info.is_oil else "coal"])
             cands.append((per * horizon / cost * bias("extract") * (C.AI_ECON_FUEL_MULT if eco else 1.0),
                           r.id, "build", "extract", None, cost / turns))
+        pb = g.mods(fid).value("port_bank", 0)
+        if pb and info.coastal and not r.b["port"]:
+            # 근초고왕 '해상 왕국': 항구 = 은행 3단계만큼의 산출
+            cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
+            turns = g.build_time(fid, "port", C.SINGLE_BUILDINGS["port"]["turns"])
+            dy = C.BANK_OUTPUT * R.g(pb) * g.mods(fid).mult("output_bank") * g.mods(fid).mult("output_prod")
+            gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1)
+            cands.append((gain / cost, r.id, "build", "port", None, cost / turns))
         if r.b["power"] < 5 and fuel["spare"] < 0 and fuel["raw_left"] > 0:
             # 발전소: 공장 연료가 모자라고 발전소에 못 넣은 석탄·석유가 남을 때(석탄 1 → 공장 연료 2)
             lv = r.b["power"] + 1

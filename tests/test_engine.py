@@ -785,7 +785,8 @@ def test_leader_roster_and_categories():
     assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 46
     assert LEADER_BY_KEY["jum"]["name"] == "동명성왕" and LEADER_BY_KEY["sej"]["name"] == "세종대왕"
     for l in LEADERS:
-        assert len(l["fx"]) >= (0 if l["key"] == "cus" else 2)
+        # 김구는 디버프가 없다(임시정부 하나)
+        assert len(l["fx"]) >= (0 if l["key"] == "cus" else 1 if l["key"] == "kgu" else 2)
     # 새 지도자로 게임을 시작해도 효과가 적용된다
     g = new_game(player_start="S002", n_enemies=5, player_leader="yis",
                  ai_leaders=["yan", "kan", "toy", "taj", "ito"])
@@ -1635,7 +1636,7 @@ def test_econ_conquest_diplomatic_victory():
 def test_dangun_one_buff_one_debuff():
     from korciv.leaders import LEADER_BY_KEY
     fx = LEADER_BY_KEY["dan"]["fx"]
-    assert fx == {"happy_turn": 0.15, "cost_air": 0.20}
+    assert fx == {"happy_turn": 0.10, "cost_noninf": 0.20}
     g = new_game(player_start="S002", n_enemies=1, player_leader="dan")
     g.player.war_weary = 10.0
     g._phase_happiness()
@@ -2118,11 +2119,12 @@ def test_new_leaders_v117():
     g.player.capital = cap
     _lead(g, 0, "sun")
     assert g.calc_output(cap, full=True) == pytest.approx(y / 1.10 * 1.05)
-    # 해동성국: 20곳을 넘을 때마다 +1 (최대 +5)
-    assert g.haedong_bonus(0) == 0
+    # 해동성국: 20곳을 넘을 때마다 전 지역 산출 +2% (최대 +10%)
+    assert g.haedong_steps(0) == 0
     free = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:40]
     _own(g, 0, free)
-    assert g.haedong_bonus(0) == 2.0                      # 41곳
+    assert g.haedong_steps(0) == 2.0                      # 41곳
+    assert g.calc_output(cap, full=True) == pytest.approx(y / 1.10 * 1.05 * 1.04)
     # 스탈린 농장 +15%, 마오쩌둥 식량 −15%
     r = g.regions[cap]
     r.b["farm"] = 3
@@ -2154,12 +2156,12 @@ def test_new_leader_combat_effects():
     assert g.amphib_mult(0) == pytest.approx(1.2)
     _lead(g, 0, "cus")
     assert g.amphib_mult(0) == pytest.approx(C.AMPHIBIOUS)
-    # 맥아더 '자기과신': 병력이 적으면 받는 피해 +20% / 스탈린 '대숙청': 지면 피해 +3
+    # 맥아더 '자기과신': 병력이 적으면 받는 피해 +10% / 스탈린 '대숙청': 지면 피해 +3
     small = g.new_army(0, "S002", {"inf": 1})
     big = [g.new_army(1, tgt, {"inf": 5})]
     _lead(g, 0, "mac")
     dd, ad = g._leader_battle_mods(0, 1, [small], big, "S002", tgt, 10.0, 10.0)
-    assert (dd, ad) == (10.0, pytest.approx(12.0))
+    assert (dd, ad) == (10.0, pytest.approx(11.0))
     _lead(g, 0, "sta")
     dd, ad = g._leader_battle_mods(0, 1, [small], big, "S002", tgt, 5.0, 10.0)
     assert ad == pytest.approx(10.0 + 3)
@@ -2268,3 +2270,103 @@ def test_greeting_needs_contact_even_without_fog():
         g.new_army(far[0], g.player.capital, {"inf": 1})
         g._update_fog()
         assert ("meet", far[0]) in [(d["kind"], d["fid"]) for d in g.dialogues], fog
+
+
+# ---------------------------------------------------------------- v1.20.0 패치
+def test_v120_leader_changes():
+    from korciv.leaders import LEADER_BY_KEY, Mods
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    base_tank = g.unit_cost(0, "S002", "tank")
+    base_inf = g.unit_cost(0, "S002", "inf")
+    _lead(g, 0, "dan")                                   # 단군: 보병 외 생산비 +20%
+    assert g.unit_cost(0, "S002", "tank") == pytest.approx(base_tank * 1.2)
+    assert g.unit_cost(0, "S002", "inf") == pytest.approx(base_inf)
+    assert g.mods(0).add("happy_turn") == pytest.approx(0.10)
+    # 광해군 '폐모살제': 정치체제 버프 없음, 디버프는 그대로
+    m = Mods("hae", "absolute")
+    assert m.add("tax_base") == 0 and m.value("far_output_gov") == 0.05
+    assert Mods("hae", "parliamentary").mult("output_bank") == 1.0
+    assert Mods("cus", "parliamentary").mult("output_bank") == pytest.approx(1.1)
+    assert LEADER_BY_KEY["jun"]["fx"]["output_bank"] == -0.08
+    assert LEADER_BY_KEY["mac"]["fx"]["outnumbered_dmg"] == 0.10
+    assert g.fx_source(0, "cost_noninf").endswith("'신화 시대'")
+    _lead(g, 0, "kgu")
+    assert g.fx_source(0, "provisional_gov").endswith("'임시정부'")
+
+
+def test_kimdaejung_early_output():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    y = g.calc_output("S002", full=True)
+    _lead(g, 0, "kdj")
+    g.turn = 12
+    assert g.calc_output("S002", full=True) == pytest.approx(y * 0.8)
+    g.turn = 13
+    assert g.calc_output("S002", full=True) == pytest.approx(y)
+
+
+def test_geunchogo_port_income():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    rid = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [rid])
+    g.regions[rid].b["port"] = 1
+    g.regions[rid].happy = 50.0
+    y = g.calc_output(rid, full=True)
+    _lead(g, 0, "gcg")
+    from korciv import rules as R
+    assert g.calc_output(rid, full=True) == pytest.approx(y + C.BANK_OUTPUT * R.g(3))   # 은행 3단계 = 2,520
+
+
+def test_kimgu_provisional_government():
+    g = new_game(player_start="S002", n_enemies=2, player_leader="kgu")
+    _neutral_ai(g, 1, 2)
+    host, foe = 1, 2
+    _own(g, host, [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:30])
+    D.add_opinion(g, 0, host, 50)
+    D.add_opinion(g, 0, foe, -50)
+    D.declare_war(g, foe, 0)
+    g.transfer_region(g.player.capital, foe)            # 마지막 지역을 잃는다
+    assert g.player.alive and g.player.provisional_used
+    cap = g.player.capital
+    assert g.regions[cap].owner == 0 and cap != g.factions[host].capital
+    assert D.allied(g, 0, host) and D.declared_friends(g, 0, host)
+    assert sum(a.units.get("inf", 0) for a in g.armies.values() if a.owner == 0) >= C.PROVISIONAL_INF
+    # 두 번째는 없다
+    g.transfer_region(cap, foe)
+    assert not g.player.alive
+
+
+def test_peace_weariness_relief():
+    g = new_game(n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    D.declare_war(g, 0, 1)
+    w = g.dip.wars[D.pair(0, 1)]
+    w["taken"] = {0: 3, 1: 1}
+    w["kills"] = {0: 5, 1: 2}
+    g.player.war_weary = 40.0
+    g.factions[1].war_weary = 30.0
+    D.make_peace(g, 0, 1)
+    assert g.player.war_weary == pytest.approx(20.0)    # 땅 −10, 유닛 −10
+    assert g.factions[1].war_weary == pytest.approx(30.0)
+    # 처치 수는 전투에서 기록된다
+    D.declare_war(g, 0, 2)
+    g._score_units(0, 2, {"inf": 3})
+    assert g.dip.wars[D.pair(0, 2)]["kills"] == {0: 3}
+
+
+def test_starts_spread_and_no_random_islands():
+    from korciv.state import Settings
+    isl = set()
+    for seed in range(12):
+        g = Game(Settings(n_enemies=7, seed=seed, all_ai=True))
+        caps = [f.capital for f in g.factions]
+        for i, a in enumerate(caps):
+            assert g.world.regions[a].island != "무연륙 섬"
+            for b in caps[i + 1:]:
+                need = 7 if {g.world.regions[a].do8, g.world.regions[b].do8} & set(C.START_WIDE_DO8) else 6
+                assert g._land_dist(a, b, need) >= need
+        isl |= {r for r in g.world.order if g.world.regions[r].island == "무연륙 섬"}
+    assert len(isl) == 3
+    # 직접 고르면 섬에서도 시작할 수 있다
+    jeju = next(r for r in isl if "서귀포" in g.world.regions[r].name)
+    g = new_game(player_start=jeju, n_enemies=3)
+    assert g.player.capital == jeju

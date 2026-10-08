@@ -293,15 +293,41 @@ def _peace_cede(g, side, other):
                         f"{g.fname(other)}에 넘겼습니다.", region=rid, fids=(side, other))
 
 
+def peace_relief(w, side, other) -> float:
+    """강화 성과로 줄어드는 전쟁 피로: 얻은 지역 > 잃은 지역이면 10, 처치한 유닛 > 처치당한 유닛이면 10."""
+    taken, kills = w.get("taken", {}), w.get("kills", {})
+    v = 0.0
+    if taken.get(side, 0) > taken.get(other, 0):
+        v += C.PEACE_WEARY_TERRITORY
+    if kills.get(side, 0) > kills.get(other, 0):
+        v += C.PEACE_WEARY_KILLS
+    return v
+
+
+def _peace_weary_relief(g, w, a, b):
+    for side, other in ((a, b), (b, a)):
+        v = peace_relief(w, side, other)
+        f = g.factions[side]
+        if v <= 0 or not f.alive or f.war_weary <= 0:
+            continue
+        before = f.war_weary
+        add_war_weary(g, side, -v)
+        if not f.is_ai:
+            g.event("info", f"{g.fname(other)}와(과)의 전쟁 성과로 전쟁 피로가 {before - f.war_weary:.0f} 줄었습니다.",
+                    fids=(side,))
+
+
 def make_peace(g, a, b, _done=None):
     done = _done if _done is not None else set()
     p = pair(a, b)
     if p not in g.dip.wars or p in done:
         return
     done.add(p)
-    aggr = g.dip.wars[p].get("aggressor")
+    w = g.dip.wars[p]
+    aggr = w.get("aggressor")
     if aggr in (a, b):
         g.factions[aggr].last_aggr_end = g.turn
+    _peace_weary_relief(g, w, a, b)
     del g.dip.wars[p]
     g.dip.nonaggr[p] = max(g.dip.nonaggr.get(p, 0), g.turn + C.PEACE_TREATY_TURNS)
     if not hasattr(g.dip, "peace_until"):

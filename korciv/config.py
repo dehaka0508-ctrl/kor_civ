@@ -69,7 +69,9 @@ CAPITAL_MOVE_COST_MULT = 20
 CAPITAL_MOVE_HAPPY = -3
 CAPITAL_LOST_HAPPY = -10
 CAPITAL_OUTPUT_BONUS = 0.10   # 모든 나라의 수도 산출 +10% (발해 선왕 '5경 분산'은 절반)
-HAEDONG_STEP, HAEDONG_MAX = 20, 5   # 발해 선왕 '해동성국': 영토 20곳을 넘을 때마다 행복도 +1, 최대 +5
+HAEDONG_STEP, HAEDONG_MAX = 20, 5   # 발해 선왕 '해동성국': 영토 20곳을 넘을 때마다 전 지역 산출 +2%, 최대 5번(+10%)
+HAEDONG_OUTPUT = 0.02
+PROVISIONAL_INF = 3            # 김구 '임시정부': 부활할 때 받는 보병
 INF_WAVE_MIN = 10             # 마오쩌둥 '국공내전': 한 번의 돌격에 보병 10 이상
 TRIBUTE_SPECIALTY = "공물"    # 야율융서 '전연의 맹약' 특산물
 PROJECT_REFUND = 0.5
@@ -136,6 +138,10 @@ WAR_WEARY_START = {"aggressor": 15.0, "defender": 10.0}
 WAR_WEARY_TURN = {"aggressor": 0.5, "defender": 0.5}
 WAR_WEARY_RECOVERY = 1.0
 WAR_WEARY_MAX = 200.0
+# 강화 성과: 그 전쟁에서 얻은 지역이 잃은 지역보다 많으면 강화 즉시 피로 −10,
+# 처치한 유닛이 처치당한 유닛보다 많으면 또 −10(양쪽 각자 판정)
+PEACE_WEARY_TERRITORY = 10.0
+PEACE_WEARY_KILLS = 10.0
 # 불행한 지역의 산출 감소: 행복도 H < 0 이면 산출 × (1 − 0.30 × (−H/100)²). −50에서 −7.5%, −100에서 −30%.
 UNHAPPY_OUTPUT_MAX = 0.30
 UNHAPPY_OUTPUT_EXP = 2.0
@@ -209,8 +215,11 @@ AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 1            # 해군: 턴당 한 칸(항구→해역, 해역→해역, 해역→상륙·입항)
 LAND_STEPS_OWN = 2
 
-START_MIN_DIST = 6         # 무작위 수도끼리(와 직접 고른 수도) 육상 최단 거리 최소 칸 수
+START_MIN_DIST = 6         # 무작위 수도끼리(와 직접 고른 수도) 육상 최단 거리 최소 칸 수(5칸 안에 다른 수도 없음)
+START_WIDE_DO8 = ("황해", "강원")   # 이 권역의 수도는 다른 수도와 한 칸 더 떨어진다(6칸 안에 다른 수도 없음)
 START_PICK_TRIES = 40
+# 무작위 시작에서 빼는 무연륙 섬(제주·서귀포·울릉): 플레이어가 직접 골라 도전할 때만 시작할 수 있다
+START_NO_RANDOM_ISLAND = True
 START_LINE_LEVEL = 1       # 시작 도시의 모든 경계 방어선 단계(반란국 제외)
 LINE_BONUS = 0.30          # 방어선 돌격 방어 x(1 + 0.30L) (단계별 성능 원안 0.25의 1.2배)
 # 지형 경계(도하·산악 돌파) 공격 배수는 data/terrain-borders.csv 의 공격배수 열(기본 0.9)을 쓴다.
@@ -327,6 +336,8 @@ AI_FRIEND_DECL_P = 0.05     # AI 우호 선언 기본 확률(호전성 0 기준,
 AI_DENOUNCE_P = 0.04        # AI 비난 기본 확률(호전성 10 기준)
 AI_DENOUNCE_PLAYER = 0.5    # 플레이어를 비난할 때는 이 배율(낮은 확률)
 AI_FRIEND_BACKLASH_W = 0.4  # 우호 선언 대상 고를 때 '대상과 적대하는 세력' 1곳당 감점
+AI_TRIBUTE_FRIEND_AGGR = 2   # 야율융서: 우호 선언 확률은 호전성 2인 지도자만큼은 된다
+AI_TRIBUTE_FRIEND_MULT = 1.5
 
 FRIEND_ON, FRIEND_OFF = 30, 20
 TREATY_MIN = 45
@@ -393,10 +404,10 @@ ECON_CURRENCY_FRIENDS = 3
 ECON_CURRENCY_ALLIES = 1
 ECON_STEPS = ("exchange", "sez", "ifc", "currency")
 ECON = {
-    "exchange": dict(name="증권거래소", where="금융 권역", per_turn=100_000, turns=10),
-    "sez":      dict(name="경제특구", where="수도", per_turn=200_000, turns=15),
-    "ifc":      dict(name="국제금융센터", where="증권거래소가 있는 지역", per_turn=250_000, turns=15),
-    "currency": dict(name="기축통화 지정", where="수도", per_turn=400_000, turns=20),
+    "exchange": dict(name="증권거래소", where="금융 권역", per_turn=80_000, turns=10),
+    "sez":      dict(name="경제특구", where="수도", per_turn=150_000, turns=12),
+    "ifc":      dict(name="국제금융센터", where="증권거래소가 있는 지역", per_turn=200_000, turns=12),
+    "currency": dict(name="기축통화 지정", where="수도", per_turn=250_000, turns=16),
 }
 ECON_STAGES = 5                # 진척도 n/5: 금융 권역, 증권거래소 3곳, 경제특구, 국제금융센터, 기축통화
 EXCHANGE_BANK_BONUS = 0.10     # 증권거래소: 그 지역 은행 산출 +10%
