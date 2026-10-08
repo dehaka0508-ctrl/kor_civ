@@ -1,0 +1,288 @@
+"""AI 2페이즈(경쟁기) 전략: 정세 판단 → 승리 방향·태세·우방.
+
+1페이즈(확장기)가 끝난 나라는 매 턴 국경 정세를 훑고(scan) 태세를 정한다(posture: 위기·경계·평시).
+6턴마다(또는 선전포고를 받거나 위기에 빠지면 바로) 나라 사정과 주변 정세를 종합해 승리 방향을 다시 고른다.
+고른 방향은 관성이 있어서 새 방향 점수가 지금 방향의 1.25배를 넘어야 바꾼다.
+국경을 맞댄 나라가 3곳 이상이거나(2곳 이상인데 위협이 있으면) 한 나라를 '우방'으로 골라
+우호 선언·선물로 불가침까지 끌어올려 두 전선에서 싸우지 않게 한다.
+
+ai.py 가 결과(f.ai["p2"])를 읽어 전쟁·강화·건설·외교 판단을 바꾼다. AI 는 플레이어가 볼 수 있는 정보
+(시야 안 병력과 기억, 반기 랭킹, 우호도·조약, 관측한 선전포고 이력)만 쓴다.
+"""
+from __future__ import annotations
+
+import random
+from collections import defaultdict
+
+from . import config as C
+from . import diplomacy as D
+from .state import NEUTRAL
+
+PATHS = ("conquest", "science", "economic", "diplomatic")
+PATH_NAMES = {"conquest": "정복", "science": "과학", "economic": "경제", "diplomatic": "외교"}
+
+
+def _ai():
+    from . import ai
+    return ai
+
+
+def state(f) -> dict:
+    return f.ai.setdefault("p2", {})
+
+
+# ------------------------------------------------------------------ 정세 판단
+def hostility(g, fid, o) -> float:
+    """o 가 나에게 보이는 적대 신호(0~1): 전쟁 1, 나에 대한 우호도가 낮을수록, 최근 선전포고 이력이 있을수록.
+    우호 선언·불가침이 있으면 줄고, 동맹이면 0."""
+    if D.at_war(g, fid, o):
+        return 1.0
+    if D.allied(g, fid, o):
+        return 0.0
+    h = max(0.0, min(0.8, 0.2 - D.opinion(g, o, fid) / 100))
+    fo = g.factions[o]
+    if g.turn - getattr(fo, "last_declare", -999) <= C.AI_P2_AGGR_MEMORY:
+        h += 0.15 + 0.05 * min(3, getattr(fo, "warmonger", 0))
+    if D.has_nonaggr(g, fid, o) or D.declared_friends(g, fid, o):
+        h *= 0.4
+    return min(1.0, h)
+
+
+def scan(g, f) -> dict:
+    """국경을 맞댄 나라마다: 추정 전력 p, 전력비 ratio(나/상대), 적대 host, 내 국경 중 그 나라 몫 share,
+    국경 집결 mass(그 나라 국경 병력 / 내 국경 병력), 위협도 T, 지역 수."""
+    AI = _ai()
+    fid, w = f.id, g.world
+    vis = g.visible(fid)
+    by_loc = AI._armies_by_loc(g)
+    mine = max(10.0, g.mil_power(fid))
+    my_side, their_side = defaultdict(set), defaultdict(set)
+    for r in g.regions_of(fid):
+        for n in w.land_adj[r.id]:
+            o = g.regions[n].owner
+            if o in (NEUTRAL, fid):
+                continue
+            my_side[o].add(r.id)
+            their_side[o].add(n)
+    total = sum(len(v) for v in my_side.values()) or 1
+    out = {}
+    for o in my_side:
+        theirs = sum(g.army_power(a) for n in their_side[o] if n in vis for a in by_loc.get(n, ()) if a.owner == o)
+        ours = sum(g.army_power(a) for rid in my_side[o] for a in by_loc.get(rid, ()) if a.owner == fid)
+        p = max(10.0, AI.perceived_power(g, fid, o))
+        host = hostility(g, fid, o)
+        share = len(my_side[o]) / total
+        mass = theirs / (ours + 20.0)
+        # 위협도: (전력비, 최대 3) × 적대 신호 × (국경 비중 보정) + 국경 집결(내 국경 병력의 1.5배 넘게 모았으면)
+        T = min(3.0, p / mine) * host * (0.5 + 0.5 * share) + 0.25 * max(0.0, mass - 1.5) * host
+        out[o] = {"p": round(p, 1), "ratio": round(mine / p, 3), "host": round(host, 3), "share": round(share, 3),
+                  "mass": round(mass, 3), "T": round(T, 3), "regions": g.region_count(o)}
+    return out
+
+
+def threat_power(g, f, sc) -> float:
+    """국경 너머 위협 전력: 적대 신호와 국경 비중을 반영한 이웃 전력의 최댓값."""
+    return max((v["p"] * min(1.0, v["host"] + 0.3) * min(1.0, v["share"] + 0.3) for v in sc.values()), default=0.0)
+
+
+def shrink(g, fid, e) -> float:
+    """e 와의 전쟁이 시작된 뒤 실제로 줄어든 영토 비율(되찾은 땅은 빼고)."""
+    w = g.dip.wars.get(D.pair(fid, e))
+    if not w:
+        return 0.0
+    n0 = max(1, w.get("regs0", {}).get(fid, g.region_count(fid)))
+    return max(0.0, 1 - g.region_count(fid) / n0)
+
+
+def posture(g, f, sc, threat=None) -> str:
+    """위기(crisis): 전쟁이 시작된 뒤 영토가 실제로 20% 이상 줄었거나, 수도 위협·실질 행복 −45 미만·자금 바닥.
+    경계(defend): 위협도 1.2 이상인 이웃, 이웃인 패권국(나 아님), 나와 비슷하거나 강한 나라에게 선전포고를 받아 싸우는 중.
+    평시(normal): 그 밖."""
+    fid = f.id
+    enemies = D.enemies(g, fid)
+    if enemies:
+        lost = max((shrink(g, fid, e) for e in enemies), default=0.0)
+        cap = g.regions.get(f.capital)
+        cap_threat = bool(cap) and (any(by != fid for by in cap.occs) or (threat or {}).get(f.capital, 0) >= 1.0)
+        if (lost >= C.AI_P2_CRISIS_LOST or cap_threat or g.avg_happiness(fid) < C.AI_P2_CRISIS_HAPPY
+                or (f.money < 0 and f.last.get("net", 0) < 0)):
+            return "crisis"
+    attacked = any((g.dip.wars.get(D.pair(fid, e)) or {}).get("declarer") == e
+                   and sc.get(e, {}).get("ratio", 0.0) < C.AI_P2_ATTACKED_RATIO for e in enemies)
+    maxT = max((v["T"] for v in sc.values()), default=0.0)
+    dominant = g.hegemon is not None and g.hegemon != fid and g.hegemon in sc
+    if maxT >= C.AI_P2_DEFEND_T or dominant or attacked:
+        return "defend"
+    return "normal"
+
+
+# ------------------------------------------------------------------ 승리 방향
+def _ranking(g):
+    if not getattr(g, "rankings", None):
+        return None
+    return g.rankings[max(g.rankings)]
+
+
+def path_scores(g, f, sc, rng=None) -> dict:
+    """방향별 점수 = 성격(Fit) × 조건(Feas) × 진척(Prospect) [× 경쟁 보정]. 이유도 함께 남긴다."""
+    AI = _ai()
+    fid = f.id
+    a = AI.eff_aggression(g, f) / 10
+    bias = lambda k: AI.leader_bias(g, fid, k)
+    regs = g.regions_of(fid)
+    R = max(1, len(regs))
+    rows = _ranking(g)
+    me_row = next((r for r in rows if r["fid"] == fid), None) if rows else None
+    others = [r for r in rows if r["fid"] != fid] if rows else []
+    why = {}
+    # 정복: 나보다 약한 이웃이 있으면 전력 차이에 비례, 강하고 적대적인 이웃이 있으면 감점
+    cands = [v for o, v in sc.items() if not D.allied(g, fid, o)]
+    best = max(cands, key=lambda v: v["ratio"], default=None)
+    adv = best["ratio"] if best else 0.0
+    if adv >= 1.0:
+        feas = 0.25 + 0.35 * min(2.0, adv - 1.0) + 0.1 * min(1.5, best["regions"] / R)
+    else:
+        feas = 0.12
+    stronger = any(v["ratio"] < 0.7 and v["host"] >= 0.3 for v in sc.values())
+    if stronger:
+        feas *= 0.6
+    feas *= 1 - min(0.5, f.war_weary / 100)
+    if g.avg_happiness(fid) < -10:
+        feas *= 0.8
+    conquest = (0.3 + 0.9 * a) * bias("war") * feas * (1 + 0.6 * min(1.0, R / 284))
+    why["conquest"] = f"최약 이웃 대비 {adv:.1f}배" + (", 강한 적대 이웃" if stronger else "")
+    # 과학: 석유·해안·산맥·공장·은행, GDP 순위, 진척. 같은 길에서 크게 앞선 나라가 있으면 감점
+    infos = [g.info(r.id) for r in regs]
+    has_oil = any(i.is_oil for i in infos)
+    has_coast = any(i.coastal for i in infos)
+    has_mtn = any(r.id in g.world.mountain_regions for r in regs)
+    fac = sum(1 for r in regs if r.b["factory"] >= 3)
+    bank_hi = any(r.b["bank"] >= 4 for r in regs)
+    if rows and me_row:
+        order = sorted(rows, key=lambda r: -r["gdp"])
+        rank = next(i for i, r in enumerate(order) if r["fid"] == fid) + 1
+        n = len(order)
+    else:
+        rank, n = None, 0
+    rank_k = (1 - (rank - 1) / max(1, n - 1)) if rank else 0.5
+    feas = (0.1 + 0.25 * has_oil + 0.12 * has_coast + 0.12 * has_mtn + 0.15 * min(1.0, fac / 2)
+            + 0.08 * bank_hi + 0.25 * rank_k)
+    k_sci = len(f.science)
+    ahead = max((r["science"] for r in others), default=0) - k_sci >= 2
+    science = (0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
+    why["science"] = ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
+    # 경제: 턴당 GDP 순위(반기 랭킹), 수도 주변 금융 권역 가능성, 우호 관계, 모아 둔 돈, 진척
+    inc = 0.35 if rank and rank <= 2 else 0.2 if rank and rank <= max(2, n // 2) else 0.05
+    near = sum(1 for rid in g.near_capital(fid, 1) if rid in g.regions and g.regions[rid].owner == fid)
+    cluster = 0.25 if near >= C.ECON_CLUSTER else 0.15 if near >= 3 else 0.05
+    partners, _ = D.econ_partners(g, fid)
+    stage = g.econ_stage(fid)
+    remaining = sum(C.ECON[s]["per_turn"] * C.ECON[s]["turns"] * (C.ECON_EXCHANGES if s == "exchange" else 1)
+                    for s in C.ECON_STEPS[max(0, stage - 1):]) * C.MONEY_SCALE
+    feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + 0.15 * min(1.0, f.money / max(1.0, remaining))
+    ahead = max((r["econ"] for r in others), default=0) - stage >= 2
+    economic = (0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
+    why["economic"] = f"GDP {rank or '?'}위, 수도 주변 {near}곳, 관계 {partners}" + (", 앞선 나라 있음" if ahead else "")
+    # 외교: 지금 규칙(생존국 전원 한 연합)은 어렵다. 우호적인 나라가 많을 때만
+    if g.mods(fid).value("no_alliance"):
+        diplomatic = 0.0
+    else:
+        alive = [x for x in g.alive_ids() if x != fid]
+        friendly = sum(1 for x in alive if D.allied(g, fid, x) or D.opinion(g, x, fid) >= 30) / max(1, len(alive))
+        diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2
+    why["diplomatic"] = "우호국 비율"
+    scores = {"conquest": conquest, "science": science, "economic": economic, "diplomatic": diplomatic}
+    if rng is not None:
+        scores = {k: v * (1 + rng.uniform(-C.AI_P2_NOISE, C.AI_P2_NOISE)) for k, v in scores.items()}
+    return {"scores": {k: round(v, 4) for k, v in scores.items()}, "why": why}
+
+
+def choose_path(g, f, sc, reason="정기") -> str:
+    s = state(f)
+    res = path_scores(g, f, sc, g.rng)
+    scores = res["scores"]
+    best = max(PATHS, key=lambda k: scores[k])
+    cur = s.get("path")
+    # 바꾼 지 24턴이 안 됐으면 정기 재검토로는 바꾸지 않는다(선전포고를 받았거나 위기면 예외)
+    settled = reason == "정기" and g.turn - s.get("path_turn", -99) < C.AI_P2_MIN_DWELL
+    if cur is None or (not settled and (scores[best] >= C.AI_P2_SWITCH * scores.get(cur, 0.0)
+                                        or scores.get(cur, 0.0) < C.AI_P2_MIN_SCORE)):
+        if cur != best:
+            log = s.setdefault("log", [])
+            log.append([g.turn, cur, best, reason, res["why"][best]])
+            del log[:-C.AI_P2_LOG]
+            s["path_turn"] = g.turn
+        cur = best
+    s["path"] = cur
+    s["scores"] = scores
+    s["last_eval"] = g.turn
+    return cur
+
+
+# ------------------------------------------------------------------ 우방(전선 이중화 방지)
+def choose_anchor(g, f, sc):
+    """국경을 맞댄 나라가 3곳 이상이거나, 2곳 이상인데 위협도 0.8 이상인 이웃이 있으면 우방 1곳을 둔다.
+    이미 우호 선언 + 불가침(또는 동맹)인 이웃이 있으면 그 나라. 없으면 강하고(뒤를 맡길 만하고) 나를 덜 싫어하는 이웃."""
+    fid = f.id
+    s = state(f)
+    if not (len(sc) >= 3 or (len(sc) >= 2 and any(v["T"] >= C.AI_P2_ANCHOR_T for v in sc.values()))):
+        return None
+    secured = [o for o in sc if D.declared_friends(g, fid, o) and (D.has_nonaggr(g, fid, o) or D.allied(g, fid, o))]
+    if s.get("anchor") in secured:
+        return s["anchor"]
+    if secured:
+        return max(secured, key=lambda o: sc[o]["p"])
+    mine = max(10.0, g.mil_power(fid))
+    cands = [o for o in sc if not D.at_war(g, fid, o) and o != s.get("target")]
+    # 상대가 나를 몹시 싫어하면(−50 미만) 관계 회복이 어렵다: 다른 후보가 있으면 뺀다
+    ok = [o for o in cands if D.opinion(g, o, fid) >= C.AI_P2_ANCHOR_MIN_OP]
+    cands = ok or cands
+    if not cands:
+        return None
+    # 서로의 우호도를 가장 크게 보고, 뒤를 맡길 만큼 강한 이웃을 조금 더 친다
+    return max(cands, key=lambda o: ((D.opinion(g, o, fid) + D.opinion(g, fid, o)) / 50
+                                     + 0.4 * min(2.0, sc[o]["p"] / mine) - sc[o]["host"], -o))
+
+
+def secured(g, fid, o) -> bool:
+    return D.declared_friends(g, fid, o) and (D.has_nonaggr(g, fid, o) or D.allied(g, fid, o))
+
+
+# ------------------------------------------------------------------ 매 턴 갱신
+def update(g, f, threat=None):
+    """2페이즈 이상인 AI 에 매 턴: 정세·태세 갱신, 6턴마다(또는 사건이 생기면) 승리 방향·우방 재검토."""
+    s = state(f)
+    sc = scan(g, f)
+    s["scan"] = sc
+    old_posture = s.get("posture")
+    s["posture"] = posture(g, f, sc, threat)
+    tp = threat_power(g, f, sc)
+    s["mil_ok"] = g.mil_power(f.id) >= C.AI_P2_MIL_OK * tp
+    enemies = set(D.enemies(g, f.id))
+    new_enemy = bool(enemies - set(s.get("enemies", ())))
+    s["enemies"] = sorted(enemies)
+    reason = None
+    if "path" not in s:
+        reason = "2페이즈 시작"
+    elif g.turn - s.get("last_eval", -99) >= C.AI_P2_EVAL_TURNS:
+        reason = "정기"
+    elif new_enemy:
+        reason = "선전포고 받음"
+    elif s["posture"] == "crisis" and old_posture != "crisis":
+        reason = "위기"
+    if reason:
+        choose_path(g, f, sc, reason)
+        s["anchor"] = choose_anchor(g, f, sc)
+    cnt = s.setdefault("posture_n", {})
+    cnt[s["posture"]] = cnt.get(s["posture"], 0) + 1
+    return s
+
+
+def path_of(f):
+    p = f.ai.get("p2")
+    return p.get("path") if p else None
+
+
+def posture_of(f) -> str:
+    p = f.ai.get("p2")
+    return p.get("posture", "normal") if p else "normal"

@@ -809,6 +809,27 @@ def gift_opinion(g, ai, value, giver=None) -> float:
     return min(C.OP_GIFT_MAX, math.floor(raw * 100 + 1e-6) / 100)
 
 
+def ai_gift(g, giver, receiver, amount) -> float:
+    """AI 끼리 돈 선물: 보내고, 받는 쪽 우호도를 선물 공식대로 올린다. 오른 우호도를 돌려준다."""
+    amount = max(0.0, min(amount, g.factions[giver].money))
+    if amount <= 0:
+        return 0.0
+    g.factions[giver].money -= amount
+    g.factions[receiver].money += amount
+    v = gift_opinion(g, receiver, amount, giver)
+    add_opinion(g, receiver, giver, v)
+    return v
+
+
+def gift_needed(g, receiver, delta, giver=None) -> float:
+    """받는 쪽 우호도를 delta 만큼 올리는 데 드는 돈(1회 최대 OP_GIFT_MAX 기준)."""
+    delta = min(delta, C.OP_GIFT_MAX)
+    rate = gift_rate(g, receiver)
+    if giver is not None and g.econ_buildings(giver, "ifc"):
+        rate *= 1 + C.IFC_GIFT_BONUS
+    return delta / max(1e-6, rate) * gift_income(g, receiver) + 1.0
+
+
 def respond_offer(g, ai, proposer, offer, execute=True):
     """AI 판정 후 수락이면 실행. (결과, 수정안, 설명)"""
     res, counter, info = evaluate_offer(g, ai, proposer, offer)

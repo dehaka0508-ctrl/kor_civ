@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 
 from . import ai_phase as PH
+from . import ai_strategy as ST
 from . import config as C
 from . import diplomacy as D
 from . import rules as R
@@ -136,7 +137,9 @@ def choose_victory_goal(g, f):
 def set_strategy(g, f):
     a = f.aggression
     w = {"military": 0.4 + a / 10, "economy": 1.4 - a / 25, "expansion": 1.2, "defense": 0.6}
-    if "victory_goal" not in f.ai or g.turn - f.ai.get("goal_turn", -999) >= C.TURNS_PER_YEAR:
+    if PH.phase(f) >= 2 and ST.path_of(f):
+        f.ai["victory_goal"] = ST.path_of(f)          # 2페이즈: 종합 판단으로 고른 방향
+    elif "victory_goal" not in f.ai or g.turn - f.ai.get("goal_turn", -999) >= C.TURNS_PER_YEAR:
         f.ai["victory_goal"] = choose_victory_goal(g, f)
         f.ai["goal_turn"] = g.turn
     goal = f.ai["victory_goal"]
@@ -163,8 +166,17 @@ def set_strategy(g, f):
     if g.turn < 48:
         w["expansion"] += 0.5
     f.ai["weights"] = w
+    f.ai["weights_base"] = dict(w)
     f.ai["goal"] = goal
     f.ai["strategy_turn"] = g.turn
+
+
+def _posture_weights(f):
+    """2페이즈 태세(위기·경계)에 따라 전략 가중치를 매 턴 조정한다(기본값은 set_strategy 가 만든 것)."""
+    w = dict(f.ai.get("weights_base") or f.ai.get("weights") or {})
+    for k, dv in C.AI_P2_POSTURE_W.get(ST.posture_of(f), {}).items():
+        w[k] = max(0.2, w.get(k, 1.0) + dv)
+    f.ai["weights"] = w
 
 
 def plan_turn(g, fid):
@@ -172,8 +184,14 @@ def plan_turn(g, fid):
     if not f.alive:
         return
     PH.update(g, f)
-    if "weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD:
+    p2 = PH.phase(f) >= 2
+    if p2:
+        ST.update(g, f, threat_map(g, fid))
+    if ("weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD
+            or (p2 and f.ai.get("goal") != ST.path_of(f))):
         set_strategy(g, f)
+    if p2:
+        _posture_weights(f)
     f.auto_food = True
     _market(g, f)
     _tax(g, f)
@@ -462,6 +480,12 @@ def war_assessment(g, fid, e):
     if f.is_ai and PH.phase(f) == 1 and f.ai.get("free", 0) > 0:
         d += C.AI_P1_PEACE * f.ai["free"]  # 1페이즈: 빨리 끝내고 빈 땅으로
         pro.append("확장할 빈 땅")
+    elif f.is_ai and PH.phase(f) >= 2:
+        if ST.posture_of(f) == "crisis":
+            d += C.AI_P2_CRISIS_PEACE
+            pro.append("국가 위기")
+        if ST.path_of(f) not in (None, "conquest"):
+            d += C.AI_P2_NONCONQ_PEACE     # 정복을 노리지 않으면 전쟁을 오래 끌지 않는다
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 
@@ -479,7 +503,8 @@ def national_power(g, fid):
 def _diplomacy(g, f):
     fid = f.id
     alive = g.alive_ids()
-    update_intel(g, f)
+    if f.ai.get("intel_turn") != g.turn:
+        update_intel(g, f)                 # 한 턴에 한 번만(기억 감쇠가 두 번 걸리지 않게)
     # 강화: 병력 판단·전선·피로·목표를 종합
     for e in D.enemies(g, fid):
         a = war_assessment(g, fid, e)
@@ -502,8 +527,50 @@ def _diplomacy(g, f):
             if ok1 and ok2:
                 D.sign_treaty(g, fid, b, kind)
                 break
+    if PH.phase(f) >= 2:
+        _p2_anchor(g, f)
     _social(g, f)
     _consider_war(g, f)
+
+
+def _p2_anchor(g, f):
+    """2페이즈 우방(전선 이중화 방지): 우호 선언 → 선물로 우호도를 불가침 문턱까지 → 불가침(AI 끼리는 조건이 맞으면
+    _diplomacy 에서 자동 체결, 플레이어에게는 제안). 선언이 안 될 만큼 사이가 나쁘면 선물로 먼저 −20까지 올린다.
+    우방에 대한 내 우호도도 매 턴 조금씩 올린다(관계를 맺기로 한 결정)."""
+    fid = f.id
+    s = ST.state(f)
+    o = s.get("anchor")
+    if o is None or not g.factions[o].alive or D.at_war(g, fid, o):
+        return
+    D.add_opinion(g, fid, o, C.AI_P2_ANCHOR_OP)
+    if ST.secured(g, fid, o):
+        return
+    if not D.declared_friends(g, fid, o):
+        ok, _ = D.friendship_check(g, fid, o)
+        if ok:
+            if g.factions[o].is_ai:
+                D.declare_friendship(g, fid, o)
+            else:
+                _queue_player(g, fid, "friendship")
+            return
+        target = C.DECL_FRIEND_MIN + 10            # 선언을 받아들일 만큼
+    else:
+        target = D.threshold(g, o, fid, C.TREATY_MIN) + C.AI_P2_GIFT_MARGIN
+    if not g.factions[o].is_ai:
+        return                                    # 플레이어에게는 조약 제안(propose_to_player)으로
+    gap = target - D.opinion(g, o, fid)
+    if gap <= 0 or g.turn - s.get("gift_turn", -99) < C.AI_P2_GIFT_EVERY:
+        return
+    reserve = 300 + g.upkeep(fid) * 5
+    net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
+    budget = min(max(0.0, f.money - reserve) * C.AI_P2_GIFT_SHARE, max(0.0, net) * C.AI_P2_GIFT_NET)
+    amount = min(budget, D.gift_needed(g, o, gap, fid))
+    if amount >= 50:
+        v = D.ai_gift(g, fid, o, amount)
+        s["gift_turn"] = g.turn
+        s["gifts"] = s.get("gifts", 0) + 1
+        s["gift_money"] = s.get("gift_money", 0) + round(amount)
+        s["gift_op"] = round(s.get("gift_op", 0) + v, 2)
 
 
 def _social(g, f):
@@ -548,8 +615,9 @@ def _social(g, f):
     if not alive or g.rng.random() >= p_den:
         return
     cands = []
+    anchor = ST.state(f).get("anchor") if PH.phase(f) >= 2 else None
     for x in alive:
-        if not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
+        if x == anchor or not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
             continue
         if not g.factions[x].is_ai and g.rng.random() >= C.AI_DENOUNCE_PLAYER:
             continue                         # 플레이어는 낮은 확률로만
@@ -571,6 +639,10 @@ def _consider_war(g, f):
     avg_h = g.avg_happiness(fid)              # 실질 행복도(전쟁 피로 반영)
     if not regs or f.money < 0 or avg_h < -20 or f.war_weary > 45:
         return
+    p2 = ST.state(f) if PH.phase(f) >= 2 else None
+    if p2 is not None and p2.get("posture") == "crisis":
+        _p2_block(f, "위기")
+        return                               # 위기 중에는 새 전쟁을 벌이지 않는다(경계 중에는 양면 전선 검사로 거른다)
     alive = g.alive_ids()
     aggr = eff_aggression(g, f)
     # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.5: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
@@ -597,6 +669,8 @@ def _consider_war(g, f):
     for o in sorted(neighbors):
         if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o) or D.peace_left(g, fid, o) > 0:
             continue
+        if p2 is not None and o == p2.get("anchor"):
+            continue                          # 우방은 치지 않는다
         their = perceived_power(g, fid, o) * g.morale(o) + sum(perceived_power(g, fid, x) for x in alive
                                                                if x not in (fid, o) and D.allied(g, x, o))
         their /= 1 + 0.5 * len(D.enemies(g, o))       # 상대도 다른 전쟁에 병력이 묶여 있다
@@ -609,6 +683,11 @@ def _consider_war(g, f):
                                                 if x not in (fid, o) and D.at_war(g, x, o)
                                                 and not D.at_war(g, x, fid))
         ratio = mine / max(10.0, their)
+        if p2 is not None:
+            why = p2_war_gate(g, fid, p2, o, ratio)
+            if why:
+                _p2_block(f, why)
+                continue
         op = D.opinion(g, fid, o)
         thr = war_op_threshold(g, f, o, ratio, can_expand)
         if op > thr:
@@ -637,12 +716,37 @@ def _consider_war(g, f):
         s += C.VICTORY_THREAT_SCORE * g.victory_threat(o)
         if PH.phase(f) == 1:
             s -= C.AI_P1_WAR_PENALTY * f.ai.get("free", 0.0)   # 1페이즈: 전쟁보다 빈 땅부터
+        elif p2 is not None:
+            s += C.AI_P2_PATH_WAR if p2.get("path") == "conquest" else C.AI_P2_OTHER_WAR
         if s > best_s:
             best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:
         ok, _ = D.declare_war(g, fid, best)
         if ok:
             f.ai.setdefault("war_goals", {})[best] = best_goals
+            if p2 is not None:
+                p2["target"] = best
+
+
+def p2_war_gate(g, fid, p2, o, ratio):
+    """2페이즈에서 o 에게 새로 선전포고하면 안 되는 이유(없으면 None).
+    - 국경 병력: o 가 국경에 내 국경 병력의 1.3배 넘게 모았는데 전체 전력이 2배가 안 되면
+    - 양면 전선: o 말고 위협도 0.8 이상이고 불가침·동맹이 없는 이웃이 있는데 o 보다 2.5배 강하지 않으면"""
+    sc = p2.get("scan", {})
+    v = sc.get(o)
+    if v and v.get("mass", 0) > C.AI_P2_MASS and ratio < C.AI_P2_MASS_RATIO:
+        return "국경 병력"
+    if ratio < C.AI_P2_TWO_FRONT_RATIO and any(
+            x != o and w_.get("T", 0) >= C.AI_P2_TWO_FRONT_T and not D.has_nonaggr(g, fid, x) and not D.allied(g, fid, x)
+            for x, w_ in sc.items()):
+        return "양면 전선"
+    return None
+
+
+def _p2_block(f, why):
+    """2페이즈 전쟁 판단을 막은 이유를 센다(분석용)."""
+    b = ST.state(f).setdefault("blocks", {})
+    b[why] = b.get(why, 0) + 1
 
 
 def _queue_player(g, fid, kind):
@@ -1227,6 +1331,14 @@ def _slots(g, f, threat, military=True):
     deficit = p1 and income - upkeep - all_committed < 0
     prod_k = C.AI_P1_DEFICIT_PROD if deficit else 1.0
     annex_k = C.AI_P1_DEFICIT_ANNEX if deficit else 1.0
+    # 2페이즈 태세: 위기면 돈을 군사로(생산 건물·편입 감점, 과학·경제 단계 착수 중지), 경계면 군사력이 모자랄 때 큰 공사 보류
+    post = ST.posture_of(f) if (f.is_ai and PH.phase(f) >= 2) else "normal"
+    if post == "crisis":
+        prod_k *= C.AI_P2_CRISIS_PROD
+        annex_k *= C.AI_P2_CRISIS_ANNEX
+    elif post == "defend":
+        prod_k *= C.AI_P2_DEFEND_PROD
+    big_ok = post == "normal" or (post == "defend" and ST.state(f).get("mil_ok", False))
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
     fuel = fuel_balance(g, fid)
@@ -1448,7 +1560,7 @@ def _slots(g, f, threat, military=True):
             cands.append((u, r.id, "unit", key, None, per))
     # 과학승리 단계: 목표면 조건을 낮춘다. 그 밖엔 재정이 아주 넉넉할 때만
     step = g.science_next(fid) if (f.is_ai and "science" in g.settings.victories) else None
-    if step is not None and g.science_busy(fid, step) is None:
+    if step is not None and g.science_busy(fid, step) is None and big_ok:
         sci_goal = f.ai.get("victory_goal") == "science"
         sc_turns = g.science_turns(fid)
         sc_total = g.science_step_cost(fid, step)
@@ -1473,7 +1585,8 @@ def _slots(g, f, threat, military=True):
                     cost = R.prod_building_cost(bk, lv) * (g.mods(fid).mult("cost_factory") if bk == "factory" else 1)
                     turns = g.build_time(fid, bk, R.prod_building_turns(lv))
                     cands.append((3.0, r0.id, "build", bk, None, cost / turns))
-    _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias)
+    if big_ok:
+        _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias)
     cands.sort(key=lambda c: -c[0])
     used = set()
     for u, rid, kind, key, border, per in cands:

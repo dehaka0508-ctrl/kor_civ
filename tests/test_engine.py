@@ -2439,3 +2439,108 @@ def test_ai_phase1_deficit_builds_production():
     ai._slots(g, f, {}, military=False)
     kinds = [r.project.kind for r in g.regions_of(fid) if r.project]
     assert "build" in kinds                              # 적자면 비축으로 생산 건물부터
+
+
+# ---------------------------------------------------------------- AI 2페이즈(경쟁기)
+def _p2_game(n=3):
+    from korciv.state import Settings
+    g = Game(Settings(n_enemies=n, seed=7, all_ai=True))
+    for f in g.factions:
+        f.ai.update(phase=2, phase_turn=0)
+    _neutral_ai(g, *[f.id for f in g.factions])
+    return g
+
+
+def test_ai_p2_path_scores_follow_situation():
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    base = ST.path_scores(g, f, {})["scores"]
+    # 석유 지역이 있으면 과학 점수가 오른다
+    oil = next(r for r in g.world.order if g.info(r).is_oil and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [oil])
+    assert ST.path_scores(g, f, {})["scores"]["science"] > base["science"]
+    # 나보다 훨씬 약한 이웃이 있으면 정복 점수가 전력 차이에 비례해 오른다
+    weak = {1: {"p": 10.0, "ratio": 1.5, "host": 0.2, "share": 1.0, "mass": 0.0, "T": 0.1, "regions": 10}}
+    weaker = {1: dict(weak[1], ratio=3.0)}
+    s1 = ST.path_scores(g, f, weak)["scores"]["conquest"]
+    s2 = ST.path_scores(g, f, weaker)["scores"]["conquest"]
+    assert s2 > s1 > ST.path_scores(g, f, {})["scores"]["conquest"]
+    # 강하고 적대적인 이웃이 있으면 정복 점수가 깎인다
+    scary = {1: dict(weak[1]), 2: {"p": 999.0, "ratio": 0.3, "host": 0.6, "share": 0.5, "mass": 0, "T": 2, "regions": 50}}
+    assert ST.path_scores(g, f, scary)["scores"]["conquest"] < s1
+
+
+def test_ai_p2_path_inertia_and_log():
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    s = ST.state(f)
+    s["path"] = "science"
+    s["scores"] = {}
+    g.rng.seed(1)
+    res = ST.path_scores(g, f, {})["scores"]
+    best = max(res, key=res.get)
+    ST.choose_path(g, f, {})
+    # 관성: 새 방향이 1.25배를 넘지 않으면 그대로
+    if res[best] < C.AI_P2_SWITCH * res["science"] * 0.95:
+        assert s["path"] == "science"
+    assert s["last_eval"] == g.turn
+
+
+def test_ai_p2_anchor_for_three_borders():
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    sc = {o: {"p": 50.0 * o, "ratio": 1.0, "host": 0.2, "share": 0.33, "mass": 0, "T": 0.2, "regions": 20} for o in (1, 2, 3)}
+    a = ST.choose_anchor(g, f, sc)
+    assert a in (1, 2, 3)
+    assert ST.choose_anchor(g, f, {1: sc[1], 2: sc[2]}) is None        # 국경 2곳·위협 없음: 우방 불필요
+    two = {1: sc[1], 2: dict(sc[2], T=1.0)}
+    assert ST.choose_anchor(g, f, two) in (1, 2)                        # 2곳이라도 위협이 있으면
+
+
+def test_ai_p2_posture_and_crisis_stops_big_projects():
+    from korciv import ai, ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    assert ST.posture(g, f, {}) == "normal"
+    assert ST.posture(g, f, {1: {"T": 2.0}}) == "defend"
+    D.declare_war(g, 1, 0)
+    g.dip.wars[D.pair(0, 1)]["taken"] = {1: 10}
+    g.dip.wars[D.pair(0, 1)]["regs0"] = {0: 20, 1: 20}
+    assert ST.posture(g, f, {1: {"T": 0.1, "ratio": 2.0}}) == "crisis"
+    # 위기: 과학 단계를 새로 시작하지 않는다
+    s = ST.state(f)
+    s.update(posture="crisis", path="science", scan={}, mil_ok=False)
+    f.ai["victory_goal"] = "science"
+    f.money = 10 ** 7
+    for r in g.regions_of(0):
+        r.project = None
+    ai._slots(g, f, {}, military=False)
+    assert not any(r.project and r.project.kind == "science" for r in g.regions_of(0))
+
+
+def test_ai_p2_two_front_blocks_new_war():
+    from korciv import ai, ai_strategy as ST
+    g = _p2_game()
+    p2 = {"scan": {1: {"T": 0.1, "mass": 0.0}, 2: {"T": 1.0, "mass": 0.0}}}
+    assert ai.p2_war_gate(g, 0, p2, 1, 1.5) == "양면 전선"       # 위협 이웃 2가 무방비로 남아 있다
+    assert ai.p2_war_gate(g, 0, p2, 1, 3.0) is None               # 압도적이면 예외
+    g.dip.nonaggr[D.pair(0, 2)] = g.turn + 24
+    assert ai.p2_war_gate(g, 0, p2, 1, 1.5) is None               # 2와 불가침이면 괜찮다
+    p2 = {"scan": {1: {"T": 0.1, "mass": 2.0}}}
+    assert ai.p2_war_gate(g, 0, p2, 1, 1.5) == "국경 병력"        # 상대가 국경에 병력을 모았다
+    assert ai.p2_war_gate(g, 0, p2, 1, 2.5) is None
+    f = g.factions[0]
+    ai._p2_block(f, "양면 전선")
+    assert ST.state(f)["blocks"]["양면 전선"] == 1
+
+
+def test_ai_gift_raises_opinion():
+    g = _p2_game()
+    before = D.opinion(g, 1, 0)
+    g.factions[0].money = 10 ** 6
+    need = D.gift_needed(g, 1, 10, 0)
+    v = D.ai_gift(g, 0, 1, need)
+    assert v == pytest.approx(10, abs=0.1) and D.opinion(g, 1, 0) == pytest.approx(before + v)
