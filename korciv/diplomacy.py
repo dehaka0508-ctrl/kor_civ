@@ -541,11 +541,7 @@ def treaty_check(g, ai, proposer, kind):
         need = threshold(g, ai, proposer, C.ALLIANCE_MIN)
         if op < need:
             return False, f"우호도 {op:.0f} / 필요 {need:.0f}"
-        common = set(enemies(g, ai)) & set(enemies(g, proposer))
-        heg = g.hegemon is not None and g.hegemon not in (ai, proposer)
-        if not common and not heg:
-            return False, "공동의 적이나 견제 대상이 없습니다."
-        return True, "공동의 적/견제 대상"
+        return True, f"우호도 {op:.0f} / 필요 {need:.0f}"
     if kind == "coalition":
         if same_coalition(g, ai, proposer):
             return False, "이미 같은 연합입니다."
@@ -556,15 +552,6 @@ def treaty_check(g, ai, proposer, kind):
         need = threshold(g, ai, proposer, C.COALITION_MIN)
         if op < need:
             return False, f"우호도 {op:.0f} / 필요 {need:.0f}"
-        members = set()
-        for x in (ai, proposer):
-            cid = coalition_of(g, x)
-            if cid is not None:
-                members |= g.dip.coalitions[cid]["members"]
-        members |= {ai, proposer}
-        leader = max(members, key=lambda f: g.power.get(f, 0))
-        if g.hegemon is not None and leader == g.hegemon:
-            return False, "맹주가 패권 세력입니다."
         return True, "조건 충족"
     return False, "알 수 없는 제안"
 
@@ -652,8 +639,9 @@ def evaluate_offer(g, ai, proposer, offer):
     if is_empty(take) and is_empty(give):
         return "reject", None, "빈 제안입니다."
     if is_empty(take):
-        return "accept", None, (f"선물 (가치 {recv:,.0f}) → 우호도 +{gift_opinion(g, ai, recv):.1f}"
-                                f" (상대 턴당 세수 {gift_income(g, ai):,.0f}마다 +1, 최대 +{C.OP_GIFT_MAX})")
+        gv = gift_value(g, give, proposer)
+        return "accept", None, (f"선물 (가치 {gv:,.0f}) → 우호도 +{gift_opinion(g, ai, gv):.2f}"
+                                f" (상대 턴당 세수 {gift_income(g, ai):,.0f}마다 +{gift_rate(g, ai):.2f}, 최대 +{C.OP_GIFT_MAX})")
     if is_empty(give):
         only_passage = take.get("passage") and not take.get("regions") and not any(
             take.get(k, 0) for k in TRADE_KEYS)
@@ -705,9 +693,34 @@ def gift_income(g, fid) -> float:
     return max(1.0, f.last.get("tax", 0.0), g.gdp(fid) * C.TAX_DEFAULT * f.income_mult)
 
 
+def gift_aggression(g, fid) -> float:
+    """선물 판정용 호전성 = 지도자 호전성 + 정치체제 호전성(AI 목표 호전성, 철인통치·미정 5). 최대 20."""
+    from .leaders import GOV_BY_KEY
+    f = g.factions[fid]
+    gdef = GOV_BY_KEY.get(f.gov) if f.gov else None
+    gov = gdef["target"] if gdef and gdef["target"] is not None else C.GIFT_GOV_AGGR_DEFAULT
+    return f.aggression + gov
+
+
+def gift_rate(g, fid) -> float:
+    """세수 1턴분 선물당 우호도: 3 − 0.05 × (호전성 − 10). 예) 지도자 6 + 체제 7 → 2.85."""
+    return C.GIFT_OP_PER_INCOME - C.GIFT_AGGR_STEP * (gift_aggression(g, fid) - C.GIFT_AGGR_BASE)
+
+
+def gift_value(g, side: dict, giver) -> float:
+    """선물의 가치: 돈은 그대로, 자원은 주는 쪽의 시장 판매가(내정 탭), 그 밖(특산물·통행권·지역)은 거래 가치."""
+    v = side.get("money", 0)
+    for k in ("food", "oil", "coal", "elec"):
+        v += g.sell_price(giver, k) * side.get(k, 0)
+    rest = {"specialty": side.get("specialty", 0), "passage": side.get("passage", False),
+            "regions": side.get("regions", [])}
+    return v + items_value(g, rest, False, None, giver)
+
+
 def gift_opinion(g, ai, value) -> float:
-    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 +1, 1회 최대 +25."""
-    return min(C.OP_GIFT_MAX, C.GIFT_OP_PER_INCOME * value / gift_income(g, ai))
+    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사, 1회 최대 +25."""
+    raw = gift_rate(g, ai) * value / gift_income(g, ai)
+    return min(C.OP_GIFT_MAX, math.floor(raw * 100 + 1e-6) / 100)
 
 
 def respond_offer(g, ai, proposer, offer, execute=True):
@@ -715,9 +728,8 @@ def respond_offer(g, ai, proposer, offer, execute=True):
     res, counter, info = evaluate_offer(g, ai, proposer, offer)
     give, take = offer["give"], offer["take"]
     if res == "accept" and execute:
-        value = items_value(g, give, False, ai, proposer)
         if is_empty(take):
-            add_opinion(g, ai, proposer, gift_opinion(g, ai, value))
+            add_opinion(g, ai, proposer, gift_opinion(g, ai, gift_value(g, give, proposer)))
         elif is_empty(give):
             only_passage = take.get("passage") and not take.get("regions") and not any(
                 take.get(k, 0) for k in TRADE_KEYS)

@@ -291,9 +291,13 @@ OP_WARMONGER = -10
 OP_WARMONGER_STEP = -5
 WARMONGER_WINDOW = 48
 OP_GIFT_MAX = 25
-# 선물: 받는 나라의 턴당 세수 1턴분마다 우호도 +1(1회 최대 OP_GIFT_MAX).
+# 선물: 받는 나라의 턴당 세수 1턴분마다 우호도 +3(1회 최대 OP_GIFT_MAX, 소수 둘째 자리 아래 절사).
 # 세수는 지난 턴 실제 세수와 GDP × 기준 세율(10%) 중 큰 값(세율을 0%로 내린 나라에 푼돈으로 우호도를 사지 못하게).
-GIFT_OP_PER_INCOME = 1.0
+# 받는 나라의 호전성(지도자 + 정치체제, 최대 20)이 10보다 1 높을 때마다 −0.05, 낮을 때마다 +0.05.
+GIFT_OP_PER_INCOME = 3.0
+GIFT_AGGR_BASE = 10
+GIFT_AGGR_STEP = 0.05
+GIFT_GOV_AGGR_DEFAULT = 5.0   # 철인통치·체제 미정의 정치체제 호전성
 OP_DEMAND_ACCEPT = -15
 OP_DEMAND_REJECT = -10
 OP_TRADE_DONE = 2

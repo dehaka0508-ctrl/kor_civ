@@ -1889,14 +1889,45 @@ def test_gift_opinion_follows_income():
     g = new_game(n_enemies=2)
     inc = D.gift_income(g, 1)
     assert inc >= g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult - 1e-6
-    g.factions[1].last["net"] = -500              # 적자여도 푼돈 선물로 우호도가 크게 오르지 않는다
-    assert D.gift_opinion(g, 1, 5) < 0.1
-    assert D.gift_opinion(g, 1, inc * 10) == pytest.approx(10)
+    f = g.factions[1]
+    f.aggression, f.gov = 5.0, "philosopher"            # 5 + 5 = 10 → 세수 1턴분당 +3
+    assert D.gift_rate(g, 1) == pytest.approx(3.0)
+    f.last["net"] = -500                               # 적자여도 푼돈 선물로 우호도가 크게 오르지 않는다
+    assert D.gift_opinion(g, 1, 5) < 1                  # 예전 버그: +25
+    assert D.gift_opinion(g, 1, inc * 2) == pytest.approx(6.0)
     assert D.gift_opinion(g, 1, inc * 100) == C.OP_GIFT_MAX
-    g.factions[1].last["tax"] = 0                 # 세율 0%여도 GDP × 10% 기준
-    assert D.gift_income(g, 1) == pytest.approx(max(1.0, g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult))
+    # 호전성 10 기준, 1 높을 때마다 −0.05: 5.5 + 전제군주제 7.5 = 13 → 2.85 (소수 둘째 자리 아래 절사)
+    f.aggression, f.gov = 5.5, "absolute"
+    assert D.gift_rate(g, 1) == pytest.approx(2.85)
+    assert D.gift_opinion(g, 1, inc) == 2.85
+    assert D.gift_opinion(g, 1, inc / 3) == 0.95                # 0.95 (0.9499.. 이 아니라)
+    f.aggression, f.gov = 1.0, "parliamentary"          # 1 + 1.5 = 2.5 → 3.375 → 3.37
+    assert D.gift_opinion(g, 1, inc) == 3.37
+    f.last["tax"] = 0                                  # 세율 0%여도 GDP × 10% 기준
+    assert D.gift_income(g, 1) == pytest.approx(max(1.0, g.gdp(1) * C.TAX_DEFAULT * f.income_mult))
+    # 자원 선물은 주는 쪽의 시장 판매가로 환산
+    offer = D.empty_offer()
+    offer["give"]["food"] = 100
+    assert D.gift_value(g, offer["give"], 0) == pytest.approx(100 * g.sell_price(0, "food"))
+    f.aggression, f.gov = 5.0, "philosopher"
     op0 = D.opinion(g, 1, 0)
     offer = D.empty_offer()
-    offer["give"]["money"] = round(D.gift_income(g, 1) * 3)
+    offer["give"]["money"] = D.gift_income(g, 1)
     D.respond_offer(g, 1, 0, offer)
     assert D.opinion(g, 1, 0) == pytest.approx(op0 + 3, abs=0.01)
+
+
+def test_alliance_needs_only_opinion():
+    g = new_game(n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    p = D.pair(0, 1)
+    g.dip.nonaggr[p] = g.turn + C.TREATY_TURNS
+    g.dip.op[(1, 0)] = C.ALLIANCE_MIN + 1
+    assert not D.enemies(g, 0) and g.hegemon is None        # 공동의 적·견제 대상 없음
+    ok, why = D.treaty_check(g, 1, 0, "alliance")
+    assert ok, why
+    D.sign_treaty(g, 0, 1, "alliance")
+    g.turn += C.COALITION_ALLIANCE_TURNS
+    g.dip.op[(1, 0)] = C.COALITION_MIN
+    ok, why = D.treaty_check(g, 1, 0, "coalition")
+    assert ok, why
