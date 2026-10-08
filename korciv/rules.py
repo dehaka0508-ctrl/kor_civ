@@ -78,11 +78,6 @@ def science_cost_mult(step_index: int) -> float:
     return C.SCIENCE_COST_GROWTH ** max(0, step_index)
 
 
-def econ_share(n_nations: int) -> float:
-    """경제승리에 필요한 전체 GDP 몫: 8개국 50%, 6개국 60%(2위 이하 합의 1.5배), 국가가 하나 늘 때마다 −5%p."""
-    return max(C.ECON_SHARE_MIN, min(C.ECON_SHARE_MAX, C.ECON_SHARE_A - C.ECON_SHARE_B * n_nations))
-
-
 def def_building_turns(level: int) -> int:
     return C.DEF_TURNS[level - 1]
 

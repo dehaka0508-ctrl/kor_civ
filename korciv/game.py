@@ -92,7 +92,10 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False)):
+                            ("pop_focus", False), ("econ", None), ("econ_paused", None)):
+                if attr in ("econ", "econ_paused") and not hasattr(r, attr):
+                    setattr(r, attr, set() if attr == "econ" else {})
+                    continue
                 if not hasattr(r, attr):
                     setattr(r, attr, v)
             if not isinstance(getattr(r, "energy", None), dict):
@@ -290,7 +293,7 @@ class Game:
         pid = self.player_id
         involved = [f for f in e["fids"] if f is not None and f != NEUTRAL and 0 <= f < len(self.factions)]
         if any(not self.has_met(pid, f) for f in involved) and pid not in e["fids"] \
-                and e["kind"] not in ("victory", "ranking"):
+                and e["kind"] not in ("victory", "ranking", "alert"):
             return None                         # 조우하지 않은 세력들의 일은 모른다
         unknown = [f for f in involved if not self.knows_name(pid, f)]
         text = e["text"]
@@ -1289,6 +1292,17 @@ class Game:
             name = f"과학 {k + 1}단계: {C.SCIENCE[step]['name']}"
             add("science", step, name, self.science_step_cost(fid, step), turns,
                 busy is None, "" if busy is None else f"{self.info(busy).name}에서 진행 중", level=k + 1)
+        for step in self.econ_available(fid):
+            if not self.econ_site_ok(fid, rid, step):
+                continue
+            spec = C.ECON[step]
+            saved = rr.econ_paused.get(step, 0)
+            turns = max(1, spec["turns"] - saved)
+            k = C.ECON_STEPS.index(step) + 2
+            name = f"경제 {k}단계: {spec['name']}" + (f" (이어서 {saved}/{spec['turns']}턴)" if saved else "")
+            busy = self.econ_busy(fid, step) if step != "exchange" else None
+            add("econ", step, name, spec["per_turn"] * C.MONEY_SCALE * turns, turns,
+                busy is None, "" if busy is None else f"{self.info(busy).name}에서 진행 중", level=k)
         if self.factions[fid].capital != rid:
             y = max(rr.output, self.region_output_estimate(rid))
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
@@ -1372,6 +1386,153 @@ class Game:
             if have == set(C.SCIENCE_UNITS):
                 return r.id
         return None
+
+    # ---- 경제승리(기축통화)
+    def econ_enabled(self) -> bool:
+        return "economic" in self.settings.victories
+
+    def finance_cluster(self, fid) -> set:
+        """수도를 포함해 서로 맞닿은(육상 인접) 한 덩어리의 금융 단지(은행 5단계) 지역. 수도가 금융 단지가 아니면 빈 집합."""
+        cap = self.factions[fid].capital
+        rr = self.regions.get(cap)
+        if not rr or rr.owner != fid or rr.b["bank"] < 5:
+            return set()
+        seen, stack = {cap}, [cap]
+        while stack:
+            u = stack.pop()
+            for v in self.world.land_adj[u]:
+                if v not in seen and self.regions[v].owner == fid and self.regions[v].b["bank"] >= 5:
+                    seen.add(v)
+                    stack.append(v)
+        return seen
+
+    def econ_buildings(self, fid, key) -> list:
+        return [r.id for r in self.regions_of(fid) if key in r.econ]
+
+    def econ_need(self, fid, n) -> int:
+        """관계 조건 국가 수: 살아 있는 다른 나라가 그보다 적으면 남은 나라 전부."""
+        return min(n, len(self.alive_ids()) - 1)
+
+    def econ_ready(self, fid, step) -> tuple:
+        """위치와 상관없는 단계 조건 (충족 여부, 설명). 착수할 때와 건설 중 매 턴 확인한다."""
+        cap = self.factions[fid].capital
+        if step == "exchange":
+            n = len(self.finance_cluster(fid))
+            return n >= C.ECON_CLUSTER, f"금융 권역 {n}/{C.ECON_CLUSTER}곳"
+        if step == "sez":
+            ex = self.econ_buildings(fid, "exchange")
+            ok = cap in ex and len(ex) >= C.ECON_EXCHANGES
+            return ok, f"증권거래소 {len(ex)}/{C.ECON_EXCHANGES}곳" + ("" if cap in ex else "(수도 포함)")
+        n, al = D.econ_partners(self, fid)
+        if step == "ifc":
+            if not self.econ_buildings(fid, "sez"):
+                return False, "경제특구 필요"
+            need = self.econ_need(fid, C.ECON_IFC_FRIENDS)
+            return n >= need, f"우호 선언 이상 {n}/{need}개국"
+        if step == "currency":
+            if not self.econ_buildings(fid, "ifc"):
+                return False, "국제금융센터 필요"
+            need = self.econ_need(fid, C.ECON_CURRENCY_FRIENDS)
+            need_al = min(C.ECON_CURRENCY_ALLIES, need)
+            return n >= need and al >= need_al, f"우호 선언 이상 {n}/{need}개국 · 동맹 {al}/{need_al}"
+        return False, ""
+
+    def econ_site_ok(self, fid, rid, step) -> bool:
+        """그 단계를 이 지역에서 지을 수 있는가(위치 조건)."""
+        rr = self.regions[rid]
+        if rr.owner != fid or step in rr.econ:
+            return False
+        if step == "exchange":
+            return rid in self.finance_cluster(fid)
+        if step in ("sez", "currency"):
+            return rid == self.factions[fid].capital
+        if step == "ifc":
+            return "exchange" in rr.econ
+        return False
+
+    def econ_busy(self, fid, step):
+        """그 단계를 건설 중인 지역 ID(없으면 None)."""
+        for r in self.regions_of(fid):
+            if r.project and r.project.kind == "econ" and r.project.key == step:
+                return r.id
+        return None
+
+    def econ_available(self, fid) -> list:
+        """지금 착수할 수 있는 경제 단계(증권거래소는 여러 곳, 나머지는 나라에 하나)."""
+        if not self.econ_enabled():
+            return []
+        out = []
+        for step in C.ECON_STEPS:
+            if step != "exchange" and self.econ_buildings(fid, step):
+                continue
+            if self.econ_ready(fid, step)[0]:
+                out.append(step)
+        return out
+
+    def econ_stage(self, fid) -> int:
+        """경제승리 진척(0~5): 금융 권역 → 증권거래소 3곳 → 경제특구 → 국제금융센터 → 기축통화."""
+        if self.econ_buildings(fid, "currency"):
+            return 5
+        if self.econ_buildings(fid, "ifc"):
+            return 4
+        if self.econ_buildings(fid, "sez"):
+            return 3
+        if self.econ_ready(fid, "sez")[0]:
+            return 2
+        return 1 if self.econ_ready(fid, "exchange")[0] else 0
+
+    def econ_progress(self, fid) -> float:
+        """0~1. 기축통화 건설 중이면 진행도만큼 더한다."""
+        st = self.econ_stage(fid)
+        rid = self.econ_busy(fid, "currency")
+        if rid is not None:
+            p = self.regions[rid].project
+            return min(1.0, (4 + p.progress / max(1, p.turns)) / C.ECON_STAGES)
+        return st / C.ECON_STAGES
+
+    def victory_threat(self, fid) -> float:
+        """승리에 가까운 정도에 따른 견제 강도(0~1): 과학·경제 진척이 절반을 넘으면 오르기 시작한다."""
+        cache = self.__dict__.setdefault("_vthreat", {})
+        key = (self.turn, fid)
+        if key not in cache:
+            if len(cache) > 64:
+                cache.clear()
+            f = self.factions[fid]
+            p = 0.0
+            if "science" in self.settings.victories:
+                p = len(f.science) / len(C.SCIENCE_STEPS)
+            if self.econ_enabled():
+                p = max(p, self.econ_progress(fid))
+            cache[key] = max(0.0, (p - C.VICTORY_THREAT_FROM) / (1 - C.VICTORY_THREAT_FROM))
+        return cache[key]
+
+    def _pause_econ(self, rr, why):
+        """건설 중 조건이 깨짐: 중단하고 낸 돈의 50% 환급, 진행도는 보존(조건이 돌아오면 이어서)."""
+        p = rr.project
+        f = self.factions[rr.owner]
+        refund = p.paid * C.ECON_PAUSE_REFUND
+        f.money += refund
+        rr.econ_paused[p.key] = rr.econ_paused.get(p.key, 0) + p.progress
+        rr.project = None
+        spec = C.ECON[p.key]
+        self.event("info", f"{self.info(rr.id).name} {spec['name']} 건설 중단: {why} — {refund:,.0f} 환급, "
+                   f"진행 {rr.econ_paused[p.key]}/{spec['turns']}턴 보존", region=rr.id, fids=(f.id,))
+
+    def _check_econ_projects(self, f):
+        for rr in self.regions_of(f.id):
+            p = rr.project
+            if not p or p.kind != "econ":
+                continue
+            ok, why = self.econ_ready(f.id, p.key)
+            if ok and not self.econ_site_ok(f.id, rr.id, p.key):
+                ok, why = False, "위치 조건"
+            if not ok:
+                self._pause_econ(rr, why)
+
+    def econ_alert(self, fid, text):
+        """다른 나라의 국제금융센터 완공·기축통화 착수: 플레이어에게만 알림."""
+        if fid != self.player_id:
+            self.event("alert", text, region=self.factions[fid].capital, fids=(fid,))
 
     def order_frozen(self, fid) -> str:
         """박혁거세 '교대 계승': 매년 12월 4주차에는 건설·생산 명령 불가. 막힌 이유(없으면 빈 문자열)."""
@@ -1467,6 +1628,11 @@ class Game:
         self.proj_counter = getattr(self, "proj_counter", 0) + 1
         rr.project.priority = self.proj_counter
         label = opt["name"]
+        if kind == "econ":
+            rr.econ_paused.pop(key, None)
+            if key == "currency":
+                self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
+                                     f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
         return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
 
     def cancel_project(self, fid, rid):
@@ -1502,7 +1668,7 @@ class Game:
         if mode == "short":
             regs.sort(key=lambda r: self.project_left(r.id))
         else:
-            kinds = {"annex": ("annex",), "build": ("build", "science", "capital"), "unit": ("unit",)}[mode]
+            kinds = {"annex": ("annex",), "build": ("build", "science", "econ", "capital"), "unit": ("unit",)}[mode]
             regs.sort(key=lambda r: r.project.kind not in kinds)
         self.set_priority_order(fid, [r.id for r in regs])
 
@@ -1784,7 +1950,8 @@ class Game:
         phi = None if full else getattr(rr, "fuel_used", 0)
         y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
                             phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
-                            m.mult("output_bank"), m.mult("output_factory"),
+                            m.mult("output_bank") * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0),
+                            m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
                             m.mult("output_prod"))
         if owner != NEUTRAL and owner == rr.owner:
@@ -1886,6 +2053,8 @@ class Game:
             return
         rr.owner = new_owner
         rr.project = None
+        rr.econ = set()                  # 경제승리 시설은 점령당하면 사라진다
+        rr.econ_paused = {}
         prev_occs = dict(rr.occs)
         rr.occs = {}
         rr.supplied = set()
@@ -2060,7 +2229,7 @@ class Game:
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
         # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
-        drafted = self._phase_projects(("build", "unit", "science", "capital"))
+        drafted = self._phase_projects(("build", "unit", "science", "econ", "capital"))
         self._phase_conscription(drafted)
         # 8~9. 자원, 세수·유지비
         for f in self.factions:
@@ -2638,6 +2807,7 @@ class Game:
             if not f.alive:
                 continue
             self._reserve_food(f)          # 식량 부족이 예상되면 식량 구매가 최우선
+            self._check_econ_projects(f)   # 경제 단계 건설 중 조건이 깨졌으면 중단·환급
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
                 p.funded = False
@@ -2785,6 +2955,15 @@ class Game:
                 text += " 세 유닛을 발사대 지역에 모으고 턴을 마치면 발사합니다."
             self.event("science", f"{f.name}이(가) 과학 {k}단계 「{spec['name']}」을(를) 완료했습니다.",
                        region=rr.id, fids=(f.id,))
+        elif p.kind == "econ":
+            spec = C.ECON[p.key]
+            rr.econ.add(p.key)
+            text = f"{name} {spec['name']} 완공!"
+            self.event("econ", f"{f.name}이(가) {name}에 {spec['name']}을(를) 세웠습니다.", region=rr.id, fids=(f.id,))
+            if p.key == "ifc":
+                self.econ_alert(f.id, f"{f.name}이(가) 국제금융센터를 완공했습니다. 기축통화 지정만 남았습니다!")
+            if p.key == "currency":
+                self._win((f.id,), "economic")
         elif p.kind == "capital":
             f.capital = rr.id
             for r in self.regions_of(f.id):
@@ -3313,6 +3492,8 @@ class Game:
 
     # ------------------------------------------------------------------ 승리
     def _check_victory(self):
+        if self.game_over:
+            return                          # 이번 턴 기축통화 완공 등으로 이미 끝났다
         st = self.settings
         alive = self.alive_ids()
         if not self.player.alive and not st.all_ai:
@@ -3332,19 +3513,6 @@ class Game:
             for fid in alive:
                 if self.launch_ready(fid):
                     self._win((fid,), "science")
-                    return
-        if "economic" in st.victories:
-            need = self.econ_share_needed()
-            gd = {f: self.gdp(f) for f in alive}
-            total = self.world_gdp(gd)
-            for fid in alive:
-                f = self.factions[fid]
-                if total > 0 and gd[fid] >= need * total:
-                    f.econ_streak += 1
-                else:
-                    f.econ_streak = 0
-                if f.econ_streak >= C.ECON_VICTORY_TURNS:
-                    self._win((fid,), "economic")
                     return
         if "diplomatic" in st.victories and len(alive) >= 2:
             cid = D.coalition_of(self, alive[0])
@@ -3376,8 +3544,6 @@ class Game:
         """시작할 때의 국가 수(플레이어 포함, 반란국 제외)."""
         return sum(1 for f in self.factions if f.rebel_of is None)
 
-    def econ_share_needed(self) -> float:
-        return R.econ_share(self.start_nations())
 
     def can_rebel(self, rr) -> bool:
         """이 지역에서 반란이 일어날 수 있는가(반란 판정 행복도 −50 이하이고 확률 > 0)."""
@@ -3407,7 +3573,7 @@ class Game:
         self.event("victory", f"{C.VICTORY_TYPES[kind]}: {names}", fids=fids)
 
     RANKING_COLS = (("regions", "지역 수"), ("pop", "인구(만)"), ("happy", "행복도"),
-                    ("gdp", "턴당 GDP(전국 비율)"), ("science", "과학승리"))
+                    ("gdp", "턴당 GDP(전국 비율)"), ("science", "과학승리"), ("econ", "경제승리"))
 
     def ranking_label(self, turn) -> str:
         """발표 턴 → '2026년 하반기'(1주차 발표는 지난해 하반기, 25주차 발표는 올해 상반기)."""
@@ -3423,7 +3589,7 @@ class Game:
             gdp = self.gdp(f.id)
             rows.append({"fid": f.id, "regions": self.region_count(f.id), "pop": self.total_pop(f.id),
                          "happy": self.avg_happiness(f.id), "gdp": gdp, "gdp_share": gdp / world,
-                         "science": len(f.science)})
+                         "science": len(f.science), "econ": self.econ_stage(f.id)})
         self.rankings[self.turn] = rows
         self.new_ranking = self.turn
         self.event("ranking", f"{self.ranking_label(self.turn)} 랭킹이 발표되었습니다.")

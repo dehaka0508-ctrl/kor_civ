@@ -249,6 +249,12 @@ def force_state(app, rng):
             rid = rng.choice(mine)
             g.regions[rid].sci.add("pad")
             g.add_units(pid, rid, rng.choice(C.SCIENCE_UNITS), 1)
+        if mine and rng.random() < 0.5:
+            # 경제승리 시설·금융 단지를 아무 데나 세워 경제 단계 표시를 흔든다
+            for rid in rng.sample(mine, min(len(mine), rng.randint(1, 6))):
+                g.regions[rid].b["bank"] = 5
+                if rng.random() < 0.5:
+                    g.regions[rid].econ.add(rng.choice(C.ECON_STEPS[:3]))
     elif k < 0.8:
         mine = [r.id for r in g.regions_of(pid)]
         if mine and rng.random() < 0.5:

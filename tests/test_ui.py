@@ -425,3 +425,53 @@ def test_half_ranking_modal(app):
     assert ranking_value_text(g, row, "gdp").endswith("%)")
     unmet = [f.id for f in g.factions if not g.has_met(g.player_id, f.id)]
     assert unmet and all(g.seen_name(f) == g.UNKNOWN_NAME for f in unmet)
+
+
+def test_econ_ui_renders(app):
+    app.start_game(Settings(seed=4, n_enemies=3))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    cap = g.player.capital
+    plan, frontier = [cap], [cap]
+    while len(plan) < 5:
+        u = frontier.pop(0)
+        for v in sorted(g.world.land_adj[u]):
+            if v not in plan and len(plan) < 5:
+                plan.append(v)
+                frontier.append(v)
+    for r in plan:
+        if g.regions[r].owner != g.player_id:
+            g.transfer_region(r, g.player_id)
+        g.regions[r].b["bank"] = 5
+        g.regions[r].resist = None
+    g.player.money = 1e9
+    app.select(cap)
+    app.tab = "action"
+    frame(app)
+    assert any(o["kind"] == "econ" for o in g.options(g.player_id, cap))
+    assert g.start_project(g.player_id, cap, "econ", "exchange")[0]
+    frame(app)
+    from korciv.ui.panels import econ_progress_text
+    assert econ_progress_text(g, g.player_id).startswith("1/5")
+    g.econ_alert(1, "테스트 알림")
+    app.left_open, app.left_tab = True, "nation"
+    g.turn = 49
+    g._half_ranking()
+    app.modal = ("ranking", 49)
+    app.rank_col = "econ"
+    frame(app)
+
+
+def test_econ_progress_text_each_stage(app):
+    from korciv.ui.panels import econ_progress_text
+    app.start_game(Settings(seed=4, n_enemies=2))
+    g = app.game
+    cap = g.regions[g.player.capital]
+    texts = [econ_progress_text(g, g.player_id)]
+    for key in ("sez", "ifc", "currency"):
+        cap.econ.add(key)
+        texts.append(econ_progress_text(g, g.player_id))
+    assert texts[1].startswith("3/5") and "국제금융센터" in texts[1]
+    assert texts[2].startswith("4/5") and "기축통화" in texts[2]
+    assert texts[3].startswith("5/5")

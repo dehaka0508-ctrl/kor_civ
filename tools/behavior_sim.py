@@ -81,6 +81,8 @@ def instrument():
             _add(self, f.id, f"unit:{key}")
         elif kind == "science":
             _add(self, f.id, f"science:{key}")
+        elif kind == "econ":
+            _add(self, f.id, f"econ:{key}")
         elif kind == "capital":
             _add(self, f.id, kind)
         return r
@@ -282,7 +284,8 @@ def run_game(job):
                      "gdp": {t: snaps[t][f.id][1] for t in SNAPS},
                      "tax": round(sum(tax_samples[f.id]) / len(tax_samples[f.id]), 3) if tax_samples[f.id] else None,
                      "army_end": dict(army), "stats": dict(g._st[f.id]),
-                     "goal_end": f.ai.get("victory_goal"), "science_done": len(f.science)})
+                     "goal_end": f.ai.get("victory_goal"), "science_done": len(f.science),
+                     "econ_stage": g.econ_stage(f.id)})
     return {"seed": seed, "turns": g.turn - 1, "victory": g.winner[1] if g.winner else None,
             "winner_rebel": bool(winners) and all(w >= N_FAC for w in winners),
             "rebel_states": len(g.factions) - N_FAC,
@@ -389,6 +392,8 @@ def report(path):
     wg = Counter((r["_victory"] if "_victory" in r else None, r.get("goal_end")) for r in rows if r["win"])
     sd = Counter(r.get("science_done", 0) for r in rows)
     p("- 과학 단계 진행(처음 8개국, 게임 종료 시): " + ", ".join(f"{k}단계 {v}" for k, v in sorted(sd.items())))
+    ed_ = Counter(r.get("econ_stage", 0) for r in rows)
+    p("- 경제(기축통화) 진척(게임 종료 시, 0~5): " + ", ".join(f"{k}단계 {v}" for k, v in sorted(ed_.items())))
     p("")
     # 표 1: 지도자별 결과
     p("## 1. 지도자별 결과")
@@ -517,7 +522,7 @@ def report(path):
             if kk.startswith("build:"):
                 bl[kk[6:]] += v
     total_b = sum(bl.values())
-    p(f"판당 완공 {total_b / nf:.1f}건 · 과학 단계 {sum(avg('science:' + k) for k in C.SCIENCE_STEPS):.2f} · 천도 {avg('capital'):.2f}")
+    p(f"판당 완공 {total_b / nf:.1f}건 · 과학 단계 {sum(avg('science:' + k) for k in C.SCIENCE_STEPS):.2f} · 경제 시설 {sum(avg('econ:' + k) for k in C.ECON_STEPS):.2f} · 천도 {avg('capital'):.2f}")
     p("")
     p("| 건물 | 판당 완공 | 비중 |")
     p("|---|---|---|")

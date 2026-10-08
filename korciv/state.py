@@ -44,6 +44,8 @@ class Region:
     b: dict = field(default_factory=dict)
     lines: dict = field(default_factory=dict)
     sci: set = field(default_factory=set)        # 과학승리 시설(lab / observatory / pad)
+    econ: set = field(default_factory=set)       # 경제승리 시설(exchange / sez / ifc / currency)
+    econ_paused: dict = field(default_factory=dict)   # 조건이 깨져 중단된 경제 건설의 진행 턴 {키: 진행}
     energy: dict = field(default_factory=dict)   # 수동 연료 배정 {"coal": n, "oil": n, "elec": n} (공장·발전소)
     project: Optional[Project] = None
     occs: dict = field(default_factory=dict)   # 무력 점령 진행 {fid: {"by", "progress", "need"}} (여러 세력 동시 가능)

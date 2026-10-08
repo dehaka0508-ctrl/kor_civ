@@ -1607,9 +1607,6 @@ def test_start_capital_lines_but_not_rebels():
 
 
 def test_econ_conquest_diplomatic_victory():
-    assert R.econ_share(8) == pytest.approx(0.5) and R.econ_share(6) == pytest.approx(0.6)
-    g = new_game(player_start="S002", n_enemies=7)
-    assert g.econ_share_needed() == pytest.approx(0.5)
     # 정복: 2/3 이상 + 반란 가능 지역 없음
     g = new_game(player_start="S002", n_enemies=1)
     need = math.ceil(len(g.regions) * 2 / 3)
@@ -1921,8 +1918,17 @@ def test_alliance_needs_only_opinion():
     g = new_game(n_enemies=2)
     _neutral_ai(g, 1, 2)
     p = D.pair(0, 1)
-    g.dip.nonaggr[p] = g.turn + C.TREATY_TURNS
     g.dip.op[(1, 0)] = C.ALLIANCE_MIN + 1
+    # 우호 → 불가침·통행권 → 동맹 → 연합: 앞 단계가 없으면 건너뛸 수 없다
+    ok, why = D.treaty_check(g, 1, 0, "nonaggr")
+    assert not ok and "우호 선언" in why
+    ok, _ = D.declare_friendship(g, 0, 1)
+    assert ok and D.declared_friends(g, 0, 1)
+    ok, why = D.treaty_check(g, 1, 0, "alliance")
+    assert not ok and "조약" in why
+    ok, why = D.treaty_check(g, 1, 0, "nonaggr")
+    assert ok, why
+    D.sign_treaty(g, 0, 1, "nonaggr")
     assert not D.enemies(g, 0) and g.hegemon is None        # 공동의 적·견제 대상 없음
     ok, why = D.treaty_check(g, 1, 0, "alliance")
     assert ok, why
@@ -1931,3 +1937,150 @@ def test_alliance_needs_only_opinion():
     g.dip.op[(1, 0)] = C.COALITION_MIN
     ok, why = D.treaty_check(g, 1, 0, "coalition")
     assert ok, why
+
+
+def _finance_setup(g, fid=0, n=C.ECON_CLUSTER):
+    """수도에서 맞닿아 뻗는 n곳(수도 포함)을 내 땅으로 만들고 은행 5단계로."""
+    cap = g.factions[fid].capital
+    plan, frontier = [cap], [cap]
+    while len(plan) < n:
+        u = frontier.pop(0)
+        for v in sorted(g.world.land_adj[u]):
+            if v not in plan and len(plan) < n:
+                plan.append(v)
+                frontier.append(v)
+    _own(g, fid, [r for r in plan if g.regions[r].owner != fid])
+    for r in plan:
+        g.regions[r].b["bank"] = 5
+        g.regions[r].resist = None
+    return plan
+
+
+def _finish(g, fid, rid, kind, key):
+    ok, msg = g.start_project(fid, rid, kind, key)
+    assert ok, msg
+    p = g.regions[rid].project
+    g.regions[rid].project = None
+    g._complete_project(g.factions[fid], g.regions[rid], p)
+
+
+def test_econ_victory_chain():
+    g = new_game(player_start="S002", n_enemies=3)
+    _neutral_ai(g, 1, 2, 3)
+    cap = g.player.capital
+    assert g.econ_stage(0) == 0 and not g.econ_available(0)
+    plan = _finance_setup(g, 0, C.ECON_CLUSTER - 1)
+    assert len(g.finance_cluster(0)) == C.ECON_CLUSTER - 1 and not g.econ_available(0)
+    plan = _finance_setup(g)
+    assert g.finance_cluster(0) == set(plan) and g.econ_stage(0) == 1
+    # 맞닿지 않은 금융 단지는 권역이 아니다
+    far = next(r for r in g.world.order if r not in plan and not set(g.world.land_adj[r]) & set(plan)
+               and g.regions[r].owner == NEUTRAL and g.world.land_adj[r])
+    _own(g, 0, [far])
+    g.regions[far].b["bank"] = 5
+    assert far not in g.finance_cluster(0) and not g.econ_site_ok(0, far, "exchange")
+    # ② 증권거래소: 금융 권역에서, 수도 포함 3곳이면 경제특구
+    opts = [o for o in g.options(0, cap) if o["kind"] == "econ"]
+    assert [o["key"] for o in opts] == ["exchange"] and opts[0]["per_turn"] == pytest.approx(150_000)
+    g.player.money = 1e9
+    for rid in plan[:2]:
+        _finish(g, 0, rid, "econ", "exchange")
+    assert g.econ_stage(0) == 1 and "sez" not in g.econ_available(0)
+    _finish(g, 0, plan[2], "econ", "exchange")
+    assert g.econ_stage(0) == 2 and "sez" in g.econ_available(0)
+    # 증권거래소: 그 지역 은행 산출 +10%
+    rr = g.regions[plan[0]]
+    with_ex = g.calc_output(plan[0], full=True)
+    rr.econ.discard("exchange")
+    without = g.calc_output(plan[0], full=True)
+    rr.econ.add("exchange")
+    assert with_ex > without
+    # ③ 경제특구(수도)
+    assert not g.econ_site_ok(0, plan[1], "sez") and g.econ_site_ok(0, cap, "sez")
+    _finish(g, 0, cap, "econ", "sez")
+    assert g.econ_stage(0) == 3
+    # ④ 국제금융센터: 우호 선언 이상 2개국 + 증권거래소 지역
+    assert not g.econ_ready(0, "ifc")[0]
+    for x in (1, 2):
+        g.dip.op[(x, 0)] = 0
+        assert D.declare_friendship(g, 0, x)[0]
+    assert g.econ_ready(0, "ifc")[0] and not g.econ_site_ok(0, far, "ifc") and g.econ_site_ok(0, plan[1], "ifc")
+    _finish(g, 0, plan[1], "econ", "ifc")
+    assert g.econ_stage(0) == 4
+    assert D.gift_opinion(g, 1, D.gift_income(g, 1) * 2, 0) > D.gift_opinion(g, 1, D.gift_income(g, 1) * 2)
+    # ⑤ 기축통화: 우호 선언 이상 3개국, 그중 동맹 1곳 이상
+    g.dip.op[(3, 0)] = 0
+    assert D.declare_friendship(g, 0, 3)[0]
+    ok, why = g.econ_ready(0, "currency")
+    assert not ok and "동맹 0/1" in why
+    g.dip.nonaggr[D.pair(0, 1)] = g.turn + 24
+    g.dip.alliance[D.pair(0, 1)] = g.turn
+    assert g.econ_ready(0, "currency")[0]
+    _finish(g, 0, cap, "econ", "currency")
+    assert g.game_over and g.winner == ((0,), "economic")
+
+
+def test_econ_pause_refund_resume_and_capture():
+    g = new_game(player_start="S002", n_enemies=1)
+    plan = _finance_setup(g)
+    cap = g.player.capital
+    for rid in plan[:3]:
+        g.regions[rid].econ.add("exchange")
+    g.player.money = 1e9
+    ok, _ = g.start_project(0, cap, "econ", "sez")
+    assert ok
+    p = g.regions[cap].project
+    p.progress, p.paid = 5, 5 * p.per_turn
+    money = g.player.money
+    g.regions[plan[1]].econ.discard("exchange")          # 조건이 깨짐 → 중단·50% 환급·진행 보존
+    g._check_econ_projects(g.player)
+    assert g.regions[cap].project is None
+    assert g.player.money == pytest.approx(money + 0.5 * 5 * p.per_turn)
+    assert g.regions[cap].econ_paused["sez"] == 5
+    assert not [o for o in g.options(0, cap) if o["kind"] == "econ" and o["key"] == "sez"]
+    g.regions[plan[1]].econ.add("exchange")              # 조건이 돌아오면 이어서
+    opt = next(o for o in g.options(0, cap) if o["kind"] == "econ" and o["key"] == "sez")
+    assert opt["turns"] == C.ECON["sez"]["turns"] - 5 and "이어서" in opt["name"]
+    assert g.start_project(0, cap, "econ", "sez")[0] and not g.regions[cap].econ_paused
+    # 완공한 건물은 조건이 깨져도 남지만, 점령당하면 사라진다
+    g.regions[plan[2]].b["bank"] = 0
+    assert "exchange" in g.regions[plan[2]].econ
+    g.transfer_region(plan[2], 1)
+    assert not g.regions[plan[2]].econ
+
+
+def test_econ_alerts_only_for_others_and_threat():
+    g = new_game(player_start="S002", n_enemies=2, fog=2)
+    _neutral_ai(g, 1, 2)
+    g.econ_alert(0, "내 알림")
+    assert not [e for e in g.events if e["kind"] == "alert"]
+    g.econ_alert(1, f"{g.factions[1].name}이(가) 기축통화 지정을 시작했습니다.")
+    e = [e for e in g.events if e["kind"] == "alert"][-1]
+    txt = g.event_for_player(e)
+    assert txt and (g.UNKNOWN_NAME in txt) != g.has_met(0, 1)
+    # 승리에 가까운 나라 견제: 과학 7단계 완료 → 견제 1, 관계없는 AI의 우호도가 깎이고 전쟁 문턱이 쉬워진다
+    from korciv import ai as AI
+    thr0 = AI.war_op_threshold(g, g.factions[1], 0)
+    g.player.science = list(C.SCIENCE_STEPS)
+    g._vthreat = {}
+    assert g.victory_threat(0) == pytest.approx(1.0)
+    assert AI.war_op_threshold(g, g.factions[1], 0) == pytest.approx(thr0 + C.VICTORY_THREAT_WAR)
+    g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
+    D.declare_friendship(g, 0, 2)
+    D.update_turn(g)
+    assert D.opinion(g, 1, 0) < D.opinion(g, 2, 0)
+
+
+def test_declared_friendship_persists_until_broken():
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
+    assert D.declare_friendship(g, 0, 1)[0] and D.declare_friendship(g, 0, 2)[0]
+    g.turn += C.DECL_FRIEND_TURNS + 5
+    D.update_turn(g)
+    assert D.declared_friends(g, 0, 1) and D.econ_partners(g, 0) == (2, 0)
+    g.turn += C.DECL_COOLDOWN
+    D.denounce(g, 0, 1)
+    assert not D.declared_friends(g, 0, 1)
+    D.declare_war(g, 2, 0)
+    assert not D.declared_friends(g, 0, 2)

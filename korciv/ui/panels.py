@@ -249,6 +249,9 @@ def draw_region_info(app, rect):
     for k in C.SCIENCE_STEPS:
         if k in r.sci:
             chips.append(f"★ {C.SCIENCE[k]['name']}")
+    for k in C.ECON_STEPS:
+        if k in r.econ:
+            chips.append(f"★ {C.ECON[k]['name']}")
     for bk, lv in sorted(r.lines.items()):
         if lv:
             nm = "해안" if bk == "coast" else app.world.regions[bk].short
@@ -365,6 +368,8 @@ def project_name(app, p, rid=None):
     if p.kind == "science":
         k = C.SCIENCE_STEPS.index(p.key) + 1
         return f"과학 {k}단계: {C.SCIENCE[p.key]['name']}"
+    if p.kind == "econ":
+        return f"경제 {C.ECON_STEPS.index(p.key) + 2}단계: {C.ECON[p.key]['name']}"
     if p.kind == "capital":
         return "천도"
     return p.kind
@@ -498,9 +503,9 @@ def draw_action_tab(app, body):
               (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 ({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
-              ("특수", [o for o in opts if o["kind"] in ("science", "capital")])]
+              ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
-    content = sum(28 + sum(60 if o["kind"] in ("build", "science") else 44 for o in lst) for _, lst in groups if lst)
+    content = sum(28 + sum(60 if o["kind"] in ("build", "science", "econ") else 44 for o in lst) for _, lst in groups if lst)
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
     money = g.player.money
@@ -527,6 +532,11 @@ def draw_action_tab(app, body):
             if o["kind"] == "science":
                 eff = ("완료하면 유닛 1개 — 발사대 지역으로 옮긴다" if C.SCIENCE[o["key"]]["unit"]
                        else "완료하면 다음 과학 단계가 열린다")
+            if o["kind"] == "econ":
+                eff = {"exchange": f"이 지역 은행 산출 +{C.EXCHANGE_BANK_BONUS:.0%}",
+                       "sez": "완료하면 국제금융센터가 열린다(우호 관계 필요)",
+                       "ifc": f"내 선물의 우호도 효과 +{C.IFC_GIFT_BONUS:.0%}",
+                       "currency": "완료하면 경제승리"}[o["key"]]
             if eff:
                 gui.text((x, yy + 38), eff, 11, t.good, "semibold", max_w=w - 70, tip=False)
             if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
@@ -536,7 +546,7 @@ def draw_action_tab(app, body):
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
-            yy += 60 if (o["kind"] in ("build", "science")) else 44
+            yy += 60 if (o["kind"] in ("build", "science", "econ")) else 44
     gui.end_scroll("actions", area, content)
 
 
@@ -954,7 +964,8 @@ def draw_diplo_tab(app, body):
             continue
         gui.text((x + 52, y + 5), o.name, 13, weight="semibold", max_w=w - 60)
         origin = f" · {g.seen_name(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
-        gui.text((x + 52, y + 24), f"{o.leader_name} · {D.STAGE_NAMES[st]} · 우호 {op:+.0f}{origin}", 11,
+        decl = " · 우호 선언" if D.declared_friends(g, pid, o.id) and st < 2 else ""
+        gui.text((x + 52, y + 24), f"{o.leader_name} · {D.STAGE_NAMES[st]}{decl} · 우호 {op:+.0f}{origin}", 11,
                  t.bad if st == -1 else t.muted, max_w=w - 60)
         y += 50
     if not others:
@@ -1074,7 +1085,8 @@ def draw_diplo_detail(app, body, fid):
 
 
 # ------------------------------------------------------------------ 좌측 [국가 현황]
-PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "science": "과학", "capital": "천도"}
+PROJECT_KIND_NAMES = {"build": "건설", "unit": "병력 생산", "annex": "편입", "science": "과학", "econ": "경제",
+                      "capital": "천도"}
 
 
 def power_text(info) -> str:
@@ -1082,6 +1094,24 @@ def power_text(info) -> str:
     if info.power_self:
         return f"{info.power_source} {info.power_self}/턴"
     return info.power_source
+
+
+def econ_progress_text(g, pid) -> str:
+    """'1/5 · 증권거래소 1/3곳(수도 포함)' 형식: 지금 단계와 다음에 필요한 것."""
+    st = g.econ_stage(pid)
+    head = f"{st}/{C.ECON_STAGES}"
+    if st == 0:
+        return f"{head} · 금융 단지 {len(g.finance_cluster(pid))}/{C.ECON_CLUSTER}곳(수도와 맞닿은 한 덩어리)"
+    if st == 1:
+        return f"{head} · {g.econ_ready(pid, 'sez')[1]}"
+    if st >= C.ECON_STAGES:
+        return f"{head} · 기축통화 지정 완료"
+    step = C.ECON_STEPS[st - 1]                 # 2 → 경제특구, 3 → 국제금융센터, 4 → 기축통화
+    busy = g.econ_busy(pid, step)
+    if busy is not None:
+        return f"{head} · {C.ECON[step]['name']} 건설 중({g.project_left(busy)}턴 남음)"
+    ok, why = g.econ_ready(pid, step)
+    return f"{head} · {C.ECON[step]['name']}" + (" 건설 가능" if ok else f" — {why}")
 
 
 def science_progress_text(g, pid) -> str:
@@ -1113,12 +1143,7 @@ def draw_victory_progress(app, x, y, w, pid):
     if "science" in vs:
         y = kv(gui, x, y, w, "과학승리", science_progress_text(g, pid))
     if "economic" in vs:
-        alive = g.alive_ids()
-        total = g.world_gdp() or 1
-        share = g.gdp(pid) / total
-        need = g.econ_share_needed()
-        y = kv(gui, x, y, w, "경제승리(GDP 몫)", f"{share * 100:.1f}% / {need * 100:.0f}% · {f.econ_streak}/"
-                                              f"{C.ECON_VICTORY_TURNS}턴", t.good if share >= need else None)
+        y = kv(gui, x, y, w, "경제승리(기축통화)", econ_progress_text(g, pid))
     if "diplomatic" in vs:
         alive = g.alive_ids()
         cid = D.coalition_of(g, pid)
@@ -1195,12 +1220,12 @@ def draw_nation_status(app, body):
     y = kv(gui, x, y, w, "  군 유지비", f"−{last.get('upkeep', 0):,.0f}")
     if last.get("buy", 0):
         y = kv(gui, x, y, w, "  시장 구매(식량 자동 구매 포함)", f"−{last.get('buy', 0):,.0f}")
-    for k in ("build", "unit", "annex", "science", "capital"):
+    for k in ("build", "unit", "annex", "science", "econ", "capital"):
         if spent.get(k):
             y = kv(gui, x, y, w, f"  {PROJECT_KIND_NAMES[k]}", f"−{spent[k]:,.0f}")
     y = kv(gui, x, y, w, "턴당 순수익", f"{last.get('net', 0):+,.0f}", t.good if last.get("net", 0) >= 0 else t.bad)
     y = section(gui, x, y + 6, w, "이번 턴 예정 작업 지출")
-    for k in ("build", "unit", "annex", "science", "capital"):
+    for k in ("build", "unit", "annex", "science", "econ", "capital"):
         if k in spend:
             n, s_ = spend[k]
             y = kv(gui, x, y, w, f"{PROJECT_KIND_NAMES[k]} {n}건", f"−{s_:,.0f}")

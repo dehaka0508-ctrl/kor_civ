@@ -93,15 +93,18 @@ def choose_victory_goal(g, f):
     wars = len(D.enemies(g, fid))
     # 정복: 2/3 목표 대비 진척
     c_prog = len(regs) / max(1, len(g.regions)) / C.CONQUEST_SHARE
-    # 경제: 필요한 GDP 몫 대비 진척
-    total = g.world_gdp() or 1
-    e_prog = g.gdp(fid) / total / g.econ_share_needed()
+    # 경제(기축통화): 진척 단계, 수도 주변 은행, 우호 선언 이상 관계, 모아 둔 돈
+    e_stage = g.econ_stage(fid)
+    near = g.near_capital(fid, 2)
+    hi_banks = sum(1 for r in regs if r.id in near and r.b["bank"] >= 4)
+    partners, _ = D.econ_partners(g, fid)
+    rich = min(1.0, f.money / 3_000_000)
     # 과학: 완료 단계, 다음 단계 비용을 감당할 재정, 필요한 땅(석유·공장 5단계·해안·산맥)
     k_done = len(f.science)
     step = g.science_next(fid)
     afford = step is not None and f.money > 0.5 * g.science_step_cost(fid, step)
     has_oil = any(g.info(r.id).is_oil for r in regs)
-    has_f5 = any(r.b["factory"] >= 5 for r in regs) + any(r.b["bank"] >= 5 for r in regs)
+    has_f5 = any(r.b["factory"] >= 5 for r in regs) + any(r.b["bank"] >= 5 for r in regs)   # 예산 편성은 은행 5단계
     has_coast = any(g.info(r.id).coastal for r in regs)
     has_mtn = any(r.id in g.world.mountain_regions for r in regs)
     # 외교: 내 연합이 살아 있는 세력 중 차지하는 비율
@@ -117,7 +120,8 @@ def choose_victory_goal(g, f):
         # 전쟁 피로가 쌓였으면 정복을 덜 노린다
         "conquest": (0.05 + 0.05 * aggr + 0.3 * my_mil / top_mil + 0.08 * min(2, weak_nb) + 0.5 * min(1.0, c_prog)
                      - 0.004 * f.war_weary - 0.05 * wars * (allies == 0)) * leader_bias(g, fid, "war"),
-        "economic": (0.15 + 0.6 * min(1.2, e_prog)) * leader_bias(g, fid, "bank"),
+        "economic": (0.05 + 0.03 * (10 - aggr) + 0.12 * e_stage + 0.03 * min(5, hi_banks)
+                     + 0.04 * min(3, partners) + 0.15 * rich) * leader_bias(g, fid, "bank"),
         "science": (0.05 + 0.03 * (10 - aggr) + 0.12 * k_done + (0.15 if afford else 0)
                     + 0.1 * has_oil + 0.05 * has_f5 + 0.03 * (has_coast + has_mtn)) * leader_bias(g, fid, "science"),
         "diplomatic": ((0.05 + 0.03 * (10 - aggr) + 0.6 * c_frac + 0.04 * min(4, allies))
@@ -141,7 +145,7 @@ def set_strategy(g, f):
         w["expansion"] += k / 2
     elif goal == "economic":
         w["economy"] += k
-        w["expansion"] += k / 2
+        w["expansion"] += k / 4
     elif goal == "science":
         w["economy"] += k
     elif goal == "diplomatic":
@@ -255,7 +259,7 @@ def _tax(g, f):
     worst = min(hs)
     last = f.last
     net = last.get("net", 0.0)
-    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "science")
+    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
     reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
@@ -293,6 +297,7 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
     thr = C.AI_WAR_OP_BASE + C.AI_WAR_OP_PER_AGGR * aggr
     if g.hegemon == target:
         thr += C.AI_WAR_OP_HEGEMON
+    thr += C.VICTORY_THREAT_WAR * g.victory_threat(target)       # 과학·경제 승리에 가까운 나라 견제
     if ratio > 1:
         thr += min(C.AI_WAR_OP_TEMPT_MAX, aggr * math.log2(ratio))
     if not can_expand and aggr >= 4:
@@ -301,6 +306,8 @@ def war_op_threshold(g, f, target, ratio=1.0, can_expand=True) -> float:
         thr += 5
     elif f.ai.get("victory_goal") == "diplomatic":
         thr -= 8                           # 외교승리를 노리면 전쟁을 꺼린다
+    elif f.ai.get("victory_goal") == "economic":
+        thr -= 4                           # 경제승리는 우호 관계가 필요하다
     thr += 30 * (leader_bias(g, f.id, "war") - 1)        # 지도자 성향: 전쟁에 유리하면 ±4.5까지
     return thr
 
@@ -497,8 +504,8 @@ def _social(g, f):
     alive = [x for x in g.alive_ids() if x != fid]
     # 우호 선언: 나를 좋게 보는(또는 적의 적인) 세력과 가까워진다
     p_friend = C.AI_FRIEND_DECL_P * (10 - aggr) / 10 * leader_bias(g, fid, "ally")
-    if f.ai.get("victory_goal") == "diplomatic":
-        p_friend *= 1.5
+    if f.ai.get("victory_goal") in ("diplomatic", "economic"):
+        p_friend *= 1.5                    # 외교·경제승리는 우호 관계가 필요하다
     if alive and g.rng.random() < p_friend:
         my_enemies = set(D.enemies(g, fid))
         cands = []
@@ -613,6 +620,7 @@ def _consider_war(g, f):
         s -= (rep_pen - 10) / 25 + 0.03 * ties * rep_pen / 10   # 전쟁광 평판
         if g.hegemon == o:
             s += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
+        s += C.VICTORY_THREAT_SCORE * g.victory_threat(o)
         if s > best_s:
             best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:
@@ -828,6 +836,52 @@ def _army_orders(g, f, threat):
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def finance_plan(g, fid) -> set:
+    """금융 권역 계획: 수도에서 시작해 맞닿은 자국 지역을 은행이 높은(같으면 인구가 많은) 곳부터 붙여 5곳."""
+    cap = g.factions[fid].capital
+    if g.regions[cap].owner != fid:
+        return set()
+    plan = {cap}
+    while len(plan) < C.ECON_CLUSTER:
+        front = {v for u in plan for v in g.world.land_adj[u] if v not in plan and g.regions[v].owner == fid}
+        if not front:
+            break
+        plan.add(max(front, key=lambda v: (g.regions[v].b["bank"], g.regions[v].pop, v)))
+    return plan
+
+
+def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
+    """경제승리(기축통화) 단계 착수와 금융 권역 은행 건설. 목표면 조건을 낮추고, 그 밖엔 재정이 아주 넉넉할 때만."""
+    fid = f.id
+    if not f.is_ai or not g.econ_enabled():
+        return
+    goal = f.ai.get("victory_goal") == "economic"
+    sm, si = ((2.0, 0.3) if goal else (4, 0.6))
+    sm, si = sm / bias("bank"), si / bias("bank")
+    for step in g.econ_available(fid):
+        if step != "exchange" and g.econ_busy(fid, step) is not None:
+            continue
+        spec = C.ECON[step]
+        per = spec["per_turn"] * C.MONEY_SCALE
+        if not ((f.money > per * sm and income - upkeep > per * si)
+                or f.money > per * spec["turns"] * (1.1 if goal else 2.5)):
+            continue
+        sites = [r for r in regs if g.econ_site_ok(fid, r.id, step) and not r.project and not r.occ
+                 and not g.resisting(r)]
+        if sites:
+            best = min(sites, key=lambda r: (threat.get(r.id, 0), -r.pop))
+            if g.start_project(fid, best.id, "econ", step)[0]:
+                break                                 # 큰 공사는 한 턴에 하나씩
+    if goal and len(g.finance_cluster(fid)) < C.ECON_CLUSTER:
+        plan = finance_plan(g, fid)
+        pool = [r for r in idle if r.id in plan and r.b["bank"] < 5]
+        for r0 in sorted(pool, key=lambda r: -r.b["bank"])[:2]:
+            lv = r0.b["bank"] + 1
+            cost = R.prod_building_cost("bank", lv)
+            turns = g.build_time(fid, "bank", R.prod_building_turns(lv))
+            cands.append((3.0, r0.id, "build", "bank", None, cost / turns))
 
 
 def _resist_discount():
@@ -1079,7 +1133,7 @@ def _slots(g, f, threat, military=True):
         return
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
-    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind != "science")
+    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
     reserve = 200 + upkeep * 3
     avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
@@ -1313,6 +1367,7 @@ def _slots(g, f, threat, military=True):
                     cost = R.prod_building_cost(bk, lv) * (g.mods(fid).mult("cost_factory") if bk == "factory" else 1)
                     turns = g.build_time(fid, bk, R.prod_building_turns(lv))
                     cands.append((3.0, r0.id, "build", bk, None, cost / turns))
+    _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias)
     cands.sort(key=lambda c: -c[0])
     used = set()
     for u, rid, kind, key, border, per in cands:

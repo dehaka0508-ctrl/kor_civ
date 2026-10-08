@@ -379,11 +379,32 @@ AI_DEF_WEALTH_P = 0.06
 AI_GOAL_WEIGHT = 0.25      # 목표에 맞는 전략 가중치에 더하는 값(맹목적이지 않도록 작게)
 
 # ---------------------------------------------------------------- 승리 (10절)
-# 경제승리: 전체 GDP 중 내 몫이 econ_share(시작 국가 수) 이상인 상태로 10턴.
-# 8개국 50%, 6개국 60%(= 2위 이하 합의 1.5배): 몫 = 0.9 − 0.05 × 국가 수 (35%~80%)
-ECON_SHARE_A, ECON_SHARE_B = 0.9, 0.05
-ECON_SHARE_MIN, ECON_SHARE_MAX = 0.35, 0.80
-ECON_VICTORY_TURNS = 10
+# 경제승리(기축통화): ① 수도를 포함해 서로 맞닿은 한 덩어리의 금융 단지(은행 5단계) 5곳 →
+# ② 금융 권역에 증권거래소(수도 포함 3곳) → ③ 수도에 경제특구 → ④ 경제특구 + 우호 선언 이상 관계 2개국이면
+# 증권거래소가 있는 지역에 국제금융센터 → ⑤ 국제금융센터 + 우호 선언 이상 3개국(그중 동맹 1곳 이상)이면
+# 수도에서 기축통화 지정. 완공하면 승리. 건물은 유닛 없이 지역에 남고, 점령당하면 사라진다.
+ECON_CLUSTER = 5
+ECON_EXCHANGES = 3
+ECON_IFC_FRIENDS = 2
+ECON_CURRENCY_FRIENDS = 3
+ECON_CURRENCY_ALLIES = 1
+ECON_STEPS = ("exchange", "sez", "ifc", "currency")
+ECON = {
+    "exchange": dict(name="증권거래소", where="금융 권역", per_turn=150_000, turns=10),
+    "sez":      dict(name="경제특구", where="수도", per_turn=200_000, turns=15),
+    "ifc":      dict(name="국제금융센터", where="증권거래소가 있는 지역", per_turn=300_000, turns=15),
+    "currency": dict(name="기축통화 지정", where="수도", per_turn=500_000, turns=20),
+}
+ECON_STAGES = 5                # 진척도 n/5: 금융 권역, 증권거래소 3곳, 경제특구, 국제금융센터, 기축통화
+EXCHANGE_BANK_BONUS = 0.10     # 증권거래소: 그 지역 은행 산출 +10%
+IFC_GIFT_BONUS = 0.10          # 국제금융센터: 내 선물이 올리는 우호도 +10%
+ECON_PAUSE_REFUND = 0.5        # 건설 중 조건이 깨지면 중단하고 낸 돈의 50% 환급(진행도는 보존, 조건이 돌아오면 이어서)
+# 승리에 가까워지는 나라 견제(패권 견제와 같은 방식): 과학·경제 진척이 절반을 넘으면 0 → 완성 직전 1.
+# 우호 선언·조약·동맹 관계가 없는 AI는 그 나라에 대한 우호도가 매 턴 최대 −0.3, 선전포고 문턱이 최대 +15 쉬워진다.
+VICTORY_THREAT_FROM = 0.5
+VICTORY_THREAT_OP = 0.3
+VICTORY_THREAT_WAR = 15
+VICTORY_THREAT_SCORE = 0.3     # 전쟁 대상 고를 때 점수 가산(최대)
 # 정복승리: 전체 지역의 2/3 이상 + 반란이 일어날 수 있는 지역(반란 판정 행복도 −50 이하) 없음
 CONQUEST_SHARE = 2 / 3
 VICTORY_TYPES = {"conquest": "정복승리", "science": "과학승리", "economic": "경제승리",

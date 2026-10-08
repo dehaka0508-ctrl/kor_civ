@@ -1037,16 +1037,16 @@ class App:
         shown = 0
         kinds_count = {}
         for e in g.events:
-            if pid not in e["fids"] and e["kind"] not in ("ranking", "victory", "eliminated", "war"):
+            if pid not in e["fids"] and e["kind"] not in ("ranking", "victory", "eliminated", "war", "alert"):
                 continue
             text = g.event_for_player(e)
             if text is None:                    # 조우하지 않은 세력끼리의 일
                 continue
             kinds_count[e["kind"]] = kinds_count.get(e["kind"], 0) + 1
             if shown < 6 and e["kind"] in ("battle", "captured", "complete", "rebel", "war", "peace", "eliminated",
-                                             "famine", "capital", "bomb", "victory", "diplo", "info"):
+                                             "famine", "capital", "bomb", "victory", "diplo", "info", "alert"):
                 col = {"battle": self.theme.bad, "war": self.theme.bad, "rebel": self.theme.warn,
-                       "famine": self.theme.warn, "victory": self.theme.good}.get(e["kind"])
+                       "famine": self.theme.warn, "victory": self.theme.good, "alert": self.theme.bad}.get(e["kind"])
                 self.toast(text, col)
                 shown += 1
         if g.new_ranking:

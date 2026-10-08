@@ -129,8 +129,10 @@ VICTORY_TIPS = {
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 석유 생산 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
                f"(단계마다 턴당 {C.SCIENCE_COST_PER_TURN:,} × {C.SCIENCE_TURNS}턴, 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g}"
                f" · 예산 편성은 턴당 {C.SCIENCE['budget']['per_turn']:,} × {C.SCIENCE_TURNS}턴)",
-    "economic": f"경제승리: 전체 GDP(중립 지역 산출 포함) 중 내 몫이 기준 이상인 상태로 {C.ECON_VICTORY_TURNS}턴 유지하면 승리\n"
-                f"(기준은 시작 국가 수에 따라: 8개국 50%, 6개국 60%, 한 나라 늘 때마다 −5%p)",
+    "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 금융 단지(은행 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
+                f"증권거래소(수도 포함 {C.ECON_EXCHANGES}곳) → ③ 수도에 경제특구 → ④ 우호 선언 이상 관계 {C.ECON_IFC_FRIENDS}개국이면\n"
+                f"국제금융센터 → ⑤ 우호 선언 이상 {C.ECON_CURRENCY_FRIENDS}개국(동맹 {C.ECON_CURRENCY_ALLIES}곳 이상)이면 "
+                "수도에서 기축통화 지정. 완료하면 승리\n(건설 중 조건이 깨지면 중단·50% 환급, 조건이 돌아오면 이어서)",
     "diplomatic": "외교승리: 살아 있는 모든 나라가 하나의 연합에 속하면 연합 전원이 함께 승리",
     "time": f"시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 {C.TIME_VICTORY_TURNS}턴)이 되면\n"
             "점수(점유 지역·GDP·인구 비율의 평균)가 가장 높은 세력이 승리",
@@ -1049,13 +1051,15 @@ def draw_diplomacy(app):
 
 # ------------------------------------------------------------------ 랭킹·로그·도움말·종료
 def ranking_value_text(g, row, key) -> str:
-    v = row[key]
+    v = row.get(key, 0)
     if key == "happy":
         return f"{v:+.1f}"
     if key == "gdp":
-        return f"{v:,.0f} ({row['gdp_share'] * 100:.1f}%)"
+        return f"{v:,.0f} ({row.get('gdp_share', 0) * 100:.1f}%)"
     if key == "science":
         return f"{v}/{len(C.SCIENCE_STEPS)}"
+    if key == "econ":
+        return f"{v}/{C.ECON_STAGES}"
     return f"{v:,.0f}"
 
 
@@ -1068,7 +1072,7 @@ def draw_ranking(app):
     turn = app.modal[1] if app.modal[1] in g.rankings else (keys[-1] if keys else None)
     rows = g.rankings.get(turn, [])
     title = f"{g.ranking_label(turn)} 랭킹" if turn else "반기 랭킹"
-    r = modal_frame(app, 960, 150 + 40 * max(1, len(rows)) + 60, title)
+    r = modal_frame(app, 1040, 150 + 40 * max(1, len(rows)) + 60, title)
     pid = g.player_id
     cols = g.RANKING_COLS
     sel = getattr(app, "rank_col", "regions")
@@ -1076,7 +1080,7 @@ def draw_ranking(app):
         gui.text((r.right - 24, r.y + 26), f"발표 {R.date_label(turn)}", 12, t.muted, anchor="topright")
     x0 = r.x + 24
     y = r.y + 64
-    name_w = 230
+    name_w = 210
     wts = [1.6 if k == "gdp" else 1.0 for k, _ in cols]          # GDP 칸은 '액수(비율%)'라 넓게
     unit = (r.w - 48 - 50 - name_w) / sum(wts)
     cx = [x0 + 50 + name_w + unit * sum(wts[:i]) for i in range(len(cols))]
@@ -1087,7 +1091,7 @@ def draw_ranking(app):
                       size=12, tooltip="눌러서 이 항목 순으로 보기"):
             app.rank_col = sel = k
     y += 42
-    order = sorted(rows, key=lambda rr: (-rr[sel], -rr["regions"]))
+    order = sorted(rows, key=lambda rr: (-rr.get(sel, 0), -rr.get("regions", 0)))
     for pos, row in enumerate(order, 1):
         fid = row["fid"]
         me = fid == pid
@@ -1122,7 +1126,7 @@ def draw_log(app):
     r = modal_frame(app, 820, 640, "이벤트 로그")
     pid = g.player_id
     evs = [e for e in reversed(g.history) if pid in e["fids"] or e["kind"] in ("war", "peace", "eliminated",
-                                                                                "ranking", "victory", "diplo")]
+                                                                                "ranking", "victory", "diplo", "alert")]
     evs = [(e, txt) for e in evs for txt in [g.event_for_player(e)] if txt is not None]   # 미지의 국가는 가림
     area = pygame.Rect(r.x + 16, r.y + 60, r.w - 32, r.h - 130)
     off = gui.begin_scroll("log", area, len(evs) * 24)

@@ -111,7 +111,6 @@ def test_new_curves():
     assert R.unhappy_combat_mult(-50) == pytest.approx(R.unhappy_output_mult(-50))
     assert [R.conscript_penalty(n) for n in range(4, 11)] == [0, 0, 0, 1, 2, 4, 8]
     assert R.science_cost_mult(5) == pytest.approx(1.2 ** 5)
-    assert R.econ_share(8) == pytest.approx(0.5) and R.econ_share(2) == pytest.approx(0.8)
     assert R.bomb_building_chance(True, False) == pytest.approx(0.3)
     assert R.bomb_building_chance(False, True) == pytest.approx(0.6)
     assert R.bomb_building_chance(True, True) == pytest.approx(0.9)

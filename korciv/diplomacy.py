@@ -33,6 +33,7 @@ class DiploState:
         self.op_temp: dict = {}        # (a, b) -> [[값, 만료 턴], ...] 기한부 우호도(우호 선언)
         self.decl_cd: dict = {}        # (종류, 사용국, 상대) -> 마지막 사용 턴
         self.denounce_log: dict = {}   # 사용국 -> [비난한 턴, ...]
+        self.declared: dict = {}       # pair -> 우호 선언이 성립한 턴. 전쟁·비난·우호도 붕괴 전까지 유지
 
 
 # ------------------------------------------------------------------ 조회
@@ -218,6 +219,7 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     """전쟁 시작. aggressor(선포한 쪽)는 전쟁 피로 +20·턴당 +1, 상대는 +10·턴당 +0.5. 독립 전쟁은 피로 증가 없음."""
     p = pair(a, b)
     _clear_treaties(g, a, b)
+    _dip_attr(g, "declared").pop(p, None)          # 전쟁하면 우호 선언 관계도 끝난다
     g.dip.wars[p] = {"start": g.turn, "declarer": a, "aggressor": aggressor if happiness else None,
                      "score": {a: 0.0, b: 0.0},
                      "regs0": {a: g.region_count(a), b: g.region_count(b)}, "taken": {a: 0, b: 0}}
@@ -443,8 +445,29 @@ def declare_friendship(g, a, b, force=False):
         else:
             add_opinion(g, x, y, v)
     _dip_attr(g, "decl_cd")[("friend", a, b)] = g.turn
+    _dip_attr(g, "declared")[pair(a, b)] = g.turn
     g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
     return True, f"우호 선언 성립: {C.DECL_FRIEND_TURNS}턴 동안 우호도 +{C.DECL_FRIEND_BONUS}"
+
+
+def declared_friends(g, a, b) -> bool:
+    """우호 선언이 성립해(어느 쪽이 선언했든) 아직 유지되는 관계인가."""
+    return pair(a, b) in _dip_attr(g, "declared")
+
+
+def econ_partners(g, fid) -> tuple:
+    """경제승리 조건용 관계 수: (우호 선언 이상 관계 국가 수, 동맹 이상 국가 수).
+    '우호 선언 이상' = 우호 선언 관계, 또는 통행권·불가침·동맹·연합. 우호도가 높아 저절로 생긴 우호관계는 세지 않는다."""
+    n = allies = 0
+    for x in g.alive_ids():
+        if x == fid:
+            continue
+        st = stage(g, fid, x)
+        if st >= 3:
+            allies += 1
+        if st >= 2 or declared_friends(g, fid, x):
+            n += 1
+    return n, allies
 
 
 def denounce_check(g, a, b):
@@ -484,6 +507,7 @@ def denounce(g, a, b):
     for x, y, v, _ in denounce_effects(g, a, b):
         add_opinion(g, x, y, v)
     _dip_attr(g, "decl_cd")[("denounce", a, b)] = g.turn
+    _dip_attr(g, "declared").pop(pair(a, b), None)   # 비난하면 우호 선언 관계도 끝난다
     log = _dip_attr(g, "denounce_log").setdefault(a, [])
     log.append(g.turn)
     del log[:-8]
@@ -532,10 +556,14 @@ def treaty_check(g, ai, proposer, kind):
             return False, "이미 체결되어 있습니다."
         if kind == "passage" and p in g.dip.passage:
             return False, "이미 체결되어 있습니다."
+        if not declared_friends(g, ai, proposer):
+            return False, "한 단계를 건너뛴 제안입니다(먼저 우호 선언)."
         return (op >= need, f"우호도 {op:.0f} / 필요 {need:.0f}")
     if kind == "alliance":
         if p in g.dip.alliance:
             return False, "이미 동맹입니다."
+        if not declared_friends(g, ai, proposer):
+            return False, "한 단계를 건너뛴 제안입니다(먼저 우호 선언)."
         if p not in g.dip.nonaggr and p not in g.dip.passage:
             return False, "한 단계를 건너뛴 제안입니다(먼저 조약)."
         need = threshold(g, ai, proposer, C.ALLIANCE_MIN)
@@ -640,7 +668,7 @@ def evaluate_offer(g, ai, proposer, offer):
         return "reject", None, "빈 제안입니다."
     if is_empty(take):
         gv = gift_value(g, give, proposer)
-        return "accept", None, (f"선물 (가치 {gv:,.0f}) → 우호도 +{gift_opinion(g, ai, gv):.2f}"
+        return "accept", None, (f"선물 (가치 {gv:,.0f}) → 우호도 +{gift_opinion(g, ai, gv, proposer):.2f}"
                                 f" (상대 턴당 세수 {gift_income(g, ai):,.0f}마다 +{gift_rate(g, ai):.2f}, 최대 +{C.OP_GIFT_MAX})")
     if is_empty(give):
         only_passage = take.get("passage") and not take.get("regions") and not any(
@@ -717,9 +745,12 @@ def gift_value(g, side: dict, giver) -> float:
     return v + items_value(g, rest, False, None, giver)
 
 
-def gift_opinion(g, ai, value) -> float:
-    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사, 1회 최대 +25."""
+def gift_opinion(g, ai, value, giver=None) -> float:
+    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사, 1회 최대 +25.
+    주는 쪽이 국제금융센터를 가졌으면 +10%."""
     raw = gift_rate(g, ai) * value / gift_income(g, ai)
+    if giver is not None and g.econ_buildings(giver, "ifc"):
+        raw *= 1 + C.IFC_GIFT_BONUS
     return min(C.OP_GIFT_MAX, math.floor(raw * 100 + 1e-6) / 100)
 
 
@@ -729,7 +760,7 @@ def respond_offer(g, ai, proposer, offer, execute=True):
     give, take = offer["give"], offer["take"]
     if res == "accept" and execute:
         if is_empty(take):
-            add_opinion(g, ai, proposer, gift_opinion(g, ai, gift_value(g, give, proposer)))
+            add_opinion(g, ai, proposer, gift_opinion(g, ai, gift_value(g, give, proposer), proposer))
         elif is_empty(give):
             only_passage = take.get("passage") and not take.get("regions") and not any(
                 take.get(k, 0) for k in TRADE_KEYS)
@@ -794,6 +825,10 @@ def update_turn(g):
                     delta += C.HEGEMON_BALANCE_K * min(
                         C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
                 delta += g.mods(b).add("ai_opinion_turn")
+                # 승리에 가까워지는 나라 견제(우호 선언·조약 이상 관계가 아니면)
+                t = g.victory_threat(b)
+                if t > 0 and stage(g, a, b) < 2 and not declared_friends(g, a, b):
+                    delta -= C.VICTORY_THREAT_OP * t
             base = op_baseline(g, a, b)
             v = base + (d.op.get((a, b), base) + delta - base) * C.OPINION_DECAY
             d.op[(a, b)] = max(-100.0, min(100.0, v))
@@ -819,6 +854,12 @@ def update_turn(g):
                 else:
                     del store[p]
                     g.event("diplo", f"{g.fname(a)}–{g.fname(b)} 조약이 만료되었습니다.", fids=p)
+    # 우호 선언 관계: 한쪽이 사라지거나 우호도가 수락 문턱(−30) 아래로 떨어지면 끝난다
+    decl = _dip_attr(g, "declared")
+    for p in list(decl):
+        a, b = p
+        if not (g.factions[a].alive and g.factions[b].alive) or mutual(g, a, b) < C.DECL_FRIEND_MIN:
+            del decl[p]
     # AI 동맹 파기(우호도 30 이하)
     for p in list(d.alliance):
         a, b = p
