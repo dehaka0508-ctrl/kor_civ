@@ -305,19 +305,19 @@ def test_science_victory_chain():
     g.regions["S002"].project = None
     g._complete_project(f, g.regions["S002"], p)
     assert f.science == ["lab"] and "lab" in g.regions["S002"].sci
-    # 2단계: 산맥과 맞닿은 지역에서만, 비용 ×1.2
+    # 2단계: 산맥과 맞닿은 지역에서만, 비용 ×1.1
     mtn = next(r for r in g.world.order if r in g.world.mountain_regions and g.regions[r].owner == NEUTRAL)
     flat = next(r for r in g.world.order if r not in g.world.mountain_regions and g.regions[r].owner == NEUTRAL
                 and g.world.land_adj[r])
     _own(g, 0, [mtn, flat])
     assert [o["key"] for o in sci(mtn)] == ["observatory"] and not sci(flat)
-    assert sci(mtn)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2)
-    # 3단계 예산 편성은 은행 5단계(금융 단지) 지역에서만, 다른 단계처럼 ×1.2^2
+    assert sci(mtn)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * C.SCIENCE_COST_GROWTH)
+    # 3단계 예산 편성은 은행 5단계(금융 단지) 지역에서만, 다른 단계처럼 ×1.1^2
     f.science = ["lab", "observatory"]
     assert not sci(flat)
     g.regions[flat].b["bank"] = 5
     assert [o["key"] for o in sci(flat)] == ["budget"]
-    assert sci(flat)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * 1.2 ** 2)
+    assert sci(flat)[0]["per_turn"] == pytest.approx(C.SCIENCE_COST_PER_TURN * C.SCIENCE_COST_GROWTH ** 2)
     ok, _ = g.start_project(0, flat, "science", "budget")
     assert ok
     p = g.regions[flat].project
@@ -839,7 +839,7 @@ def test_wanggeon_far_output():
 def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
     costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
-    assert costs == pytest.approx([costs[0] * 1.2 ** k for k in range(len(C.SCIENCE_STEPS))])   # 연료 ≈ 3배
+    assert costs == pytest.approx([costs[0] * C.SCIENCE_COST_GROWTH ** k for k in range(len(C.SCIENCE_STEPS))])   # 연료 ≈ 1.77배
     assert costs[0] == pytest.approx(100_000 * C.SCIENCE_TURNS)
 
 
@@ -2686,3 +2686,49 @@ def test_ai_p2_court_builds_relation():
     ai._p2_court(g, f, 1, "coalition", C.AI_P2_PATRON_OP)
     assert D.opinion(g, 1, 0) > op                       # 다음 단계 문턱까지 선물
 
+
+
+def test_lost_science_project_resume_or_refund():
+    """점령으로 멈춘 과학·경제 공사: 저항·회복 기간 안에 되찾으면 이어서, 다른 나라에 넘어가거나 기간이 지나면 50% 환급."""
+    from korciv.state import Project
+    g = Game(Settings(n_enemies=2, seed=7, all_ai=True))
+    _neutral_ai(g, 0, 1, 2)
+    D.declare_war(g, 1, 0)
+    cap = g.factions[0].capital
+    rid = next(n for n in g.world.land_adj[cap] if g.regions[n].owner == NEUTRAL)
+    _own(g, 0, [rid])
+    rr = g.regions[rid]
+    rr.project = Project(kind="science", key="lab", turns=15, progress=5, per_turn=110_000, paid=550_000)
+    g.complete_occupation(1, rid)
+    assert rr.project is None and rr.lost_project["fid"] == 0
+    g.complete_occupation(0, rid)                                   # 저항 중 탈환: 그대로 이어서
+    assert rr.project is not None and rr.project.paid == 550_000 and rr.lost_project is None
+    # 다시 빼앗기고, 기간 안에 되찾지 못하면 50% 환급
+    g.complete_occupation(1, rid)
+    money = g.factions[0].money
+    rr.resist["turn"] -= C.RESIST_TURNS + C.RESIST_RECOVER_TURNS
+    g._phase_happiness()
+    assert rr.lost_project is None and g.factions[0].money == pytest.approx(money + 550_000 * C.LOST_PROJECT_REFUND)
+
+
+def test_coalition_war_needs_consent_and_all_join():
+    from korciv import ai
+    g = Game(Settings(n_enemies=3, seed=7, all_ai=True))
+    _neutral_ai(g, 0, 1, 2, 3)
+    g.dip.coalitions[1] = {"members": {0, 1}, "leader": 0, "start": 0}
+    for a, b in ((0, 3), (1, 3)):
+        g.dip.op[(a, b)] = 50.0
+    # 회원 1이 대상(3)을 좋게 보면 동의하지 않는다
+    ok, msg = D.declare_war(g, 0, 3)
+    assert not ok and "동의" in msg and not D.at_war(g, 0, 3)
+    g.dip.op[(1, 3)] = -40.0
+    assert ai.coalition_war_consent(g, 1, 0, 3)
+    ok, _ = D.declare_war(g, 0, 3)
+    assert ok and D.at_war(g, 0, 3) and D.at_war(g, 1, 3)        # 연합 전원 참전
+    # 동맹(연합 포함)이 공격당하면 모두 자동 참전
+    D.make_peace(g, 0, 3)
+    D.make_peace(g, 1, 3)
+    g.dip.nonaggr.clear()
+    g.dip.peace_until = {} if hasattr(g.dip, "peace_until") else None
+    ok, _ = D.declare_war(g, 2, 0)
+    assert ok and D.at_war(g, 2, 1)

@@ -844,6 +844,24 @@ def draw_proposal(app):
     r = modal_frame(app, 520, 260, "외교 제안")
     f = g.factions[fid]
     gui.rect(hex2rgb(f.color), (r.x + 24, r.y + 62, 12, 16), radius=3)
+    if kind == "coalition_war":
+        # 연합 회원의 선전포고: 연합 전원이 동의해야 하고, 수락하면 연합 전원이 함께 선포한다
+        tgt = prop["target"]
+        if not g.factions[tgt].alive or D.at_war(g, fid, tgt) or not D.same_coalition(g, fid, g.player_id):
+            g.pending_proposals.pop(0)
+            return
+        gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {g.seen_name(tgt)}에 "
+                 "연합 공동 선전포고를 제안합니다.", 15, weight="semibold")
+        gui.text((r.x + 24, r.y + 96), "수락하면 연합 전원이 함께 선포합니다(전쟁 피로·전쟁광 평판은 각자).", 13, t.muted)
+        if gui.button((r.x + 24, r.bottom - 64, 220, 44), "동의", "primary"):
+            g.pending_proposals.pop(0)
+            ok, msg = D.declare_war(g, fid, tgt, _agreed=(g.player_id,))
+            app.toast(msg or f"연합이 {g.seen_name(tgt)}에 선전포고했습니다.", None if ok else t.bad)
+            app.changed()
+        if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
+            g.pending_proposals.pop(0)
+            D.add_opinion(g, fid, g.player_id, -3)
+        return
     gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "

@@ -74,7 +74,7 @@ def conscript_penalty(n: int) -> float:
 
 
 def science_cost_mult(step_index: int) -> float:
-    """과학 단계 k(0부터) 비용 배수 1.2^k."""
+    """과학 단계 k(0부터) 비용 배수 1.1^k."""
     return C.SCIENCE_COST_GROWTH ** max(0, step_index)
 
 

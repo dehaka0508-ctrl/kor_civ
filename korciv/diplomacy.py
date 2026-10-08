@@ -153,13 +153,39 @@ def trade_m(g, ai, proposer) -> float:
 
 
 # ------------------------------------------------------------------ 전쟁·강화
-def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare"):
-    """a 가 b 에게 선전포고. 동맹 자동 참전, 연합 공동 결정.
-    _role: declare(직접 선포) / coalition(연합 공동 선포) / ally(방어 동맹 참전: 전쟁 피로는 당한 쪽 기준)."""
+def coalition_consent(g, a, b, agreed=()):
+    """연합 회원 a 가 b 에게 선전포고하려면 연합 전원이 동의해야 한다. (모두 동의?, 동의하지 않은 회원, 답을 기다리는 플레이어).
+    이미 b 와 전쟁 중인 회원은 동의로 본다. AI 회원은 ai.coalition_war_consent 로 판단하고,
+    플레이어 회원은 agreed 에 없으면 '답을 기다림'."""
+    cid = coalition_of(g, a)
+    if cid is None:
+        return True, [], []
+    from . import ai as AI
+    refuse, wait = [], []
+    for c in sorted(g.dip.coalitions[cid]["members"]):
+        if c in (a, b) or c in agreed or not g.factions[c].alive or at_war(g, c, b):
+            continue
+        if not g.factions[c].is_ai:
+            wait.append(c)
+        elif not AI.coalition_war_consent(g, c, a, b):
+            refuse.append(c)
+    return not refuse and not wait, refuse, wait
+
+
+def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _agreed=()):
+    """a 가 b 에게 선전포고. 동맹(연합 포함)은 당한 쪽을 자동으로 돕고, 연합 회원의 선포는 전원 동의해야 하며
+    동의하면 연합 전원이 함께 선포한다.
+    _role: declare(직접 선포) / coalition(연합 공동 선포) / ally(방어 동맹 참전: 전쟁 피로는 당한 쪽 기준).
+    _agreed: 이미 동의한 연합 회원(플레이어가 제안을 수락한 경우)."""
     if a == b or at_war(g, a, b) or not g.factions[a].alive or not g.factions[b].alive:
         return False, "이미 전쟁 중이거나 대상이 없습니다."
     if has_nonaggr(g, a, b):
         return False, "불가침조약·동맹 중에는 먼저 조약을 파기해야 합니다."
+    if _role == "declare":
+        ok, refuse, wait = coalition_consent(g, a, b, _agreed)
+        if not ok:
+            who = ", ".join(g.factions[c].name for c in refuse + wait)
+            return False, f"연합 회원 전원이 동의해야 합니다({who}{' 거절' if refuse else ' 답 필요'})."
     joined = _joined if _joined is not None else set()
     pen = warmonger_penalty(g, a) if _role == "declare" else 0.0
     _start_war(g, a, b, aggressor=b if _role == "ally" else a)
@@ -187,8 +213,8 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare"):
         if allied(g, c, b) and not at_war(g, c, a) and (c, a) not in joined:
             _clear_treaties(g, c, a)
             declare_war(g, c, a, reason="동맹 참전으로 선전포고", _joined=joined, _role="ally")
-    # 공격측 연합 회원 공동 참전
-    cid = coalition_of(g, a)
+    # 공격측 연합 회원 공동 참전(직접 선포일 때만: 전원 동의를 받았다)
+    cid = coalition_of(g, a) if _role == "declare" else None
     if cid is not None:
         for c in list(g.dip.coalitions[cid]["members"]):
             if c not in (a, b) and not at_war(g, c, b) and (c, b) not in joined and g.factions[c].alive:

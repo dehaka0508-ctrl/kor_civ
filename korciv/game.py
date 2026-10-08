@@ -93,7 +93,7 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False), ("econ", None)):
+                            ("pop_focus", False), ("econ", None), ("lost_project", None)):
                 if attr == "econ" and not hasattr(r, attr):
                     r.econ = set()
                     continue
@@ -1338,7 +1338,7 @@ class Game:
         return int(self.mods(fid).value("science_turns", C.SCIENCE_TURNS))
 
     def science_step_cost(self, fid, step) -> float:
-        """과학 단계 총비용: 턴당 10만 × 1.2^단계 × 턴 수 × 지도자 보정."""
+        """과학 단계 총비용: 턴당 10만 × 1.1^단계 × 턴 수 × 지도자 보정."""
         spec = C.SCIENCE[step]
         per = C.SCIENCE_COST_PER_TURN * R.science_cost_mult(spec["tier"])
         return per * C.MONEY_SCALE * self.mods(fid).mult("cost_science") * self.science_turns(fid)
@@ -2083,8 +2083,29 @@ class Game:
         old = rr.owner
         if old == new_owner:
             return
+        # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
+        # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
+        lp = getattr(rr, "lost_project", None)
+        resume = None
+        if lp is not None:
+            rs = rr.resist
+            if (lp["fid"] == new_owner and rs and rs.get("from") == new_owner
+                    and self.resist_phase(rr)[0] in ("resist", "recover")):
+                resume = lp["project"]
+            else:
+                self._refund_lost_project(rr)
+            rr.lost_project = None
+        p = rr.project
+        if p is not None and p.kind in ("science", "econ") and old != NEUTRAL:
+            if new_owner != NEUTRAL and reason == "점령":
+                p.stalled, p.funded = True, False
+                rr.lost_project = {"fid": old, "project": p}
+            else:
+                rr.lost_project = {"fid": old, "project": p}
+                self._refund_lost_project(rr)
+                rr.lost_project = None
         rr.owner = new_owner
-        rr.project = None
+        rr.project = resume
         rr.econ = set()                  # 경제승리 시설은 점령당하면 사라진다
         prev_occs = dict(rr.occs)
         rr.occs = {}
@@ -2143,6 +2164,21 @@ class Game:
         if new_owner != NEUTRAL:
             f = self.factions[new_owner]
             f.explored.add(rid)
+
+    def _refund_lost_project(self, rr):
+        """점령으로 멈춘 과학·경제 공사를 되찾지 못함: 원래 주인에게 낸 돈의 50% 환급."""
+        lp = getattr(rr, "lost_project", None)
+        if not lp:
+            return
+        rr.lost_project = None
+        f = self.factions[lp["fid"]]
+        p = lp["project"]
+        if not f.alive or p.paid <= 0:
+            return
+        refund = p.paid * C.LOST_PROJECT_REFUND
+        f.money += refund
+        self.event("info", f"{self.info(rr.id).name}의 {p.name or p.key} 공사를 되찾지 못했습니다 — {refund:,.0f} 환급",
+                   region=rr.id, fids=(f.id,))
 
     def eliminate(self, fid, by=None):
         f = self.factions[fid]
@@ -3300,6 +3336,9 @@ class Game:
             h = (r.happy + r.h_delta + t + spec) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
+            lp = getattr(r, "lost_project", None)
+            if lp is not None and self.resist_phase(r)[0] not in ("resist", "recover"):
+                self._refund_lost_project(r)        # 탈환 기간(저항 + 회복)이 지났다
             if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
                 r.resist = None
         self._morale = {}

@@ -234,7 +234,7 @@ def choose_path(g, f, sc, reason="정기") -> str:
     # 어느 쪽도 유리하지 않으면 자포자기하지 않고 강국에 기대 외교승리를 노린다(동맹을 맺을 수 있는 지도자만)
     other = max(scores[k] for k in ("conquest", "science", "economic"))
     limit = C.AI_P2_HOPELESS * (C.AI_P2_HOPELESS_EXIT if s.get("hopeless") else 1.0)
-    # 강국에 기대기로 했으면 최소 48턴은 그대로(관계를 쌓을 시간). 그 뒤 최고점이 0.25×1.25를 넘으면 벗어난다
+    # 강국에 기대기로 했으면 최소 48턴은 그대로(관계를 쌓을 시간). 그 뒤 최고점이 문턱×1.25를 넘으면 벗어난다
     committed = s.get("hopeless") and g.turn - s.get("hopeless_turn", -999) < C.AI_P2_HOPELESS_MIN
     if (other < limit or committed) and not g.mods(f.id).value("no_alliance"):
         if not s.get("hopeless") or cur != "diplomatic":

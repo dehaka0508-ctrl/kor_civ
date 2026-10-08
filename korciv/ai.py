@@ -733,6 +733,12 @@ def _consider_war(g, f):
                                                 if x not in (fid, o) and D.at_war(g, x, o)
                                                 and not D.at_war(g, x, fid))
         ratio = mine / max(10.0, their)
+        if cid is not None:
+            ok_c, refuse, wait = D.coalition_consent(g, fid, o)
+            if refuse:
+                if p2 is not None:
+                    _p2_block(f, "연합 반대")
+                continue                      # 연합 전원이 동의해야 선포할 수 있다
         if p2 is not None:
             why = p2_war_gate(g, fid, p2, o, ratio)
             if why:
@@ -777,10 +783,31 @@ def _consider_war(g, f):
             best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:
         ok, _ = D.declare_war(g, fid, best)
+        if not ok and D.coalition_consent(g, fid, best)[2]:
+            # 연합에 플레이어가 있으면 동의를 구한다(수락하면 연합 전원이 함께 선포)
+            if g.turn - f.ai.get("proposed_coalition_war", -99) >= 8:
+                f.ai["proposed_coalition_war"] = g.turn
+                g.pending_proposals.append({"from": fid, "kind": "coalition_war", "target": best})
         if ok:
             f.ai.setdefault("war_goals", {})[best] = best_goals
             if p2 is not None:
                 p2["target"] = best
+
+
+def coalition_war_consent(g, c, a, b) -> bool:
+    """연합 회원 c 가 a 의 b 에 대한 선전포고에 동의하는가: b 와 따로 동맹이 아니고, 나라가 흔들리지 않으며
+    (적자·민심·전쟁 피로·위기·이미 전쟁 2곳), b 가 패권국·승리 근접국이거나 c 가 b 를 좋게 보지 않을 때."""
+    fc = g.factions[c]
+    if D.allied(g, c, b):
+        return False
+    if (fc.money < 0 or fc.last.get("tax", 0) - fc.last.get("upkeep", 0) < 0 or g.avg_happiness(c) < -20
+            or fc.war_weary > 45 or len(D.enemies(g, c)) >= C.AI_MAX_WARS):
+        return False
+    if PH.phase(fc) >= 2 and ST.posture_of(fc) == "crisis":
+        return False
+    if g.hegemon == b or g.victory_threat(b) >= 0.5:
+        return True
+    return D.opinion(g, c, b) <= C.AI_COALITION_WAR_OP
 
 
 def p2_war_gate(g, fid, p2, o, ratio):
