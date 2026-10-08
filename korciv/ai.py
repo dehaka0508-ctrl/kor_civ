@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 
+from . import ai_endgame as EG
 from . import ai_phase as PH
 from . import ai_strategy as ST
 from . import config as C
@@ -188,6 +189,8 @@ def plan_turn(g, fid):
     p2 = PH.phase(f) >= 2
     if p2:
         ST.update(g, f, threat_map(g, fid))
+    if PH.phase(f) >= 3:
+        EG.assess(g, f)                       # 3페이즈: 6턴마다 승리까지 남은 턴을 비교해 질주 여부
     if ("weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD
             or (p2 and f.ai.get("goal") != ST.path_of(f))):
         set_strategy(g, f)
@@ -502,6 +505,9 @@ def war_assessment(g, fid, e):
             pro.append("국가 위기")
         if ST.path_of(f) not in (None, "conquest"):
             d += C.AI_P2_NONCONQ_PEACE     # 정복을 노리지 않으면 전쟁을 오래 끌지 않는다
+        if EG.sprint(f) == "conquest" and ST.posture_of(f) != "crisis":
+            d -= C.AI_P3_SPRINT_PEACE      # 3페이즈 정복 질주: 이기고 있는 전쟁은 끝까지
+            con.append("정복 질주")
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 
@@ -557,7 +563,9 @@ def _p2_anchor(g, f):
         _p2_court(g, f, s["patron"], "coalition", C.AI_P2_PATRON_OP)
     a = s.get("anchor")
     if a is not None and a != s.get("patron"):
-        _p2_court(g, f, a, "treaty", C.AI_P2_ANCHOR_OP)
+        # 3페이즈 경제: 기축통화에 동맹 1곳이 필요하다 — 우방과 동맹(연합)까지
+        goal = "coalition" if PH.p3_kind(f) == "economic" else "treaty"
+        _p2_court(g, f, a, goal, C.AI_P2_ANCHOR_OP)
 
 
 def _p2_court(g, f, o, goal, drift):
@@ -716,6 +724,9 @@ def _consider_war(g, f):
     by_loc = _armies_by_loc(g)
     my_total = g.mil_power(fid) * g.morale(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
     best, best_s, best_goals = None, 1.0, []
+    spr = EG.sprint(f)
+    site_regions = EG.missing_science_site(g, fid) if spr == "science" else []
+    site_owners = {g.regions[n].owner for n in site_regions}
     for o in sorted(neighbors):
         if D.has_nonaggr(g, fid, o) or D.at_war(g, fid, o) or D.peace_left(g, fid, o) > 0:
             continue
@@ -748,7 +759,7 @@ def _consider_war(g, f):
         thr = war_op_threshold(g, f, o, ratio, can_expand)
         if op > thr:
             continue                      # 아직 참을 만하다
-        need = 1.5 - 0.07 * aggr
+        need = 1.5 - 0.07 * aggr - (C.AI_P3_SPRINT_NEED if spr == "conquest" else 0.0)
         if ratio < need:
             continue
         fr = front_analysis(g, fid, o, by_loc)
@@ -779,8 +790,14 @@ def _consider_war(g, f):
                 s += C.AI_P2_PATH_WAR * min(1.0, max(0.0, ratio - need)) * min(1.0, prize / 15)
             else:
                 s += C.AI_P2_OTHER_WAR
+        goals = fr["targets"][:4] or fr["border"][:2]
+        if spr == "conquest":
+            s += C.AI_P3_SPRINT_WAR                         # 3페이즈 정복 질주: 땅을 넓힐 전쟁을 더 적극적으로
+        elif spr == "science" and o in site_owners:
+            s += C.AI_P3_SITE_WAR                           # 과학 질주: 다음 단계를 지을 땅(산맥·해안·석유)을 가진 이웃
+            goals = [n for n in site_regions if g.regions[n].owner == o][:2] + goals[:2]
         if s > best_s:
-            best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
+            best, best_s, best_goals = o, s, goals
     if best is not None:
         ok, _ = D.declare_war(g, fid, best)
         if not ok and D.coalition_consent(g, fid, best)[2]:
@@ -1116,6 +1133,7 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
     goal = f.ai.get("victory_goal") == "economic"
     sm, si = ((2.0, 0.3) if goal else (4, 0.6))
     sm, si = sm / bias("bank"), si / bias("bank")
+    spr = EG.sprint(f) == "economic"
     cap = f.capital
     ex = g.econ_buildings(fid, "exchange")
     ex_busy = [r.id for r in regs if r.project and r.project.kind == "econ" and r.project.key == "exchange"]
@@ -1127,7 +1145,8 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
         spec = C.ECON[step]
         per = spec["per_turn"] * C.MONEY_SCALE
         if not ((f.money > per * sm and income - upkeep > per * si)
-                or f.money > per * spec["turns"] * (1.1 if goal else 2.5)):
+                or f.money > per * spec["turns"] * (1.1 if goal else 2.5)
+                or (spr and f.money > per * C.AI_P3_SPRINT_START)):
             continue
         sites = [r for r in regs if g.econ_site_ok(fid, r.id, step) and not r.project and not r.occ
                  and not g.resisting(r)]
@@ -1136,6 +1155,8 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
         if sites:
             best = min(sites, key=lambda r: (threat.get(r.id, 0), -r.pop))
             if g.start_project(fid, best.id, "econ", step)[0]:
+                if spr:
+                    best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
                 break                                 # 큰 공사는 한 턴에 하나씩
     if goal and len(g.finance_cluster(fid)) < C.ECON_CLUSTER:
         plan = finance_plan(g, fid)
@@ -1171,6 +1192,8 @@ def capital_min_garrison(g, f, threat) -> int:
             break
     if threat.get(cap, 0) >= 1.0:
         n += 2
+    if EG.sprint(f):
+        n += C.AI_P3_SPRINT_GARRISON         # 질주 중: 승리 조건(수도 시설)을 지킨다
     return n
 
 
@@ -1421,6 +1444,9 @@ def _slots(g, f, threat, military=True):
     elif post == "defend":
         prod_k *= C.AI_P2_DEFEND_PROD
     big_ok = post == "normal" or (post == "defend" and ST.state(f).get("mil_ok", False))
+    spr = EG.sprint(f) if f.is_ai else ""
+    if spr:
+        big_ok = post != "crisis"             # 질주 중: 위기만 아니면 승리 조건 공사를 멈추지 않는다
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
     fuel = fuel_balance(g, fid)
@@ -1435,6 +1461,8 @@ def _slots(g, f, threat, military=True):
     desired = max(2, int(len(regs) * (0.8 if at_war else 0.35) * wts.get("military", 1)))
     if f.aggression >= 6 and g.turn > 6:
         desired += 3
+    if spr:
+        desired = int(desired * (C.AI_P3_SPRINT_MIL_CONQ if spr == "conquest" else C.AI_P3_SPRINT_MIL))
     mil_need = max(0, desired - mil_units)
     producing = sum(1 for r in regs if r.project and r.project.kind == "unit")
     mil_need = max(0, mil_need - producing)
@@ -1576,7 +1604,7 @@ def _slots(g, f, threat, military=True):
     airports = [r for r in regs if r.b["airport"]]
     n_ftr = sum(a.units.get("ftr", 0) for a in g.armies.values() if a.owner == fid)
     n_bmb = sum(a.units.get("bmb", 0) for a in g.armies.values() if a.owner == fid)
-    if military and (at_war or f.aggression >= 6) and f.money > 15000 and not airports and g.turn > 24:
+    if military and (at_war or f.aggression >= 6 or spr) and f.money > 15000 and not airports and g.turn > 24:
         site = cap if (cap is not None and cap.owner == fid and f.capital in idle_ids) else None
         if site is None:
             pool_ap = sorted(idle, key=lambda r: -threat.get(r.id, 0) - r.pop / 100)
@@ -1585,7 +1613,7 @@ def _slots(g, f, threat, military=True):
             cost = C.SINGLE_BUILDINGS["airport"]["cost"] * C.BUILD_COST_MULT
             cands.append((2.0 * bias("air"), site.id, "build", "airport", None,
                           cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
-    if military and at_war and airports:
+    if military and (at_war or spr) and airports:
         ap_idle = [r for r in airports if r.id in idle_ids]
         if ap_idle and g.can_pay_oil(fid, C.UNITS["ftr"]["oil"]) and f.money > 3000 and n_ftr < 2 + len(regs) // 25:
             r0 = ap_idle[0]
@@ -1617,6 +1645,16 @@ def _slots(g, f, threat, military=True):
             elif enemy_ports and n_dd < n_lst + 1 and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000:
                 r0 = ports_idle[-1]
                 cands.append((2.0 * bias("naval"), r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
+    # 질주 중 해안 방어: 항구 하나와 구축함(전쟁이 아니어도)
+    if military and spr and not at_war:
+        coast_idle = [r for r in idle if g.world.regions[r.id].coastal]
+        ports_idle = [r for r in regs if r.b["port"] and r.id in idle_ids]
+        n_dd = sum(a.units.get("dd", 0) for a in g.armies.values() if a.owner == fid)
+        if coast_idle and not any(r.b["port"] for r in regs) and f.money > 6000:
+            cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
+            cands.append((1.6, coast_idle[0].id, "build", "port", None, cost / C.SINGLE_BUILDINGS["port"]["turns"]))
+        elif ports_idle and n_dd < 1 + len(regs) // 40 and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000:
+            cands.append((1.6, ports_idle[0].id, "unit", "dd", None, g.unit_cost(fid, ports_idle[0].id, "dd")))
     # 상륙함이 빈 채로 기다리는 항구: 그 자리에서 태울 병력을 뽑는다
     if military and at_war:
         for fl in g.armies.values():
@@ -1649,14 +1687,16 @@ def _slots(g, f, threat, military=True):
         sc_per = sc_total / sc_turns
         sm, si = ((2.0, 0.3) if sci_goal else (4, 0.6))
         sm, si = sm / bias("science"), si / bias("science")
-        if (f.money > sc_per * sm and income - upkeep > sc_per * si) or f.money > sc_total * (1.1 if sci_goal else 2.5):
+        if ((f.money > sc_per * sm and income - upkeep > sc_per * si) or f.money > sc_total * (1.1 if sci_goal else 2.5)
+                or (spr == "science" and f.money > sc_per * C.AI_P3_SPRINT_START)):
             sites = [r for r in regs if g.science_site_ok(fid, r.id, step) and not r.project and not r.occ
                      and not g.resisting(r)]
             if sites:
                 # 위협이 적고 수도에 가까운 곳(유닛은 발사대까지 옮겨야 한다)
                 dist = g.world.distances_from(f.capital, 30)
                 best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
-                g.start_project(fid, best.id, "science", step)
+                if g.start_project(fid, best.id, "science", step)[0] and spr == "science":
+                    best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
             elif sci_goal and step in ("booster", "module", "budget"):
                 # 공장(예산 편성은 은행) 5단계 지역이 없으면 가장 높은 곳부터 올린다
                 bk = "bank" if step == "budget" else "factory"
@@ -1686,10 +1726,10 @@ def _slots(g, f, threat, military=True):
         if avail <= 0:
             break
     if f.is_ai and PH.phase(f) >= 2:
-        _fill_slots(g, f, [r for r in idle if r.id not in used and not r.project], post, reserve, income, upkeep)
+        _fill_slots(g, f, [r for r in idle if r.id not in used and not r.project], post, reserve, income, upkeep, spr)
 
 
-def _fill_slots(g, f, idle, post, reserve, income, upkeep):
+def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     """돈이 남는데 노는 땅(2페이즈): 자금 부족으로 공사가 멈추지 않는 범위에서 채운다.
     ① 경계 태세면 국경·해안 지역에 방어 시설 ② 발전소: 석탄·석유 채굴량만큼 ③ 공장: 발전·자체 전기 생산량만큼
     ④ 농장·어장·은행·채굴(완공 뒤 비용 없음)은 계속. 그래도 남는 땅은 생산 집중(plan_turn)."""
@@ -1701,6 +1741,10 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep):
     net = income - upkeep - all_committed
     # 지금 공사 총비용을 다 대도 자금이 비상금 아래로 떨어지지 않을 만큼만(멈춤 방지): 여윳돈 절반 + 남는 순수입 12턴분
     budget = max(0.0, f.money - reserve) * C.AI_FILL_SAVINGS + max(0.0, net) * C.AI_FILL_NET_TURNS
+    if spr in ("science", "economic"):
+        # 질주: 승리 조건 공사 몇 턴분은 남겨 두고 나머지 여윳돈으로 지킨다
+        big = sum(r.project.per_turn for r in regs if r.project and r.project.kind in ("science", "econ"))
+        budget -= max(big, C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE) * C.AI_P3_SPRINT_KEEP
     if budget <= 0:
         return
     pool = sorted(idle, key=lambda r: (-r.pop, r.id))
@@ -1716,8 +1760,9 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep):
             return True
         return False
 
-    # ① 경계: 국경·해안 지역 방어 시설(같은 단계면 방어선 우선, 3단계까지)
-    if post == "defend":
+    # ① 경계(또는 3페이즈 질주): 국경·해안 지역 방어 시설(같은 단계면 방어선 우선, 3단계까지, 질주면 4단계)
+    if post == "defend" or spr:
+        top = C.AI_P3_SPRINT_DEF_LV if spr else C.AI_DEF_MAX_LEVEL
         for r in pool:
             if r.id in used:
                 continue
@@ -1729,7 +1774,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep):
             bkey = min(borders, key=lambda n: (r.lines.get(n, 0), D.opinion(g, fid, g.regions[n].owner) if n != "coast" else 0))
             opts = [(r.lines.get(bkey, 0), 0, "line", bkey), (r.b["shelter"], 1, "shelter", None), (r.b["aa"], 2, "aa", None)]
             lv, _, key, border = min(opts)
-            if lv >= C.AI_DEF_MAX_LEVEL:
+            if lv >= top:
                 continue
             cost = R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1)
             start(r, key, border, cost)

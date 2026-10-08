@@ -2749,3 +2749,19 @@ def test_ai_phase3_entry_by_goal():
     extra = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:int(need) + 1]
     _own(g, 1, extra)
     assert PH.update(g, f2) == 3 and PH.p3_kind(f2) == "conquest"
+
+
+def test_ai_phase3_sprint_when_ahead():
+    """3페이즈: 내 승리 ETA 가 다른 나라 가장 빠른 ETA 의 1.2배 안이면 질주."""
+    from korciv import ai_endgame as EG
+    g = _p2_game(n=3)
+    f = g.factions[0]
+    f.ai.update(phase=3, p3={"kind": "science", "turn": 0})
+    f.science = list(C.SCIENCE_STEPS[:6])
+    for r in g.regions_of(0):
+        r.output = 10 ** 6                              # 돈은 넉넉하다
+    p = EG.assess(g, f)
+    assert p["eta"] < p["rival_eta"] and p["sprint"] and EG.sprint(f) == "science"
+    g.factions[1].science = list(C.SCIENCE_STEPS)          # 남이 훨씬 앞서면 질주하지 않는다
+    p["eval"] = -99
+    assert not EG.assess(g, f)["sprint"]
