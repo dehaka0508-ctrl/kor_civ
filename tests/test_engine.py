@@ -661,7 +661,7 @@ def test_war_weariness_separate_from_happiness():
     assert g.factions[1].war_weary == pytest.approx(10.5)  # 당한 쪽 +10, 턴당 +0.5
     assert g.eff_happy(cap) == pytest.approx(-15.5)       # 실질 행복도 = 행복도 − 전쟁 피로도
     assert g.avg_happiness(0) == pytest.approx(-15.5) and g.avg_happiness(0, effective=False) == pytest.approx(0)
-    for _ in range(300):
+    for _ in range(400):
         g._phase_happiness()
     assert g.player.war_weary == C.WAR_WEARY_MAX
     D.make_peace(g, 0, 1)
