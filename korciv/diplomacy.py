@@ -963,10 +963,12 @@ def update_turn(g):
         if not (g.factions[a].alive and g.factions[b].alive) or mutual(g, a, b) < C.DECL_FRIEND_MIN:
             del decl[p]
     # AI 동맹 파기(우호도 30 이하)
+    from . import ai as AI
     for p in list(d.alliance):
         a, b = p
         for x, y in ((a, b), (b, a)):
-            if g.factions[x].is_ai and opinion(g, x, y) <= C.ALLIANCE_LEAVE and p in d.alliance:
+            if (g.factions[x].is_ai and opinion(g, x, y) <= C.ALLIANCE_LEAVE and p in d.alliance
+                    and not AI.loyal(g, x, y)):       # 강국과 거기 기댄 나라는 서로 등을 돌리지 않는다
                 leave_alliance(g, x, y)
     d.rejected.clear()
     temps = d.__dict__.get("op_temp")

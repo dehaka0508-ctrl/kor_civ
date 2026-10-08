@@ -2783,3 +2783,19 @@ def test_ai_harass_imminent_winner():
     assert EG.watch(g, f)["harass"] == 1                       # 6턴 안에는 다시 계산하지 않는다
     g.turn += C.AI_P3_EVAL_TURNS
     assert EG.watch(g, f)["harass"] is None
+
+
+def test_ai_diplomatic_follower_rides_conqueror():
+    """외교 3페이즈: 정복을 노리는 강국에 기대고, 강국의 전쟁에 동의하며, 강국과 서로 동맹을 깨지 않는다."""
+    from korciv import ai, ai_endgame as EG, ai_strategy as ST
+    g = _p2_game(n=3)
+    f, pat = g.factions[0], g.factions[1]
+    f.ai.update(phase=3, p3={"kind": "diplomatic", "turn": 0})
+    pat.ai["p2"] = {"path": "conquest"}
+    g.new_army(1, pat.capital, {"inf": 40})
+    g.settings.fog = 0
+    ai.follower_update(g, f)
+    assert ST.state(f)["patron"] == 1 and EG.follower_patron(g, f) == 1
+    assert EG.conquest_minded(g, 1)
+    assert ai.coalition_war_consent(g, 0, 1, 2)            # 강국의 전쟁에는 함께한다
+    assert ai.loyal(g, 1, 0) and ai.loyal(g, 0, 1)

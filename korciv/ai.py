@@ -200,6 +200,8 @@ def plan_turn(g, fid):
         ST.update(g, f, threat_map(g, fid))
     if p2:
         EG.watch(g, f)                        # 6턴마다 승리까지 남은 턴을 비교: 3페이즈는 질주 여부, 모두 견제 위급도
+    if PH.p3_kind(f) == "diplomatic":
+        follower_update(g, f)                 # 외교 3페이즈: 정복을 노리는 강국에 기댄다
     if ("weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD
             or (p2 and f.ai.get("goal") != ST.path_of(f))):
         set_strategy(g, f)
@@ -552,6 +554,11 @@ def _diplomacy(g, f):
                 D.make_peace(g, fid, e)
         else:
             _queue_player(g, fid, "peace")
+    # 정복을 노리는 강국은 자기에게 기대는 나라를 받아준다(같이 외교승리든 혼자 정복승리든 둘 다 승리)
+    if PH.phase(f) >= 2 and EG.conquest_minded(g, fid):
+        for x in alive:
+            if x != fid and g.factions[x].is_ai and EG.follower_patron(g, g.factions[x]) == fid:
+                D.add_opinion(g, fid, x, C.AI_P3_PATRON_WARM)
     # AI 간 조약
     for b in alive:
         if b == fid or not g.factions[b].is_ai or D.at_war(g, fid, b):
@@ -568,14 +575,29 @@ def _diplomacy(g, f):
     _consider_war(g, f)
     if PH.phase(f) >= 2:
         _p3_harass_war(g, f)
+    if PH.p3_kind(f) == "diplomatic":
+        _follower_wars(g, f)
 
 
 def _p2_anchor(g, f):
     """2페이즈 관계 만들기. 어느 쪽도 유리하지 않은 나라는 먼저 '의지할 강국'과 연합까지(외교승리),
     그다음(또는 그 밖의 나라는) '우방'과 불가침까지(전선 이중화 방지)."""
     s = ST.state(f)
-    if s.get("hopeless") and s.get("patron") is not None:
-        _p2_court(g, f, s["patron"], "coalition", C.AI_P2_PATRON_OP)
+    pat = EG.follower_patron(g, f)
+    if pat is not None:
+        if PH.p3_kind(f) == "diplomatic":
+            # 외교 3페이즈: 이 강국에 기대기로 했다 — 강국의 전쟁광 평판 따위로 내 쪽 마음이 식지 않는다
+            gap = max(C.ALLIANCE_MIN, C.COALITION_MIN) + C.AI_P2_GIFT_MARGIN - D.opinion(g, f.id, pat)
+            if gap > 0:
+                D.add_opinion(g, f.id, pat, gap)
+        _p2_court(g, f, pat, "coalition", C.AI_P2_PATRON_OP)
+        # 외교 3페이즈: 강국과 동맹 이상이면 다른 나라도 연합으로 끌어들인다(큰 연합 = 빠른 외교승리, 강국 단독 정복 저지)
+        if PH.p3_kind(f) == "diplomatic" and D.allied(g, f.id, pat):
+            r = s.get("recruit")
+            if r is None or not g.factions[r].alive or D.same_coalition(g, f.id, r) or D.at_war(g, pat, r):
+                r = s["recruit"] = EG.recruit(g, f, pat)
+            if r is not None:
+                _p2_court(g, f, r, "coalition", C.AI_P3_RECRUIT_OP)
     a = s.get("anchor")
     if a is not None and a != s.get("patron"):
         # 3페이즈 경제: 기축통화에 동맹 1곳이 필요하다 — 우방과 동맹(연합)까지
@@ -687,6 +709,7 @@ def _social(g, f):
         return
     cands = []
     keep = {ST.state(f).get("anchor"), ST.state(f).get("patron")} if PH.phase(f) >= 2 else set()
+    keep |= {x for x in alive if g.factions[x].is_ai and EG.follower_patron(g, g.factions[x]) == fid}   # 나에게 기댄 나라
     for x in alive:
         if x in keep or not D.denounce_check(g, fid, x)[0] or not D.hostile_to(g, fid, x):
             continue
@@ -852,6 +875,99 @@ def _p3_harass_war(g, f):
         st["harass_war"] = st.get("harass_war", 0) + 1
 
 
+def follower_update(g, f):
+    """외교 3페이즈(6턴마다): 기댈 강국이 없거나 정복을 노리지 않는 나라면 정복을 노리는 강국으로 바꾼다."""
+    s = ST.state(f)
+    if g.turn - s.get("follow_eval", -99) < C.AI_P3_EVAL_TURNS:
+        return
+    s["follow_eval"] = g.turn
+    s["hopeless"] = True                      # 강국에 기대 연합으로 이긴다(_p2_anchor 가 강국과 연합까지)
+    cur = s.get("patron")
+    best = ST.choose_patron(g, f)
+    if best is None:
+        return
+    if (cur is None or not g.factions[cur].alive or D.at_war(g, f.id, cur)
+            or (not EG.conquest_minded(g, cur) and EG.conquest_minded(g, best)
+                and perceived_power(g, f.id, best) >= C.AI_P3_PATRON_SWITCH * perceived_power(g, f.id, cur)
+                and not D.same_coalition(g, f.id, cur))):
+        s["patron"] = best
+
+
+def _follower_wars(g, f):
+    """외교 3페이즈, 강국과 동맹 이상일 때(6턴마다): ① 강국에게 무너지는 이웃과의 전쟁에 끼어들어 땅을 나눠 먹는다
+    (강국 혼자 3분의 2를 차지해 정복승리로 혼자 이기지 않게). ② 같은 연합이면 강국과 나 둘 다 맞닿은 약한 나라에
+    연합 공동 선포로 강국을 끌어들인다(연합 밖의 나라가 줄어야 외교승리)."""
+    fid = f.id
+    pat = EG.follower_patron(g, f)
+    if pat is None or not D.allied(g, fid, pat):
+        return
+    if g.turn - f.ai.get("follow_war_eval", -99) < C.AI_P3_EVAL_TURNS:
+        return
+    f.ai["follow_war_eval"] = g.turn
+    if (f.money < 0 or f.last.get("tax", 0) - f.last.get("upkeep", 0) < 0 or g.avg_happiness(fid) < -20
+            or f.war_weary > 45 or ST.posture_of(f) == "crisis" or len(D.enemies(g, fid)) >= C.AI_MAX_WARS):
+        return
+    w = g.world
+    mine = {r.id for r in g.regions_of(fid)}
+    touch = lambda x: [n for rid in mine for n in w.land_adj[rid] if g.regions[n].owner == x]
+    st = f.ai.setdefault("p3s", {})
+    # ① 편승 참전
+    joins = []
+    for x in D.enemies(g, pat):
+        if D.at_war(g, fid, x) or D.has_nonaggr(g, fid, x) or D.peace_left(g, fid, x) > 0 or D.allied(g, fid, x):
+            continue
+        t = touch(x)
+        info = D.war_info(g, x, pat)
+        if t and (info.get("lost", 0) > 0 or g.region_count(x) <= C.AI_P3_DYING_REGIONS):
+            joins.append((len(set(t)), x, sorted(set(t))))
+    if joins:
+        _, x, t = max(joins)
+        ok, _ = D.declare_war(g, fid, x, reason="강대국 편승 참전")
+        if ok:
+            f.ai.setdefault("war_goals", {})[x] = t[:4]
+            st["join"] = st.get("join", 0) + 1
+            return
+    # ② 강국 끌어들이기(같은 연합)
+    blk = st.setdefault("drag_block", {})
+    if not D.same_coalition(g, fid, pat):
+        blk["연합 아님"] = blk.get("연합 아님", 0) + 1
+        return
+    if len(D.enemies(g, pat)) >= C.AI_MAX_WARS:
+        blk["강국 전쟁 많음"] = blk.get("강국 전쟁 많음", 0) + 1
+        return
+    if g.rng.random() >= C.AI_P3_DRAG_P:
+        return
+    pat_regs = {r.id for r in g.regions_of(pat)}
+    cands = []
+    for x in g.alive_ids():
+        if x in (fid, pat) or D.same_coalition(g, fid, x) or D.at_war(g, fid, x) or D.has_nonaggr(g, fid, x):
+            continue
+        if D.peace_left(g, fid, x) > 0 or D.peace_left(g, pat, x) > 0:
+            continue
+        if not any(n in pat_regs for r in g.regions_of(x) for n in w.land_adj[r.id]):
+            continue                          # 강국과 맞닿아야 강국이 싸운다
+        if perceived_power(g, fid, x) > C.AI_P3_DRAG_RATIO * perceived_power(g, fid, pat):
+            continue
+        t = touch(x)                          # 나와도 맞닿으면 땅을 나눠 먹을 수 있어 더 좋다
+        cands.append((len(set(t)), -g.region_count(x), x, sorted(set(t))))
+    if not cands:
+        blk["대상 없음"] = blk.get("대상 없음", 0) + 1
+        return
+    _, _, x, t = max(cands)
+    ok, msg = D.declare_war(g, fid, x, reason="연합 공동 선전포고")
+    if ok:
+        f.ai.setdefault("war_goals", {})[x] = t[:4]
+        st["drag"] = st.get("drag", 0) + 1
+    else:
+        blk["동의 실패"] = blk.get("동의 실패", 0) + 1
+
+
+def loyal(g, x, y) -> bool:
+    """x 가 y 와의 동맹을 깨지 않는가: y 가 x 에 기댄 나라(강국 입장: 같이 외교승리든 혼자 정복승리든 둘 다 승리)이거나
+    x 가 y 에 기댄 나라."""
+    return EG.follower_patron(g, g.factions[y]) == x or EG.follower_patron(g, g.factions[x]) == y
+
+
 def _harass_block(g, f, t, urg):
     """견제 선포를 하지 않는 이유(없으면 None)."""
     fid = f.id
@@ -904,6 +1020,11 @@ def coalition_war_consent(g, c, a, b) -> bool:
         return False
     if g.hegemon == b or g.victory_threat(b) >= 0.5 or EG.best_eta(g, b)[1] < C.AI_P3_URGENT_ETA:
         return True                           # 패권국·승리가 임박한 나라를 막는 전쟁에는 동의
+    if EG.follower_patron(g, fc) == a:
+        return True                           # 기댄 강국의 전쟁에는 함께한다(땅을 나눠 먹는다)
+    if (EG.conquest_minded(g, c) and perceived_power(g, c, b) * C.AI_P3_CONQ_CONSENT < g.mil_power(c)
+            and any(g.regions[n].owner == c for r in g.regions_of(b) for n in g.world.land_adj[r.id])):
+        return True                           # 정복을 노리는 나라는 맞닿은 약한 나라와의 전쟁에 기꺼이 동의
     return D.opinion(g, c, b) <= C.AI_COALITION_WAR_OP
 
 
@@ -1014,6 +1135,7 @@ def _army_orders(g, f, threat):
     # 1페이즈(평시): 편입으로 얻어 흩어져 있는 보병을 집결지로 모아 빈 땅을 무력 점령한다(돈이 들지 않는 확장)
     p1 = f.is_ai and PH.phase(f) == 1 and not at_war
     rally = _p1_rally(g, fid, annexing) if p1 else None
+    spoils = EG.follower_patron(g, f) if f.is_ai else None    # 외교: 강국이 무너뜨리는 나라의 땅을 나눠 먹는다
     border_keep = set()
     if p1:
         border_keep = {r.id for r in g.regions_of(fid)
@@ -1075,6 +1197,8 @@ def _army_orders(g, f, threat):
                 # 적 지역은 빼앗아도 저항·회복을 거쳐 이득이 늦다(중립 지역은 바로)
                 horizon = 24 if tgt.owner == NEUTRAL else 24 - C.RESIST_TURNS - 0.2 * C.RESIST_RECOVER_TURNS
                 cap_val = g.region_output_estimate(node) * tax * horizon if kill else 0
+                if spoils is not None and tgt.owner != NEUTRAL and D.at_war(g, spoils, tgt.owner):
+                    cap_val *= C.AI_P3_SPOILS
                 u = enemy_val - own_val + cap_val
                 if mode == "assault" and pv["line"] > 0 and dd > ad:
                     u += C.ASSAULT_LINE_BREAK * 400 * pv["line"]   # 방어선을 무너뜨릴 수 있다

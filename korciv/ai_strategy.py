@@ -297,7 +297,7 @@ def choose_anchor(g, f, sc):
 
 def choose_patron(g, f):
     """의지할 강국: 만나 본(시야에 들어온 영토의 주인이거나 국경을 맞댄) 나라 가운데 전쟁 중이 아니고 동맹을 맺을 수 있는,
-    추정 군사력이 가장 큰 나라."""
+    추정 군사력이 가장 큰 나라(정복을 노리는 나라는 ×1.5로 친다)."""
     AI = _ai()
     fid = f.id
     known = {g.regions[v].owner for v in g.visible(fid) if v in g.regions}
@@ -306,7 +306,10 @@ def choose_patron(g, f):
              if g.factions[x].alive and not D.at_war(g, fid, x) and not g.mods(x).value("no_alliance")]
     if not cands:
         return None
-    return max(cands, key=lambda x: (AI.perceived_power(g, fid, x), -x))
+    from . import ai_endgame as EG
+    # 정복을 노리는 강국에 기댄다: 그 나라가 다른 나라들을 무너뜨리는 동안 연합으로 함께 이긴다(외교승리)
+    return max(cands, key=lambda x: (AI.perceived_power(g, fid, x)
+                                     * (1 + C.AI_P3_PATRON_CONQ * EG.conquest_minded(g, x)), -x))
 
 
 def secured(g, fid, o) -> bool:

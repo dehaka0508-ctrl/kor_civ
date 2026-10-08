@@ -175,3 +175,54 @@ def missing_science_site(g, fid):
     near = {n for rid in mine for n in g.world.land_adj[rid]} - mine
     return [n for n in sorted(near) if g.regions[n].owner not in (fid,) and g.regions[n].owner >= 0
             and g.science_site_ok(g.regions[n].owner, n, step)]
+
+
+# ------------------------------------------------------------------ 외교 3페이즈: 정복 강대국에 편승
+def conquest_minded(g, x) -> bool:
+    """정복을 노리는 나라: AI 는 2페이즈 방향·3페이즈가 정복, 플레이어는 정복 3페이즈 문턱(2/N)을 넘었으면."""
+    from . import ai_phase as PH
+    xf = g.factions[x]
+    if not xf.alive:
+        return False
+    if xf.is_ai:
+        p2 = xf.ai.get("p2") or {}
+        return p2.get("path") == "conquest" or PH.p3_kind(xf) == "conquest"
+    return "conquest" in PH.p3_reached(g, x)
+
+
+def follower_patron(g, f):
+    """외교로 강국에 기대는 나라(외교 3페이즈, 또는 2페이즈 '어느 쪽도 유리하지 않음')의 강국. 아니면 None."""
+    from . import ai_phase as PH
+    p2 = f.ai.get("p2") or {}
+    if not (PH.p3_kind(f) == "diplomatic" or (f.ai.get("phase", 1) >= 2 and p2.get("hopeless"))):
+        return None
+    p = p2.get("patron")
+    if p is None or not g.factions[p].alive or D.at_war(g, f.id, p):
+        return None
+    return p
+
+
+def coalition_share(g, fid) -> float:
+    """내 연합(없으면 나 혼자)이 생존국 가운데 차지하는 비율: 외교승리 진척."""
+    alive = g.alive_ids()
+    cid = D.coalition_of(g, fid)
+    n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
+    return n / max(1, len(alive))
+
+
+def recruit(g, f, patron):
+    """연합에 끌어들일 나라: 연합 밖이고 강국과 전쟁 중이 아니며 강국·나와 사이가 나쁘지 않은 나라 중
+    서로 우호도가 가장 높은 나라(약할수록 조금 더: 보호가 필요하다)."""
+    fid = f.id
+    cid = D.coalition_of(g, fid)
+    members = g.dip.coalitions[cid]["members"] if cid is not None else {fid, patron}
+    best, best_s = None, None
+    for x in g.alive_ids():
+        if x in members or x in (fid, patron) or g.mods(x).value("no_alliance"):
+            continue
+        if D.at_war(g, patron, x) or D.at_war(g, fid, x) or D.opinion(g, patron, x) < C.AI_P3_RECRUIT_MIN_OP:
+            continue
+        s = (D.opinion(g, x, fid) + D.opinion(g, fid, x)) / 50 - 0.3 * min(2.0, g.mil_power(x) / max(10.0, g.mil_power(patron)))
+        if best_s is None or s > best_s:
+            best, best_s = x, s
+    return best
