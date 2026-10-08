@@ -1995,7 +1995,7 @@ class Game:
                    region=rid, fids=(fid, rr.owner))
 
     def complete_occupation(self, fid, rid):
-        """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(6턴 산출·생산 없음·행복도 −100,
+        """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(3턴 산출·생산 없음·행복도 −100,
         이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음)."""
         rr = self.regions[rid]
         old = rr.owner
@@ -2017,7 +2017,7 @@ class Game:
         if old != NEUTRAL:
             half = bool(m.value("wanggeon_occupy"))         # 왕건: 저항·회복 기간 절반
             n_res = C.RESIST_TURNS // 2 if half else C.RESIST_TURNS
-            n_res = int(round(n_res * m.mult("resist_time")))  # 광개토대왕 '약탈경제': +50%
+            n_res = int(n_res * m.mult("resist_time") + 0.5)    # 광개토대왕 '약탈경제': +50%
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": n_res,
                          "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}

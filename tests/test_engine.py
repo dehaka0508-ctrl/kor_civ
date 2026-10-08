@@ -657,10 +657,10 @@ def test_war_weariness_separate_from_happiness():
     D.declare_war(g, 0, 1)
     g._phase_happiness()
     assert cap.happy == pytest.approx(0, abs=0.01)         # 전쟁이 행복도를 직접 깎지 않는다
-    assert g.player.war_weary == pytest.approx(15.75)      # 선포 +15, 전쟁 중 턴당 +0.75
+    assert g.player.war_weary == pytest.approx(15.5)       # 선포 +15, 전쟁 중 턴당 +0.5
     assert g.factions[1].war_weary == pytest.approx(10.5)  # 당한 쪽 +10, 턴당 +0.5
-    assert g.eff_happy(cap) == pytest.approx(-15.75)       # 실질 행복도 = 행복도 − 전쟁 피로도
-    assert g.avg_happiness(0) == pytest.approx(-15.75) and g.avg_happiness(0, effective=False) == pytest.approx(0)
+    assert g.eff_happy(cap) == pytest.approx(-15.5)       # 실질 행복도 = 행복도 − 전쟁 피로도
+    assert g.avg_happiness(0) == pytest.approx(-15.5) and g.avg_happiness(0, effective=False) == pytest.approx(0)
     for _ in range(300):
         g._phase_happiness()
     assert g.player.war_weary == C.WAR_WEARY_MAX
@@ -697,7 +697,7 @@ def test_allied_defense_counts_as_defender_weariness():
     assert D.at_war(g, 2, 0)
     assert g.factions[2].war_weary == pytest.approx(10)       # 방어 동맹 참전은 당한 쪽 기준
     assert D.war_weary_rate(g, 2) == pytest.approx(0.5)
-    assert D.war_weary_rate(g, 0) == pytest.approx(0.75)
+    assert D.war_weary_rate(g, 0) == pytest.approx(0.5)
     assert g.player.war_weary == pytest.approx(25)            # 선포 15 + 동맹 참전 상대 10
 
 
@@ -1274,7 +1274,7 @@ def test_unique_debuffs_combat():
     # 광개토대왕: 저항 기간 +50%
     _lead(g, 1, "ggt")
     g.complete_occupation(1, "S002")
-    assert g.regions["S002"].resist["resist"] == 6
+    assert g.regions["S002"].resist["resist"] == 5           # 3 × 1.5 = 4.5 → 5
 
 
 def test_unique_debuffs_occupation_upkeep_naval():

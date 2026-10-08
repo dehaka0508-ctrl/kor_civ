@@ -225,7 +225,7 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     if delay:
         g.dip.no_attack_until[(a, b)] = g.turn + delay
     for f in (a, b) if happiness else ():
-        # 직접 선포한 쪽만 +20. 방어 동맹 참전(aggressor = 상대)은 양쪽 모두 +10
+        # 직접 선포한 쪽만 +15. 방어 동맹 참전(aggressor = 상대)은 양쪽 모두 +10
         role = "aggressor" if f == a and aggressor in (None, a) else "defender"
         add_war_weary(g, f, C.WAR_WEARY_START[role] * g.mods(f).mult("war_start_weary"),
                       defensive=role == "defender")
@@ -262,7 +262,7 @@ def war_weary_defensive(g, fid) -> bool:
 
 
 def war_weary_rate(g, fid) -> float:
-    """이번 턴 전쟁 피로 증가량: 스스로 선포한 전쟁이 하나라도 있으면 1, 당한 전쟁뿐이면 0.5, 평시 0."""
+    """이번 턴 전쟁 피로 증가량: 전쟁 중이면 턴당 0.5(선포·피선포 공통, WAR_WEARY_TURN), 평시 0."""
     rate = 0.0
     for p, w in g.dip.wars.items():
         if fid not in p:

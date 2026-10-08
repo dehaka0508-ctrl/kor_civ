@@ -552,7 +552,7 @@ def _consider_war(g, f):
         return
     alive = g.alive_ids()
     aggr = eff_aggression(g, f)
-    # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.75: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
+    # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.5: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
     start_w = C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
     already = any(w.get("aggressor") == fid for p, w in g.dip.wars.items() if fid in p)   # 이미 선포국 증가율
     proj_h = avg_h - start_w - (0 if already else 20 * C.WAR_WEARY_TURN["aggressor"]
