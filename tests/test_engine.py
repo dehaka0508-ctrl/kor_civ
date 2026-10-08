@@ -2492,6 +2492,31 @@ def test_ai_p2_econ_follows_gdp_rank():
     assert "감당 가능" in ST.path_scores(g, f, {})["why"]["economic"]
 
 
+def test_ai_fill_idle_slots_when_rich():
+    """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
+    from korciv import ai
+    g = _p2_game()
+    f = g.factions[0]
+    f.money = 10 ** 6
+    idle = [r for r in g.regions_of(0) if not r.project]
+    ai._fill_slots(g, f, idle, "normal", 200, 1000, 0)
+    assert all(r.project and r.project.kind == "build" for r in idle)
+    g2 = _p2_game()
+    f2 = g2.factions[0]
+    f2.money = 0
+    idle2 = [r for r in g2.regions_of(0) if not r.project]
+    ai._fill_slots(g2, f2, idle2, "normal", 200, 0, 0)          # 돈이 없으면 손대지 않는다(멈춤 방지)
+    assert not any(r.project for r in idle2)
+
+
+def test_ai_poverty_tilts_to_diplomacy():
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    rows = [{"fid": x.id, "gdp": 100 * (x.id + 1), "science": 0, "econ": 0} for x in g.factions if x.alive]
+    g.rankings = {g.turn: rows}
+    assert ST.poverty(g, 0) == 1.0 and ST.poverty(g, g.factions[-1].id) == 0.0
+
+
 def test_ai_unhappy_loss_penalty():
     """행복도 때문에 산출·전투력이 떨어질수록 전쟁을 덜 한다. 적자면 2배."""
     from korciv import ai

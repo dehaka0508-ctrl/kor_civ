@@ -621,6 +621,8 @@ def _social(g, f):
         p_friend = max(p_friend, C.AI_FRIEND_DECL_P * (10 - C.AI_TRIBUTE_FRIEND_AGGR) / 10) * C.AI_TRIBUTE_FRIEND_MULT
     if f.ai.get("victory_goal") in ("diplomatic", "economic"):
         p_friend *= 1.5                    # 외교·경제승리는 우호 관계가 필요하다
+    if PH.phase(f) >= 2:
+        p_friend *= 1 + C.AI_POOR_FRIEND * ST.poverty(g, fid)   # GDP 하위권은 외교에 더 적극적
     # 포위 방지: 국경을 맞댄 나라가 많을수록(강약과 상관없이) 이웃과 우호 관계를 맺으려 한다
     borders = {g.regions[n].owner for r in g.regions_of(fid) for n in g.world.land_adj[r.id]} - {NEUTRAL, fid}
     p_friend *= 1 + min(0.5, C.AI_FRIEND_ENCIRCLE_P * max(0, len(borders) - 2))
@@ -685,6 +687,8 @@ def _consider_war(g, f):
     avg_h = g.avg_happiness(fid)              # 실질 행복도(전쟁 피로 반영)
     if not regs or f.money < 0 or avg_h < -20 or f.war_weary > 45:
         return
+    if f.last.get("tax", 0) - f.last.get("upkeep", 0) < 0:
+        return                               # 턴 수입 적자(세수 < 유지비)면 새 전쟁을 벌이지 않는다
     p2 = ST.state(f) if PH.phase(f) >= 2 else None
     if p2 is not None and p2.get("posture") == "crisis":
         _p2_block(f, "위기")
@@ -1654,3 +1658,95 @@ def _slots(g, f, threat, military=True):
             avail -= per
         if avail <= 0:
             break
+    if f.is_ai and PH.phase(f) >= 2:
+        _fill_slots(g, f, [r for r in idle if r.id not in used and not r.project], post, reserve, income, upkeep)
+
+
+def _fill_slots(g, f, idle, post, reserve, income, upkeep):
+    """돈이 남는데 노는 땅(2페이즈): 자금 부족으로 공사가 멈추지 않는 범위에서 채운다.
+    ① 경계 태세면 국경·해안 지역에 방어 시설 ② 발전소: 석탄·석유 채굴량만큼 ③ 공장: 발전·자체 전기 생산량만큼
+    ④ 농장·어장·은행·채굴(완공 뒤 비용 없음)은 계속. 그래도 남는 땅은 생산 집중(plan_turn)."""
+    fid = f.id
+    if not idle or post == "crisis":
+        return
+    regs = g.regions_of(fid)
+    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    net = income - upkeep - all_committed
+    # 지금 공사 총비용을 다 대도 자금이 비상금 아래로 떨어지지 않을 만큼만(멈춤 방지): 여윳돈 절반 + 남는 순수입 12턴분
+    budget = max(0.0, f.money - reserve) * C.AI_FILL_SAVINGS + max(0.0, net) * C.AI_FILL_NET_TURNS
+    if budget <= 0:
+        return
+    pool = sorted(idle, key=lambda r: (-r.pop, r.id))
+    used = set()
+
+    def start(r, key, border=None, cost=None):
+        nonlocal budget
+        if cost is None or cost > budget:
+            return False
+        if g.start_project(fid, r.id, "build", key, border=border)[0]:
+            used.add(r.id)
+            budget -= cost
+            return True
+        return False
+
+    # ① 경계: 국경·해안 지역 방어 시설(같은 단계면 방어선 우선, 3단계까지)
+    if post == "defend":
+        for r in pool:
+            if r.id in used:
+                continue
+            borders = [n for n in g.world.land_adj[r.id] if g.regions[n].owner not in (NEUTRAL, fid)]
+            if g.info(r.id).coastal:
+                borders.append("coast")
+            if not borders:
+                continue
+            bkey = min(borders, key=lambda n: (r.lines.get(n, 0), D.opinion(g, fid, g.regions[n].owner) if n != "coast" else 0))
+            opts = [(r.lines.get(bkey, 0), 0, "line", bkey), (r.b["shelter"], 1, "shelter", None), (r.b["aa"], 2, "aa", None)]
+            lv, _, key, border = min(opts)
+            if lv >= C.AI_DEF_MAX_LEVEL:
+                continue
+            cost = R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1)
+            start(r, key, border, cost)
+    # ② 발전소: 발전소 용량(단계 합)이 석탄·석유 채굴량에 닿을 때까지
+    mined = g.energy_mined(fid)
+    plants, facts = g.energy_sites(fid)
+    room = mined["coal"] + mined["oil"] - sum(r.b["power"] for r in regs) - sum(
+        1 for r in regs if r.project and r.project.key == "power")
+    for r in sorted((r for r in pool if r.id not in used and r.b["power"] < 5),
+                    key=lambda r: (not g.info(r.id).power_site, -r.b["power"], -r.pop, r.id)):
+        if room <= 0:
+            break
+        if start(r, "power", cost=R.prod_building_cost("power", r.b["power"] + 1, g.info(r.id).power_site)):
+            room -= 1
+    # ③ 공장: 공장의 전기 소비(단계 합)가 전기 생산(자체 발전 + 발전소 변환)에 닿을 때까지
+    cap = sum(r.b["power"] for r in plants)
+    conv_oil = min(cap, mined["oil"])
+    conv_coal = min(cap - conv_oil, mined["coal"])
+    elec = mined["elec"] + C.POWER_ELEC["oil"] * conv_oil + C.POWER_ELEC["coal"] * conv_coal
+    need = elec - sum(r.b["factory"] for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
+    for r in sorted((r for r in pool if r.id not in used and r.b["factory"] < 5),
+                    key=lambda r: (-r.b["factory"], -r.pop, r.id)):
+        if need <= 0:
+            break
+        cost = R.prod_building_cost("factory", r.b["factory"] + 1) * g.mods(fid).mult("cost_factory")
+        if start(r, "factory", cost=cost):
+            need -= 1
+    # ④ 완공 뒤 비용이 없는 생산 건물: 산출(·식량)이 가장 많이 느는 것
+    tax = max(0.05, f.tax)
+    for r in pool:
+        if r.id in used:
+            continue
+        info = g.info(r.id)
+        opts = []
+        for key in ("farm", "fishery", "bank"):
+            lv = r.b[key] + 1
+            if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
+                continue
+            cost = R.prod_building_cost(key, lv)
+            val = _delta_output(g, r.id, key) * tax + (C.FOOD_PER_G * C.MARKET_SELL["food"] if key != "bank" else 0)
+            opts.append((val / cost, key, cost))
+        if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
+            cost = R.prod_building_cost("extract", r.b["extract"] + 1)
+            opts.append((C.MARKET_SELL["oil" if info.is_oil else "coal"] / cost, "extract", cost))
+        if opts:
+            _, key, cost = max(opts)
+            start(r, key, cost=cost)

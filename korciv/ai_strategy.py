@@ -123,6 +123,21 @@ def _ranking(g):
     return g.rankings[max(g.rankings)]
 
 
+def gdp_rank_k(g, fid):
+    """반기 랭킹 GDP 순위 계수: 1위 1 → 꼴찌 0(랭킹이 없으면 0.5)."""
+    rows = _ranking(g)
+    if not rows:
+        return 0.5
+    order = sorted(rows, key=lambda r: -r["gdp"])
+    idx = next((i for i, r in enumerate(order) if r["fid"] == fid), None)
+    return 0.5 if idx is None else 1 - idx / max(1, len(order) - 1)
+
+
+def poverty(g, fid) -> float:
+    """GDP 하위 절반일수록 0 → 1(꼴찌)."""
+    return max(0.0, 0.5 - gdp_rank_k(g, fid)) * 2
+
+
 def path_scores(g, f, sc, rng=None) -> dict:
     """방향별 점수 = 성격(Fit) × 조건(Feas) × 진척(Prospect) [× 경쟁 보정]. 이유도 함께 남긴다."""
     AI = _ai()
@@ -170,7 +185,9 @@ def path_scores(g, f, sc, rng=None) -> dict:
             + 0.08 * bank_hi + 0.25 * rank_k)
     k_sci = len(f.science)
     ahead = max((r["science"] for r in others), default=0) - k_sci >= 2
-    science = (0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
+    poor = max(0.0, 0.5 - rank_k) * 2 if rank else 0.0      # GDP 하위권: 과학·경제는 조금 덜, 외교는 조금 더
+    science = ((0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
+               * (1 - C.AI_P2_POOR_SCI * poor))
     why["science"] = ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
     # 경제: '돈만 있으면 된다' — 반기 랭킹 GDP 순위(계단 + 연속), 수도 주변 금융 권역 가능성,
     # 수도 2칸 안 은행 4단계(과학보다 큰 가점), 우호 관계, 진척
@@ -184,7 +201,8 @@ def path_scores(g, f, sc, rng=None) -> dict:
     feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap
     feas *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.2 → 꼴찌 ×0.4
     ahead = max((r["econ"] for r in others), default=0) - stage >= 2
-    economic = (0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
+    economic = ((0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
+                * (1 - C.AI_P2_POOR_SCI * poor))
     # GDP 1~2위가 다음 단계를 순수입으로 감당할 수 있으면 경제를 확실히 노린다(과학보다 돈은 더 들어도 최소 턴 수가 적다)
     step = C.ECON[C.ECON_STEPS[max(0, min(len(C.ECON_STEPS) - 1, stage - 1))]]
     net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
@@ -199,7 +217,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     else:
         alive = [x for x in g.alive_ids() if x != fid]
         friendly = sum(1 for x in alive if D.allied(g, fid, x) or D.opinion(g, x, fid) >= 30) / max(1, len(alive))
-        diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2
+        diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2 * (1 + C.AI_P2_POOR_DIP * poor)
     why["diplomatic"] = "우호국 비율"
     scores = {"conquest": conquest, "science": science, "economic": economic, "diplomatic": diplomatic}
     if rng is not None:
