@@ -335,8 +335,17 @@ def update(g, f, threat=None):
         reason = "선전포고 받음"
     elif s["posture"] == "crisis" and old_posture != "crisis":
         reason = "위기"
+    p3 = (f.ai.get("p3") or {}).get("kind") if f.ai.get("phase", 1) >= 3 else None
+    if p3 and s.get("path") != p3:
+        log = s.setdefault("log", [])
+        log.append([g.turn, s.get("path"), p3, "3페이즈", "결승기: 이 승리 조건에 전념"])
+        del log[:-C.AI_P2_LOG]
+        s["path"], s["path_turn"] = p3, g.turn
     if reason:
-        choose_path(g, f, sc, reason)
+        if p3:
+            s["last_eval"] = g.turn            # 3페이즈: 노리는 승리 조건은 바꾸지 않는다(문턱에서 밀려나면 2페이즈로)
+        else:
+            choose_path(g, f, sc, reason)
         s["anchor"] = choose_anchor(g, f, sc)
     p = s.get("patron")
     if p is not None and (not g.factions[p].alive or D.at_war(g, f.id, p)):

@@ -2732,3 +2732,20 @@ def test_coalition_war_needs_consent_and_all_join():
     g.dip.peace_until = {} if hasattr(g.dip, "peace_until") else None
     ok, _ = D.declare_war(g, 2, 0)
     assert ok and D.at_war(g, 2, 1)
+
+
+def test_ai_phase3_entry_by_goal():
+    """3페이즈: 노리는 승리 조건의 문턱(정복 2/N 지역, 과학 3단계, 경제 2단계)을 넘으면 들어가고 방향을 고정한다."""
+    from korciv import ai_phase as PH
+    g = _p2_game(n=3)
+    f = g.factions[0]
+    f.ai["p2"] = {"path": "science"}
+    f.science = ["lab", "observatory", "budget"]
+    assert PH.update(g, f) == 3 and PH.p3_kind(f) == "science"
+    f2 = g.factions[1]
+    f2.ai["p2"] = {"path": "conquest"}
+    need = PH.conquest_need(g) * len(g.regions)
+    assert PH.update(g, f2) == 2
+    extra = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:int(need) + 1]
+    _own(g, 1, extra)
+    assert PH.update(g, f2) == 3 and PH.p3_kind(f2) == "conquest"
