@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 
+from . import ai_phase as PH
 from . import config as C
 from . import diplomacy as D
 from . import rules as R
@@ -170,6 +171,7 @@ def plan_turn(g, fid):
     f = g.factions[fid]
     if not f.alive:
         return
+    PH.update(g, f)
     if "weights" not in f.ai or g.turn - f.ai.get("strategy_turn", -99) >= C.AI_STRATEGY_PERIOD:
         set_strategy(g, f)
     f.auto_food = True
@@ -457,6 +459,9 @@ def war_assessment(g, fid, e):
     d -= (aggr - 5) * 0.06
     if f.ai.get("victory_goal") == "diplomatic":
         d += 0.15                          # 외교승리를 노리면 강화에 적극적
+    if f.is_ai and PH.phase(f) == 1 and f.ai.get("free", 0) > 0:
+        d += C.AI_P1_PEACE * f.ai["free"]  # 1페이즈: 빨리 끝내고 빈 땅으로
+        pro.append("확장할 빈 땅")
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 
@@ -630,6 +635,8 @@ def _consider_war(g, f):
         if g.hegemon == o:
             s += min(C.HEGEMON_WAR_MAX, C.HEGEMON_WAR_K * (g.hegemon_share - C.HEGEMON_SHARE))
         s += C.VICTORY_THREAT_SCORE * g.victory_threat(o)
+        if PH.phase(f) == 1:
+            s -= C.AI_P1_WAR_PENALTY * f.ai.get("free", 0.0)   # 1페이즈: 전쟁보다 빈 땅부터
         if s > best_s:
             best, best_s, best_goals = o, s, fr["targets"][:4] or fr["border"][:2]
     if best is not None:
@@ -721,6 +728,13 @@ def _army_orders(g, f, threat):
     front = set(threat)
     crisis = _war_crisis(g, fid, threat)
     cap_min = capital_min_garrison(g, f, threat)
+    # 1페이즈(평시): 편입으로 얻어 흩어져 있는 보병을 집결지로 모아 빈 땅을 무력 점령한다(돈이 들지 않는 확장)
+    p1 = f.is_ai and PH.phase(f) == 1 and not at_war
+    rally = _p1_rally(g, fid, annexing) if p1 else None
+    border_keep = set()
+    if p1:
+        border_keep = {r.id for r in g.regions_of(fid)
+                       if any(g.regions[n].owner not in (NEUTRAL, fid) for n in w.land_adj[r.id])}
     for a in armies:
         if a.id not in g.armies:
             continue
@@ -760,7 +774,7 @@ def _army_orders(g, f, threat):
             if tgt.owner == NEUTRAL:
                 if node in annexing or not neutral_ok:
                     continue
-                if wts.get("military", 1) < 0.9 and a.count() < 3:
+                if not p1 and wts.get("military", 1) < 0.9 and a.count() < 3:
                     continue
             for mode in (("assault",) if g.mods(fid).value("no_surprise") else ("assault", "surprise")):
                 pv = g.preview_attack(a, node, mode)
@@ -815,6 +829,18 @@ def _army_orders(g, f, threat):
                 if g.hostile_units_at(fid, tgts[0]) or _building_levels(g, tgts[0]) > 0:
                     g.order_army(a.id, tgts[0], force_bombard=True)
                     continue
+        # 1페이즈: 국경(다른 나라와 맞닿은 곳)의 마지막 1개는 남기고, 나머지는 집결지로
+        if p1 and rally is not None and rr.owner == fid:
+            alone = sum(x.count() for x in g.armies_at(a.loc, fid) if x.domain() == "land") <= a.count()
+            if not (a.loc in border_keep and alone and a.count() <= 1) and a.loc != rally:
+                if rally in reach and reach[rally]["action"] == "move":
+                    g.order_army(a.id, rally)
+                else:
+                    step = _step_toward(g, fid, a.loc, rally, reach)
+                    if step:
+                        g.order_army(a.id, step)
+                if a.order:
+                    continue
         # 전선으로 이동: 1개짜리 수비대는 전쟁 중 후방일 때만 움직인다
         if a.count() <= 1 and (not at_war or a.loc in front):
             continue
@@ -845,6 +871,29 @@ def _army_orders(g, f, threat):
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def _p1_rally(g, fid, annexing):
+    """1페이즈 집결지: 아직 편입·점령하지 않은 빈 땅(중립)과 가장 많이 맞닿은 내 지역.
+    다른 나라와도 맞닿은 빈 땅(경합지)은 1.5배로 친다. 수도에서 멀면 조금 감점."""
+    w = g.world
+    cap = g.factions[fid].capital
+    dist = w.distances_from(cap, 30) if cap in g.regions else {}
+    best, best_s = None, 0.0
+    for r in g.regions_of(fid):
+        s = 0.0
+        for n in w.land_adj[r.id]:
+            rr = g.regions[n]
+            if rr.owner != NEUTRAL or n in annexing or fid in rr.occs:
+                continue
+            contested = any(g.regions[m].owner not in (NEUTRAL, fid) for m in w.land_adj[n])
+            s += 1.5 if contested else 1.0
+        if s <= 0:
+            continue
+        s -= 0.05 * dist.get(r.id, 30)
+        if best is None or s > best_s or (s == best_s and r.id < best):
+            best, best_s = r.id, s
+    return best
 
 
 def econ_saving_target(g, fid) -> float:
@@ -1172,6 +1221,12 @@ def _slots(g, f, threat, military=True):
             avail = min(avail, (income - upkeep) * C.AI_ECON_SAVE_SPEND - committed)
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
+    # 1페이즈: 이번 턴 예상 수지(세수 − 유지비 − 진행 중인 모든 공사비)가 적자면 생산 건물로 재정부터 늘린다
+    p1 = f.is_ai and PH.phase(f) == 1
+    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    deficit = p1 and income - upkeep - all_committed < 0
+    prod_k = C.AI_P1_DEFICIT_PROD if deficit else 1.0
+    annex_k = C.AI_P1_DEFICIT_ANNEX if deficit else 1.0
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
     fuel = fuel_balance(g, fid)
@@ -1206,8 +1261,13 @@ def _slots(g, f, threat, military=True):
             gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["eff_turns"]) * wts.get("expansion", 1)
             if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
                 gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
-            gain *= annex_bias
+            gain *= annex_bias * annex_k
             cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
+        # 1페이즈: 생산 건물은 편입할 곳이 없는 안쪽 지역부터(맞닿은 중립이 있는 지역 슬롯은 편입에 남긴다)
+        place_k = 1.0
+        if p1:
+            place_k = C.AI_P1_FRONTIER_PROD if any(
+                g.regions[n].owner == NEUTRAL for n in g.world.land_adj[r.id]) else C.AI_P1_INTERIOR_PROD
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):
             lv = r.b[key] + 1
@@ -1226,7 +1286,7 @@ def _slots(g, f, threat, military=True):
                 pu = C.FACTORY_UNIT_OUTPUT
                 up = (pu[lv - 1] - pu[lv - 2]) * getattr(r, "fuel_used", 0) if lv >= 2 else 0
                 gain = up * tax * horizon * wts.get("economy", 1)
-            gain *= bias(key)
+            gain *= bias(key) * prod_k * place_k
             if eco and key in ("factory", "bank"):
                 gain *= C.AI_ECON_PROD_MULT
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
@@ -1238,7 +1298,7 @@ def _slots(g, f, threat, military=True):
             # 연료가 모자라면 1개 더 캐는 만큼 공장이 돈다(발전소가 남으면 석탄 1 → 전기 2), 남으면 판매가 정도
             per = (unit_val * (2 if fuel["plant_room"] > 0 else 1) if fuel["spare"] < 0
                    else C.MARKET_SELL["oil" if info.is_oil else "coal"])
-            cands.append((per * horizon / cost * bias("extract") * (C.AI_ECON_FUEL_MULT if eco else 1.0),
+            cands.append((per * horizon / cost * bias("extract") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
                           r.id, "build", "extract", None, cost / turns))
         pb = g.mods(fid).value("port_bank", 0)
         if pb and info.coastal and not r.b["port"]:
@@ -1246,7 +1306,7 @@ def _slots(g, f, threat, military=True):
             cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
             turns = g.build_time(fid, "port", C.SINGLE_BUILDINGS["port"]["turns"])
             dy = C.BANK_OUTPUT * R.g(pb) * g.mods(fid).mult("output_bank") * g.mods(fid).mult("output_prod")
-            gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1)
+            gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1) * prod_k * place_k
             cands.append((gain / cost, r.id, "build", "port", None, cost / turns))
         if r.b["power"] < 5 and fuel["spare"] < 0 and fuel["raw_left"] > 0:
             # 발전소: 공장 연료가 모자라고 발전소에 못 넣은 석탄·석유가 남을 때(석탄 1 → 공장 연료 2)
@@ -1254,7 +1314,7 @@ def _slots(g, f, threat, military=True):
             cost = R.prod_building_cost("power", lv, info.power_site)
             turns = g.build_time(fid, "power", R.prod_building_turns(lv))
             gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns)
-            cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0),
+            cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
                           r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
             lv = r.b["specialty"] + 1
@@ -1419,7 +1479,10 @@ def _slots(g, f, threat, military=True):
     for u, rid, kind, key, border, per in cands:
         if rid in used or u <= 0.05:
             continue
-        if per > avail and not (kind == "unit" and f.money > per * 2):
+        # 적자인 1페이즈: 재정을 늘리는 생산 건물은 비축(비상금 위)으로도 짓는다
+        prod_from_savings = (deficit and kind == "build" and key in C.PROD_PAYBACK_KEYS
+                             and f.money - reserve >= per * 3)
+        if per > avail and not (kind == "unit" and f.money > per * 2) and not prod_from_savings:
             continue
         ok, _ = g.start_project(fid, rid, kind, key, border=border)
         if ok:

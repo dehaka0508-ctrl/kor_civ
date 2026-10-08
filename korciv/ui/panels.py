@@ -8,7 +8,7 @@ import pygame
 from .. import config as C
 from .. import diplomacy as D
 from .. import rules as R
-from ..leaders import GOV_BY_KEY, LEADER_BY_KEY, gov_buff_void
+from ..leaders import GOV_BY_KEY, LEADER_BY_KEY, gov_buff_scale
 from ..state import BUILDING_NAMES, NEUTRAL
 from ..flags import faction_flag
 from .art import draw_flag, draw_portrait
@@ -1200,8 +1200,8 @@ def draw_nation_status(app, body):
                  f"{lead['debuff'][0]}({lead['debuff'][1]})", w, 11, t.muted)
     if gov:
         buff = gov['buff'][1]
-        if gov_buff_void(f.leader) and gov.get("buff_keys"):
-            buff = f"({buff} — {lead['debuff'][0]}로 없음)"
+        if gov_buff_scale(f.leader) != 1.0 and gov.get("buff_keys"):
+            buff = f"{buff} ({lead['debuff'][0]}: 효과 {gov_buff_scale(f.leader):.0%})"
         y = gui.wrap((x, y), f"체제 {gov['name']}: {buff} / {gov['debuff'][1]}", w, 11, t.muted)
     # 재정
     items = g.projects_by_priority(pid)

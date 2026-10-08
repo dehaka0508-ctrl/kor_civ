@@ -1873,8 +1873,11 @@ def test_government_v190():
 
 def test_half_year_ranking_schedule():
     g = new_game(player_start="S002", n_enemies=2)
+    for x in (1, 2):                                   # 가만히 있는 플레이어가 멸망하지 않게(게임 종료 방지)
+        g.dip.nonaggr[D.pair(0, x)] = 10 ** 6
     seen = []
     while g.turn <= 2 * C.TURNS_PER_YEAR + 1:
+        assert not g.game_over
         g.end_turn()
         if g.new_ranking:
             seen.append(g.new_ranking)
@@ -2282,10 +2285,12 @@ def test_v120_leader_changes():
     assert g.unit_cost(0, "S002", "tank") == pytest.approx(base_tank * 1.2)
     assert g.unit_cost(0, "S002", "inf") == pytest.approx(base_inf)
     assert g.mods(0).add("happy_turn") == pytest.approx(0.10)
-    # 광해군 '폐모살제': 정치체제 버프 없음, 디버프는 그대로
+    # 광해군 '폐모살제': 정치체제 버프 50%, 디버프는 그대로
     m = Mods("hae", "absolute")
-    assert m.add("tax_base") == 0 and m.value("far_output_gov") == 0.05
-    assert Mods("hae", "parliamentary").mult("output_bank") == 1.0
+    assert m.add("tax_base") == pytest.approx(1.0) and m.value("far_output_gov") == 0.05
+    assert Mods("hae", "parliamentary").mult("output_bank") == pytest.approx(1.05)
+    assert Mods("hae", "fascist").mult("cost_mil") == pytest.approx(0.925)
+    assert Mods("hae", "fascist").add("start_opinion") == -5
     assert Mods("cus", "parliamentary").mult("output_bank") == pytest.approx(1.1)
     assert LEADER_BY_KEY["jun"]["fx"]["output_bank"] == -0.08
     assert LEADER_BY_KEY["mac"]["fx"]["outnumbered_dmg"] == 0.10
@@ -2370,3 +2375,67 @@ def test_starts_spread_and_no_random_islands():
     jeju = next(r for r in isl if "서귀포" in g.world.regions[r].name)
     g = new_game(player_start=jeju, n_enemies=3)
     assert g.player.capital == jeju
+
+
+# ---------------------------------------------------------------- AI 1페이즈(확장기)
+def test_ai_phase1_transition_and_free_ratio():
+    from korciv import ai_phase as PH
+    g = new_game(player_start="S002", n_enemies=2)
+    f = g.factions[1]
+    assert PH.update(g, f) == 1 and f.ai["phase"] == 1
+    assert f.ai["nadj"] > 0 and 0 < f.ai["free"] <= 1
+    assert PH.free_ratio(0, 30) == 0 and PH.free_ratio(6, 30) == 1.0 and PH.free_ratio(3, 30) == 0.5
+    # 빈 땅이 모두 사라져도 최소 체류(12턴) 전에는 그대로, 그 뒤 2페이즈
+    for r in g.regions.values():
+        if r.owner == NEUTRAL:
+            r.owner = 2
+    g.turn = 5
+    assert PH.update(g, f) == 1 and f.ai["nadj"] == 0
+    g.turn = 20
+    assert PH.update(g, f) == 2 and f.ai["phase_turn"] == 20
+    # 96턴이 지나면 무조건 2페이즈
+    f2 = g.factions[2]
+    g.turn = C.AI_P1_MAX_TURN
+    f2.ai["phase_turn"] = 0
+    assert PH.update(g, f2) == 2
+    assert PH.phase(g.player) == 2                       # 플레이어는 기존 판단(페이즈 없음)
+
+
+def test_ai_phase1_prefers_land_over_war():
+    from korciv import ai
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    f = g.factions[1]
+    f.ai.update(phase=1, free=1.0)
+    D.declare_war(g, 0, 1)
+    base = ai.war_assessment(g, 1, 0)["desire"]
+    f.ai["free"] = 0.0
+    assert ai.war_assessment(g, 1, 0)["desire"] == pytest.approx(base - C.AI_P1_PEACE)
+
+
+def test_ai_phase1_rally_point():
+    from korciv import ai
+    g = new_game(player_start="S002", n_enemies=1)
+    fid = 1
+    rally = ai._p1_rally(g, fid, set())
+    assert rally is not None and g.regions[rally].owner == fid
+    assert any(g.regions[n].owner == NEUTRAL for n in g.world.land_adj[rally])
+    # 맞닿은 빈 땅을 모두 편입 중이면 집결지 없음
+    annexing = {n for r in g.regions_of(fid) for n in g.world.land_adj[r.id] if g.regions[n].owner == NEUTRAL}
+    assert ai._p1_rally(g, fid, annexing) is None
+
+
+def test_ai_phase1_deficit_builds_production():
+    from korciv import ai
+    g = new_game(player_start="S002", n_enemies=1)
+    fid = 1
+    f = g.factions[fid]
+    _neutral_ai(g, fid)
+    f.ai.update(phase=1, free=1.0, weights={"military": 0.5, "economy": 1, "expansion": 1, "defense": 1})
+    f.money = 50_000
+    f.last.update(tax=100.0, upkeep=400.0)               # 세수 < 유지비: 적자
+    for r in g.regions_of(fid):
+        r.project = None
+    ai._slots(g, f, {}, military=False)
+    kinds = [r.project.kind for r in g.regions_of(fid) if r.project]
+    assert "build" in kinds                              # 적자면 비축으로 생산 건물부터

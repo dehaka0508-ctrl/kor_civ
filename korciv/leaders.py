@@ -54,8 +54,8 @@ LEADERS = [
          buff=("민본 과학", "생산 건물 건설 시간 -15%"), debuff=("고기 없이는 못살아", "전국 특산물 생산 10개당 1개 감소(9개까지는 감소 없음)"),
          fx={"build_time_prod": -0.15, "specialty_tithe": 10}),
     dict(key="hae", name="광해군", aggr=3,
-         buff=("중립 외교", "제3국 전쟁 때문에 생기는 우호도 감소 없음"), debuff=("폐모살제", "정치체제 버프 효과 없음"),
-         fx={"neutral_diplomacy": True, "no_gov_buff": True}),
+         buff=("중립 외교", "제3국 전쟁 때문에 생기는 우호도 감소 없음"), debuff=("폐모살제", "정치체제 버프 효과 50%만 적용"),
+         fx={"neutral_diplomacy": True, "gov_buff_scale": 0.5}),
     dict(key="jjo", name="정조", aggr=4,
          buff=("신해통공", "은행 산출 +20%"), debuff=("문체반정", "공장·정유·탄광·석탄액화공장·발전소 건설 시간 +20%"),
          fx={"output_bank": 0.20, "build_time_industry": 0.20}),
@@ -228,15 +228,16 @@ def effects(leader_key: str, gov_key: str | None):
     g = GOV_BY_KEY.get(gov_key) if gov_key else None
     if g:
         fx = g["fx"]
-        if l and l["fx"].get("no_gov_buff"):            # 광해군 '폐모살제': 정치체제 버프는 없고 디버프만
-            fx = {k: v for k, v in fx.items() if k not in g.get("buff_keys", ())}
+        k = gov_buff_scale(leader_key)
+        if k != 1.0:                                     # 광해군 '폐모살제': 정치체제 버프는 50%만
+            fx = {key: (v * k if key in g.get("buff_keys", ()) else v) for key, v in fx.items()}
         out.append(fx)
     return out
 
 
-def gov_buff_void(leader_key: str) -> bool:
-    """이 지도자는 정치체제 버프를 받지 못한다(광해군 '폐모살제')."""
-    return bool(LEADER_BY_KEY.get(leader_key, {}).get("fx", {}).get("no_gov_buff"))
+def gov_buff_scale(leader_key: str) -> float:
+    """정치체제 버프에 곱하는 배수(광해군 '폐모살제' 0.5, 그 밖 1)."""
+    return float(LEADER_BY_KEY.get(leader_key, {}).get("fx", {}).get("gov_buff_scale", 1.0))
 
 
 class Mods:

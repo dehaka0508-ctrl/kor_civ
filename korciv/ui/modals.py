@@ -9,7 +9,7 @@ from .. import config as C
 from .. import diplomacy as D
 from .. import flags as FL
 from .. import rules as R
-from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_void
+from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_scale
 from ..state import NEUTRAL, Settings
 from .art import draw_flag, draw_portrait, render_flag
 from .theme import hex2rgb, measure, mix
@@ -590,9 +590,10 @@ def draw_government(app):
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        if gov_buff_void(app.game.player.leader) and gdef.get("buff_keys"):
+        if gov_buff_scale(app.game.player.leader) != 1.0 and gdef.get("buff_keys"):
             lead = LEADER_BY_KEY[app.game.player.leader]
-            gui.text((row.x + 16, row.y + 36), f"＋ 없음({lead['debuff'][0]})", 12, t.muted)
+            k = gov_buff_scale(app.game.player.leader)
+            gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]} ({lead['debuff'][0]}: {k:.0%})", 12, t.good)
         else:
             gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
         gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
