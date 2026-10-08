@@ -277,6 +277,21 @@ def war_weary_rate(g, fid) -> float:
     return rate * g.mods(fid).mult("war_weary_rate") if rate else 0.0
 
 
+def _peace_cede(g, side, other):
+    """야율융서 '강동 6주': 강화하면 상대와 맞닿은 내 지역 1곳(수도 제외)을 상대에게 넘긴다."""
+    if not g.mods(side).value("peace_cede") or not (g.factions[side].alive and g.factions[other].alive):
+        return
+    cap = g.factions[side].capital
+    cands = sorted(r.id for r in g.regions_of(side)
+                   if r.id != cap and any(g.regions[n].owner == other for n in g.world.land_adj[r.id]))
+    if not cands:
+        return
+    rid = g.rng.choice(cands)
+    g.transfer_region(rid, other, reason="강화 할양")
+    g.event("captured", f"강동 6주: {g.fname(side)}이(가) 강화 조건으로 {g.info(rid).name}을(를) "
+                        f"{g.fname(other)}에 넘겼습니다.", region=rid, fids=(side, other))
+
+
 def make_peace(g, a, b, _done=None):
     done = _done if _done is not None else set()
     p = pair(a, b)
@@ -304,6 +319,8 @@ def make_peace(g, a, b, _done=None):
             if g.regions[army.loc].owner == other:
                 g.teleport_home(army)
     g.event("peace", f"{g.fname(a)}와(과) {g.fname(b)}이(가) 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
+    for side, other in ((a, b), (b, a)):
+        _peace_cede(g, side, other)
     for side, other in ((a, b), (b, a)):
         cid = coalition_of(g, side)
         if cid is not None:

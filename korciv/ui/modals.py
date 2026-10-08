@@ -642,7 +642,7 @@ def draw_battle(app):
     if not army or not g.hostile_units_at(army.owner, node):
         close(app)
         return
-    can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS)
+    can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS) and not g.mods(army.owner).value("no_surprise")
     if not can_surprise:
         st["mode"] = "assault"
     bd = g.battle_breakdown(army, node, st["mode"])

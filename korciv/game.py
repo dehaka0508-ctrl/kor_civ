@@ -678,8 +678,9 @@ class Game:
         if act == "bombard":
             a.order = {"type": "bombard", "target": target}
         elif act == "attack":
-            if mode == "surprise" and not any(a.units.get(k) for k in C.SURPRISE_UNITS):
-                mode = "assault"
+            if mode == "surprise" and (not any(a.units.get(k) for k in C.SURPRISE_UNITS)
+                                       or self.mods(a.owner).value("no_surprise")):
+                mode = "assault"                 # 기습할 유닛이 없거나 강감찬 '문신의 신중함'이면 돌격
             a.order = {"type": "attack", "target": target, "mode": mode, "path": opt["path"]}
         elif act == "land":
             a.order = {"type": "land", "target": target, "path": opt["path"]}
@@ -847,6 +848,17 @@ class Game:
         per = C.FTR_SUPPORT_ATK if attack else C.FTR_SUPPORT_DEF
         return per * sum(a.units["ftr"] for a in arms), arms
 
+    def amphib_mult(self, fid) -> float:
+        """상륙 돌격 배수: 기본 ×0.8(근초고왕·쿠빌라이 보정), 맥아더 '인천상륙작전'은 감소 없이 +20%."""
+        m = self.mods(fid)
+        base = 1.0 if m.value("amphib_free") else C.AMPHIBIOUS * m.value("amphib_extra", 1.0)
+        return base * m.mult("amphib_atk")
+
+    def inf_wave_on(self, fid, armies) -> bool:
+        """마오쩌둥 '국공내전': 이 돌격에 보병을 10 이상 투입했는가."""
+        return (self.mods(fid).mult("inf_wave") != 1.0
+                and sum(a.units.get("inf", 0) for a in armies) >= C.INF_WAVE_MIN)
+
     def combat_strength(self, fid, armies, target, mode="assault"):
         """공격력 A 와 주 공격 경로를 계산."""
         w = self.world
@@ -859,6 +871,8 @@ class Game:
             mult *= 1 + C.RESIST_RETAKE_ATK      # 저항 중인 옛 영토를 되찾는 공격
         if self.multi_attack_on(fid, target):
             mult *= m.mult("multi_attack")      # 홍길동 '신출귀몰': 한 국가의 두 지역 이상 동시 공격
+        if mode == "assault" and self.inf_wave_on(fid, armies):
+            mult *= m.mult("inf_wave")          # 마오쩌둥 '국공내전': 보병 10 이상 돌격
         total = 0.0
         contrib = {}
         sources = set()
@@ -881,7 +895,7 @@ class Game:
             if mode == "assault":
                 val *= m.mult("atk_assault")
                 if amph:
-                    val *= C.AMPHIBIOUS * m.value("amphib_extra", 1.0)
+                    val *= self.amphib_mult(fid)
             if tgt_owner != NEUTRAL and D.at_war(self, fid, tgt_owner):
                 allies_in = any(D.allied(self, fid, x) and D.at_war(self, x, tgt_owner)
                                 for x in self.alive_ids() if x != fid)
@@ -970,7 +984,9 @@ class Game:
         if mode == "assault":
             add(af, self.fx_source(fid, "atk_assault"), m.mult("atk_assault"))
             if amph:
-                add(af, "상륙 돌격", C.AMPHIBIOUS * m.value("amphib_extra", 1.0))
+                add(af, "상륙 돌격", self.amphib_mult(fid))
+            if self.inf_wave_on(fid, [army]):
+                add(af, self.fx_source(fid, "inf_wave"), m.mult("inf_wave"))
         if rr.owner != NEUTRAL and D.at_war(self, fid, rr.owner):
             allies_in = any(D.allied(self, fid, x) and D.at_war(self, x, rr.owner)
                             for x in self.alive_ids() if x != fid)
@@ -1950,9 +1966,11 @@ class Game:
                             m.mult("output_bank") * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0),
                             m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
-                            m.mult("output_prod"))
+                            m.mult("output_prod"), m.mult("output_farm"))
         if owner != NEUTRAL and owner == rr.owner:
             y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
+            if rid == self.factions[owner].capital:
+                y *= 1 + C.CAPITAL_OUTPUT_BONUS * m.value("capital_bonus_mult", 1.0)   # 수도 (선왕 '5경 분산': 절반)
             far = m.value("far_output", 0)
             if far and rid not in self.near_capital(owner):
                 y *= 1 - far                                  # 왕건 '호족 연합': 수도에서 먼 지역
@@ -2028,7 +2046,7 @@ class Game:
             return rr.happy
         f = self.factions[rr.owner]
         h = (self.base_happy(rr) - rr.conscript - self.minority_penalty(rr.owner) + self.scenic_bonus(rr)
-             + self.crowd_penalty(rr))
+             + self.crowd_penalty(rr) + self.haedong_bonus(rr.owner))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
@@ -2322,6 +2340,9 @@ class Game:
     def _score_units(self, winner, loser, lost):
         if winner != NEUTRAL and loser != NEUTRAL:
             D.add_war_score(self, winner, loser, self.units_value(lost) / 1000)
+            k = self.mods(loser).value("bounty")
+            if k and lost:                       # 김원봉 '현상금': 잃은 유닛 생산비의 50%를 상대가 얻는다
+                self.factions[winner].money += self.units_value(lost) * k * C.MONEY_SCALE
 
     def _exec_move(self, a, path):
         w = self.world
@@ -2621,6 +2642,8 @@ class Game:
                 dd *= win[0]
                 ad *= win[1]
                 note = "기습 성공"
+                if self.mods(fid).value("sabotage") and any(a.units.get("inf") for a in attackers):
+                    note += self._sabotage(rr)               # 김원봉 '의열단'
             else:
                 dd *= fail[0]
                 ad *= fail[1]
@@ -2630,6 +2653,7 @@ class Game:
             note = f"방어선 {line} → {line - 1}단계"
         filt = C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS
         def_owner = defenders[0].owner if defenders else rr.owner
+        dd, ad = self._leader_battle_mods(fid, def_owner, attackers, defenders, main, tgt, dd, ad)
         # 지원 전투기는 기여한 전력 비율만큼 피해를 나눠 입는다
         a_air, a_air_arms = self.air_support(fid, tgt, True)
         a_air *= self.morale(fid)
@@ -2663,6 +2687,39 @@ class Game:
                         self.merge_armies(fleet.id, x.id)
                     else:
                         self.remove_army(x)
+
+    def _leader_battle_mods(self, fid, def_owner, attackers, defenders, main, tgt, dd, ad):
+        """지도자 전투 효과로 (방어측 피해, 공격측 피해) 보정."""
+        am = self.mods(fid)
+        dm = self.mods(def_owner) if def_owner != NEUTRAL else None
+        # 강감찬 '귀주대첩': 강을 건너 공격해 온 적의 피해 +50%
+        if dm is not None and dm.mult("river_def_dmg") != 1.0 and main and main != "coast":
+            terr = self.world.terrain_between(main, tgt)
+            if terr and terr["kind"] == "도하":
+                ad *= dm.mult("river_def_dmg")
+        # 맥아더 '자기과신': 상대 병력이 더 많은 전투에서 받는 피해 +20%
+        n_att = sum(a.count(("land",)) for a in attackers if a.id in self.armies)
+        n_def = sum(a.count() for a in defenders)
+        if n_def > n_att:
+            ad *= am.mult("outnumbered_dmg")
+        if dm is not None and n_att > n_def:
+            dd *= dm.mult("outnumbered_dmg")
+        # 스탈린 '대숙청': 전투에서 지면(준 피해보다 받은 피해가 크면) 받는 피해 +3
+        if ad > dd and am.value("loss_dmg"):
+            ad += am.value("loss_dmg") * C.UNIT_STAT_SCALE
+        elif dd > ad and dm is not None and dm.value("loss_dmg"):
+            dd += dm.value("loss_dmg") * C.UNIT_STAT_SCALE
+        return dd, ad
+
+    def _sabotage(self, rr) -> str:
+        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다."""
+        keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS) + list(C.SINGLE_BUILDINGS)
+                if k in rr.b and k != "line" and rr.b[k] > 0]
+        if not keys:
+            return ""
+        k = self.rng.choice(sorted(keys))
+        rr.b[k] -= 1
+        return f", 의열단 파괴: {BUILDING_NAMES.get(k, k)} {rr.b[k] + 1} → {rr.b[k]}단계"
 
     def _phase_heal(self):
         """이번 턴에 이동·공격·폭격·점령을 하지 않고 전투에도 휘말리지 않은 부대는 체력 10% 회복."""
@@ -2824,11 +2881,17 @@ class Game:
                 p.funded = True
                 p.stalled = False
 
+    def food_prod(self, fid, r) -> float:
+        """한 지역의 식량 생산(스탈린 '집단농장' 농장 +15%, 마오쩌둥 '해로운 새' −15%)."""
+        m = self.mods(fid)
+        return R.food_output(r.b["farm"] * m.mult("output_farm"), r.b["fishery"],
+                             self.fish_mult(fid, r.id)) * m.mult("food_prod")
+
     def expected_food_balance(self, f) -> float:
         """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
         regs = self.regions_of(f.id)
         prod = sum(0.0 if r.occ or self.resisting(r) else
-                   R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id)) for r in regs)
+                   self.food_prod(f.id, r) for r in regs)
         cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
         return f.res.get("food", 0) + prod - cons
 
@@ -2987,6 +3050,10 @@ class Game:
                 sp = max(made, key=lambda k: (made[k], k))
                 made[sp] -= 1
             f.last["specialty_tithe"] = cut
+        if self.mods(f.id).value("tribute") and any(r.id == f.capital for r in active):
+            n = sum(1 for x in self.alive_ids() if x != f.id and D.declared_friends(self, f.id, x))
+            if n:                                             # 야율융서 '전연의 맹약': 우호 선언 1곳마다 공물 1
+                made[C.TRIBUTE_SPECIALTY] = made.get(C.TRIBUTE_SPECIALTY, 0) + n * self.mods(f.id).value("tribute")
         for sp, n in made.items():
             if n > 0:
                 f.specialty[sp] = f.specialty.get(sp, 0) + n
@@ -3000,7 +3067,7 @@ class Game:
         live = {r.id for r in active}
         for r in regs:
             r.output = self.calc_output(r.id) if r.id in live else 0.0
-            r.food = R.food_output(r.b["farm"], r.b["fishery"], self.fish_mult(f.id, r.id)) if r.id in live else 0.0
+            r.food = self.food_prod(f.id, r) if r.id in live else 0.0
         prod = sum(r.food for r in regs)
         cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
         res["food"] += prod - cons
@@ -3229,7 +3296,7 @@ class Game:
         if rebel:
             weary = (weary - getattr(f, "war_weary_def", 0.0)) * C.REBEL_WEARY_MULT
         h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
-             + self.scenic_bonus(rr) + self.crowd_penalty(rr))
+             + self.scenic_bonus(rr) + self.crowd_penalty(rr) + self.haedong_bonus(rr.owner))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
@@ -3243,6 +3310,19 @@ class Game:
         if rr.owner == NEUTRAL:
             return 0.0
         return C.SCENIC_HAPPY * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
+
+    def haedong_bonus(self, fid) -> float:
+        """발해 선왕 '해동성국': 영토가 20곳을 넘을 때마다 전 지역 행복도 +1(최대 +5)."""
+        if not self.mods(fid).value("haedong"):
+            return 0.0
+        cache = self.__dict__.setdefault("_haedong", {})
+        stamp = getattr(self, "acq_counter", 0)
+        hit = cache.get(fid)
+        if hit is None or hit[0] != stamp:
+            n = self.region_count(fid)
+            hit = (stamp, float(min(C.HAEDONG_MAX, max(0, (n - 1) // C.HAEDONG_STEP))))
+            cache[fid] = hit
+        return hit[1]
 
     def minority_penalty(self, fid) -> float:
         """홍타이지 '소수민족': 보유 지역이 30곳을 넘으면 넘는 1곳마다 전 지역 행복도 −0.3."""

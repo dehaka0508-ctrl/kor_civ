@@ -811,9 +811,13 @@ def draw_army_tab(app, body):
                     return
             y += 34
         gui.text((x, y + 6), "공격 방식", 12, t.muted)
-        modes = ["assault", "surprise"]
-        idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
-        app.attack_mode = modes[idx]
+        if g.mods(pid).value("no_surprise"):
+            app.attack_mode = "assault"
+            gui.text((x + 70, y + 6), f"돌격만 가능 — {g.fx_source(pid, 'no_surprise')}", 12, t.muted)
+        else:
+            modes = ["assault", "surprise"]
+            idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
+            app.attack_mode = modes[idx]
         y += 34
         app.bombard_mode = gui.checkbox((x, y, w, 24), "폭격 모드 (우클릭 대상 폭격)", app.bombard_mode)
         y += 30

@@ -45,6 +45,7 @@ ChatGPT용 초상화 프롬프트는 `docs/지도자_초상화_프롬프트.md`�
 | 정조 | `jjo.png` |
 | 박정희 | `pak.png` |
 | 김대중 | `kdj.png` |
+| 발해 선왕 | `sun.png` |
 
 ## 왕관 없는 지도자들
 
@@ -59,6 +60,8 @@ ChatGPT용 초상화 프롬프트는 `docs/지도자_초상화_프롬프트.md`�
 | 홍길동 | `gil.png` |
 | 안창호 | `ahn.png` |
 | 김구 | `kgu.png` |
+| 강감찬 | `kgc.png` |
+| 김원봉 | `kwb.png` |
 
 ## 한반도를 넘본 외적들
 
@@ -70,6 +73,10 @@ ChatGPT용 초상화 프롬프트는 `docs/지도자_초상화_프롬프트.md`�
 | 도요토미 히데요시 | `toy.png` |
 | 홍타이지 | `taj.png` |
 | 이토 히로부미 | `ito.png` |
+| 야율융서 | `yyl.png` |
+| 맥아더 | `mac.png` |
+| 스탈린 | `sta.png` |
+| 마오쩌둥 | `mao.png` |
 
 ## 기타
 

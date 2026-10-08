@@ -124,6 +124,7 @@ def test_war_and_peace():
 
 def test_trade_gift_and_demand():
     g = new_game(n_enemies=2)
+    g.power = {f.id: 1.0 for f in g.factions}         # 국력 차이로 요구를 받아들이지 않게
     offer = D.empty_offer()
     offer["give"]["money"] = 500
     res, _, _ = D.respond_offer(g, 1, 0, offer)
@@ -379,7 +380,8 @@ def test_production_focus_bonus():
     r = g.regions["S002"]
     base = g.calc_output("S002", full=True)
     g.set_focus(0, "S002", True)
-    assert g.calc_output("S002", full=True) == pytest.approx(base + 30 * r.pop * C.FOCUS_POP_BONUS)
+    assert g.calc_output("S002", full=True) == pytest.approx(
+        base + 30 * r.pop * C.FOCUS_POP_BONUS * (1 + C.CAPITAL_OUTPUT_BONUS))     # 수도 산출 +10%
     g.start_project(0, "S002", "build", "farm")          # 건설 중에는 효과 없음
     assert g.calc_output("S002", full=True) == pytest.approx(base)
     assert g.idle_slots(0) == 0
@@ -499,9 +501,10 @@ def test_government_opinion_baseline():
     assert bias("socialist", "presidential") == -10          # 사회주의 → 민주주의
     assert bias("presidential", "absolute") == -10           # 민주주의 → 군주제
     assert bias("socialist", "absolute") == 0                # 한 방향만
-    g = new_game(n_enemies=2, ai_leaders=["sej", "jjo"])   # 우호도 효과가 없는 지도자
+    g = new_game(n_enemies=2, ai_leaders=["sej", "jjo"], player_leader="cus")   # 우호도 효과가 없는 지도자
     g.factions[1].gov, g.factions[2].gov = "absolute", "socialist"
     g.dip.op[(1, 2)] = 0.0
+    g.hegemon = None                                         # 패권 견제로 비패권국끼리 가까워지지 않게
     for _ in range(300):
         D.update_turn(g)
     assert D.opinion(g, 1, 2) == pytest.approx(-10, abs=3)   # 기본값으로 수렴
@@ -779,7 +782,7 @@ def test_conscription_fatigue():
 def test_leader_roster_and_categories():
     from korciv.leaders import LEADERS, LEADER_CATEGORIES, LEADER_BY_KEY, MULT_KEYS, ADD_KEYS
     keys = [k for _, _, ks in LEADER_CATEGORIES for k in ks]
-    assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 39
+    assert len(keys) == len(set(keys)) == len(LEADERS) - 1 == 46
     assert LEADER_BY_KEY["jum"]["name"] == "동명성왕" and LEADER_BY_KEY["sej"]["name"] == "세종대왕"
     for l in LEADERS:
         assert len(l["fx"]) >= (0 if l["key"] == "cus" else 2)
@@ -953,6 +956,7 @@ def _contest_setup():
 
 def test_occupation_not_cancelled_by_other_army():
     g, tgt, other = _contest_setup()
+    _neutral_ai(g, 1)                       # 점령 속도 보정이 있는 지도자가 뽑혀도 같은 조건
     g.new_army(0, tgt, {"inf": 2})
     g.begin_occupation(0, tgt)
     need = g.regions[tgt].occs[0]["need"]
@@ -1929,7 +1933,8 @@ def test_alliance_needs_only_opinion():
     ok, why = D.treaty_check(g, 1, 0, "nonaggr")
     assert ok, why
     D.sign_treaty(g, 0, 1, "nonaggr")
-    assert not D.enemies(g, 0) and g.hegemon is None        # 공동의 적·견제 대상 없음
+    g.hegemon = None
+    assert not D.enemies(g, 0)                              # 공동의 적·견제 대상 없음
     ok, why = D.treaty_check(g, 1, 0, "alliance")
     assert ok, why
     D.sign_treaty(g, 0, 1, "alliance")
@@ -2096,3 +2101,109 @@ def test_ai_econ_goal_saves_for_next_step():
     assert AI.econ_saving_target(g, 0) == pytest.approx(spec["per_turn"] * spec["turns"] * 1.1)
     g.regions[g.player.capital].econ.add("sez")
     assert AI.econ_saving_target(g, 0) == pytest.approx(C.ECON["ifc"]["per_turn"] * C.ECON["ifc"]["turns"] * 1.1)
+
+
+def test_new_leaders_v117():
+    from korciv.leaders import LEADER_BY_KEY, LEADER_CATEGORIES
+    cats = {cid: ks for cid, _, ks in LEADER_CATEGORIES}
+    assert "sun" in cats["footprints"] and {"kgc", "kwb"} <= set(cats["uncrowned"])
+    assert {"yyl", "mac", "sta", "mao"} <= set(cats["invaders"])
+    assert [LEADER_BY_KEY[k]["aggr"] for k in ("sun", "kgc", "kwb", "yyl", "mac", "sta", "mao")] == [6, 4, 7, 8, 9, 7, 8]
+    # 모든 수도 산출 +10%, 발해 선왕은 +5%
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    cap = g.player.capital
+    y = g.calc_output(cap, full=True)
+    g.player.capital = next(r for r in g.world.land_adj[cap])
+    assert y == pytest.approx(g.calc_output(cap, full=True) * 1.10)
+    g.player.capital = cap
+    _lead(g, 0, "sun")
+    assert g.calc_output(cap, full=True) == pytest.approx(y / 1.10 * 1.05)
+    # 해동성국: 20곳을 넘을 때마다 +1 (최대 +5)
+    assert g.haedong_bonus(0) == 0
+    free = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:40]
+    _own(g, 0, free)
+    assert g.haedong_bonus(0) == 2.0                      # 41곳
+    # 스탈린 농장 +15%, 마오쩌둥 식량 −15%
+    r = g.regions[cap]
+    r.b["farm"] = 3
+    _lead(g, 0, "cus")
+    f0 = g.food_prod(0, r)
+    _lead(g, 0, "sta")
+    assert g.food_prod(0, r) == pytest.approx(R.food_output(3 * 1.15, r.b["fishery"], g.fish_mult(0, cap)))
+    _lead(g, 0, "mao")
+    assert g.food_prod(0, r) == pytest.approx(f0 * 0.85)
+
+
+def test_new_leader_combat_effects():
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    _neutral_ai(g, 1)
+    g.regions["S002"].lines.clear()
+    g.regions[tgt].lines.clear()
+    D.declare_war(g, 0, 1)
+    # 마오쩌둥 '국공내전': 보병 10 이상 돌격 +30%
+    _lead(g, 0, "mao")
+    a9 = g.new_army(0, "S002", {"inf": 9})
+    s9 = g.combat_strength(0, [a9], tgt)[0]
+    a9.units["inf"] = 10
+    s10 = g.combat_strength(0, [a9], tgt)[0]
+    assert s10 == pytest.approx(s9 / 9 * 10 * 1.3)
+    # 맥아더: 상륙 감소 없이 +20%
+    _lead(g, 0, "mac")
+    assert g.amphib_mult(0) == pytest.approx(1.2)
+    _lead(g, 0, "cus")
+    assert g.amphib_mult(0) == pytest.approx(C.AMPHIBIOUS)
+    # 맥아더 '자기과신': 병력이 적으면 받는 피해 +20% / 스탈린 '대숙청': 지면 피해 +3
+    small = g.new_army(0, "S002", {"inf": 1})
+    big = [g.new_army(1, tgt, {"inf": 5})]
+    _lead(g, 0, "mac")
+    dd, ad = g._leader_battle_mods(0, 1, [small], big, "S002", tgt, 10.0, 10.0)
+    assert (dd, ad) == (10.0, pytest.approx(12.0))
+    _lead(g, 0, "sta")
+    dd, ad = g._leader_battle_mods(0, 1, [small], big, "S002", tgt, 5.0, 10.0)
+    assert ad == pytest.approx(10.0 + 3 * C.UNIT_STAT_SCALE)
+    # 강감찬 '귀주대첩': 강을 건너 온 적 피해 +50% (방어측)
+    river = next(((a, b) for k, t in g.world.terrain.items() if t["kind"] == "도하" for a, b in [tuple(k)]), None)
+    _lead(g, 1, "kgc")
+    _lead(g, 0, "cus")
+    dd, ad = g._leader_battle_mods(0, 1, [small], [small], river[0], river[1], 5.0, 10.0)
+    assert ad == pytest.approx(15.0)
+    # 강감찬 '문신의 신중함': 기습 명령은 돌격으로
+    _lead(g, 0, "kgc")
+    a = g.new_army(0, "S002", {"inf": 3})
+    ok, _ = g.order_army(a.id, tgt, mode="surprise")
+    assert ok and a.order["mode"] == "assault"
+    # 김원봉 '현상금': 잃은 유닛 생산비의 50%를 상대가 얻는다
+    _lead(g, 0, "kwb")
+    m1 = g.factions[1].money
+    g._score_units(1, 0, {"inf": 2})
+    assert g.factions[1].money == pytest.approx(m1 + C.UNITS["inf"]["cost"] * C.UNITS["inf"]["turns"] * 2 * 0.5)
+    # 김원봉 '의열단': 건물 1단계 낮추기
+    for k in g.regions[tgt].b:
+        g.regions[tgt].b[k] = 0
+    g.regions[tgt].b["factory"] = 2
+    note = g._sabotage(g.regions[tgt])
+    assert "의열단" in note and g.regions[tgt].b["factory"] == 1
+
+
+def test_yelu_tribute_and_cession():
+    g = new_game(player_start="S002", n_enemies=2, player_leader="yyl")
+    _neutral_ai(g, 1, 2)
+    g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
+    assert D.declare_friendship(g, 0, 1)[0] and D.declare_friendship(g, 0, 2)[0]
+    before = g.player.specialty.get(C.TRIBUTE_SPECIALTY, 0)
+    g._phase_resources(g.player)
+    got = g.player.specialty.get(C.TRIBUTE_SPECIALTY, 0) + sum(
+        1 for r in g.regions_of(0) if C.TRIBUTE_SPECIALTY in r.supplied) - before
+    assert got == 2                                       # 우호 선언 2곳 → 공물 2
+    # 강동 6주: 강화하면 상대와 맞닿은 내 지역 1곳(수도 제외)이 넘어간다
+    cap = g.player.capital
+    mine = sorted(g.world.land_adj[cap])[:2]
+    _own(g, 0, mine)
+    enemy = next(n for n in g.world.land_adj[mine[0]] if n != cap and n not in mine)
+    _own(g, 1, [enemy])
+    D.declare_war(g, 1, 0)
+    n0 = g.region_count(0)
+    D.make_peace(g, 0, 1)
+    assert g.region_count(0) == n0 - 1 and g.regions[cap].owner == 0

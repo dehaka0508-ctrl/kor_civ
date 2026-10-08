@@ -17,12 +17,13 @@ from .state import NEUTRAL
 # 행동마다 관련된 지도자 효과 (키, 방향). 방향 +1 은 값이 클수록 유리, −1 은 작을수록 유리.
 # 특수 키는 _bias_term 에서 기준값과의 차이로 바꾼다.
 LEADER_BIAS_KEYS = {
-    "inf": [("atk_inf", 1), ("cost_mil", -1), ("inf_cost_early", -1)],
+    "inf": [("atk_inf", 1), ("cost_mil", -1), ("inf_cost_early", -1), ("inf_wave", 1)],
     "tank": [("cost_tank", -1), ("cost_mil", -1)],
     "art": [("bomb_art", 1), ("cost_mil", -1)],
-    "naval": [("cost_naval", -1), ("naval_power", 1), ("naval_bomb", 1), ("amphib_extra", 1), ("cut_supply", -1)],
+    "naval": [("cost_naval", -1), ("naval_power", 1), ("naval_bomb", 1), ("amphib_extra", 1), ("cut_supply", -1),
+              ("amphib_atk", 1)],
     "air": [("cost_air", -1)],
-    "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
+    "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1), ("output_farm", 1)],
     "fishery": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
     "factory": [("output_factory", 1), ("output_prod", 1), ("cost_factory", -1), ("build_time_factory", -1),
                 ("build_time_prod", -1), ("build_time_all", -1), ("build_time_industry", -1)],
@@ -35,7 +36,7 @@ LEADER_BIAS_KEYS = {
     "assault": [("atk_assault", 1), ("no_ally_assault", 1), ("atk_vs_line", 1)],
     "surprise": [("surprise", 1)],
     "war": [("war_weary_rate", -1), ("war_start_weary", -1), ("resist_time", -1), ("guerrilla", -1),
-            ("capital_fall_rebel", -1)],
+            ("capital_fall_rebel", -1), ("outnumbered_dmg", -1), ("bounty", -1)],
     "ally": [("ally_war_atk", 1), ("treaty_threshold", -1), ("no_ally_assault", -1)],
 }
 LEADER_BIAS_K = 0.6        # 효과 크기 → 확률·효용 배수
@@ -756,7 +757,7 @@ def _army_orders(g, f, threat):
                     continue
                 if wts.get("military", 1) < 0.9 and a.count() < 3:
                     continue
-            for mode in ("assault", "surprise"):
+            for mode in (("assault",) if g.mods(fid).value("no_surprise") else ("assault", "surprise")):
                 pv = g.preview_attack(a, node, mode)
                 if not pv or pv["A"] <= 0:
                     continue
