@@ -133,6 +133,13 @@ def gdp_rank_k(g, fid):
     return 0.5 if idx is None else 1 - idx / max(1, len(order) - 1)
 
 
+def science_ready(g, fid) -> bool:
+    """과학 조건 완비: 산지·해안·석유 지역과 공장 3단계 이상 지역을 모두 가졌다(과학을 일찍 시작할 만한 나라)."""
+    regs = g.regions_of(fid)
+    return (any(g.info(r.id).is_oil for r in regs) and any(g.info(r.id).coastal for r in regs)
+            and any(r.id in g.world.mountain_regions for r in regs) and any(r.b["factory"] >= 3 for r in regs))
+
+
 def poverty(g, fid) -> float:
     """GDP 하위 절반일수록 0 → 1(꼴찌)."""
     return max(0.0, 0.5 - gdp_rank_k(g, fid)) * 2
@@ -189,7 +196,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     science = ((0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
                * (1 - C.AI_P2_POOR_SCI * poor))
     # 산지·해안·석유·공장 3단계 이상을 모두 갖췄으면 과학을 일찍(경제보다 20~30턴 먼저) 고를 만큼 가점
-    early = has_oil and has_coast and has_mtn and any(r.b["factory"] >= 3 for r in regs)
+    early = science_ready(g, fid)
     if early:
         science *= C.AI_P2_SCI_EARLY
     why["science"] = ("조건 완비 " if early else "") + ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
@@ -349,6 +356,7 @@ def update(g, f, threat=None):
     s["posture"] = posture(g, f, sc, threat)
     tp = threat_power(g, f, sc)
     s["mil_ok"] = g.mil_power(f.id) >= C.AI_P2_MIL_OK * tp
+    s["mil_k"] = g.mil_power(f.id) / max(1.0, C.AI_P2_MIL_OK * tp)     # 1 이상이면 군사력 충분
     enemies = set(D.enemies(g, f.id))
     new_enemy = bool(enemies - set(s.get("enemies", ())))
     s["enemies"] = sorted(enemies)
