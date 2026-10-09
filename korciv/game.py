@@ -78,6 +78,7 @@ class Game:
     def __getstate__(self):
         s = dict(self.__dict__)
         s.pop("world", None)
+        s.pop("_keyv", None)
         s["_mods"] = {}
         s["_morale"] = {}
         return s

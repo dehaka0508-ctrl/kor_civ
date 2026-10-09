@@ -2799,3 +2799,20 @@ def test_ai_diplomatic_follower_rides_conqueror():
     assert EG.conquest_minded(g, 1)
     assert ai.coalition_war_consent(g, 0, 1, 2)            # 강국의 전쟁에는 함께한다
     assert ai.loyal(g, 1, 0) and ai.loyal(g, 0, 1)
+
+
+def test_key_region_value_and_guards():
+    """승리 거점: 발사대 10·증권거래소 6. 과학·경제 3페이즈는 거점마다 수비대 2를 둔다."""
+    from korciv import ai, ai_endgame as EG
+    g = _p2_game(n=3)
+    f = g.factions[0]
+    cap = f.capital
+    a, b = [n for n in g.world.land_adj[cap] if g.regions[n].owner == NEUTRAL][:2]
+    _own(g, 0, [a, b])
+    g.regions[a].sci.add("pad")
+    g.regions[b].econ.add("exchange")
+    g.turn += 1                                      # 거점 가치 캐시는 턴마다
+    assert EG.key_value(g, a) == 10 and EG.key_value(g, b) == 6 and EG.key_value(g, cap) == 4
+    f.ai.update(phase=3, p3={"kind": "science", "turn": 0})
+    guards = ai.key_guards(g, f, {})
+    assert guards == {a: C.AI_KEY_GUARD, b: C.AI_KEY_GUARD}

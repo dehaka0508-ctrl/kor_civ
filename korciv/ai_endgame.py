@@ -149,13 +149,74 @@ def harass(g, f):
     return t, p3.get("urgency", 0.0)
 
 
-def key_region(g, rid) -> bool:
-    """승리에 중요한 지역: 수도, 과학·경제 시설(완공·건설 중)."""
+def key_value(g, rid) -> float:
+    """승리 거점 가치(0이면 아님). 빼앗으면 승리가 막히거나 늦어지는 곳일수록 크다.
+    - 발사대(과학 유닛을 모아 발사하는 곳)·과학 유닛이 있는 곳 10
+    - 경제 시설: 기축통화·국제금융센터·경제특구 10, 증권거래소 6(빼앗으면 사라진다)
+    - 과학·경제 공사 중 8(빼앗으면 멈춘다)
+    - 수도 4, 연구소·관측소 2"""
     rr = g.regions[rid]
     if rr.owner < 0:
-        return False
-    return (g.factions[rr.owner].capital == rid or bool(rr.sci) or bool(rr.econ)
-            or (rr.project is not None and rr.project.kind in ("science", "econ")))
+        return 0.0
+    cache = g.__dict__.get("_keyv")
+    if cache is None or cache[0] != g.turn:
+        units = {}
+        for a in g.armies.values():
+            if any(a.units.get(k) for k in C.SCIENCE_UNITS):
+                units.setdefault(a.loc, set()).add(a.owner)
+        cache = g.__dict__["_keyv"] = (g.turn, {}, units)
+    hit = cache[1].get(rid)
+    if hit is not None and hit[0] == rr.owner:
+        return hit[1]
+    v = _key_value(g, rr, rid, cache[2])
+    cache[1][rid] = (rr.owner, v)
+    return v
+
+
+def _key_value(g, rr, rid, sci_units) -> float:
+    v = 0.0
+    if "pad" in rr.sci:
+        v = 10.0
+    elif rr.sci:
+        v = 2.0
+    if rr.econ & {"currency", "ifc", "sez"}:
+        v = max(v, 10.0)
+    elif rr.econ:
+        v = max(v, 6.0)
+    if rr.project is not None and rr.project.kind in ("science", "econ"):
+        v = max(v, 8.0)
+    if g.factions[rr.owner].capital == rid:
+        v = max(v, 4.0)
+    if v < 10 and rr.owner in sci_units.get(rid, ()):
+        v = 10.0
+    return v
+
+
+def key_region(g, rid) -> bool:
+    """승리에 중요한 지역: 수도, 발사대·과학 유닛, 경제 시설, 과학·경제 공사 중."""
+    return key_value(g, rid) >= 4
+
+
+def key_targets(g, t, depth=6) -> dict:
+    """t 의 승리 거점(가치 6 이상)에서 육로로 몇 칸인지: {지역: (거리, 가치)} — 공격 부대를 거점 쪽으로 이끈다."""
+    from collections import deque
+    srcs = [(r.id, key_value(g, r.id)) for r in g.regions_of(t)]
+    srcs = [(rid, v) for rid, v in srcs if v >= 6]
+    out = {}
+    q = deque()
+    for rid, v in srcs:
+        out[rid] = (0, v)
+        q.append(rid)
+    while q:
+        u = q.popleft()
+        d, v = out[u]
+        if d >= depth:
+            continue
+        for n in g.world.land_adj[u]:
+            if n not in out or out[n][0] > d + 1:
+                out[n] = (d + 1, v)
+                q.append(n)
+    return out
 
 
 def sprint(f) -> str:
