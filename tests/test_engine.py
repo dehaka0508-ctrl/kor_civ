@@ -2550,6 +2550,25 @@ def test_ai_p2_econ_skipped_when_richer_rival_ahead():
     g.rankings = {g.turn: rows(2)}
     assert ST.path_scores(g, f, {})["scores"]["economic"] == 0
 
+def test_ai_p2_science_early_when_sites_ready():
+    """산지·해안·석유·공장 3단계 이상을 모두 갖추면 과학 점수 × AI_P2_SCI_EARLY."""
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    w = g.world
+    free = lambda pred: next(r for r in w.order if g.regions[r].owner == NEUTRAL and pred(r))
+    _own(g, 0, [free(lambda r: g.info(r).is_oil), free(lambda r: g.info(r).coastal),
+                free(lambda r: r in w.mountain_regions)])
+    for r in g.regions_of(0):
+        r.b["factory"] = min(r.b["factory"], 2)
+    g.rankings = {g.turn: [{"fid": x.id, "gdp": 100 if x.id == 0 else 1000, "science": 0, "econ": 0}
+                           for x in g.factions if x.alive]}
+    before = ST.path_scores(g, f, {})
+    g.regions_of(0)[0].b["factory"] = 3
+    after = ST.path_scores(g, f, {})
+    assert after["scores"]["science"] == pytest.approx(before["scores"]["science"] * C.AI_P2_SCI_EARLY, rel=0.01)
+    assert "조건 완비" in after["why"]["science"] and "조건 완비" not in before["why"]["science"]
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai

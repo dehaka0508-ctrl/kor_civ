@@ -188,7 +188,11 @@ def path_scores(g, f, sc, rng=None) -> dict:
     poor = max(0.0, 0.5 - rank_k) * 2 if rank else 0.0      # GDP 하위권: 과학·경제는 조금 덜, 외교는 조금 더
     science = ((0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
                * (1 - C.AI_P2_POOR_SCI * poor))
-    why["science"] = ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
+    # 산지·해안·석유·공장 3단계 이상을 모두 갖췄으면 과학을 일찍(경제보다 20~30턴 먼저) 고를 만큼 가점
+    early = has_oil and has_coast and has_mtn and any(r.b["factory"] >= 3 for r in regs)
+    if early:
+        science *= C.AI_P2_SCI_EARLY
+    why["science"] = ("조건 완비 " if early else "") + ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
     # 경제: '돈만 있으면 된다' — 반기 랭킹 GDP 순위(계단 + 연속), 수도 주변 금융 권역 가능성,
     # 수도 2칸 안 은행 4단계(과학보다 큰 가점), 우호 관계, 진척
     inc = 0.35 if rank and rank <= 2 else 0.2 if rank and rank <= max(2, n // 2) else 0.05

@@ -1958,6 +1958,7 @@ def _slots(g, f, threat, military=True):
         if save and f.money < save:
             # 다음 경제 단계 비용을 모으는 중: 비축은 헐지 않고 순수입의 절반만 다른 공사에 쓴다
             avail = min(avail, (income - upkeep) * C.AI_ECON_SAVE_SPEND - committed)
+    top_gdp = eco and PH.phase(f) >= 2 and ST.gdp_rank_k(g, fid) >= 1.0
     food_bal = f.last.get("food_prod", 0) - f.last.get("food_cons", 0)
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     # 1페이즈: 이번 턴 예상 수지(세수 − 유지비 − 진행 중인 모든 공사비)가 적자면 생산 건물로 재정부터 늘린다
@@ -2046,6 +2047,8 @@ def _slots(g, f, threat, military=True):
             gain *= bias(key) * prod_k * place_k
             if eco and key in ("factory", "bank"):
                 gain *= C.AI_ECON_PROD_MULT
+                if top_gdp:
+                    gain *= C.AI_ECON_TOP_PROD        # GDP 1위 경제: 턴당 수입부터 빠르게 늘린다
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             lv = r.b["extract"] + 1
