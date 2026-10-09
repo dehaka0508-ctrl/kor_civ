@@ -94,7 +94,7 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False), ("econ", None), ("lost_project", None)):
+                            ("pop_focus", False), ("econ", None), ("lost_project", None), ("lost_bld", None)):
                 if attr == "econ" and not hasattr(r, attr):
                     r.econ = set()
                     continue
@@ -1403,7 +1403,11 @@ class Game:
         f = self.factions[fid]
         if any(st not in f.science for st in C.SCIENCE_STEPS):
             return None
-        for r in self.regions_of(fid):
+        mine = self.regions_of(fid)
+        built = set().union(*(r.sci for r in mine)) if mine else set()
+        if any(st not in built for st in C.SCIENCE_STEPS if not C.SCIENCE[st]["unit"]):
+            return None                          # 점령으로 꺼진 시설이 있으면 발사할 수 없다(되찾거나 철거 뒤 다시 지어야)
+        for r in mine:
             if "pad" not in r.sci:
                 continue
             have = set()
@@ -1489,8 +1493,8 @@ class Game:
             return []
         out = []
         for step in C.ECON_STEPS:
-            if step != "exchange" and self.econ_buildings(fid, step):
-                continue
+            if step != "exchange" and (self.econ_buildings(fid, step) or self.lost_buildings(fid, step)):
+                continue                          # 있거나, 점령으로 꺼져 아직 되찾을 수 있으면(철거 전) 다시 짓지 않는다
             if self.econ_ready(fid, step)[0]:
                 out.append(step)
         return out
@@ -2087,15 +2091,30 @@ class Game:
         # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
         # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
         lp = getattr(rr, "lost_project", None)
+        rs = rr.resist
+        retaking = bool(rs and rs.get("from") == new_owner and self.resist_phase(rr)[0] in ("resist", "recover"))
         resume = None
         if lp is not None:
-            rs = rr.resist
-            if (lp["fid"] == new_owner and rs and rs.get("from") == new_owner
-                    and self.resist_phase(rr)[0] in ("resist", "recover")):
+            if lp["fid"] == new_owner and retaking:
                 resume = lp["project"]
             else:
                 self._refund_lost_project(rr)
             rr.lost_project = None
+        # 과학·경제 시설: 적에게 점령당하면 꺼진다(빼앗은 나라도 못 쓴다). 저항·회복 기간 안에 원래 주인이 되찾으면
+        # 되살아나고, 못 되찾으면(기간이 지남·다른 나라에 넘어감·독립) 철거되어 다시 지어야 한다
+        lb = getattr(rr, "lost_bld", None)
+        revive = None
+        if lb is not None:
+            if lb["fid"] == new_owner and retaking:
+                revive = lb
+                rr.lost_bld = None
+            else:
+                self._demolish_lost_bld(rr)
+        if old != NEUTRAL and (rr.sci or rr.econ):
+            rr.lost_bld = {"fid": old, "sci": set(rr.sci), "econ": set(rr.econ)}
+            if new_owner == NEUTRAL or reason != "점령":
+                self._demolish_lost_bld(rr)
+        rr.sci = set()
         p = rr.project
         if p is not None and p.kind in ("science", "econ") and old != NEUTRAL:
             if new_owner != NEUTRAL and reason == "점령":
@@ -2107,7 +2126,10 @@ class Game:
                 rr.lost_project = None
         rr.owner = new_owner
         rr.project = resume
-        rr.econ = set()                  # 경제승리 시설은 점령당하면 사라진다
+        rr.econ = set()
+        if revive is not None:
+            rr.sci |= revive["sci"]
+            rr.econ |= revive["econ"]
         prev_occs = dict(rr.occs)
         rr.occs = {}
         rr.supplied = set()
@@ -2165,6 +2187,27 @@ class Game:
         if new_owner != NEUTRAL:
             f = self.factions[new_owner]
             f.explored.add(rid)
+
+    def _demolish_lost_bld(self, rr):
+        """점령으로 꺼진 과학·경제 시설을 되찾지 못함: 철거. 과학 단계는 완료에서 빠져 다시 지을 수 있게 된다."""
+        lb = getattr(rr, "lost_bld", None)
+        rr.lost_bld = None
+        if not lb:
+            return
+        f = self.factions[lb["fid"]]
+        for st in sorted(lb["sci"]):
+            if st in f.science and not any(st in r.sci for r in self.regions_of(f.id)):
+                f.science.remove(st)
+        names = [C.SCIENCE[k]["name"] for k in sorted(lb["sci"]) if k in C.SCIENCE] + \
+                [C.ECON[k]["name"] for k in sorted(lb["econ"]) if k in C.ECON]
+        if f.alive and names:
+            self.event("info", f"{self.info(rr.id).name}의 {', '.join(names)}을(를) 되찾지 못해 철거되었습니다(다시 지어야 합니다).",
+                       region=rr.id, fids=(f.id,))
+
+    def lost_buildings(self, fid, key) -> list:
+        """점령으로 꺼졌지만 아직 철거되지 않은(되찾을 수 있는) 내 시설 지역."""
+        return [r.id for r in self.regions.values()
+                if r.lost_bld and r.lost_bld["fid"] == fid and (key in r.lost_bld["sci"] or key in r.lost_bld["econ"])]
 
     def _refund_lost_project(self, rr):
         """점령으로 멈춘 과학·경제 공사를 되찾지 못함: 원래 주인에게 낸 돈의 50% 환급."""
@@ -3337,9 +3380,10 @@ class Game:
             h = (r.happy + r.h_delta + t + spec) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
-            lp = getattr(r, "lost_project", None)
-            if lp is not None and self.resist_phase(r)[0] not in ("resist", "recover"):
-                self._refund_lost_project(r)        # 탈환 기간(저항 + 회복)이 지났다
+            if (getattr(r, "lost_project", None) is not None or getattr(r, "lost_bld", None) is not None) \
+                    and self.resist_phase(r)[0] not in ("resist", "recover"):
+                self._refund_lost_project(r)        # 탈환 기간(저항 + 회복)이 지났다: 공사 50% 환급, 시설 철거
+                self._demolish_lost_bld(r)
             if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
                 r.resist = None
         self._morale = {}

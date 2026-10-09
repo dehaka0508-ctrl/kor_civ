@@ -65,6 +65,7 @@ class Region:
     mil_hist: int = 0               # 최근 10턴 군 생산 여부(비트, 최하위 = 이번 턴)
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
+    lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
 
     @property
     def occ(self) -> Optional[dict]:

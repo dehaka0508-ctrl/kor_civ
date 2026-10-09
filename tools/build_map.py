@@ -109,7 +109,7 @@ NK_NAMES = {
     "Jangjin": "함남 장진군", "Rakwon": "함남 락원군", "Pujon": "함남 부전군",
     "Yodok": "함남 요덕군", "Kumho": "함남 금호지구",
     # 함북
-    "Chongjin City": "함북 청진시", "Kim Chaek City": "함북 김책시", "Hoeryong City": "함북 회령시",
+    "Chongjin City": "함북 청진시", "Kim Chaek City": "함북 성진시", "Hoeryong City": "함북 회령시",
     "Kilju": "함북 길주군", "Onsong": "함북 온성군", "Musan": "함북 무산군",
     "Kyongwon": "함북 경원군", "Kyongsong": "함북 경성군", "Myonggan": "함북 명간군",
     "Kyonghung": "함북 경흥군", "Orang": "함북 어랑군", "Hwadae": "함북 화대군",
@@ -123,8 +123,8 @@ NK_NAMES = {
     "Rangrim": "자강 랑림군", "Ryongrim": "자강 룡림군", "Kophung": "자강 고풍군",
     # 량강
     "Hyesan City": "량강 혜산시", "Kabsan": "량강 갑산군", "Paekam": "량강 백암군",
-    "Unhung": "량강 운흥군", "Kim Hyong Jik": "량강 김형직군", "Phungso": "량강 풍서군",
-    "Kim Jong Suk": "량강 김정숙군", "Samsu": "량강 삼수군", "Kim Hyong Gwon": "량강 김형권군",
+    "Unhung": "량강 운흥군", "Kim Hyong Jik": "량강 후창군", "Phungso": "량강 풍서군",
+    "Kim Jong Suk": "량강 신파군", "Samsu": "량강 삼수군", "Kim Hyong Gwon": "량강 풍산군",
     "Pochon": "량강 보천군", "Taehongdan": "량강 대홍단군", "Samjiyon": "량강 삼지연시",
 }
 

@@ -127,7 +127,7 @@ def choose_victory_goal(g, f):
         "economic": (0.05 + 0.03 * (10 - aggr) + 0.12 * e_stage + 0.03 * min(5, hi_banks)
                      + 0.04 * min(3, partners) + 0.15 * rich) * leader_bias(g, fid, "bank"),
         "science": (0.05 + 0.03 * (10 - aggr) + 0.12 * k_done + (0.15 if afford else 0)
-                    + 0.1 * has_oil + 0.05 * has_f5 + 0.03 * (has_coast + has_mtn)) * leader_bias(g, fid, "science"),
+                    + 0.05 * has_oil + 0.05 * has_f5 + 0.03 * (has_coast + has_mtn)) * leader_bias(g, fid, "science"),
         "diplomatic": ((0.05 + 0.03 * (10 - aggr) + 0.6 * c_frac + 0.04 * min(4, allies))
                        * leader_bias(g, fid, "ally") if can_ally else -1.0),
         "time": 0.3 + (0.4 * t_prog if top else 0.1 * t_prog),
@@ -1139,6 +1139,8 @@ def _army_orders(g, f, threat):
     # 견제: 승리가 임박한 나라와 전쟁 중이면 그 나라의 승리 거점(발사대·경제 시설·공사 중)을 노린다
     h_tgt, _ = EG.harass(g, f) if f.is_ai else (None, 0.0)
     keys = EG.key_targets(g, h_tgt) if h_tgt is not None and D.at_war(g, fid, h_tgt) else {}
+    # 빼앗긴 내 승리 시설·공사: 저항·회복 기간 안에 되찾으면 되살아난다(못 되찾으면 철거) — 무엇보다 먼저
+    retake = EG.retake_targets(g, fid) if f.is_ai and at_war else {}
     # 승리 거점 수비(과학·경제를 짓는 쪽): 거점마다 최소 수비대를 남기고, 모자라면 채운다
     guards = key_guards(g, f, threat) if f.is_ai else {}
     short = {rid: n - sum(x.count(("land",)) for x in g.armies_at(rid, fid) if x.domain() == "land")
@@ -1226,6 +1228,8 @@ def _army_orders(g, f, threat):
                 if node in keys and tgt.owner == h_tgt and (kill or dd > ad):
                     kd, kv = keys[node]
                     u += C.AI_P3_KEY_ATK * kv / (1 + kd)   # 견제: 승리 거점(과 그리로 가는 길)을 먼저
+                if node in retake and (kill or dd > ad):
+                    u += C.AI_P3_KEY_ATK * retake[node]    # 빼앗긴 내 승리 시설 되찾기
                 if tgt.owner == NEUTRAL and not kill:
                     u = -1
                 elif u > 0:
@@ -1284,9 +1288,9 @@ def _army_orders(g, f, threat):
                 if short[dest] <= 0:
                     del short[dest]
                 continue
-        # 견제 전쟁: 큰 부대는 상대 승리 거점에 가장 가까운 내 국경으로
-        if keys and a.count() >= 3 and not (a.loc in front and threat.get(a.loc, 0) > 0.5):
-            near = [rid for rid, (kd, kv) in keys.items() if kd == 0]
+        # 견제 전쟁·탈환: 큰 부대는 되찾을 내 시설 또는 상대 승리 거점에 가장 가까운 내 국경으로
+        if (keys or retake) and a.count() >= 3 and not (a.loc in front and threat.get(a.loc, 0) > 0.5):
+            near = list(retake) or [rid for rid, (kd, kv) in keys.items() if kd == 0]
             dist = w.distances_from(a.loc, 30)
             dest = min(near, key=lambda rid: (dist.get(rid, 99), rid)) if near else None
             if dest is not None and dist.get(dest, 99) < 99:

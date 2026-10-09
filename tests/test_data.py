@@ -45,11 +45,16 @@ def test_every_mainland_region_has_neighbor_and_is_connected():
 def test_sea_coasts():
     w = load_world()
     counts = {s.name: len(s.coast) for s in w.seas.values()}
-    assert counts == {"서북해": 33, "서남해": 32, "남서해": 11, "남동해": 17, "동남해": 15, "동북해": 23,
-                      "독도 해역": 1, "제주도 연안": 2}
+    assert counts == {"서한만": 25, "경기만": 24, "서해 남부": 16, "남해 서부": 11, "남해 동부": 17,
+                      "남동해": 8, "영동 해역": 7, "동한만": 14, "북동해": 8, "독도 해역": 1, "제주도 연안": 2}
     assert w.seas["SEA1"].adj == ["SEA2"]
-    assert w.seas["SEA3"].adj == ["SEA2", "SEA4", "SEA8"]
-    assert w.island_seas_of(w.name_to_id["제주 서귀포시"]) == ("SEA8",)
+    assert w.seas["SEA4"].adj == ["SEA3", "SEA5", "SEA11"]
+    assert w.island_seas_of(w.name_to_id["제주 서귀포시"]) == ("SEA11",)
+    n = w.name_to_id
+    assert w.regions[n["충남 태안군"]].seas == ("SEA2", "SEA3")         # 경기만·서해 남부 경계
+    assert w.regions[n["황남 옹진군"]].seas == ("SEA1", "SEA2")         # 서한만·경기만 경계
+    assert w.regions[n["경북 울진군"]].seas == ("SEA7",) and w.regions[n["경북 영덕군"]].seas == ("SEA6",)
+    assert w.regions[n["함남 단천시"]].seas == ("SEA8",) and w.regions[n["함북 성진시"]].seas == ("SEA9",)
     assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("독도새우", "명이")
     # 해안선에 맞춘 해역 모양이 저장되어 있다
     assert set(w.sea_shapes) == set(w.seas)
@@ -65,8 +70,8 @@ def test_cross_border_links():
 def test_mountain_pass_not_adjacent_unless_touching():
     w = load_world()
     n = w.name_to_id
-    assert n["량강 김형권군"] not in w.land_adj[n["함남 북청군"]]
-    assert n["량강 백암군"] not in w.land_adj[n["함북 김책시"]]
+    assert n["량강 풍산군"] not in w.land_adj[n["함남 북청군"]]
+    assert n["량강 백암군"] not in w.land_adj[n["함북 성진시"]]
     # 도하 하구 경로는 인접
     assert n["개성 개풍구역"] in w.land_adj[n["인천 강화군"]]
     assert w.terrain_between(n["경북 문경시"], n["충북 괴산군"])["kind"] == "돌파"

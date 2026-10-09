@@ -192,6 +192,25 @@ def _key_value(g, rr, rid, sci_units) -> float:
     return v
 
 
+def retake_targets(g, fid) -> dict:
+    """빼앗겼지만 저항·회복 기간이라 되찾으면 되살아나는 내 과학·경제 시설·공사 지역: {지역: 가치}."""
+    out = {}
+    for r in g.regions.values():
+        lb, lp = r.lost_bld, r.lost_project
+        mine = (lb and lb["fid"] == fid) or (lp and lp["fid"] == fid)
+        if not mine or r.owner == fid or not r.resist or r.resist.get("from") != fid:
+            continue
+        if g.resist_phase(r)[0] not in ("resist", "recover"):
+            continue
+        v = 6.0
+        if lb and ("pad" in lb["sci"] or lb["econ"] & {"currency", "ifc", "sez"}):
+            v = 10.0
+        elif lp:
+            v = 8.0
+        out[r.id] = v
+    return out
+
+
 def key_region(g, rid) -> bool:
     """승리에 중요한 지역: 수도, 발사대·과학 유닛, 경제 시설, 과학·경제 공사 중."""
     return key_value(g, rid) >= 4

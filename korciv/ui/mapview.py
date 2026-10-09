@@ -6,7 +6,6 @@ import math
 import numpy as np
 import pygame
 
-from ..data import SEA_LABELS
 from .theme import mix, render_text, ui_scale
 
 COS = math.cos(math.radians(38.0))
@@ -79,7 +78,7 @@ class MapView:
         # 해역: sid -> [(바깥 테두리, [섬 구멍...])] — 해안선에 맞춰 잘린 모양
         self.sea_polys = {sid: [(proj_arr(p["ext"]), [proj_arr(h) for h in p["holes"]]) for p in parts]
                           for sid, parts in world.sea_shapes.items()}
-        self.label.update({sid: proj(*p) for sid, p in SEA_LABELS.items()})
+        self.label.update({sid: proj(*p) for sid, p in world.sea_labels.items()})
         self.world_outlines_open = getattr(world, "outlines_open", False)
         self.province_lines = [proj_arr(r) for rings in world.province_outlines.values() for r in rings]
         self.do8_lines = [proj_arr(r) for rings in world.do8_outlines.values() for r in rings]

@@ -219,7 +219,7 @@ def test_rebel_region_becomes_capital_and_inherits_state():
     nf = g.factions[-1]
     assert "분리독립" in msg
     assert r.owner == nf.id and nf.capital == rid and nf.rebel_of == 0
-    assert r.pop == pop and r.b == b and "lab" in r.sci
+    assert r.pop == pop and r.b == b and not r.sci      # 과학·경제 시설은 빼앗기면 쓸 수 없다(독립은 바로 철거)
     assert r.project and r.project.key == "farm"
     assert D.at_war(g, 0, nf.id)
     # 첫 24턴 행복도 하한 0
@@ -342,6 +342,7 @@ def test_science_victory_chain():
     pad = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
     _own(g, 0, [pad])
     g.regions[pad].sci.add("pad")
+    g.regions[g.factions[0].capital].sci |= {"lab", "observatory", "budget"}   # 시설이 모두 살아 있어야 발사
     for k in C.SCIENCE_UNITS[:2]:
         g.add_units(0, pad, k, 1)
     assert g.launch_ready(0) is None
@@ -410,7 +411,7 @@ def test_river_fishery_and_coast_bonus():
     assert g.fish_mult(0, inland_river) == pytest.approx(C.RIVER_FISH_MULT)
     assert not g.can_fish(n["충북 증평군"])      # 해안도 강도 아님
     # 해역의 해안 지역을 모두 가지면 바다 어장 +20%
-    sea = "SEA3"
+    sea = "SEA4"
     for rid in g.world.seas[sea].coast:
         g.regions[rid].owner = 0
     coast = g.world.seas[sea].coast[0]
@@ -438,7 +439,7 @@ def test_no_sea_annex():
     busan, jeju_s = n["부산 중구"], n["제주 서귀포시"]
     _own(g, 0, [busan])
     g.regions[busan].b["port"] = 1
-    g.new_army(0, "SEA8", {"lst": 1})                  # 상륙함이 있어도 해로 편입은 없다
+    g.new_army(0, "SEA11", {"lst": 1})                 # 상륙함이 있어도 해로 편입은 없다
     g.new_army(0, busan, {"lst": 1})
     targets = {t["target"] for t in g.annex_targets(0, busan)}
     assert targets <= set(g.world.land_adj[busan]) and jeju_s not in targets
@@ -2816,3 +2817,31 @@ def test_key_region_value_and_guards():
     f.ai.update(phase=3, p3={"kind": "science", "turn": 0})
     guards = ai.key_guards(g, f, {})
     assert guards == {a: C.AI_KEY_GUARD, b: C.AI_KEY_GUARD}
+
+
+
+def test_captured_victory_buildings_off_then_revived_or_demolished():
+    """빼앗긴 과학·경제 시설: 꺼져서 누구도 못 쓰고, 저항·회복 중 되찾으면 되살아나며, 못 되찾으면 철거되어
+    그 단계를 다시 지어야 한다(철거 전에는 다시 지을 수 없다)."""
+    g = Game(Settings(n_enemies=2, seed=7, all_ai=True))
+    _neutral_ai(g, 0, 1, 2)
+    D.declare_war(g, 1, 0)
+    f = g.factions[0]
+    cap = f.capital
+    rid = next(n for n in g.world.land_adj[cap] if g.regions[n].owner == NEUTRAL)
+    _own(g, 0, [rid])
+    rr = g.regions[rid]
+    rr.sci.add("lab")
+    rr.econ.add("exchange")
+    f.science = ["lab"]
+    g.complete_occupation(1, rid)
+    assert not rr.sci and not rr.econ and rr.lost_bld["fid"] == 0          # 빼앗은 나라도 못 쓴다
+    assert "lab" in f.science and g.science_next(0) == "observatory"        # 철거 전에는 다시 짓지 않는다
+    assert "exchange" in [k for k in ("exchange",) if g.lost_buildings(0, k)]
+    g.complete_occupation(0, rid)                                            # 저항 중 탈환: 되살아난다
+    assert rr.sci == {"lab"} and rr.econ == {"exchange"} and rr.lost_bld is None
+    g.complete_occupation(1, rid)
+    rr.resist["turn"] -= C.RESIST_TURNS + C.RESIST_RECOVER_TURNS
+    g._phase_happiness()                                                     # 기간이 지나 철거
+    assert rr.lost_bld is None and not rr.sci and "lab" not in f.science
+    assert g.science_next(0) == "lab"                                        # 다시 지어야 한다

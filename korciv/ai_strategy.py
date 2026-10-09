@@ -181,7 +181,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
         rank, n = None, 0
     rank_k = (1 - (rank - 1) / max(1, n - 1)) if rank else 0.5
     # 해안·산맥은 거의 모든 나라에 있어 가점이 작다. 석유(6곳, 흩어져 있음)는 조금 더. 공장·은행은 4단계 이상부터
-    feas = (0.1 + 0.25 * has_oil + C.AI_P2_SCI_GEO * (has_coast + has_mtn) + 0.15 * min(1.0, fac / 2)
+    feas = (0.1 + C.AI_P2_SCI_OIL * has_oil + C.AI_P2_SCI_GEO * (has_coast + has_mtn) + 0.15 * min(1.0, fac / 2)
             + 0.08 * bank_hi + 0.25 * rank_k)
     k_sci = len(f.science)
     ahead = max((r["science"] for r in others), default=0) - k_sci >= 2
