@@ -50,7 +50,7 @@ SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인�
 
 # ---- 과학승리: 7단계를 차례로 완료한 뒤 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리
 # 단계마다 15턴, 턴당 10만 × 1.1^단계(0부터, 예산 편성 포함 7단계): 10만 → 11만 → 12.1만 → … → 약 17.7만(합계 약 1,423만)
-SCIENCE_COST_PER_TURN = 100_000
+SCIENCE_COST_PER_TURN = 80_000
 SCIENCE_TURNS = 15
 SCIENCE_COST_GROWTH = 1.1
 SCIENCE_STEPS = ("lab", "observatory", "budget", "pad", "booster", "module", "propellant")

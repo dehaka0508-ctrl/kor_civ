@@ -2255,7 +2255,7 @@ def _slots(g, f, threat, military=True):
         sc_per = sc_total / sc_turns
         sm, si = 2.0 / bias("science"), 0.3 / bias("science")
         if ((f.money > sc_per * sm and income - upkeep > sc_per * si) or f.money > sc_total * 1.1
-                or (spr == "science" and f.money > sc_per * C.AI_P3_SPRINT_START)):
+                or f.money > sc_per * C.AI_P3_SPRINT_START):    # 과학 방향: 2턴분만 있어도 착수(모자라면 멈췄다 이어서)
             sites = [r for r in regs if g.science_site_ok(fid, r.id, step) and not r.project and not r.occ
                      and not g.resisting(r)]
             if sites:

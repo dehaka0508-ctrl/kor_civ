@@ -841,7 +841,7 @@ def test_science_cost_grows():
     g = new_game(player_start="S002", n_enemies=1)
     costs = [g.science_step_cost(0, k) for k in C.SCIENCE_STEPS]
     assert costs == pytest.approx([costs[0] * C.SCIENCE_COST_GROWTH ** k for k in range(len(C.SCIENCE_STEPS))])   # 연료 ≈ 1.77배
-    assert costs[0] == pytest.approx(100_000 * C.SCIENCE_TURNS)
+    assert costs[0] == pytest.approx(80_000 * C.SCIENCE_TURNS)
 
 
 def test_no_peace_victory():
@@ -1710,7 +1710,7 @@ def test_econ_share_counts_neutral_and_rebel_weary_mult():
     r.happy, r.resist = -10.0, None
     g.player.war_weary, g.player.war_weary_def = 20.0, 5.0
     assert g.rebel_happy(r) == pytest.approx(g.eff_happy(r) + 20 - 15 * 1.2)
-    assert C.SCIENCE_COST_PER_TURN == 100_000
+    assert C.SCIENCE_COST_PER_TURN == 80_000
 
 
 def test_display_names_and_flag_number_input():
@@ -2537,6 +2537,18 @@ def test_ai_conquest_artillery_behind_front():
     arts = [a for a in g.armies.values() if a.owner == 0 and a.units.get("art")]
     assert arts and all(set(a.units) == {"art"} for a in arts)
     assert any(a.order and a.order["type"] == "move" and a.order["path"][-1] == z for a in arts)
+
+def test_ai_p2_econ_skipped_when_richer_rival_ahead():
+    """반기 랭킹에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면 경제 점수 0."""
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    rows = lambda e: [{"fid": x.id, "gdp": 500 if x.id == 0 else 1000 if x.id == 1 else 10, "science": 0,
+                       "econ": e if x.id == 1 else 0} for x in g.factions if x.alive]
+    g.rankings = {g.turn: rows(0)}
+    assert ST.path_scores(g, f, {})["scores"]["economic"] > 0
+    g.rankings = {g.turn: rows(2)}
+    assert ST.path_scores(g, f, {})["scores"]["economic"] == 0
 
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""

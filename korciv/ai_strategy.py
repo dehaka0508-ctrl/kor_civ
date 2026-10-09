@@ -211,11 +211,15 @@ def path_scores(g, f, sc, rng=None) -> dict:
         conquest = fit_c * feas_c * pen_c
         why["conquest"] = f"GDP 1위, 호전성 {a * 10:.0f}" + (", 강한 적대 이웃" if stronger else "")
     economic = fit_e * feas_e
+    # 반기 랭킹(공개 정보)에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면 경제는 노리지 않는다
+    blocked = bool(me_row) and any(r["gdp"] > me_row["gdp"] and r["econ"] > stage for r in others)
+    if blocked:
+        economic = 0.0
     # GDP 1~2위가 다음 단계를 순수입으로 감당할 수 있으면 경제를 확실히 노린다(과학보다 돈은 더 들어도 최소 턴 수가 적다)
     step = C.ECON[C.ECON_STEPS[max(0, min(len(C.ECON_STEPS) - 1, stage - 1))]]
     net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
     rich = bool(rank and rank <= 2 and net >= C.AI_P2_ECON_RICH_NET * step["per_turn"] * C.MONEY_SCALE)
-    if rich:
+    if rich and not blocked:
         economic *= C.AI_P2_ECON_RICH
     why["economic"] = (f"GDP {rank or '?'}위" + ("(감당 가능)" if rich else "") + f", 수도 주변 {near}곳, 관계 {partners}"
                        + (", 앞선 나라 있음" if ahead else ""))
