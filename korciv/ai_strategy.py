@@ -199,7 +199,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     partners, _ = D.econ_partners(g, fid)
     stage = g.econ_stage(fid)
     feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap
-    feas *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.2 → 꼴찌 ×0.4
+    feas *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.3 → 꼴찌 ×0.3
     ahead = max((r["econ"] for r in others), default=0) - stage >= 2
     economic = ((0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
                 * (1 - C.AI_P2_POOR_SCI * poor))

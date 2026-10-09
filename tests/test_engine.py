@@ -2603,6 +2603,25 @@ def test_ai_p2_posture_and_crisis_stops_big_projects():
     assert not any(r.project and r.project.kind == "science" for r in g.regions_of(0))
 
 
+def test_ai_only_goal_builds_victory_projects():
+    """과학·경제 단계는 그 방향일 때만 짓는다: 돈이 아주 많아도 정복 방향은 손대지 않는다."""
+    from korciv import ai, ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    s = ST.state(f)
+    s.update(posture="normal", path="conquest", scan={}, mil_ok=True)
+    f.ai["victory_goal"] = "conquest"
+    f.money = 10 ** 8
+
+    def run():
+        for r in g.regions_of(0):
+            r.project = None
+        ai._slots(g, f, {}, military=False)
+        return {r.project.kind for r in g.regions_of(0) if r.project}
+    assert not run() & {"science", "econ"}
+    s["path"] = f.ai["victory_goal"] = "science"
+    assert "science" in run()
+
 def test_ai_p2_two_front_blocks_new_war():
     from korciv import ai, ai_strategy as ST
     g = _p2_game()
@@ -2687,6 +2706,24 @@ def test_ai_p2_court_builds_relation():
     ai._p2_court(g, f, 1, "coalition", C.AI_P2_PATRON_OP)
     assert D.opinion(g, 1, 0) > op                       # 다음 단계 문턱까지 선물
 
+
+
+def test_ai_diplomatic_path_gifts_from_savings():
+    """외교 방향은 모아 둔 돈으로 선물한다(다른 방향은 순수입 몇 턴분까지)."""
+    from korciv import ai
+
+    def gain(goal):
+        g = _p2_game()
+        f = g.factions[0]
+        f.ai["victory_goal"] = goal
+        f.money = 10 ** 7
+        f.last.update(tax=1_000.0, upkeep=0.0)
+        g.factions[1].last["tax"] = 100_000.0            # 받는 쪽이 부자: 우호도 1에 세수 1/3턴분
+        D.declare_friendship(g, 0, 1)
+        op = D.opinion(g, 1, 0)
+        ai._p2_court(g, f, 1, "coalition", 0)
+        return D.opinion(g, 1, 0) - op
+    assert gain("diplomatic") > gain("conquest") > 0
 
 
 def test_lost_science_project_resume_or_refund():
