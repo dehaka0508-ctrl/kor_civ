@@ -195,7 +195,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     near = sum(1 for rid in g.near_capital(fid, 1) if rid in g.regions and g.regions[rid].owner == fid)
     cluster = 0.25 if near >= C.ECON_CLUSTER else 0.15 if near >= 3 else 0.05
     near2 = g.near_capital(fid, 2)
-    bank_cap = any(r.b["bank"] >= 4 for r in regs if r.id in near2)
+    bank_cap = any(r.b["bank"] >= C.AI_P2_ECON_BANK_LV for r in regs if r.id in near2)
     partners, _ = D.econ_partners(g, fid)
     stage = g.econ_stage(fid)
     feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap

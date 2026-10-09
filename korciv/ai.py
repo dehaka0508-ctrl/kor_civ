@@ -1529,7 +1529,8 @@ def _sea_targets(g, fid):
     w = g.world
     enemies = set(D.enemies(g, fid))
     seas = {s for r in g.regions_of(fid) if w.regions[r.id].coastal for s in w.regions[r.id].seas}
-    seas |= {s2 for s in list(seas) for s2 in w.seas[s].adj}
+    for _ in range(C.AI_SEA_REACH):              # 해역 두 칸까지(바다는 육로보다 빠르다)
+        seas |= {s2 for s in list(seas) for s2 in w.seas[s].adj}
     tgts = sorted({v for s in seas for v in w.seas[s].coast if g.regions[v].owner in enemies})
     ports = [v for v in tgts if g.regions[v].b["port"]]
     contact = any(g.regions[n].owner in enemies for r in g.regions_of(fid) for n in w.land_adj[r.id])
@@ -1623,10 +1624,52 @@ def _naval_orders(g, f, threat):
             if seas:
                 g.order_army(fl.id, seas[0])
                 continue
+        # 이번 턴에 닿는 목표가 없으면 적 해안(견제 대상의 승리 거점·항구 우선) 쪽 해역으로 나아간다(해역 두 칸까지)
+        if (fl.units.get("dd") or (fl.units.get("lst") and cargo >= 3)) and _sail_toward(g, f, fl, reach, h_tgt):
+            continue
         if not at_port and (cargo == 0 or not fl.units.get("lst")):
             home = [v for v, o in reach.items() if o["action"] == "move" and not w.is_sea(v)]
             if home:
                 g.order_army(fl.id, home[0])
+
+
+def _sail_toward(g, f, fl, reach, h_tgt) -> bool:
+    """함대를 적 해안 쪽 해역으로 한 칸 움직인다(움직였으면 True). 목표 해안: 견제 대상의 승리 거점 > 항구 > 그 밖."""
+    w = g.world
+    tgts, _, _ = _sea_targets(g, f.id)
+    if not tgts:
+        return False
+    def worth(v):
+        rr = g.regions[v]
+        return (rr.owner == h_tgt) * (2 + EG.key_value(g, v)) + 2 * rr.b["port"] + 1
+    goal = {}
+    for v in tgts:
+        for s_ in w.regions[v].seas:
+            goal[s_] = max(goal.get(s_, 0), worth(v))
+    if fl.loc in goal:
+        return False                              # 이미 목표 해역: 다음 턴 상륙·포격
+    from collections import deque
+    start = fl.loc if w.is_sea(fl.loc) else None
+    starts = [start] if start else list(w.regions[fl.loc].seas)
+    prev = {s_: None for s_ in starts}
+    q = deque(starts)
+    best = None
+    while q:
+        u = q.popleft()
+        if u in goal and (best is None or goal[u] > goal[best]):
+            best = u
+        for v in w.seas[u].adj:
+            if v not in prev:
+                prev[v] = u
+                q.append(v)
+    if best is None:
+        return False
+    step = best
+    while prev.get(step) is not None and reach.get(step, {}).get("action") != "move":
+        step = prev[step]
+    if reach.get(step, {}).get("action") == "move":
+        return g.order_army(fl.id, step)[0]
+    return False
 
 
 def _carrier_orders(g, f, fl, h_tgt, at_port):
@@ -1988,12 +2031,16 @@ def _slots(g, f, threat, military=True):
                           cost / C.SINGLE_BUILDINGS["airport"]["turns"]))
     if military and (at_war or spr) and airports:
         ap_idle = [r for r in airports if r.id in idle_ids]
-        if ap_idle and g.can_pay_oil(fid, C.UNITS["ftr"]["oil"]) and f.money > 3000 and n_ftr < 2 + len(regs) // 25:
+        ftr_ok = ap_idle and g.can_pay_oil(fid, C.UNITS["ftr"]["oil"]) and f.money > 3000 and n_ftr < 2 + len(regs) // 25
+        bmb_ok = (ap_idle and g.can_pay_oil(fid, C.UNITS["bmb"]["oil"]) and f.money > 4000
+                  and n_bmb < C.AI_BMB_BASE + len(regs) // C.AI_BMB_PER_REG)
+        # 폭격기는 육로가 막혀도 거점을 깎을 수 있다: 전투기보다 적으면 폭격기부터
+        if bmb_ok and (n_bmb < n_ftr or not ftr_ok):
+            r0 = ap_idle[0]
+            cands.append((C.AI_BMB_UTIL * bias("air"), r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
+        elif ftr_ok:
             r0 = ap_idle[0]
             cands.append((2.2 * bias("air"), r0.id, "unit", "ftr", None, g.unit_cost(fid, r0.id, "ftr")))
-        elif ap_idle and g.can_pay_oil(fid, C.UNITS["bmb"]["oil"]) and f.money > 4000 and n_bmb < 1 + len(regs) // 40:
-            r0 = ap_idle[0]
-            cands.append((1.8 * bias("air"), r0.id, "unit", "bmb", None, g.unit_cost(fid, r0.id, "bmb")))
     # 해군: 육로로 불리하거나 닿지 않는 적 해안을 노린다(상륙함), 적 항구가 있으면 구축함
     if military and at_war:
         sea_t, enemy_ports, land_contact = _sea_targets(g, fid)
@@ -2001,8 +2048,9 @@ def _slots(g, f, threat, military=True):
         n_lst = sum(a.units.get("lst", 0) for a in g.armies.values() if a.owner == fid)
         n_dd = sum(a.units.get("dd", 0) for a in g.armies.values() if a.owner == fid)
         unfavorable = threat and max(threat.values()) >= 1.0
+        # 바다는 해역이 잘게 나뉘어도 육로보다 훨씬 빠르다: 적 해안이 닿으면 기본적으로 해군을 갖춘다
         want_navy = sea_t and (not land_contact or unfavorable or f.aggression >= 6
-                               or g.rng.random() < 0.5 * max(0.0, bias("naval") - 1))
+                               or g.rng.random() < C.AI_NAVY_P + 0.5 * max(0.0, bias("naval") - 1))
         has_port = any(r.b["port"] for r in regs)
         if want_navy and not has_port and f.money > 6000:
             coast = sorted([r for r in idle if g.world.regions[r.id].coastal],
@@ -2012,10 +2060,12 @@ def _slots(g, f, threat, military=True):
                 cands.append((2.3 * bias("naval"), coast[0].id, "build", "port", None,
                               cost / C.SINGLE_BUILDINGS["port"]["turns"]))
         if sea_t and ports_idle and g.can_pay_oil(fid, C.UNITS["lst"]["oil"]) and f.money > 2000:
-            if n_lst < 1 + len(regs) // 40 and (not land_contact or unfavorable or g.rng.random() < 0.15):
+            if n_lst < 1 + len(regs) // C.AI_LST_PER_REG and (not land_contact or unfavorable
+                                                               or g.rng.random() < C.AI_LST_P):
                 r0 = ports_idle[0]
                 cands.append((2.4 * bias("naval"), r0.id, "unit", "lst", None, g.unit_cost(fid, r0.id, "lst")))
-            elif enemy_ports and n_dd < n_lst + 1 and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000:
+            elif (n_dd < n_lst + 1 + (len(regs) // C.AI_DD_PER_REG if enemy_ports or not land_contact else 0)
+                  and g.can_pay_oil(fid, C.UNITS["dd"]["oil"]) and f.money > 4000):
                 r0 = ports_idle[-1]
                 cands.append((2.0 * bias("naval"), r0.id, "unit", "dd", None, g.unit_cost(fid, r0.id, "dd")))
     # 질주 중 해안 방어: 항구 하나와 구축함(전쟁이 아니어도)
