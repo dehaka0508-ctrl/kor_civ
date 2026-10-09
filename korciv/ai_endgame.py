@@ -108,6 +108,9 @@ def _set_urgency(g, f, rec, leader, lead_eta, mine, sprinting, kind):
     if (not sprinting and kind != "diplomatic" and leader is not None and lead_eta < mine
             and not D.allied(g, f.id, leader)):
         urg = max(0.0, min(1.0, (C.AI_P3_URGENT_ETA - lead_eta) / C.AI_P3_URGENT_ETA))
+        # 우호도에 따라: 좋아하는 나라는 덜, 싫어하는 나라는 더 견제한다(우호도 ±100 → ×(1 ∓ 0.4))
+        op = D.opinion(g, f.id, leader)
+        urg = max(0.0, min(1.0, urg * (1 - C.AI_P3_HARASS_OP_K * op / 100)))
     rec["rival"], rec["rival_eta"] = leader, round(lead_eta, 1)
     rec["urgency"] = round(urg, 2)
     rec["harass"] = leader if urg >= C.AI_P3_HARASS_MIN else None
@@ -129,6 +132,9 @@ def assess(g, f):
     p3.update(eta=round(mine, 1), rival=leader, rival_kind=rivals[leader][0] if leader is not None else "",
               rival_eta=round(lead_eta, 1),
               sprint=mine < ETA_NONE and mine <= (1 + C.AI_P3_TOL) * lead_eta)
+    # 우세한 나라의 수비 강도: 내 승리가 가까울수록 0 → 1(질주 중일 때만)
+    p3["defense"] = round(max(0.0, min(1.0, (C.AI_P3_URGENT_ETA - mine) / C.AI_P3_URGENT_ETA)), 2) \
+        if p3["sprint"] else 0.0
     _set_urgency(g, f, p3, leader, lead_eta, mine, p3["sprint"], kind)
     n = f.ai.setdefault("p3s", {})
     n["eval"] = n.get("eval", 0) + 1
@@ -236,6 +242,14 @@ def key_targets(g, t, depth=6) -> dict:
                 out[n] = (d + 1, v)
                 q.append(n)
     return out
+
+
+def lead_defense(f) -> float:
+    """질주 중인(가장 유리한) 나라의 수비 강도 0~1: 승리가 가까울수록 크다."""
+    p3 = f.ai.get("p3")
+    if not p3 or f.ai.get("phase", 1) < 3 or not p3.get("sprint"):
+        return 0.0
+    return p3.get("defense", 0.0)
 
 
 def sprint(f) -> str:

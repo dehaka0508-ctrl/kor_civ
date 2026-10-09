@@ -2845,3 +2845,18 @@ def test_captured_victory_buildings_off_then_revived_or_demolished():
     g._phase_happiness()                                                     # 기간이 지나 철거
     assert rr.lost_bld is None and not rr.sci and "lab" not in f.science
     assert g.science_next(0) == "lab"                                        # 다시 지어야 한다
+
+
+def test_harass_urgency_scales_with_opinion():
+    """견제 위급도는 우호도가 낮을수록 크다."""
+    from korciv import ai_endgame as EG
+    vals = []
+    for op in (60.0, -60.0):
+        g = _p2_game(n=3)
+        f = g.factions[0]
+        leader = g.factions[1]
+        leader.science = list(C.SCIENCE_STEPS[:6])
+        leader.money = 10 ** 8
+        g.dip.op[(0, 1)] = op
+        vals.append(EG.watch(g, f)["urgency"])
+    assert vals[1] > vals[0]

@@ -220,6 +220,11 @@ def path_scores(g, f, sc, rng=None) -> dict:
         diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2 * (1 + C.AI_P2_POOR_DIP * poor)
     why["diplomatic"] = "우호국 비율"
     scores = {"conquest": conquest, "science": science, "economic": economic, "diplomatic": diplomatic}
+    # 남은 턴(ETA): 빨리 끝낼 수 있는 길에 조금 더(300턴보다 짧으면, ×1.0~1.25)
+    from . import ai_endgame as EG
+    for k in ("conquest", "science", "economic"):
+        eta = EG.ETA[k](g, fid)
+        scores[k] *= max(C.AI_P2_ETA_MIN, min(C.AI_P2_ETA_MAX, 1 + C.AI_P2_ETA_W * (C.AI_P2_ETA_REF - eta) / C.AI_P2_ETA_REF))
     if rng is not None:
         scores = {k: v * (1 + rng.uniform(-C.AI_P2_NOISE, C.AI_P2_NOISE)) for k, v in scores.items()}
     return {"scores": {k: round(v, 4) for k, v in scores.items()}, "why": why}
