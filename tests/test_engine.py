@@ -2473,7 +2473,7 @@ def test_ai_p2_path_scores_follow_situation():
 
 
 def test_ai_p2_econ_follows_gdp_rank():
-    """경제 점수는 '돈'(반기 랭킹 GDP 순위)을 따른다: 1위 ×1.2 → 꼴찌 ×0.4, 1~2위가 다음 단계를 감당하면 ×1.25."""
+    """경제 점수는 '돈'(반기 랭킹 GDP 순위)을 따른다: 1위 ×1.3 → 꼴찌 ×0.3, 1~2위가 다음 단계를 감당하면 ×1.25."""
     from korciv import ai_strategy as ST
     g = _p2_game()
     f = g.factions[0]
@@ -2487,11 +2487,33 @@ def test_ai_p2_econ_follows_gdp_rank():
     last = ST.path_scores(g, f, {})["scores"]["economic"]
     ranked(True)
     first = ST.path_scores(g, f, {})["scores"]["economic"]
-    assert first > 3 * last                          # 순위 배수 1.2/0.4 = 3배에 계단 가점까지
+    assert first > 3 * last                          # 순위 배수 1.3/0.3 ≈ 4.3배에 계단 가점까지
     f.last["tax"] = 10 ** 7                         # 다음 단계를 순수입으로 감당할 수 있다
     assert ST.path_scores(g, f, {})["scores"]["economic"] == pytest.approx(first * C.AI_P2_ECON_RICH, rel=0.01)
     assert "감당 가능" in ST.path_scores(g, f, {})["why"]["economic"]
 
+
+def test_ai_p2_gdp_top_picks_conquest_or_econ_by_aggression():
+    """GDP 1위는 정복과 경제 중 호전성에 맞는 쪽을 고른다(돈으로 군대를 빨리 올릴 수 있다). 과학·외교는 고르지 않는다."""
+    from korciv import ai_strategy as ST
+    g = _p2_game()
+    f = g.factions[0]
+    g.rankings = {g.turn: [{"fid": x.id, "gdp": 1000 if x.id == 0 else 10, "science": 0, "econ": 0}
+                           for x in g.factions if x.alive]}
+    f.last["tax"], f.last["upkeep"] = 0, 0
+    f.gov = None
+
+    def scores(aggr):
+        f.aggression = aggr
+        return ST.path_scores(g, f, {})["scores"]
+    hawk, dove = scores(9), scores(2)
+    assert hawk["conquest"] > hawk["economic"] and dove["economic"] > dove["conquest"]
+    assert hawk["science"] == hawk["diplomatic"] == dove["science"] == dove["diplomatic"] == 0
+    # 2위부터는 예전처럼: 약한 이웃이 없으면 정복은 어렵다
+    g.rankings = {g.turn: [{"fid": x.id, "gdp": 500 if x.id == 0 else 1000 if x.id == 1 else 10, "science": 0, "econ": 0}
+                           for x in g.factions if x.alive]}
+    second = scores(9)
+    assert second["conquest"] < hawk["conquest"] and second["science"] > 0
 
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""

@@ -155,16 +155,16 @@ def path_scores(g, f, sc, rng=None) -> dict:
     best = max(cands, key=lambda v: v["ratio"], default=None)
     adv = best["ratio"] if best else 0.0
     if adv >= 1.0:
-        feas = 0.25 + 0.35 * min(2.0, adv - 1.0) + 0.1 * min(1.5, best["regions"] / R)
+        feas_c = 0.25 + 0.35 * min(2.0, adv - 1.0) + 0.1 * min(1.5, best["regions"] / R)
     else:
-        feas = 0.12
+        feas_c = 0.12
     stronger = any(v["ratio"] < 0.7 and v["host"] >= 0.3 for v in sc.values())
-    if stronger:
-        feas *= 0.6
-    feas *= 1 - min(0.5, f.war_weary / 100)
+    pen_c = 0.6 if stronger else 1.0                     # 강하고 적대적인 이웃, 전쟁 피로, 불행은 정복을 어렵게 한다
+    pen_c *= 1 - min(0.5, f.war_weary / 100)
     if g.avg_happiness(fid) < -10:
-        feas *= 0.8
-    conquest = (0.3 + 0.9 * a) * bias("war") * feas * (1 + 0.6 * min(1.0, R / 284))
+        pen_c *= 0.8
+    fit_c = (0.3 + 0.9 * a) * bias("war") * (1 + 0.6 * min(1.0, R / 284))
+    conquest = fit_c * feas_c * pen_c
     why["conquest"] = f"최약 이웃 대비 {adv:.1f}배" + (", 강한 적대 이웃" if stronger else "")
     # 과학: 석유·해안·산맥·공장·은행, GDP 순위, 진척. 같은 길에서 크게 앞선 나라가 있으면 감점
     infos = [g.info(r.id) for r in regs]
@@ -198,11 +198,19 @@ def path_scores(g, f, sc, rng=None) -> dict:
     bank_cap = any(r.b["bank"] >= C.AI_P2_ECON_BANK_LV for r in regs if r.id in near2)
     partners, _ = D.econ_partners(g, fid)
     stage = g.econ_stage(fid)
-    feas = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap
-    feas *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.3 → 꼴찌 ×0.3
+    feas_e = 0.08 + inc + cluster + 0.08 * min(3, partners) + C.AI_P2_ECON_BANK_CAP * bank_cap
+    feas_e *= C.AI_P2_ECON_RANK_BASE + C.AI_P2_ECON_RANK_K * rank_k     # 돈: GDP 1위 ×1.3 → 꼴찌 ×0.3
     ahead = max((r["econ"] for r in others), default=0) - stage >= 2
-    economic = ((0.3 + 0.9 * (1 - a)) * bias("bank") * feas * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
-                * (1 - C.AI_P2_POOR_SCI * poor))
+    fit_e = ((0.3 + 0.9 * (1 - a)) * bias("bank") * (1 + 0.8 * stage / 5) * (0.75 if ahead else 1.0)
+             * (1 - C.AI_P2_POOR_SCI * poor))
+    top = bool(rank == 1 and n > 1)
+    if top:
+        # GDP 1위: 지역이 적어도 돈으로 군대를 빨리 올릴 수 있다 — 정복과 경제는 같은 조건(둘 중 나은 쪽)에서
+        # 호전성(성격)·진척·정복 감점(강한 적대 이웃·피로·불행)으로 고른다. 과학·외교는 고르지 않는다
+        feas_c = feas_e = max(feas_c, feas_e)
+        conquest = fit_c * feas_c * pen_c
+        why["conquest"] = f"GDP 1위, 호전성 {a * 10:.0f}" + (", 강한 적대 이웃" if stronger else "")
+    economic = fit_e * feas_e
     # GDP 1~2위가 다음 단계를 순수입으로 감당할 수 있으면 경제를 확실히 노린다(과학보다 돈은 더 들어도 최소 턴 수가 적다)
     step = C.ECON[C.ECON_STEPS[max(0, min(len(C.ECON_STEPS) - 1, stage - 1))]]
     net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
@@ -219,6 +227,8 @@ def path_scores(g, f, sc, rng=None) -> dict:
         friendly = sum(1 for x in alive if D.allied(g, fid, x) or D.opinion(g, x, fid) >= 30) / max(1, len(alive))
         diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2 * (1 + C.AI_P2_POOR_DIP * poor)
     why["diplomatic"] = "우호국 비율"
+    if top:
+        science = diplomatic = 0.0
     scores = {"conquest": conquest, "science": science, "economic": economic, "diplomatic": diplomatic}
     # 남은 턴(ETA): 빨리 끝낼 수 있는 길에 조금 더(300턴보다 짧으면, ×1.0~1.25)
     from . import ai_endgame as EG
