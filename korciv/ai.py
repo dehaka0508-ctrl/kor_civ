@@ -1151,6 +1151,7 @@ def _army_orders(g, f, threat):
     short = {rid: n - sum(x.count(("land",)) for x in g.armies_at(rid, fid) if x.domain() == "land")
              for rid, n in guards.items()}
     short = {rid: k for rid, k in short.items() if k > 0}
+    tactic = f.is_ai and at_war and f.ai.get("victory_goal") == "conquest"
     border_keep = set()
     if p1:
         border_keep = {r.id for r in g.regions_of(fid)
@@ -1197,6 +1198,14 @@ def _army_orders(g, f, threat):
             old = rr.resist.get("from")
             if old is not None and D.at_war(g, fid, old) and any(
                     g.regions[n].owner == old for n in w.land_adj[a.loc]):
+                continue
+        # 정복 전술: 최전선(적과 맞닿은 칸)은 전차·보병이, 포병은 그 바로 뒤 칸에서 2칸 포격으로 받친다
+        if tactic and a.units.get("art"):
+            if a.count() > a.units["art"] and _enemy_adj(g, fid, a.loc):
+                b, _ = g.split_army(a.id, {"art": a.units["art"]})
+                if b is not None:
+                    _art_tactic(g, fid, b)
+            elif a.count() == a.units["art"] and _art_tactic(g, fid, a):
                 continue
         reach = g.reachable(a)
         best, best_u, best_mode = None, 0.0, "assault"
@@ -1336,6 +1345,40 @@ def _army_orders(g, f, threat):
         tg.sort(reverse=True)
         if tg and tg[0][0] > 0:
             g.order_army(a.id, tg[0][1], force_bombard=True)
+
+
+def _enemy_adj(g, fid, rid) -> bool:
+    """rid 가 전쟁 중인 적의 땅과 맞닿았는가(최전선)."""
+    return any(g.regions[n].owner not in (NEUTRAL, fid) and D.at_war(g, fid, g.regions[n].owner)
+               for n in g.world.land_adj[rid])
+
+
+def _art_tactic(g, fid, a) -> bool:
+    """포병 부대(포병만): 최전선 바로 뒤의 내 땅(적과 맞닿지 않고 적 땅이 2칸 안)에서 포격한다.
+    거기 있으면 적 병력(없으면 건물)이 가장 많은 적 지역을 포격하고, 아니면 가장 가까운 그런 자리로 간다. 처리했으면 True."""
+    w = g.world
+
+    def enemy(n):
+        o = g.regions[n].owner
+        return o not in (NEUTRAL, fid) and D.at_war(g, fid, o)
+
+    def targets(loc):
+        return [n for n in g.land_within(loc, C.ART_RANGE) if enemy(n)]
+
+    def second(loc):
+        return g.regions[loc].owner == fid and not _enemy_adj(g, fid, loc) and bool(targets(loc))
+    if second(a.loc):
+        tg = max(targets(a.loc), key=lambda n: (bool(g.hostile_units_at(fid, n)), visible_hostile_power(g, fid, n),
+                                                 _building_levels(g, n), n))
+        if (g.hostile_units_at(fid, tg) or _building_levels(g, tg) > 0) and g._can_bombard(a, tg):
+            g.order_army(a.id, tg, force_bombard=True)
+        return True                               # 쏠 곳이 없어도 자리를 지킨다
+    spots = [n for n, o in g.reachable(a).items() if o["action"] == "move" and not w.is_sea(n) and second(n)]
+    if spots:
+        dist = w.distances_from(a.loc, 30)
+        g.order_army(a.id, min(spots, key=lambda n: (dist.get(n, 99), n)))
+        return True
+    return False
 
 
 def harassed_by(g, fid) -> list:
@@ -2188,6 +2231,21 @@ def _slots(g, f, threat, military=True):
             per = g.unit_cost(fid, r.id, key)
             u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1) * bias(key)
             cands.append((u, r.id, "unit", key, None, per))
+    # 정복 방향: 모아 둔 돈을 군비로 — 군 유지비가 세수의 30%가 될 때까지 위협이 큰 곳부터 전차·포병을 더 뽑는다
+    if military and conq_rich > 0 and post != "crisis":
+        mil_up = sum(C.UNITS[k]["upkeep"] * n for a in g.armies.values() if a.owner == fid
+                     for k, n in a.units.items() if k in C.UNITS)
+        room = C.AI_P2_CONQ_UPKEEP * income - mil_up
+        n_extra = min(int(room // C.UNITS["tank"]["upkeep"]), C.AI_P2_CONQ_EXTRA + len(regs) // 30)
+        if n_extra > 0:
+            busy = {c[1] for c in cands if c[2] == "unit"}
+            safe = min(C.CONSCRIPT_PENALTY) - 1
+            pool = sorted([r for r in idle if r.id not in busy and g.drafted_turns(r.id) < safe],
+                          key=lambda r: (-threat.get(r.id, 0), r.id))
+            oil_ok = g.can_pay_oil(fid, C.UNITS["tank"]["oil"])
+            for i, r in enumerate(pool[:n_extra]):
+                key = "art" if i % 3 == 2 else ("tank" if oil_ok else "inf")
+                cands.append(((1.2 + conq_rich) * bias(key), r.id, "unit", key, None, g.unit_cost(fid, r.id, key)))
     # 과학승리 단계: 과학이 목표일 때만(다른 방향은 그 방향에 돈을 모은다)
     sci_goal = f.is_ai and f.ai.get("victory_goal") == "science"
     step = g.science_next(fid) if (sci_goal and "science" in g.settings.victories) else None

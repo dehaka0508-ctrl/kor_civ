@@ -2515,6 +2515,29 @@ def test_ai_p2_gdp_top_picks_conquest_or_econ_by_aggression():
     second = scores(9)
     assert second["conquest"] < hawk["conquest"] and second["science"] > 0
 
+def test_ai_conquest_artillery_behind_front():
+    """정복 방향 전쟁: 최전선 부대의 포병은 떨어져 바로 뒤 칸(적과 맞닿지 않고 적 땅이 2칸 안)으로 물러나 받친다."""
+    from korciv import ai
+    g = _p2_game()
+    w = g.world
+    y, x, z = next((y, x, z) for y in w.order if not w.is_sea(y) for x in w.land_adj[y] for z in w.land_adj[y]
+                   if z != x and x not in w.land_adj[z])
+    _own(g, 1, [x])
+    _own(g, 0, [y, z] + [n for n in w.land_adj[z] if n != y])
+    for n in w.land_adj[z]:
+        assert n == y or g.regions[n].owner == 0
+    for a in [a for a in g.armies.values() if a.loc in (x, y, z)]:
+        del g.armies[a.id]
+    g.new_army(1, x, {"inf": 1})
+    g.new_army(0, y, {"inf": 3, "art": 2})
+    D.declare_war(g, 0, 1)
+    f = g.factions[0]
+    f.ai["victory_goal"] = "conquest"
+    ai._army_orders(g, f, {y: 1.0})
+    arts = [a for a in g.armies.values() if a.owner == 0 and a.units.get("art")]
+    assert arts and all(set(a.units) == {"art"} for a in arts)
+    assert any(a.order and a.order["type"] == "move" and a.order["path"][-1] == z for a in arts)
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai
