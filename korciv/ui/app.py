@@ -629,7 +629,7 @@ class App:
         g = self.game
         # 이동 범위
         army = g.armies.get(self.sel_army) if self.sel_army else None
-        if army and army.owner == g.player_id:
+        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 전투한 부대는 범위 없음
             reach = g.reachable(army)
             ov = pygame.Surface(mv.view.size, pygame.SRCALPHA)
             # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
@@ -889,6 +889,8 @@ class App:
                 fy += 14 * u
             for a, num, fw in flags:
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
+                if g.army_acted(a.id):
+                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 전투한 부대: 흐리게
                 icon_key = "lst" if a.units.get("lst", 0) > 0 else max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
                 kind = C.UNITS[icon_key]["kind"]
                 x0, y0 = int(fx), int(fy)
@@ -1023,6 +1025,9 @@ class App:
         if not node:
             return
         army = g.armies.get(self.sel_army) if self.sel_army else None
+        if army and army.owner == g.player_id and g.army_acted(army.id):
+            self.toast("이번 턴에 이미 전투한 부대입니다(합치기·분리·이동·공격 불가).", self.theme.bad)
+            return
         if army and army.owner == g.player_id:
             # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
             if not self.bombard_mode and node in g.regions:
@@ -1055,6 +1060,9 @@ class App:
         g = self.game
         army = g.armies.get(self.sel_army)
         if not army or army.owner != g.player_id or self.gui.over_ui():
+            return
+        if g.army_acted(army.id):
+            self.gui.tooltip = "이번 턴 전투 완료: 이동·공격 불가"
             return
         reach = g.reachable(army)
         opt = reach.get(node)

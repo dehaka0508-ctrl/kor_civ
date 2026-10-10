@@ -3304,3 +3304,43 @@ def test_surplus_food_modes():
                 math.floor(cons) * 2 * g.mods(0).mult("market_sell"), rel=0.01)
         else:
             assert f.res["food"] == pytest.approx(100) and f.ration_bonus == pytest.approx(C.POP_FOCUS_GROWTH)
+
+
+def _battle_setup():
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.new_army(1, tgt, {"inf": 2})
+    D.declare_war(g, 0, 1)
+    a = g.new_army(0, "S002", {"inf": 8, "tank": 2})
+    return g, a, tgt
+
+
+def test_player_battle_is_immediate_and_locks_army():
+    g, a, tgt = _battle_setup()
+    hp0 = sum(x.count() for x in g.armies_at(tgt, 1))
+    ok, msg = g.attack_now(a.id, tgt, "assault")
+    assert ok and "돌격" in msg
+    assert sum(x.count() for x in g.armies_at(tgt, 1)) < hp0 or g.regions[tgt].owner == 0   # 턴 종료 전에 이미 싸웠다
+    assert g.army_acted(a.id)
+    # 이번 턴에는 합치기·분리·이동·공격 모두 불가
+    assert not g.order_army(a.id, "S002")[0]
+    assert g.split_army(a.id, {"inf": 1})[0] is None
+    b = g.new_army(0, a.loc, {"inf": 1})
+    assert not g.merge_player(b.id, a.id)[0]
+    assert not g.attack_now(a.id, tgt)[0]
+    g.end_turn()
+    assert not g.army_acted(a.id) and not g.fought                # 다음 턴엔 다시 명령 가능
+
+
+def test_ai_still_fights_at_turn_end():
+    g, a, tgt = _battle_setup()
+    ai_army = g.new_army(1, tgt, {"inf": 6})
+    ai_army.order = {"type": "attack", "target": "S002", "mode": "assault", "path": ["S002"]}
+    n0 = sum(x.count() for x in g.armies_at("S002", 0))
+    g._phase_attack()                                            # AI 공격은 지금처럼 턴 종료 단계에서
+    assert not g.fought and sum(x.count() for x in g.armies_at("S002", 0)) <= n0
+    assert any(e["kind"] == "battle" for e in g.events)

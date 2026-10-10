@@ -703,13 +703,17 @@ def draw_army_tiles(app, x, y, w, here, merge):
         if gui.button(rect, "", "ghost", selected=selected or picked,
                       tooltip=a.label() + (" (이동 명령 있음)" if a.order or a.goto else "")):
             if merge is not None:
-                merge.symmetric_difference_update({a.id})
+                if not g.army_acted(a.id):          # 이번 턴 전투한 부대는 합칠 수 없다
+                    merge.symmetric_difference_update({a.id})
             else:
                 app.sel_army = a.id
                 app.split = {}
         lit = selected or picked
-        fg = (255, 255, 255) if lit else t.text
+        acted = g.army_acted(a.id)
+        fg = (255, 255, 255) if lit else (t.muted if acted else t.text)
         gui.icon(main, (cx + size / 2, cy + size * 0.30), fg, 1.8)
+        if acted:
+            gui.text((cx + 6, cy + 4), "전투 완료", 9, (235, 240, 255) if lit else t.bad, "semibold")
         kinds = len([k for k in a.units if a.units[k] > 0])
         name = C.UNITS[main]["name"] + (f" 외 {kinds - 1}" if kinds > 1 else "")
         if a.units.get("lst", 0) > 0:
@@ -758,6 +762,12 @@ def draw_army_tab(app, body):
         dom = {"land": "육군", "naval": "해군", "air": "공군"}[army.domain()]
         gui.text((x, y), f"{dom} · 전력 {g.army_power(army):,.0f}", 12, t.muted)
         y += 22
+        acted = g.army_acted(army.id)
+        if acted:
+            gui.rect(t.panel_alt, (x, y, w, 26), radius=6)
+            gui.text((x + 8, y + 13), "이번 턴 전투 완료 — 합치기·분리·이동·공격 불가", 12, t.bad, "semibold",
+                     anchor="midleft", max_w=w - 16)
+            y += 32
         # 유닛 목록 + 분리 수량
         for k in C.UNIT_ORDER:
             n = army.units.get(k, 0)
@@ -770,7 +780,7 @@ def draw_army_tab(app, body):
             stat = f"공{u['atk']:g} 방{u['df']:g}" + (f" 폭{u['bomb']:g}" if u.get("bomb") else "")
             gui.text((x + 22, y + 20), f"{stat} 체 {left:.0f}/{full:g}", 11,
                      t.bad if left < full * 0.5 else t.muted)
-            app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)
+            app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)   # 해산 수량에도 쓴다
             y += 40
         if army.domain() == "naval":
             gui.text((x, y), f"수송 {army.cargo_used()}/{army.cargo_cap()}칸 · 탑재 {army.air_used()}/{army.air_cap()}대",
@@ -779,14 +789,14 @@ def draw_army_tab(app, body):
         nb = 4 if merge is not None else 3
         bw = (w - 4 * (nb - 1)) / nb
         sel_n = sum(app.split.values())
-        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0):
+        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0 and not acted):
             b, msg = g.split_army(army.id, app.split)
             if b:
                 app.sel_army = b.id
                 app.split = {}
             else:
                 app.toast(msg, t.bad)
-        others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id]
+        others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id and not g.army_acted(a.id)]
         go = False
         if merge is not None:
             for k in list(gui.keys):
@@ -798,7 +808,7 @@ def draw_army_tab(app, body):
                     app.merge_pick = merge = None
         label = "합치기" if merge is None else f"합치기 ({len(merge)})"
         if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
-                      enabled=bool(others)):
+                      enabled=bool(others) and not acted):
             if merge is None and len(others) == 1:
                 app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
                 go = True
@@ -808,7 +818,7 @@ def draw_army_tab(app, body):
             else:
                 go = True
         if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12):
-            app.merge_pick = merge = {a.id for a in here}
+            app.merge_pick = merge = {a.id for a in here if not g.army_acted(a.id)}
             go = True
         if go and merge is not None:
             ids = [a.id for a in here if a.id in merge]
@@ -818,7 +828,7 @@ def draw_army_tab(app, body):
                 base = army.id if army.id in ids else ids[0]
                 for o in ids:
                     if o != base:
-                        ok, msg = g.merge_armies(base, o)
+                        ok, msg = g.merge_player(base, o)
                         if not ok:
                             app.toast(msg, t.bad)
                 app.sel_army = base
@@ -835,7 +845,8 @@ def draw_army_tab(app, body):
         ship = g.boarding_target(army.id)
         if ship is not None:
             what = "상륙함" if army.domain() == "land" else "항공모함"
-            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary"):
+            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary",
+                          enabled=not acted and not g.army_acted(ship.id)):
                 ok, msg, fleet = g.board(army.id)
                 app.toast(msg, None if ok else t.bad)
                 if ok:
@@ -865,11 +876,14 @@ def draw_army_tab(app, body):
             if army.goto:
                 gui.text((x, y), f"최종 목적지: {app.world.node_name(army.goto)}", 12, t.muted)
                 y += 22
+        elif acted:
+            gui.wrap((x, y), "다음 턴에 다시 명령할 수 있습니다. 해산은 가능합니다.", w, 12, t.muted)
+            y += 24
         else:
-            gui.wrap((x, y), "지도에서 우클릭으로 이동·공격 대상을 지정하세요. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
+            gui.wrap((x, y), "지도에서 우클릭으로 이동·공격 대상을 지정하세요. 적 병력이 있는 곳을 공격하면 확인 창에서 바로 싸웁니다. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
                              "범위 밖을 우클릭하면 최단 경로로 여러 턴에 걸쳐 자동 이동합니다.",
                      w, 12, t.muted)
-            y += 78
+            y += 94
     else:
         gui.text((x, y), "이 지역에 내 부대가 없습니다.", 13, t.muted)
 

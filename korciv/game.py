@@ -125,6 +125,8 @@ class Game:
         self.battle_regions: list[str] = []
         self.pending_rebellions: list[str] = []   # 플레이어 대응 대기
         self.pending_proposals: list[dict] = []   # AI → 플레이어 제안
+        self.fought: set = set()                  # 이번 턴 바로 전투한 플레이어 부대
+        self.fought_targets: dict = {}            # (세력, 주인) -> 이번 턴 바로 공격한 지역
         self.dialogues: list[dict] = []           # 지도자 대사 팝업 대기 {kind, fid, turn}
         self.rankings: dict[int, list] = {}
         self.new_ranking = None
@@ -455,6 +457,8 @@ class Game:
         a = self.armies.get(army_id)
         if not a:
             return None, "부대가 없습니다."
+        if self.army_acted(a.id):
+            return None, "이번 턴에 이미 전투한 부대는 나눌 수 없습니다."
         take = {k: min(v, a.units.get(k, 0)) for k, v in units.items() if v > 0}
         if not take or sum(take.values()) >= a.count():
             return None, "분리할 유닛을 고르세요(전부는 불가)."
@@ -480,6 +484,12 @@ class Game:
         rest = left - part
         a.dmg[k] = (n - v) * hp - rest
         return v * hp - part
+
+    def merge_player(self, a_id, b_id):
+        """플레이어 합치기: 이번 턴 이미 전투한 부대는 합칠 수 없다(전투 뒤 상륙 병력 복귀 등 내부 합치기는 그대로)."""
+        if self.army_acted(a_id) or self.army_acted(b_id):
+            return False, "이번 턴에 이미 전투한 부대는 합칠 수 없습니다."
+        return self.merge_armies(a_id, b_id)
 
     def merge_armies(self, a_id, b_id):
         a, b = self.armies.get(a_id), self.armies.get(b_id)
@@ -527,6 +537,8 @@ class Game:
         f = self.boarding_target(army_id)
         if f is None:
             return False, "태울 함대가 없습니다.", None
+        if self.army_acted(army_id) or self.army_acted(f.id):
+            return False, "이번 턴에 이미 전투한 부대는 태우거나 합칠 수 없습니다.", None
         ok, msg = self.merge_armies(f.id, army_id)
         return ok, (msg or "탑승 완료"), f
 
@@ -690,6 +702,8 @@ class Game:
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
+        if self.army_acted(a.id):
+            return False, "이번 턴에 이미 전투한 부대는 움직일 수 없습니다."
         a.goto = None
         if target is None:
             a.order = None
@@ -2464,6 +2478,7 @@ class Game:
         # 1. 외교: 제안·선전포고는 즉시 처리된다. 여기서는 턴 단위 갱신만.
         # 2~5. 이동 → 해전 → 폭격 → 지상 공격 (명령을 받은 부대는 이번 턴 회복하지 않는다)
         self._acted.update(a.id for a in self.armies.values() if a.order)
+        self._acted.update(self.fought_armies())         # 이번 턴 바로 싸운 플레이어 부대도 회복하지 않는다
         self._phase_move()
         self._phase_naval()
         self._phase_bombard()
@@ -2497,6 +2512,8 @@ class Game:
         for a in list(self.armies.values()):
             self._prune_army(a)
         self._phase_heal()
+        self.fought = set()                  # 플레이어 즉시 전투 기록은 턴이 끝나면 지운다
+        self.fought_targets = {}
         for a in self.armies.values():
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
                 a.order = None
@@ -2809,11 +2826,61 @@ class Game:
         return len(self.attack_targets(fid, o) | {target}) >= 2
 
     def attack_targets(self, fid, owner) -> set:
-        """이번 턴 fid 가 owner 의 지역 중 공격 명령을 내린 곳(홍길동 '신출귀몰' 판정)."""
+        """이번 턴 fid 가 owner 의 지역 중 공격 명령을 내렸거나 이미 바로 공격한 곳(홍길동 '신출귀몰' 판정)."""
         snap = getattr(self, "_attack_snap", None)
         if snap is None:
             snap = self._attack_orders_by_owner()
-        return snap.get((fid, owner), set())
+        done = getattr(self, "fought_targets", {}).get((fid, owner), set())
+        return snap.get((fid, owner), set()) | done
+
+    # ---- 플레이어 즉시 전투(v1.49.0): 전투 확인 창에서 [전투]를 누르면 바로 싸운다. AI는 턴 종료 때 그대로
+    def fought_armies(self) -> set:
+        return getattr(self, "fought", set())
+
+    def army_acted(self, army_id) -> bool:
+        """이번 턴 이미 전투한 부대(합치기·분리·이동·공격·탑승 불가)."""
+        return army_id in self.fought_armies()
+
+    def attack_now(self, army_id, target, mode="assault"):
+        """플레이어 부대가 target 을 바로 공격한다(함대 상륙 공격은 해역 경로를 먼저 따라간다).
+        반환 (성공 여부, 결과 문장)."""
+        a = self.armies.get(army_id)
+        if not a or a.owner == NEUTRAL:
+            return False, "부대가 없습니다."
+        if self.army_acted(a.id):
+            return False, "이번 턴에 이미 전투한 부대입니다."
+        opt = self.reachable(a).get(target)
+        if not opt or opt["action"] != "attack" or not self.hostile_units_at(a.owner, target):
+            return False, "지금 바로 공격할 수 없는 곳입니다."
+        fid = a.owner
+        if a.domain() == "naval":
+            for node in opt["path"]:
+                a.loc = node
+        a.goto = None
+        a.order = {"type": "attack", "target": target, "mode": mode}
+        if not self._attack_valid(a, target):
+            a.order = None
+            return False, "지금 바로 공격할 수 없는 곳입니다."
+        owner = self.regions[target].owner
+        if not hasattr(self, "fought"):
+            self.fought = set()
+        if not hasattr(self, "fought_targets"):
+            self.fought_targets = {}
+        before = set(self.armies)
+        n_ev = len(self.events)
+        self.fought_targets.setdefault((fid, owner), set()).add(target)
+        self._ground_battle(fid, [a], target, mode, [a])
+        self.fought.add(a.id)
+        self.fought.update(x for x in set(self.armies) - before if self.armies[x].owner == fid)
+        if a.id in self.armies:
+            a.order = None
+        self._update_fog()
+        msg = next((e["text"] for e in self.events[n_ev:] if e["kind"] == "battle"), "전투")
+        if self.regions[target].owner == fid:
+            msg += f" — {self.info(target).name} 차지"
+        elif any(x.owner == fid for x in self.armies_at(target)):
+            msg += f" — {self.info(target).name}에 진입"
+        return True, msg
 
     def _attack_orders_by_owner(self) -> dict:
         out = {}

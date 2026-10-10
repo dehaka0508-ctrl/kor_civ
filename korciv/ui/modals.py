@@ -1057,7 +1057,7 @@ def draw_battle(app):
     st = app.modal[1]
     army = g.armies.get(st["army"])
     node = st["node"]
-    if not army or not g.hostile_units_at(army.owner, node):
+    if not army or not g.hostile_units_at(army.owner, node) or g.army_acted(army.id):
         close(app)
         return
     can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS) and not g.mods(army.owner).value("no_surprise")
@@ -1147,10 +1147,16 @@ def draw_battle(app):
             gui.keys.remove(k)                   # Enter = [전투](턴 종료로 넘어가지 않게)
             fight = True
     if fight:
-        ok, msg = g.order_army(army.id, node, st["mode"])
+        # 플레이어 전투는 바로 치른다(AI는 턴 종료 때 그대로)
+        ok, msg = g.attack_now(army.id, node, st["mode"])
         app.attack_mode = st["mode"]
         close(app)
-        app.toast(msg if isinstance(msg, str) else str(msg), None if ok else t.bad)
+        app.toast(msg, None if ok else t.bad)
+        if ok:
+            app.flash_t = pygame.time.get_ticks()
+            if app.sel_army not in g.armies:
+                app.sel_army = None
+            app.changed()
     for k in list(gui.keys):
         if k.key == pygame.K_ESCAPE:
             gui.keys.remove(k)
@@ -1686,6 +1692,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 좌측 [내정]: 세율·자원 시장·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
 · [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
 · 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
+· 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
 · 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. AI도 남는 자원을 팔고 모자라면 사자고 제안합니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 

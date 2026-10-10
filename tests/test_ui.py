@@ -594,3 +594,33 @@ def test_enter_end_turn_does_not_skip_new_dialogue(app):
     app.frame()
     assert not g.dialogues and g.turn == t0 + 1                 # 잠시 뒤 Enter는 대사만 닫는다
     del app.next_region
+
+
+def test_battle_modal_enter_fights_now(app):
+    from korciv import diplomacy as D
+    app.start_game(Settings(seed=4, n_enemies=1))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    other = next(f.id for f in g.factions if f.id != g.player_id)
+    cap = g.player.capital
+    tgt = sorted(g.world.land_adj[cap])[0]
+    g.transfer_region(tgt, other)
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.new_army(other, tgt, {"inf": 2})
+    D.declare_war(g, g.player_id, other)
+    g.dialogues = []
+    a = g.new_army(g.player_id, cap, {"inf": 8})
+    app.select(cap)
+    app.sel_army = a.id
+    app.modal = ("battle", {"army": a.id, "node": tgt, "mode": "assault"})
+    ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r")
+    app.gui.begin([ev])
+    app.frame()
+    assert g.army_acted(a.id) or a.id not in g.armies            # Enter로 바로 싸웠다
+    app.modal = None
+    app.tab = "army"
+    app.left_open, app.left_tab = True, "region"
+    frame(app)                                                    # 전투 완료 표시가 그려진다
