@@ -2539,16 +2539,20 @@ def test_ai_conquest_artillery_behind_front():
     assert any(a.order and a.order["type"] == "move" and a.order["path"][-1] == z for a in arts)
 
 def test_ai_p2_econ_skipped_when_richer_rival_ahead():
-    """반기 랭킹에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면 경제 점수 0."""
+    """반기 랭킹에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면 격차만큼 exp(−k × 격차)로 줄어든다."""
     from korciv import ai_strategy as ST
     g = _p2_game()
     f = g.factions[0]
     rows = lambda e: [{"fid": x.id, "gdp": 500 if x.id == 0 else 1000 if x.id == 1 else 10, "science": 0,
                        "econ": e if x.id == 1 else 0} for x in g.factions if x.alive]
     g.rankings = {g.turn: rows(0)}
-    assert ST.path_scores(g, f, {})["scores"]["economic"] > 0
-    g.rankings = {g.turn: rows(2)}
-    assert ST.path_scores(g, f, {})["scores"]["economic"] == 0
+    base = ST.path_scores(g, f, {})["scores"]["economic"]
+    assert base > 0
+    g.rankings = {g.turn: rows(1)}                    # 1단계 + GDP 2배: 격차 2
+    near = ST.path_scores(g, f, {})["scores"]["economic"]
+    assert near == pytest.approx(base * math.exp(-2 * C.AI_P2_ECON_BEHIND_K), rel=0.01)
+    g.rankings = {g.turn: rows(4)}                    # 격차가 벌어질수록 0에 가깝다
+    assert ST.path_scores(g, f, {})["scores"]["economic"] < near / 4
 
 def test_ai_p2_science_early_when_sites_ready():
     """산지·해안·석유·공장 4단계 이상을 모두 갖추면 과학 점수 × AI_P2_SCI_EARLY."""

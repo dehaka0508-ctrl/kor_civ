@@ -2257,7 +2257,7 @@ def _slots(g, f, threat, military=True):
     sci_goal = f.is_ai and f.ai.get("victory_goal") == "science"
     step = g.science_next(fid) if (sci_goal and "science" in g.settings.victories) else None
     # 과학 조건 완비(산지·해안·석유·공장 4단계): 착수 판단에도 같은 가중치 — 경계 중이어도 군사력이 필요량의 1/가중치면,
-    # 잔고는 턴당 비용 2/가중치 턴분이면 시작한다
+    # 잔고는 턴당 비용 3/가중치 턴분이면 시작한다
     ready_k = C.AI_P2_SCI_EARLY if (step is not None and PH.phase(f) >= 2 and ST.science_ready(g, fid)) else 1.0
     sci_ok = big_ok or (ready_k > 1 and post == "defend" and ST.state(f).get("mil_k", 0.0) * ready_k >= 1)
     if step is not None and g.science_busy(fid, step) is None and sci_ok:
@@ -2266,7 +2266,8 @@ def _slots(g, f, threat, military=True):
         sc_per = sc_total / sc_turns
         sm, si = 2.0 / bias("science"), 0.3 / bias("science")
         if ((f.money > sc_per * sm and income - upkeep > sc_per * si) or f.money > sc_total * 1.1
-                or f.money > sc_per * C.AI_P3_SPRINT_START / ready_k):  # 과학 방향: 2턴분만 있어도 착수(모자라면 멈췄다 이어서)
+                or f.money > sc_per * (C.AI_P3_SPRINT_START if spr == "science" else C.AI_SCI_START_TURNS) / ready_k):
+            # 과학 방향: 턴당 비용 3턴분(질주면 2턴분)만 있어도 착수(모자라면 멈췄다 이어서)
             sites = [r for r in regs if g.science_site_ok(fid, r.id, step) and not r.project and not r.occ
                      and not g.resisting(r)]
             if sites:

@@ -11,6 +11,8 @@ ai.py 가 결과(f.ai["p2"])를 읽어 전쟁·강화·건설·외교 판단을 
 """
 from __future__ import annotations
 
+import math
+
 import random
 from collections import defaultdict
 
@@ -222,18 +224,20 @@ def path_scores(g, f, sc, rng=None) -> dict:
         conquest = fit_c * feas_c * pen_c
         why["conquest"] = f"GDP 1위, 호전성 {a * 10:.0f}" + (", 강한 적대 이웃" if stronger else "")
     economic = fit_e * feas_e
-    # 반기 랭킹(공개 정보)에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면 경제는 노리지 않는다
-    blocked = bool(me_row) and any(r["gdp"] > me_row["gdp"] and r["econ"] > stage for r in others)
-    if blocked:
-        economic = 0.0
+    # 반기 랭킹(공개 정보)에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면: 근소하면 그래도 시도하고,
+    # 격차(단계 차 + GDP 배수 − 1)가 벌어질수록 exp(−k × 격차)로 0에 수렴
+    gap = max((r["econ"] - stage + r["gdp"] / max(1.0, me_row["gdp"]) - 1 for r in others
+               if me_row and r["gdp"] > me_row["gdp"] and r["econ"] > stage), default=0.0)
+    behind = math.exp(-C.AI_P2_ECON_BEHIND_K * gap) if gap > 0 else 1.0
+    economic *= behind
     # GDP 1~2위가 다음 단계를 순수입으로 감당할 수 있으면 경제를 확실히 노린다(과학보다 돈은 더 들어도 최소 턴 수가 적다)
     step = C.ECON[C.ECON_STEPS[max(0, min(len(C.ECON_STEPS) - 1, stage - 1))]]
     net = f.last.get("tax", 0) - f.last.get("upkeep", 0)
     rich = bool(rank and rank <= 2 and net >= C.AI_P2_ECON_RICH_NET * step["per_turn"] * C.MONEY_SCALE)
-    if rich and not blocked:
+    if rich:
         economic *= C.AI_P2_ECON_RICH
     why["economic"] = (f"GDP {rank or '?'}위" + ("(감당 가능)" if rich else "") + f", 수도 주변 {near}곳, 관계 {partners}"
-                       + (", 앞선 나라 있음" if ahead else ""))
+                       + (", 앞선 나라 있음" if ahead else "") + (f", 앞선 부국 ×{behind:.2f}" if behind < 1 else ""))
     # 외교: 지금 규칙(생존국 전원 한 연합)은 어렵다. 우호적인 나라가 많을 때만
     if g.mods(fid).value("no_alliance"):
         diplomatic = 0.0
