@@ -320,19 +320,65 @@ def star_points(cx, cy, r, inner=0.42):
     return _star(cx, cy, r, 5, inner)
 
 
+_icon_cache: dict = {}
+ICON_SS = 4                 # 아이콘은 4배로 그려서 줄인다(가장자리 매끈, 가운데 정확)
+
+
 def ui_icon(surf, kind, center, col, k=1.0):
-    """상단 바·패널용 단색 아이콘(실제 픽셀 좌표, 크기 배율 k)."""
+    """상단 바·패널용 아이콘(실제 픽셀 좌표 center 에 가운데 맞춤, 크기 배율 k). 종류·색·크기별로 한 번만 그린다.
+    행복도 얼굴: face_happy(웃음)·face_neutral(무표정)·face_sad(슬픔) — 노란 이모지 모양."""
+    key = (kind, tuple(col), round(k, 3))
+    img = _icon_cache.get(key)
+    if img is None:
+        size = max(4, int(round(24 * k)))
+        big = pygame.Surface((size * ICON_SS, size * ICON_SS), pygame.SRCALPHA)
+        c = size * ICON_SS / 2
+        _draw_icon(big, kind, (c, c), tuple(col), k * ICON_SS)
+        img = pygame.transform.smoothscale(big, (size, size))
+        if len(_icon_cache) > 300:
+            _icon_cache.clear()
+        _icon_cache[key] = img
+    surf.blit(img, img.get_rect(center=(int(round(center[0])), int(round(center[1])))))
+
+
+def _draw_icon(surf, kind, center, col, k=1.0):
     x, y = center
     w2 = max(1, int(2 * k))
     dark = _mix(col, (17, 30, 49), 0.6)
-    if kind == "coin":                                # 엽전
-        pygame.draw.circle(surf, col, (x, y), int(8 * k))
-        pygame.draw.rect(surf, dark, (x - 3 * k, y - 3 * k, 6 * k, 6 * k))
-    elif kind == "rice":                              # 쌀가마
-        pygame.draw.ellipse(surf, col, (x - 8 * k, y - 6 * k, 16 * k, 14 * k))
-        pygame.draw.polygon(surf, col, [(x - 4 * k, y - 5 * k), (x, y - 10 * k), (x + 4 * k, y - 5 * k)])
-        pygame.draw.line(surf, dark, (x - 7 * k, y), (x + 7 * k, y), 1)
-        pygame.draw.line(surf, dark, (x - 3 * k, y - 5 * k), (x + 3 * k, y - 5 * k), w2)
+    if kind == "coin":                                # 엽전: 둥근 몸 + 테두리 + 가운데 네모 구멍
+        pygame.draw.circle(surf, col, (x, y), 8.5 * k)
+        pygame.draw.circle(surf, dark, (x, y), 8.5 * k, max(1, int(1.2 * k)))
+        pygame.draw.circle(surf, _mix(col, dark, 0.35), (x, y), 6.3 * k, max(1, int(0.8 * k)))
+        hole = pygame.Rect(0, 0, round(5.2 * k), round(5.2 * k))
+        hole.center = (round(x), round(y))
+        pygame.draw.rect(surf, dark, hole)
+    elif kind == "rice":                              # 밥그릇: 수북한 흰 밥 + 그릇 + 굽
+        rice = _mix(col, (255, 255, 255), 0.75)
+        for dx, dy, r in ((-4.2, -1.5, 4.0), (0, -3.2, 4.6), (4.2, -1.5, 4.0), (-1.8, 0, 4.0), (2.2, 0, 4.0)):
+            pygame.draw.circle(surf, rice, (x + dx * k, y + dy * k), r * k)
+        for dx, dy in ((-3, -3.5), (1.5, -5), (3.5, -2), (-1, -1.5)):          # 밥알 결
+            pygame.draw.ellipse(surf, _mix(rice, col, 0.35), (x + dx * k, y + dy * k, 1.6 * k, 1.0 * k))
+        bowl = [(x - 9.5 * k * math.cos(math.pi * i / 12), y + 7 * k * math.sin(math.pi * i / 12)) for i in range(13)]
+        pygame.draw.polygon(surf, col, bowl)                                     # 아래로 둥근 반타원 그릇
+        pygame.draw.line(surf, _mix(col, (255, 255, 255), 0.35), (x - 9 * k, y + 1.4 * k), (x + 9 * k, y + 1.4 * k),
+                         max(1, int(1.2 * k)))
+        pygame.draw.rect(surf, col, (x - 3.5 * k, y + 6.3 * k, 7 * k, 2.2 * k))
+    elif kind in ("face_happy", "face_neutral", "face_sad"):     # 이모지 얼굴
+        face, edge, feat = (255, 204, 77), (214, 150, 40), (92, 58, 24)
+        R = 9 * k
+        pygame.draw.circle(surf, face, (x, y), R)
+        pygame.draw.circle(surf, edge, (x, y), R, max(1, int(1.1 * k)))
+        pygame.draw.circle(surf, (255, 228, 140), (x - 3 * k, y - 4 * k), 2.6 * k)          # 윗부분 반짝임
+        pygame.draw.circle(surf, face, (x - 2.2 * k, y - 3.2 * k), 2.4 * k)
+        for ex in (-3.2, 3.2):                                                             # 눈
+            pygame.draw.ellipse(surf, feat, (x + ex * k - 1.2 * k, y - 3.6 * k, 2.4 * k, 3.4 * k))
+        mw = max(2, int(1.7 * k))
+        if kind == "face_happy":
+            pygame.draw.arc(surf, feat, (x - 5 * k, y - 3.5 * k, 10 * k, 9.5 * k), math.pi * 1.12, math.pi * 1.88, mw)
+        elif kind == "face_sad":
+            pygame.draw.arc(surf, feat, (x - 4.6 * k, y + 2.6 * k, 9.2 * k, 7 * k), math.pi * 0.15, math.pi * 0.85, mw)
+        else:
+            pygame.draw.line(surf, feat, (x - 4 * k, y + 3.6 * k), (x + 4 * k, y + 3.6 * k), mw)
     elif kind == "face":
         pygame.draw.circle(surf, col, (x, y), int(8.5 * k), w2)
         pygame.draw.circle(surf, col, (int(x - 3 * k), int(y - 2 * k)), max(1, int(1.4 * k)))
@@ -344,11 +390,26 @@ def ui_icon(surf, kind, center, col, k=1.0):
         pygame.draw.line(surf, col, (x - 5 * k, y + 7 * k), (x + 5 * k, y + 7 * k), w2)
         for sx in (-1, 1):
             pygame.draw.arc(surf, col, (x + sx * 7 * k - 4 * k, y - 2 * k, 8 * k, 6 * k), math.pi, 2 * math.pi, w2)
-    elif kind == "swords":
-        pygame.draw.line(surf, col, (x - 7 * k, y - 7 * k), (x + 7 * k, y + 7 * k), w2)
-        pygame.draw.line(surf, col, (x + 7 * k, y - 7 * k), (x - 7 * k, y + 7 * k), w2)
-        pygame.draw.line(surf, col, (x - 7 * k, y + 3 * k), (x - 3 * k, y + 7 * k), w2)
-        pygame.draw.line(surf, col, (x + 7 * k, y + 3 * k), (x + 3 * k, y + 7 * k), w2)
+    elif kind == "swords":                            # 엇갈린 두 칼: 넓은 칼날(가운데 결) + 칼막이 + 손잡이 + 끝 장식, 테두리로 겹침 구분
+        ow = max(1, int(0.9 * k))
+        for sx in (1, -1):
+            ux, uy = sx * 0.7071, 0.7071                  # 칼끝 → 손잡이 방향(대각선)
+            px, py = -uy, ux                               # 칼날 폭 방향
+
+            def at(t, w=0.0):
+                return (x + ux * t * k + px * w * k, y + uy * t * k + py * w * k)
+            blade = [at(-11), at(-8.6, 2.3), at(3.6, 2.3), at(3.6, -2.3), at(-8.6, -2.3)]
+            pygame.draw.polygon(surf, col, blade)
+            pygame.draw.polygon(surf, dark, blade, ow)
+            pygame.draw.line(surf, _mix(col, dark, 0.45), at(-8.4), at(2.8), ow)               # 칼날 가운데 결
+            guard = [at(3.4, 5), at(3.4, -5), at(5.4, -5), at(5.4, 5)]
+            pygame.draw.polygon(surf, col, guard)
+            pygame.draw.polygon(surf, dark, guard, ow)
+            grip = [at(5.4, 1.4), at(5.4, -1.4), at(8.6, -1.4), at(8.6, 1.4)]
+            pygame.draw.polygon(surf, col, grip)
+            pygame.draw.polygon(surf, dark, grip, ow)
+            pygame.draw.circle(surf, col, at(9.8), 1.9 * k)
+            pygame.draw.circle(surf, dark, at(9.8), 1.9 * k, ow)
     elif kind == "pause":
         pygame.draw.rect(surf, col, (x - 5 * k, y - 6 * k, 3.5 * k, 12 * k))
         pygame.draw.rect(surf, col, (x + 1.5 * k, y - 6 * k, 3.5 * k, 12 * k))

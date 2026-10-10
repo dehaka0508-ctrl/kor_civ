@@ -1359,8 +1359,10 @@ class App:
         highlight = pygame.time.get_ticks() - self.prev_t < 600
         last = f.last
         good, bad = (143, 212, 174), (242, 163, 143)
+        hv = snap["happy"]
+        face = "face_happy" if hv > 10 else "face_sad" if hv < -10 else "face_neutral"   # ±10 안은 무표정
         items = [
-            ("happy", "face", "행복도", f"{snap['happy']:+d}", bad if snap["happy"] < 0 else None,
+            ("happy", face, "행복도", f"{snap['happy']:+d}", bad if snap["happy"] < 0 else None,
              f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f} (피로·저항 반영 전 {g.avg_happiness(f.id, effective=False):+.1f})"),
             ("weary", "swords", "전쟁 피로", f"{snap['weary']:d}", bad if f.war_weary >= 1 else None,
              f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
