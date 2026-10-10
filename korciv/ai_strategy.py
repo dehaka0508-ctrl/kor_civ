@@ -134,10 +134,10 @@ def gdp_rank_k(g, fid):
 
 
 def science_ready(g, fid) -> bool:
-    """과학 조건 완비: 산지·해안·석유 지역과 공장 3단계 이상 지역을 모두 가졌다(과학을 일찍 시작할 만한 나라)."""
+    """과학 조건 완비: 산지·해안·석유 지역과 공장 4단계 이상 지역을 모두 가졌다(과학을 일찍 시작할 만한 나라)."""
     regs = g.regions_of(fid)
     return (any(g.info(r.id).is_oil for r in regs) and any(g.info(r.id).coastal for r in regs)
-            and any(r.id in g.world.mountain_regions for r in regs) and any(r.b["factory"] >= 3 for r in regs))
+            and any(r.id in g.world.mountain_regions for r in regs) and any(r.b["factory"] >= 4 for r in regs))
 
 
 def poverty(g, fid) -> float:
@@ -195,7 +195,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     poor = max(0.0, 0.5 - rank_k) * 2 if rank else 0.0      # GDP 하위권: 과학·경제는 조금 덜, 외교는 조금 더
     science = ((0.3 + 0.9 * (1 - a)) * bias("science") * feas * (1 + 0.8 * k_sci / 7) * (0.75 if ahead else 1.0)
                * (1 - C.AI_P2_POOR_SCI * poor))
-    # 산지·해안·석유·공장 3단계 이상을 모두 갖췄으면 과학을 일찍(경제보다 20~30턴 먼저) 고를 만큼 가점
+    # 산지·해안·석유·공장 4단계 이상을 모두 갖췄으면 과학을 일찍(경제보다 20~30턴 먼저) 고를 만큼 가점
     early = science_ready(g, fid)
     if early:
         science *= C.AI_P2_SCI_EARLY

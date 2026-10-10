@@ -2252,7 +2252,7 @@ def _slots(g, f, threat, military=True):
     # 과학승리 단계: 과학이 목표일 때만(다른 방향은 그 방향에 돈을 모은다)
     sci_goal = f.is_ai and f.ai.get("victory_goal") == "science"
     step = g.science_next(fid) if (sci_goal and "science" in g.settings.victories) else None
-    # 과학 조건 완비(산지·해안·석유·공장 3단계): 착수 판단에도 같은 가중치 — 경계 중이어도 군사력이 필요량의 1/가중치면,
+    # 과학 조건 완비(산지·해안·석유·공장 4단계): 착수 판단에도 같은 가중치 — 경계 중이어도 군사력이 필요량의 1/가중치면,
     # 잔고는 턴당 비용 2/가중치 턴분이면 시작한다
     ready_k = C.AI_P2_SCI_EARLY if (step is not None and PH.phase(f) >= 2 and ST.science_ready(g, fid)) else 1.0
     sci_ok = big_ok or (ready_k > 1 and post == "defend" and ST.state(f).get("mil_k", 0.0) * ready_k >= 1)

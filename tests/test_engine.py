@@ -2551,7 +2551,7 @@ def test_ai_p2_econ_skipped_when_richer_rival_ahead():
     assert ST.path_scores(g, f, {})["scores"]["economic"] == 0
 
 def test_ai_p2_science_early_when_sites_ready():
-    """산지·해안·석유·공장 3단계 이상을 모두 갖추면 과학 점수 × AI_P2_SCI_EARLY."""
+    """산지·해안·석유·공장 4단계 이상을 모두 갖추면 과학 점수 × AI_P2_SCI_EARLY."""
     from korciv import ai_strategy as ST
     g = _p2_game()
     f = g.factions[0]
@@ -2560,12 +2560,19 @@ def test_ai_p2_science_early_when_sites_ready():
     _own(g, 0, [free(lambda r: g.info(r).is_oil), free(lambda r: g.info(r).coastal),
                 free(lambda r: r in w.mountain_regions)])
     for r in g.regions_of(0):
-        r.b["factory"] = min(r.b["factory"], 2)
+        r.b["factory"] = min(r.b["factory"], 3)
     g.rankings = {g.turn: [{"fid": x.id, "gdp": 100 if x.id == 0 else 1000, "science": 0, "econ": 0}
                            for x in g.factions if x.alive]}
-    before = ST.path_scores(g, f, {})
-    g.regions_of(0)[0].b["factory"] = 3
+    assert not ST.science_ready(g, 0)
+    g.regions_of(0)[0].b["factory"] = 4
+    assert ST.science_ready(g, 0)
     after = ST.path_scores(g, f, {})
+    ready = ST.science_ready
+    ST.science_ready = lambda g, fid: False           # 같은 공장 단계에서 가점만 뺀 점수
+    try:
+        before = ST.path_scores(g, f, {})
+    finally:
+        ST.science_ready = ready
     assert after["scores"]["science"] == pytest.approx(before["scores"]["science"] * C.AI_P2_SCI_EARLY, rel=0.01)
     assert "조건 완비" in after["why"]["science"] and "조건 완비" not in before["why"]["science"]
 
