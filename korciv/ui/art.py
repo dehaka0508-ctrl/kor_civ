@@ -17,7 +17,7 @@ PORTRAIT_DIR = os.path.join(ASSETS, "portraits")
 _masks: dict = {}
 _presets: dict = {}
 # 마스크 문양의 크기(문양 반지름 R 대비 상자 한 변)
-MASK_BOX = {"pine": 2.2, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
+MASK_BOX = {"pine": 2.3, "flower": 2.2, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
 PORTRAIT_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -64,13 +64,16 @@ def draw_emblem(s, key, cx, cy, R, fl):
     hole = (0, 0, 0, 0)
     W = max(1, int(R * 0.2))
     if key in MASK_EMBLEMS:
-        m = _mask(key)
-        if m is None:
-            return
+        # 그림 문양: 흰 마스크에 문양 색을 곱한다. 무궁화는 꽃잎(색 1) + 꽃술·잎(색 2) 두 장
+        layers = [(key, ec)] + ([("flower2", fl["ec2"])] if key == "flower" else [])
         side = max(1, int(R * MASK_BOX.get(key, 2.2)))
-        img = pygame.transform.smoothscale(m, (side, side))
-        img.fill((*ec, 255), special_flags=pygame.BLEND_RGBA_MULT)
-        s.blit(img, (int(cx - side / 2), int(cy - side / 2)))
+        for mk, col in layers:
+            m = _mask(mk)
+            if m is None:
+                continue
+            img = pygame.transform.smoothscale(m, (side, side))
+            img.fill((*col, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            s.blit(img, (int(cx - side / 2), int(cy - side / 2)))
     elif key == "disc":
         pygame.draw.circle(s, ec, (cx, cy), int(R * 0.8))
     elif key == "ring":
@@ -157,11 +160,6 @@ def draw_emblem(s, key, cx, cy, R, fl):
             pts = [(cx - R + k * 2 * R / 24, cy + j * R * 0.55 + R * 0.18 * math.sin(k / 24 * 4 * math.pi))
                    for k in range(25)]
             pygame.draw.lines(s, ec, False, pts, W)
-    elif key == "flower":
-        for i in range(5):
-            a = -math.pi / 2 + i * 2 * math.pi / 5
-            pygame.draw.circle(s, ec, (int(cx + R * 0.5 * math.cos(a)), int(cy + R * 0.5 * math.sin(a))), int(R * 0.42))
-        pygame.draw.circle(s, fl["ec2"], (cx, cy), int(R * 0.25))
 
 
 def _draw_ingonggi(s, W, H):

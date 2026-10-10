@@ -26,7 +26,7 @@ BACKGROUNDS = (
 EMBLEMS = (
     # 도형
     ("none", "없음"), ("disc", "원"), ("ring", "고리"), ("taegeuk", "태극"), ("star5", "오각별"),
-    ("shield", "방패"), ("crown", "왕관"), ("flower", "꽃"), ("pine", "소나무"), ("saltire", "X자"),
+    ("shield", "방패"), ("crown", "왕관"), ("flower", "무궁화"), ("pine", "소나무"), ("saltire", "X자"),
     ("diamond", "마름모"), ("wave", "물결"), ("mountain", "산"), ("cloud", "구름"),
     # 종교
     ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "초승달과 별"),
@@ -34,7 +34,7 @@ EMBLEMS = (
     # 동물
     ("tiger", "호랑이 머리"), ("dragon", "용"), ("cheonma", "천마(천마도)"), ("samjogo", "삼족오"),
 )
-MASK_EMBLEMS = {"pine", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
+MASK_EMBLEMS = {"pine", "flower", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
 TWO_TONE_EMBLEMS = {"taegeuk", "yinyang", "flower"}      # 문양 색 2를 쓰는 문양   # assets/emblems/<키>.png
 
 # 역사 국기: 고르면 배경·문양·색 대신 그대로 쓴다
