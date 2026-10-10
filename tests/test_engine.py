@@ -821,7 +821,7 @@ def test_honggildong_no_monarchy():
     s1 = g.combat_strength(0, [a], t1)[0]
     g.order_army(b.id, t2)
     assert g.multi_attack_on(0, t1)
-    assert g.combat_strength(0, [a], t1)[0] == pytest.approx(s1 * 1.10)
+    assert g.combat_strength(0, [a], t1)[0] == pytest.approx(s1 * 1.20)
 
 
 def test_wanggeon_far_output():
@@ -1523,7 +1523,7 @@ def test_assign_energy_command_priority():
     g.regions[other].resist = None
     r.b["factory"], r.b["power"] = 3, 1
     g.regions[other].b["factory"], g.regions[other].b["power"] = 5, 0
-    f.res.update(coal=50, oil=50, elec=50)                     # 재고는 배정에 쓰지 않는다
+    f.res.update(coal=50, oil=50, elec=0)                      # 석탄·석유 재고는 배정에 쓰지 않는다
     g.energy_mined = lambda fid: {"coal": 3, "oil": 1, "elec": 0}   # 턴당 생산량 기준
     units, cap = g.assign_energy(0)
     # ① 발전소에 석유 1 → 전기 4 ③ 전기는 단계 높은 공장(5단계)부터 ④ 석탄 ⑤ 석유(남은 것 없음)
@@ -1533,6 +1533,10 @@ def test_assign_energy_command_priority():
     assert (units, cap) == (7, 8) and not f.auto_energy
     f.res.update(coal=0, oil=0, elec=0)                        # 배정은 다음에 누를 때까지 그대로(재고만큼만 쓰임)
     assert g.regions[other].energy["f"]["elec"] == 4
+    # 남아 있는 전기 재고는 턴당 생산량을 넘어도 공장에 최대한 배정한다
+    f.res.update(coal=50, oil=50, elec=50)
+    units, cap = g.assign_energy(0)
+    assert g.regions[other].energy["f"]["elec"] == 5 and r.energy["f"]["elec"] == 3 and units == 8
 
 
 def test_energy_manual_assignment():
@@ -3069,3 +3073,53 @@ def test_suro_power_elec_and_fuel_annex():
     assert plan["plants"][rid]["elec_out"] == 3
     # 편입 성향은 디버프로 줄지 않는다
     assert AI.leader_bias(g, 0, "annex") == 1.0
+
+
+def test_chain_build_continues_to_max():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    g.player.money = 1e8
+    rr = g.regions["S002"]
+    lv0 = rr.b["farm"]
+    ok, msg = g.start_project_max(0, "S002", "build", "farm")
+    assert ok and rr.project.chain and "이어서" in msg
+    for _ in range(80):
+        if rr.b["farm"] >= 5 and not rr.project:
+            break
+        g.end_turn()
+        g.player.money = 1e8
+    assert rr.b["farm"] == 5 and lv0 < 5
+    assert not (rr.project and rr.project.key == "farm")
+
+
+def test_start_message_uses_level_names_and_unchecks_focus():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    g.player.money = 1e8
+    rr = g.regions["S002"]
+    g.set_focus(0, "S002", True)
+    lv = rr.b["factory"] + 1
+    ok, msg = g.start_project(0, "S002", "build", "factory")
+    assert ok and msg.startswith(g.build_label("S002", "factory", lv))
+    assert not rr.focus
+
+
+def test_auto_energy_uses_stored_elec():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    rr = g.regions["S002"]
+    rr.b["factory"] = 5
+    g.player.res.update({"elec": 50, "coal": 0, "oil": 0})
+    g.assign_energy(0)
+    assert rr.energy["f"]["elec"] == 5
+
+
+def test_small_resource_gift_still_raises_opinion():
+    g = new_game(player_start="S002", n_enemies=2)
+    g.factions[1].last["tax"] = 1e7                    # 세수가 아주 큰 나라
+    for k in ("food", "oil", "coal", "elec", "specialty"):
+        g.player.res.update(food=50, oil=50, coal=50, elec=50)
+        g.player.specialty = {"쌀": 5}
+        g.dip.rejected.clear()
+        o = D.empty_offer()
+        o["give"][k] = 1
+        b = D.opinion(g, 1, 0)
+        assert D.respond_offer(g, 1, 0, o)[0] == "accept"
+        assert D.opinion(g, 1, 0) >= b + 0.01 - 1e-9, k

@@ -393,6 +393,11 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
     y += 22
     if not can_cancel:
         return y
+    if app.game.can_chain(p.kind, p.key):
+        on = gui.checkbox((x, y, w, 24), "최대 단계까지 이어서 건설", getattr(p, "chain", False), size=12)
+        if on != getattr(p, "chain", False):
+            p.chain = on
+        y += 28
     if gui.button((x, y, 150, 28), "취소 (50% 환급)"):
         ok, msg = app.game.cancel_project(app.game.player_id, rid)
         app.toast(msg)
@@ -461,13 +466,13 @@ def draw_action_tab(app, body):
         gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음)", w, 14, t.bad)
         return
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
-    on = gui.checkbox((x, y, w, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
+    on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
     if on != r.focus:
         ok, msg = g.set_focus(pid, rid, on)
         app.toast(msg)
         app.changed()
     if r.focus:
-        state = "적용 중" if g.focus_active(r) else "대기: 건설·생산 중에는 효과 없음"
+        state = "적용 중" if g.focus_active(r) else "대기: 건설·생산 중"
         gui.text((x + w, y + 4), state, 11, t.good if g.focus_active(r) else t.muted, anchor="topright")
     y += 28
     # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
@@ -543,6 +548,13 @@ def draw_action_tab(app, body):
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):
                 ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+                app.toast(msg, None if ok else t.bad)
+                if ok:
+                    app.changed()
+            if g.can_chain(o["kind"], o["key"]) and gui.button(
+                    (x + w - 62, yy + 36, 62, 22), "최대", "default", enabled=o["ok"], size=11,
+                    tooltip="완공되면 바로 다음 단계를 이어서 짓습니다(마지막 단계까지)"):
+                ok, msg = g.start_project_max(pid, rid, o["kind"], o["key"])
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
@@ -663,6 +675,8 @@ def draw_army_tiles(app, x, y, w, here, merge):
         cy = y + (i // cols) * (size + gap)
         rect = pygame.Rect(cx, cy, size, size)
         main = max(a.units, key=lambda k: (C.unit_weight(k) * a.units[k], k)) if a.units else "inf"
+        if a.units.get("lst", 0) > 0:
+            main = "lst"
         picked = merge is not None and a.id in merge
         selected = a.id == app.sel_army and merge is None
         if gui.button(rect, "", "ghost", selected=selected or picked,
@@ -677,6 +691,8 @@ def draw_army_tiles(app, x, y, w, here, merge):
         gui.icon(main, (cx + size / 2, cy + size * 0.30), fg, 1.8)
         kinds = len([k for k in a.units if a.units[k] > 0])
         name = C.UNITS[main]["name"] + (f" 외 {kinds - 1}" if kinds > 1 else "")
+        if a.units.get("lst", 0) > 0:
+            name = C.UNITS["lst"]["name"]       # 상륙함에 다른 유닛이 타도 이름은 상륙함
         gui.text((cx + size / 2, cy + size * 0.58), name, 11, (235, 240, 255) if lit else t.muted, anchor="center",
                  max_w=size - 6)
         gui.text((cx + size / 2, cy + size * 0.80), f"{a.count()}", 16, fg, "bold", anchor="center")
@@ -1287,6 +1303,10 @@ def draw_nation_status(app, body):
     gui.end_scroll("nation_status", area, app._nation_h)
 
 
+PRIO_HOLD_MS = 1000     # 우선순위 ↑↓를 이만큼 누르고 있으면
+PRIO_REPEAT_MS = 70     # 이 간격으로 빠르게 이어서 움직인다
+
+
 def draw_priority_list(app, x, y, w, items):
     """자금 지출 우선순위 목록. 행을 끌어 순서를 바꾼다."""
     gui = app.gui
@@ -1348,18 +1368,33 @@ def draw_priority_list(app, x, y, w, items):
         i = ids.index(sel)
         gui.rect(t.accent, pygame.Rect(x, top + i * row_h, w, row_h - 4), 2, radius=8)
         app.arrow_capture_v = True                # ↑↓를 누르고 있어도 지도는 위아래로 움직이지 않는다
+
+        def step(d):
+            nonlocal ids, i
+            j = i + d
+            if 0 <= j < n:
+                new = ids[:]
+                new[i], new[j] = new[j], new[i]
+                g.set_priority_order(g.player_id, new)
+                ids, i = new, j
+        now = pygame.time.get_ticks()
         for k in list(gui.keys):
             if k.key in (pygame.K_UP, pygame.K_DOWN) and not gui.focus:
                 gui.keys.remove(k)                 # 지도 이동 대신 순서 이동
-                j = i + (-1 if k.key == pygame.K_UP else 1)
-                if 0 <= j < n:
-                    new = ids[:]
-                    new[i], new[j] = new[j], new[i]
-                    g.set_priority_order(g.player_id, new)
-                    ids, i = new, j
+                d = -1 if k.key == pygame.K_UP else 1
+                step(d)
+                app.prio_hold = [d, now, now]      # 1초 넘게 누르고 있으면 빠르게 이어서 움직인다
             elif k.key == pygame.K_ESCAPE:
                 gui.keys.remove(k)
                 app.prio_sel = None
+        hold = getattr(app, "prio_hold", None)
+        if hold and not gui.focus:
+            pressed = pygame.key.get_pressed()
+            if not pressed[pygame.K_UP if hold[0] < 0 else pygame.K_DOWN]:
+                app.prio_hold = None
+            elif now - hold[1] >= PRIO_HOLD_MS and now - hold[2] >= PRIO_REPEAT_MS:
+                hold[2] = now
+                step(hold[0])
     elif sel is not None and sel not in ids:
         app.prio_sel = None
     return top + n * row_h + 4

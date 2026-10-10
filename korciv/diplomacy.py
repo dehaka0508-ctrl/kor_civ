@@ -827,11 +827,13 @@ def gift_value(g, side: dict, giver) -> float:
 
 
 def gift_opinion(g, ai, value, giver=None) -> float:
-    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사, 1회 최대 +25.
+    """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사(가치가 있으면 최소 +0.01), 1회 최대 +25.
     주는 쪽이 국제금융센터를 가졌으면 +10%."""
     raw = gift_rate(g, ai) * value / gift_income(g, ai)
     if giver is not None and g.econ_buildings(giver, "ifc"):
         raw *= 1 + C.IFC_GIFT_BONUS
+    if value > 0:
+        raw = max(raw, 0.01)          # 아주 작은 선물도 0으로 버려지지 않게 최소 +0.01
     return min(C.OP_GIFT_MAX, math.floor(raw * 100 + 1e-6) / 100)
 
 

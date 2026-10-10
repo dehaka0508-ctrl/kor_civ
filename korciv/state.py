@@ -29,6 +29,7 @@ class Project:
     name: Optional[str] = None
     priority: float = 0.0          # 자금 지출 우선순위(작을수록 먼저). 기본은 착수 순서
     funded: bool = False
+    chain: bool = False            # 최대 건설: 완공되면 바로 다음 단계를 이어서 건설
 
     @property
     def remaining(self) -> int:

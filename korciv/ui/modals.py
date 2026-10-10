@@ -1098,7 +1098,7 @@ def draw_diplomacy(app):
         gui.text(cell.center, nm, 12, (255, 255, 255) if active or st == -1 else t.muted, "semibold", anchor="center")
     status = "전쟁 중" if st == -1 else D.STAGE_NAMES[st]
     pl = D.peace_left(g, pid, fid)
-    gui.text((sx, r.y + 58), f"상대의 우호도 {op:+.1f} · 현재 {status}"
+    gui.text((sx, r.y + 58), f"상대의 우호도 {op:+.2f} · 현재 {status}"
              + (f" · 전쟁 점수 {D.war_score(g, pid, fid):+.1f}" if st == -1 else "")
              + (f" · 강화 불가침 {pl}턴 남음" if pl else ""), 13,
              t.bad if st == -1 else t.text)
@@ -1129,9 +1129,11 @@ def draw_diplomacy(app):
     m = D.trade_m(g, fid, pid)
     gui.wrap((mx, r.y + 214), f"요구 배수 m = {m:.2f}\n(받는 가치 ≥ 주는 가치 × m 이면 수락)", mw, 12, t.muted)
     if gui.button((mx, r.y + 270, mw, 38), "제안하기", "primary"):
+        op0 = D.opinion(g, fid, pid)
         res2, counter2, info2 = D.respond_offer(g, fid, pid, ds.offer)
         if res2 == "accept":
-            app.toast("거래 성사!")
+            gain = D.opinion(g, fid, pid) - op0
+            app.toast(f"거래 성사! 상대 우호도 {gain:+.2f}" if abs(gain) >= 0.005 else "거래 성사!")
             ds.offer = D.empty_offer()
             app.changed()
         elif res2 == "counter":

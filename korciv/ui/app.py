@@ -833,7 +833,7 @@ class App:
                     pygame.draw.rect(self.screen, (255, 212, 59), r.inflate(4, 4), 2, border_radius=5)
                 else:
                     pygame.draw.rect(self.screen, mix(col, (0, 0, 0), 0.35), r, 1, border_radius=4)
-                icon_key = max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
+                icon_key = "lst" if a.units.get("lst", 0) > 0 else max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
                 panels.unit_icon(self.screen, icon_key, (r.x + int(9 * u), r.centery), (255, 255, 255), 1.1 * u)
                 t = render_text(str(a.count()), 11, (255, 255, 255), "bold")
                 self.screen.blit(t, t.get_rect(midright=(r.right - int(3 * u), r.centery)))
@@ -1183,7 +1183,7 @@ class App:
             ("tax", "세율", f"{snap['tax']}%", None,
              f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"
              "\n바꾸기: 좌측 [내정] 탭"),
-            ("elec", "전기", f"{snap['elec']:.0f}", None, "전기: 발전소(석탄 1→2, 석유 1→4)·자체 발전으로 생산, 공장 연료\n"
+            ("elec", "전기", f"{snap['elec']:.0f}", None, f"전기: 발전소(석탄 1→{g.power_elec(f.id, 'coal')}, 석유 1→{g.power_elec(f.id, 'oil')})·자체 발전으로 생산, 공장 연료\n"
              "석유·석탄은 살 수 없고 팔 수만 있습니다(전기는 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),
             ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄: 탄광 생산, 공장 연료·발전소 연료, 석유 대신 군 생산(석유 1 = 석탄 2)"),
             ("oil", "석유", f"{snap['oil']:.0f}", None, "석유: 유전 생산, 군 생산·발전소(전기 4)·공장 연료"),

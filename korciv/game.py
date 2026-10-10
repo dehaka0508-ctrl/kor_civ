@@ -1683,9 +1683,16 @@ class Game:
             rr.h_delta += C.UNIT_START_HAPPY[u["weight"]]
         rr.project = Project(kind=kind, key=key, level=opt["level"], turns=opt["turns"],
                              per_turn=opt["per_turn"], border=opt["border"])
+        if not f.is_ai:
+            rr.focus = rr.pop_focus = False      # 건설·생산 중엔 집중 효과가 없으니 체크를 푼다
         self.proj_counter = getattr(self, "proj_counter", 0) + 1
         rr.project.priority = self.proj_counter
         label = opt["name"]
+        if kind == "build":
+            if key == "line":
+                label = f"{opt['name']} {opt['level']}단계"
+            elif key not in C.SINGLE_BUILDINGS:
+                label = self.build_label(rid, key, opt["level"])      # 예: '공업 단지 건설', '발전소 2단계'
         if kind == "econ":
             if key == "currency":
                 self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
@@ -1898,7 +1905,9 @@ class Game:
         적어 둔다(다음에 누를 때까지 그대로, 재고는 쓰지 않으니 매 턴 같은 배정을 유지할 수 있다)."""
         f = self.factions[fid]
         mined = self.energy_mined(fid)
-        want = self.auto_energy_plan(fid, {k: float(mined[k]) for k in C.ENERGY}, oil_reserve=0)
+        base = {k: float(mined[k]) for k in C.ENERGY}
+        base["elec"] += float(f.res.get("elec", 0))   # 남는 전기는 턴당 생산량을 넘어도 공장에 최대한
+        want = self.auto_energy_plan(fid, base, oil_reserve=0)
         for r in self.regions_of(fid):
             r.energy = {}
         for rid, a in want["p"].items():
@@ -3123,7 +3132,32 @@ class Game:
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
+                if getattr(p, "chain", False):
+                    self._chain_next(f, rr, p)
         return drafted
+
+    def can_chain(self, kind, key) -> bool:
+        """최대 건설 대상: 생산 건물(농업·어업·공업·금융·채굴·발전소·특산물)."""
+        return kind == "build" and key in C.CHAIN_BUILDINGS
+
+    def start_project_max(self, fid, rid, kind, key):
+        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다."""
+        ok, msg = self.start_project(fid, rid, kind, key)
+        if ok and self.can_chain(kind, key):
+            self.regions[rid].project.chain = True
+            msg += " · 최대 단계까지 이어서 건설"
+        return ok, msg
+
+    def _chain_next(self, f, rr, p):
+        """최대 건설: 방금 완공한 건물의 다음 단계를 바로 착수(못 하면 알리고 멈춘다)."""
+        if rr.owner != f.id or rr.project or rr.b.get(p.key, 0) >= C.PROD_BUILDINGS[p.key]["max"]:
+            return
+        ok, msg = self.start_project(f.id, rr.id, "build", p.key)
+        if ok:
+            rr.project.chain = True
+            rr.project.priority = p.priority          # 자금 우선순위는 그대로
+        elif not f.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 최대 건설 중단 — {msg}", region=rr.id, fids=(f.id,))
 
     def project_left(self, rid) -> int:
         """남은 턴. 공동 편입은 함께하는 지역 수에 따른 속도로 계산."""

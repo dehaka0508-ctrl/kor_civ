@@ -91,6 +91,7 @@ PROD_BUILDINGS = {
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
 PROD_TURNS_PER_LEVEL = 2
+CHAIN_BUILDINGS = ("farm", "fishery", "factory", "bank", "extract", "power", "specialty")   # [최대] 이어서 건설
 # 생산 건물 단계별 이름(행동 탭 '○○ 건설', 완공 알림, 지역 정보)
 PROD_LEVEL_NAMES = {
     "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장"),
