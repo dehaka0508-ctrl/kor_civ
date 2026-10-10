@@ -1003,6 +1003,34 @@ def draw_proposal(app):
             g.pending_proposals.pop(0)
             D.add_opinion(g, fid, g.player_id, -3)
         return
+    if kind == "trade":
+        # AI의 자원·특산물 거래 제의: 턴당 n개 × 12턴, 개당 값은 받는 턴마다
+        res, n, price, sell = prop["res"], prop["n"], prop["price"], prop["sell"]
+        pid = g.player_id
+        if D.at_war(g, fid, pid):
+            g.pending_proposals.pop(0)
+            return
+        what = f"{D.RES_NAMES[res]} 턴당 {n}개를 {C.CONTRACT_TURNS}턴 동안 개당 {price:,.0f}에"
+        gui.wrap((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {what} "
+                 + ("팔겠다고" if sell else "사겠다고") + " 제안합니다.", r.w - 70, 15, weight="semibold")
+        if sell:
+            mine = (f"내 공장에 넣으면 턴당 약 {max(0.0, D.energy_value(g, pid, res, n)[1]):,.0f}"
+                    if res in C.ENERGY else f"내 특산물 값 개당 {D.spec_price(g, pid):,.0f}")
+            note = f"매 턴 {price * n:,.0f}을 냅니다(받은 만큼만). {mine}"
+        else:
+            have = D.spec_supply(g, pid) if res == "specialty" else int(g.energy_supply(pid)[res])
+            note = f"매 턴 {price * n:,.0f}을 받습니다(보낸 만큼만). 지금 턴당 확보량 {have}개"
+        gui.wrap((r.x + 24, r.y + 118), note + f" · 수락하면 서로 우호도 +{C.TRADE_OP_PER_UNIT * n:g}, 거절은 변화 없음",
+                 r.w - 48, 12, t.muted)
+        if gui.button((r.x + 24, r.bottom - 64, 220, 44), "수락", "primary"):
+            g.pending_proposals.pop(0)
+            seller, buyer = (fid, pid) if sell else (pid, fid)
+            D.make_trade(g, seller, buyer, res, n, price, fid)
+            app.toast(f"{D.RES_NAMES[res]} 거래 성사 ({C.CONTRACT_TURNS}턴)")
+            app.changed()
+        if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
+            g.pending_proposals.pop(0)
+        return
     gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "
@@ -1032,14 +1060,18 @@ def _side_editor(app, x, y, w, side, owner, other, label):
     t = app.theme
     f = g.factions[owner]
     gui.text((x, y), label, 14, weight="bold")
+    gui.text((x + w, y + 3), f"자원은 턴당 개수 × {C.CONTRACT_TURNS}턴", 11, t.muted, anchor="topright")
     y += 26
+    # 자원은 쌓이지 않으니(식량 제외) 턴당 확보량까지만 내줄 수 있다. 식량은 비축 ÷ 12턴
+    sup = g.energy_supply(owner)
     rows = [("money", "돈", max(0, int(f.money)), 100)]
-    rows += [(res, C.RESOURCE_NAMES[res], int(f.res.get(res, 0)), 1) for res in ("food", "oil", "coal", "elec")]
-    rows.append(("specialty", "특산물", int(sum(f.specialty.values())), 1))
+    rows.append(("food", "식량/턴", int(f.res.get("food", 0) // C.CONTRACT_TURNS), 1))
+    rows += [(res, C.RESOURCE_NAMES[res] + "/턴", int(sup[res]), 1) for res in ("oil", "coal", "elec")]
+    rows.append(("specialty", "특산물/턴", D.spec_supply(g, owner), 1))
     for key, name, mx, step in rows:
         side[key] = min(side[key], mx)
         gui.text((x, y + 6), name, 13)
-        gui.text((x + 70, y + 6), f"{side[key]:,} / {mx:,}", 13, weight="semibold")
+        gui.text((x + 78, y + 6), f"{side[key]:,} / {mx:,}", 13, weight="semibold")
 
         def pick(v, side=side, key=key):
             side[key] = v
@@ -1145,7 +1177,7 @@ def draw_diplomacy(app):
         gui.wrap((mx, r.y + 316), f"수정안: 돈 {ds.counter['give']['money']:,}을 달라고 합니다.", mw, 12, t.warn)
         if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary"):
             D.execute_offer(g, pid, fid, ds.counter)
-            D.add_opinion(g, fid, pid, C.OP_TRADE_DONE)
+            D.trade_done_opinion(g, fid, pid, ds.counter)
             ds.counter = None
             ds.offer = D.empty_offer()
             app.toast("거래 성사!")
@@ -1153,6 +1185,17 @@ def draw_diplomacy(app):
     if gui.button((mx, r.y + 396, mw, 30), "초기화", size=12):
         ds.offer = D.empty_offer()
         ds.counter = None
+    # 진행 중인 자원 계약(이 나라와)
+    cy = r.y + 436
+    cs = D.contracts_between(g, pid, fid)
+    gui.text((mx, cy), f"진행 중인 자원 계약 {len(cs)}건", 12, weight="semibold")
+    cy += 18
+    for c in cs[:5]:
+        arrow = "→ 상대" if c["from"] == pid else "← 상대"
+        price = f" · 개당 {c['price']:,.0f}" if c["price"] > 0 else ""
+        gui.text((mx, cy), f"{D.RES_NAMES[c['res']]} 턴당 {c['n']} {arrow} · 남은 {c['left']}턴{price}", 11, t.muted,
+                 max_w=mw)
+        cy += 16
     # 조약 버튼
     y = r.bottom - 110
     gui.line(t.border, (r.x + 24, y - 10), (r.right - 24, y - 10))
@@ -1326,6 +1369,8 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
 · 좌측 [내정]: 세율·자원 시장·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
 · [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
+· 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
+· 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. AI도 남는 자원을 팔고 모자라면 사자고 제안합니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
@@ -1425,8 +1470,8 @@ def draw_specialty(app):
     if gui.button((r.right - 44, r.y + 16, 28, 28), "×", "ghost", size=18):
         close(app)
         return
-    gui.text((r.x + 24, r.y + 52), f"한 지역에 최대 {C.SPECIALTY_MAX_TYPES}종, 종류별 턴당 1개 소비 · 공급 시작 +3 / 중단 −3 (1회)"
-             " · 변경은 다음 턴 자원 단계에 반영", 12, t.muted)
+    gui.text((r.x + 24, r.y + 52), f"한 지역에 최대 {C.SPECIALTY_MAX_TYPES}종, 종류별 턴당 1개 소비 · 남는 특산물은 쌓이지 않고 사라짐"
+             " · 변경은 이번 턴 자원 단계에 반영", 12, t.muted)
     f.auto_specialty = gui.checkbox((r.right - 260, r.y + 20, 220, 24), "행복도 낮은 지역부터 자동", f.auto_specialty)
     # 재고
     stock = {k: v for k, v in f.specialty.items() if v > 0}
@@ -1470,14 +1515,14 @@ def draw_specialty(app):
     rid = app.spec_sel
     if rid not in g.regions or g.regions[rid].owner != pid:
         gui.text((x, y), "왼쪽에서 지역을 고르세요.", 14, t.muted)
-        gui.text((x, y + 30), f"보유 특산물 {len(kinds)}종 · 재고 {sum(stock.values())}개", 13)
+        gui.text((x, y + 30), f"보유 특산물 {len(kinds)}종 · 이번 턴 {sum(stock.values())}개", 13)
     else:
         rr = g.regions[rid]
         gui.text((x, y), f"{app.world.regions[rid].name}  (행복도 {rr.happy:+.1f}, 실질 {g.eff_happy(rr):+.1f})", 16,
                  weight="bold")
         y += 30
         gui.text((x, y), "종류", 12, t.muted)
-        gui.text((x + 170, y), "재고/생산", 12, t.muted)
+        gui.text((x + 170, y), "이번 턴/생산", 12, t.muted)
         gui.text((x + 250, y), "상태", 12, t.muted)
         y += 22
         area = pygame.Rect(x - 4, y, w + 8, r.bottom - 70 - y)

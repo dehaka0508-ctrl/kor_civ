@@ -35,15 +35,32 @@ POWER_ELEC = {"coal": 2, "oil": 4}   # 발전소: 단계 L마다 연료 1개/턴
 OIL_AS_COAL = 2                      # 석유 1 = 석탄 2 (군 생산 비용 대체 등)
 ENERGY = ("oil", "coal", "elec")
 UNBUYABLE = ("oil", "coal")          # 돈으로 살 수 없는 자원(판매는 가능). 전기는 시장에서 산다
-AUTO_OIL_RESERVE = 6                 # 자동 배정은 군 생산용 석유를 이만큼 남긴다
+# v1.45.0: 석유·석탄·전기·특산물은 쌓이지 않는다. 매 턴 생산량(+계약 수입 − 계약 수출)만큼 확보해
+# 유닛·발전소·공장(특산물은 지역 공급)에 쓰고, 남은 석유·석탄·전기는 턴 종료 때 시장 판매가로 팔린다(특산물은 사라짐)
 
-START_RESOURCES = {"oil": 5, "coal": 10, "elec": 0}   # 식량은 인구 * 5
+START_RESOURCES = {"oil": 0, "coal": 0, "elec": 0}   # 식량은 인구 * 5
 RESOURCES = ("food", "oil", "coal", "elec")
 RESOURCE_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "전기"}
 MARKET_BUY = {"food": 4, "oil": 40, "coal": 20, "elec": 20}     # 석유·석탄은 구매 불가(UNBUYABLE)
 MARKET_SELL = {"food": 3, "oil": 20, "coal": 10, "elec": 10}
 MARKET_STEP = 0.10         # 식량 제외 자원은 같은 턴 1개 살 때마다 +10%
-SPECIALTY_VALUE = 20
+SPECIALTY_VALUE = 20         # (예전 거래 가치. v1.45.0부터 특산물 값은 spec_price)
+# 외교 자원 거래(v1.45.0): 자원은 '턴당 n개 × 12턴' 계약으로 주고받는다
+CONTRACT_TURNS = 12
+TRADE_RES = ("food", "oil", "coal", "elec", "specialty")
+TRADE_OP_PER_UNIT = 1.0      # 거래 수락: 제의한 쪽과 서로 우호도 +1 × 턴당 자원 개수(거절은 변화 없음)
+# 특산물 1개(1턴 공급)의 값 = 사는 나라 지역 평균 산출 × 1% × exp(−평균 행복도 / 50), 0.25~4배로 제한.
+# 근거: 특산물 1종 공급 = 그 지역 행복도 턴당 +0.1 = 세율 1%p를 낮춘 것과 같은 효과 → 그 지역 산출의 1%
+SPEC_PRICE_K = 0.01
+SPEC_PRICE_H = 50.0
+SPEC_PRICE_LO, SPEC_PRICE_HI = 0.25, 4.0
+AI_TRADE_EVERY = 4           # AI 자원·특산물 거래 제의 주기(턴)
+AI_TRADE_MIN_OP = -10        # 우호도가 이보다 낮은 상대와는 거래를 제의·수락하지 않는다
+AI_TRADE_GAIN = 1.1          # 사는 쪽 가치가 파는 쪽 손해의 이 배수를 넘어야 제의
+AI_TRADE_MIL_OIL = 2         # 전쟁 중·정복 방향 AI가 군 생산용으로 원하는 턴당 석유(석탄 2 = 석유 1)
+AI_SPEC_BUY_H = 0.0          # 평균 행복도가 이보다 낮으면 이웃에게 특산물 구매 제의
+AI_SPEC_BUY_MAX = 3          # 한 번에 사려는 특산물 턴당 최대 개수
+AI_OCC_CONTEST_MIN = 4       # 중립 지역 동시 점령에서 상대 병력이 더 크면, 중요도가 이 이상일 때 병력을 더 보낸다
 SPECIALTY_MAX_TYPES = 5
 SPECIALTY_HAPPY_TURN = 0.1   # 공급받는 특산물 1종마다 그 지역 행복도 턴당 +0.1
 SCENIC_HAPPY = 5             # 자연경관: 그 지역과 같은 나라의 인접 지역 행복도 +5

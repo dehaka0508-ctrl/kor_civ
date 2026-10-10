@@ -709,6 +709,7 @@ def propose_treaty(g, proposer, target, kind):
 
 # ------------------------------------------------------------------ 거래
 TRADE_KEYS = ("money", "food", "oil", "coal", "elec", "specialty")
+RES_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "전기", "specialty": "특산물"}
 
 
 def empty_offer():
@@ -716,11 +717,185 @@ def empty_offer():
             "take": {k: 0 for k in TRADE_KEYS} | {"passage": False, "regions": []}}
 
 
+# ---- 자원 계약(v1.45.0): 자원은 '턴당 n개 × 12턴'으로 주고받는다
+def contracts(g) -> list:
+    """진행 중인 자원 계약 [{from, to, res, n, price, left, start}] (예전 세이브 호환)."""
+    d = g.dip.__dict__
+    if "contracts" not in d:
+        d["contracts"] = []
+    return d["contracts"]
+
+
+def contracts_between(g, a, b) -> list:
+    return [c for c in contracts(g) if {c["from"], c["to"]} == {a, b}]
+
+
+def committed_out(g, fid, res) -> int:
+    """fid 가 계약으로 매 턴 내주기로 한 res 개수."""
+    return sum(c["n"] for c in contracts(g) if c["from"] == fid and c["res"] == res)
+
+
+def add_contract(g, giver, receiver, res, n, price=0.0, deliver_now=True):
+    """giver → receiver: res 를 턴당 n개씩 CONTRACT_TURNS 턴(이번 턴 포함).
+    price: 개당 값(받는 쪽이 받는 턴마다 낸다. 거래 대금을 한 번에 냈거나 선물이면 0)."""
+    n = int(n)
+    if n <= 0 or res not in C.TRADE_RES or giver == receiver:
+        return None
+    c = {"from": giver, "to": receiver, "res": res, "n": n, "price": float(price),
+         "left": C.CONTRACT_TURNS, "start": g.turn}
+    contracts(g).append(c)
+    if deliver_now:
+        _deliver(g, c)
+        if c["left"] <= 0:
+            contracts(g).remove(c)
+    return c
+
+
+def _pick_specialty(fa, fb):
+    """주는 쪽 특산물 중 받는 쪽에 없는(적은) 종류부터, 같으면 주는 쪽에 많은 것."""
+    have = fb.specialty
+    return max((k for k, v in fa.specialty.items() if v > 0), key=lambda k: (-have.get(k, 0), fa.specialty[k], k))
+
+
+def _deliver(g, c):
+    """계약 1턴분 이행. 주는 쪽 이번 턴 확보량(식량은 비축)만큼, 사는 쪽이 낼 수 있는 만큼만."""
+    fa, fb = g.factions[c["from"]], g.factions[c["to"]]
+    res, n, price = c["res"], c["n"], c["price"]
+    q = n
+    if price > 0:
+        q = min(q, max(0, int(fb.money // price)))
+    if res == "specialty":
+        q = min(q, int(sum(v for v in fa.specialty.values() if v > 0)))
+        for _ in range(q):
+            k = _pick_specialty(fa, fb)
+            fa.specialty[k] -= 1
+            fb.specialty[k] = fb.specialty.get(k, 0) + 1
+    else:
+        q = min(q, max(0, int(math.floor(fa.res.get(res, 0) + 1e-9))))
+        fa.res[res] = fa.res.get(res, 0) - q
+        fb.res[res] = fb.res.get(res, 0) + q
+    if price > 0 and q > 0:
+        pay = q * price
+        fb.money -= pay
+        fa.money += pay
+        fb.trade_buy += pay
+        fa.trade_sell += pay
+    c["left"] -= 1
+    c["last_q"] = q
+    if q < n and not g.player.is_ai and g.player_id in (c["from"], c["to"]):
+        g.event("info", f"자원 계약: {g.fname(c['from'])} → {g.fname(c['to'])} {RES_NAMES[res]} "
+                        f"{q}/{n}개만 오갔습니다" + (" (대금 부족)" if price > 0 and fb.money < price * n else ""),
+                fids=(c["from"], c["to"]))
+    return q
+
+
+def run_contracts(g):
+    """턴 시작(확보량을 새로 잡은 뒤): 계약 이행. 전쟁·멸망이면 끊기고, 12턴이 지나면 끝난다."""
+    lst = contracts(g)
+    for c in list(lst):
+        a, b = c["from"], c["to"]
+        if not (g.factions[a].alive and g.factions[b].alive) or at_war(g, a, b):
+            lst.remove(c)
+            continue
+        if c["left"] <= 0:
+            lst.remove(c)
+            continue
+        _deliver(g, c)
+        if c["left"] <= 0:
+            lst.remove(c)
+
+
+# ---- 자원 가치
+def energy_eval(g, fid, supply) -> tuple:
+    """supply(턴당 석유·석탄·전기)를 자동 배정했을 때 (공장 산출, 남는 양 {석유, 석탄, 전기}, 공장 빈 칸)."""
+    plan = g.auto_energy_plan(fid, supply, oil_reserve=0)
+    m = g.mods(fid)
+    k_out = m.mult("output_factory") * m.mult("output_prod")
+    used = {"oil": 0, "coal": 0, "elec": 0}
+    gen = 0
+    for a in plan["p"].values():
+        used["oil"] += a["oil"]
+        used["coal"] += a["coal"]
+        gen += g.power_elec(fid, "oil") * a["oil"] + g.power_elec(fid, "coal") * a["coal"]
+    out = 0.0
+    room = 0
+    for rid, a in plan["f"].items():
+        lv = g.regions[rid].b["factory"]
+        u = a["coal"] + a["oil"] + a["elec"]
+        for k in ("coal", "oil", "elec"):
+            used[k] += a[k]
+        out += u * C.FACTORY_UNIT_OUTPUT[min(lv, 5) - 1] * k_out
+        room += max(0, lv - u)
+    left = {k: max(0.0, int(supply.get(k, 0)) - used[k]) for k in ("oil", "coal")}
+    left["elec"] = max(0.0, int(supply.get("elec", 0)) + gen - used["elec"])
+    return out, left, room
+
+
+def energy_value(g, fid, res, delta, tax=None) -> tuple:
+    """fid 의 턴당 res 확보량이 delta 만큼 바뀔 때 (공장 산출 변화 × 세율, 남는 자원 판매까지 더한 돈 변화)."""
+    base = g.energy_supply(fid)
+    out0, left0, _ = energy_eval(g, fid, base)
+    sup = dict(base)
+    sup[res] = max(0.0, sup.get(res, 0) + delta)
+    out1, left1, _ = energy_eval(g, fid, sup)
+    t = g.factions[fid].tax if tax is None else tax
+    fac = (out1 - out0) * t
+    sell = sum((left1[k] - left0[k]) * g.sell_price(fid, k) for k in C.ENERGY)
+    return fac, fac + sell
+
+
+def spec_price(g, fid) -> float:
+    """특산물 1개(1턴 공급)의 값: 지역 평균 산출 × 1% × exp(−평균 행복도/50), 0.25~4배.
+    행복도가 낮을수록 비싸게 사고, 높을수록 굳이 비싸게 사지 않는다."""
+    regs = g.regions_of(fid)
+    if not regs:
+        return 0.0
+    avg_y = sum(g.region_output_estimate(r.id) for r in regs) / len(regs)
+    k = math.exp(-g.avg_happiness(fid) / C.SPEC_PRICE_H)
+    return C.SPEC_PRICE_K * avg_y * max(C.SPEC_PRICE_LO, min(C.SPEC_PRICE_HI, k))
+
+
+def spec_supply(g, fid) -> int:
+    """턴당 특산물 확보량(명목): 생산 + 계약 수입 − 계약 수출."""
+    n = sum(g.specialty_made(g.factions[fid]).values())
+    for c in contracts(g):
+        if c["res"] == "specialty":
+            if c["to"] == fid:
+                n += c["n"]
+            elif c["from"] == fid:
+                n -= c["n"]
+    return max(0, n)
+
+
+def spec_cost(g, fid, n) -> float:
+    """fid 가 특산물을 턴당 n개 내줄 때 1턴 손해: 지역에 공급하고 남던 몫은 0, 공급하던 몫은 자기 값."""
+    used = sum(len(r.supplied) for r in g.regions_of(fid))
+    spare = max(0, spec_supply(g, fid) - used)
+    return max(0, n - spare) * spec_price(g, fid)
+
+
 def items_value(g, side: dict, giver_is_ai: bool, ai, proposer) -> float:
+    """ai 입장의 가치(받는 쪽이면 얻는 가치, 주는 쪽이면 잃는 가치). 자원은 턴당 n개 × 12턴."""
+    T = C.CONTRACT_TURNS
     v = side.get("money", 0)
-    for k in ("food", "oil", "coal", "elec"):
-        v += C.MARKET_BUY[k] * side.get(k, 0)
-    v += C.SPECIALTY_VALUE * side.get("specialty", 0)
+    v += C.MARKET_BUY["food"] * C.MONEY_SCALE * side.get("food", 0) * T
+    for k in C.ENERGY:
+        n = side.get(k, 0)
+        if not n:
+            continue
+        if ai is None:
+            v += C.MARKET_BUY[k] * C.MONEY_SCALE * n * T
+        else:
+            _, tot = energy_value(g, ai, k, -n if giver_is_ai else n)
+            v += abs(tot) * T
+    n = side.get("specialty", 0)
+    if n:
+        if ai is None:
+            v += C.SPECIALTY_VALUE * n * T
+        elif giver_is_ai:
+            v += spec_cost(g, ai, n) * T
+        else:
+            v += spec_price(g, ai) * n * T
     if side.get("passage"):
         if giver_is_ai:
             v += 0 if opinion(g, ai, proposer) >= C.PASSAGE_FREE_OPINION else C.PASSAGE_VALUE
@@ -732,25 +907,30 @@ def items_value(g, side: dict, giver_is_ai: bool, ai, proposer) -> float:
     return v
 
 
+def res_count(side) -> int:
+    """제공하는 자원의 턴당 개수 합."""
+    return int(sum(side.get(k, 0) for k in C.TRADE_RES))
+
+
 def is_empty(side) -> bool:
     return (not any(side.get(k, 0) for k in TRADE_KEYS) and not side.get("passage")
             and not side.get("regions"))
 
 
 def evaluate_offer(g, ai, proposer, offer):
-    """offer: proposer 기준 give(내가 줌)/take(내가 받음).
+    """offer: proposer 기준 give(내가 줌)/take(내가 받음). 자원은 턴당 개수(12턴 동안).
     반환: (결과 "accept"/"counter"/"reject", 수정안 또는 None, 설명)"""
     if (proposer, ai) in g.dip.rejected:
         return "reject", None, "이번 턴에는 다시 제안할 수 없습니다."
     give, take = offer["give"], offer["take"]
-    recv = items_value(g, give, False, ai, proposer)     # AI 가 받는 가치
-    cost = items_value(g, take, True, ai, proposer)      # AI 가 주는 가치
     if is_empty(take) and is_empty(give):
         return "reject", None, "빈 제안입니다."
     if is_empty(take):
-        gv = gift_value(g, give, proposer)
+        gv = gift_value(g, give, proposer, ai)
         return "accept", None, (f"선물 (가치 {gv:,.0f}) → 우호도 +{gift_opinion(g, ai, gv, proposer):.2f}"
                                 f" (상대 턴당 세수 {gift_income(g, ai):,.0f}마다 +{gift_rate(g, ai):.2f}, 최대 +{C.OP_GIFT_MAX})")
+    recv = items_value(g, give, False, ai, proposer)     # AI 가 받는 가치
+    cost = items_value(g, take, True, ai, proposer)      # AI 가 주는 가치
     if is_empty(give):
         only_passage = take.get("passage") and not take.get("regions") and not any(
             take.get(k, 0) for k in TRADE_KEYS)
@@ -773,27 +953,40 @@ def evaluate_offer(g, ai, proposer, offer):
 
 
 def execute_offer(g, proposer, ai, offer):
-    """거래 실행. 수량이 모자라면 가능한 만큼만."""
+    """거래 실행: 돈·통행권·영토는 바로, 자원은 턴당 n개 × 12턴 계약(이번 턴부터)."""
     fp, fa = g.factions[proposer], g.factions[ai]
     for src, dst, side in ((fp, fa, offer["give"]), (fa, fp, offer["take"])):
         amt = min(side.get("money", 0), max(0, src.money))
         src.money -= amt
         dst.money += amt
-        for k in ("food", "oil", "coal", "elec"):
-            q = min(side.get(k, 0), src.res.get(k, 0))
-            src.res[k] -= q
-            dst.res[k] = dst.res.get(k, 0) + q
-        n = side.get("specialty", 0)
-        while n > 0 and any(v > 0 for v in src.specialty.values()):
-            kind = max(src.specialty, key=lambda s: src.specialty[s])
-            src.specialty[kind] -= 1
-            dst.specialty[kind] = dst.specialty.get(kind, 0) + 1
-            n -= 1
+        for k in C.TRADE_RES:
+            add_contract(g, src.id, dst.id, k, side.get(k, 0))
         if side.get("passage"):
             g.dip.passage[pair(proposer, ai)] = g.turn + C.TREATY_TURNS
         for rid in side.get("regions", []):
             if g.regions[rid].owner == src.id:
                 g.transfer_region(rid, dst.id, reason="거래")
+
+
+def trade_done_opinion(g, a, b, offer=None, n=None):
+    """거래 성사: 서로 우호도 +1 × 턴당 자원 개수(자원이 없는 거래는 예전처럼 +OP_TRADE_DONE)."""
+    if n is None:
+        n = res_count(offer["give"]) + res_count(offer["take"])
+    if n > 0:
+        add_opinion(g, a, b, C.TRADE_OP_PER_UNIT * n)
+        add_opinion(g, b, a, C.TRADE_OP_PER_UNIT * n)
+    else:
+        add_opinion(g, a, b, C.OP_TRADE_DONE)        # a(수락한 쪽)가 b(제의한 쪽)를 보는 우호도
+
+
+def make_trade(g, seller, buyer, res, n, price, proposer):
+    """AI 거래 제의가 수락됨: seller → buyer 턴당 n개 × 12턴, 개당 price(받는 턴마다 낸다)."""
+    c = add_contract(g, seller, buyer, res, n, price)
+    trade_done_opinion(g, seller, buyer, n=n)
+    other = buyer if proposer == seller else seller
+    g.event("diplo", f"{g.fname(seller)} → {g.fname(buyer)} {RES_NAMES[res]} 턴당 {n}개 × {C.CONTRACT_TURNS}턴 "
+                     f"(개당 {price:,.0f}) 거래 성사", fids=(proposer, other))
+    return c
 
 
 def gift_income(g, fid) -> float:
@@ -816,13 +1009,24 @@ def gift_rate(g, fid) -> float:
     return C.GIFT_OP_PER_INCOME - C.GIFT_AGGR_STEP * (gift_aggression(g, fid) - C.GIFT_AGGR_BASE)
 
 
-def gift_value(g, side: dict, giver) -> float:
-    """선물의 가치: 돈은 그대로, 자원은 주는 쪽의 시장 판매가(내정 탭), 그 밖(특산물·통행권·지역)은 거래 가치."""
+def gift_value(g, side: dict, giver, receiver=None) -> float:
+    """선물의 가치(자원은 턴당 n개 × 12턴): 돈은 그대로, 식량은 주는 쪽 시장 판매가,
+    석유·석탄·전기는 받는 쪽 공장 산출 증가 × 기준 세율 10%, 특산물은 받는 쪽 특산물 값, 그 밖은 거래 가치."""
+    T = C.CONTRACT_TURNS
     v = side.get("money", 0)
-    for k in ("food", "oil", "coal", "elec"):
-        v += g.sell_price(giver, k) * side.get(k, 0)
-    rest = {"specialty": side.get("specialty", 0), "passage": side.get("passage", False),
-            "regions": side.get("regions", [])}
+    v += g.sell_price(giver, "food") * side.get("food", 0) * T
+    for k in C.ENERGY:
+        n = side.get(k, 0)
+        if n:
+            if receiver is None:
+                v += g.sell_price(giver, k) * n * T
+            else:
+                fac, _ = energy_value(g, receiver, k, n, tax=C.TAX_DEFAULT)
+                v += max(0.0, fac) * T
+    n = side.get("specialty", 0)
+    if n:
+        v += (spec_price(g, receiver) if receiver is not None else C.SPECIALTY_VALUE) * n * T
+    rest = {"passage": side.get("passage", False), "regions": side.get("regions", [])}
     return v + items_value(g, rest, False, None, giver)
 
 
@@ -864,14 +1068,14 @@ def respond_offer(g, ai, proposer, offer, execute=True):
     give, take = offer["give"], offer["take"]
     if res == "accept" and execute:
         if is_empty(take):
-            add_opinion(g, ai, proposer, gift_opinion(g, ai, gift_value(g, give, proposer), proposer))
+            add_opinion(g, ai, proposer, gift_opinion(g, ai, gift_value(g, give, proposer, ai), proposer))
         elif is_empty(give):
             only_passage = take.get("passage") and not take.get("regions") and not any(
                 take.get(k, 0) for k in TRADE_KEYS)
             if not (only_passage and opinion(g, ai, proposer) >= C.PASSAGE_FREE_OPINION):
                 add_opinion(g, ai, proposer, C.OP_DEMAND_ACCEPT)
         else:
-            add_opinion(g, ai, proposer, C.OP_TRADE_DONE)
+            trade_done_opinion(g, ai, proposer, offer)    # 거래 수락: 서로 +1 × 턴당 자원 개수
         execute_offer(g, proposer, ai, offer)
         g.event("diplo", f"{g.fname(proposer)} ↔ {g.fname(ai)} 거래 성사", fids=(proposer, ai))
     elif res == "reject" and execute:

@@ -214,6 +214,7 @@ def plan_turn(g, fid):
     _market(g, f)
     _tax(g, f)
     _diplomacy(g, f)
+    _trade_offers(g, f)
     threat = threat_map(g, fid)
     _merge_idle(g, fid)
     _austerity(g, f, threat)
@@ -271,18 +272,161 @@ def threat_map(g, fid):
 
 # ------------------------------------------------------------------ 시장·세율
 def _market(g, f):
-    need_oil = 4 if f.ai.get("weights", {}).get("military", 0) > 1.0 else 2
-    if D.enemies(g, f.id) and f.money > 10000:
-        need_oil = 8                      # 전쟁 중: 함선·항공기 생산용 석유
-    # 에너지 자원은 돈으로 살 수 없다: 넉넉할 때만 판다(공장·발전소 몫은 남긴다)
-    for res, keep in (("coal", 40), ("elec", 30)):
-        if f.res.get(res, 0) > keep * 2:
-            g.market_sell(f.id, res, f.res[res] - keep)
+    # 석유·석탄·전기는 쌓이지 않고 남는 것은 턴 종료 때 저절로 팔린다(v1.45.0). 식량만 넉넉하면 판다
     cons = f.last.get("food_cons", 0)
     if cons and f.res.get("food", 0) > cons * 30:
         g.market_sell(f.id, "food", f.res["food"] - cons * 20)
-    if f.res.get("oil", 0) > 80 + need_oil:
-        g.market_sell(f.id, "oil", f.res["oil"] - 60)
+
+
+# ------------------------------------------------------------------ 자원·특산물 거래 제의(v1.45.0)
+def trade_partners(g, fid):
+    """거래할 만한 상대: 전쟁 중이 아니고 서로 우호도가 AI_TRADE_MIN_OP 이상."""
+    return [x for x in g.alive_ids() if x != fid and not D.at_war(g, fid, x)
+            and D.opinion(g, fid, x) >= C.AI_TRADE_MIN_OP
+            and (not g.factions[x].is_ai or D.opinion(g, x, fid) >= C.AI_TRADE_MIN_OP)]
+
+
+def energy_unit_cost(g, fid, res, n) -> float:
+    """fid 가 res 를 턴당 n개 내줄 때 개당 손해(공장 산출 × 세율 + 못 팔게 되는 남는 몫)."""
+    _, tot = D.energy_value(g, fid, res, -n)
+    return max(0.0, -tot) / max(1, n)
+
+
+def energy_unit_value(g, fid, res, n, military=False) -> float:
+    """fid 가 res 를 턴당 n개 더 받을 때 개당 가치(공장에 넣었을 때 금액). 군 생산용 석유는 시장 구매가 이상."""
+    _, tot = D.energy_value(g, fid, res, n)
+    v = max(0.0, tot) / max(1, n)
+    if military and res in ("oil", "coal"):
+        v = max(v, C.MARKET_BUY["oil"] * C.MONEY_SCALE / (1 if res == "oil" else C.OIL_AS_COAL))
+    return v
+
+
+def mil_oil_want(g, f) -> int:
+    """전쟁 중이거나 정복 방향이면 군 생산용 석유가 턴당 AI_TRADE_MIL_OIL은 있어야 한다."""
+    if not (D.enemies(g, f.id) or f.ai.get("victory_goal") == "conquest"):
+        return 0
+    sup = g.energy_supply(f.id)
+    have = sup["oil"] + sup["coal"] / C.OIL_AS_COAL
+    return max(0, int(C.AI_TRADE_MIL_OIL - have + 0.999))
+
+
+def ai_accepts_trade(g, ai, other, res, n, price, ai_sells) -> bool:
+    """AI 가 다른 나라의 거래 제의(res 턴당 n개 × 12턴, 개당 price)를 받아들일까."""
+    if D.at_war(g, ai, other) or D.opinion(g, ai, other) < C.AI_TRADE_MIN_OP:
+        return False
+    if ai_sells:
+        have = D.spec_supply(g, ai) if res == "specialty" else g.energy_supply(ai)[res]   # 계약으로 내주는 몫은 뺀 양
+        if n > have:
+            return False
+        cost = D.spec_cost(g, ai, n) / n if res == "specialty" else energy_unit_cost(g, ai, res, n)
+        return price >= cost
+    f = g.factions[ai]
+    if f.money < price * n * 3:
+        return False
+    if res == "specialty":
+        val = D.spec_price(g, ai)
+    else:
+        val = energy_unit_value(g, ai, res, n, military=mil_oil_want(g, f) > 0)
+    return price <= val
+
+
+def _propose_trade(g, fid, other, res, n, price, sell):
+    """fid 가 other 에게 res 턴당 n개 × 12턴을 개당 price에 팔겠다(sell)·사겠다고 제의.
+    상대가 AI면 바로 판단하고, 플레이어면 다음 턴 시작에 제안 창으로 묻는다."""
+    if n <= 0 or price <= 0:
+        return False
+    seller, buyer = (fid, other) if sell else (other, fid)
+    o = g.factions[other]
+    if o.is_ai:
+        if ai_accepts_trade(g, other, fid, res, n, price, ai_sells=not sell):
+            D.make_trade(g, seller, buyer, res, n, price, fid)
+            return True
+        return False
+    key = f"trade_{res}_{'s' if sell else 'b'}"
+    f = g.factions[fid]
+    if g.turn - f.ai.get(key, -99) < C.AI_TRADE_EVERY * 2:
+        return False
+    f.ai[key] = g.turn
+    g.pending_proposals.append({"from": fid, "kind": "trade", "res": res, "n": int(n), "price": round(price, 1),
+                                "sell": bool(sell)})
+    return True
+
+
+def _trade_offers(g, f):
+    """4턴마다: 남는 지하자원은 가장 값을 쳐 줄 나라에 팔고, 공장 빈 칸·군 생산 석유가 모자라면 남는 나라에서
+    산다(값은 파는 쪽 손해와 사는 쪽 가치의 가운데: 사는 쪽이 공장에 넣었을 때 금액 이하, 파는 쪽 시장 판매가 이상).
+    평균 행복도가 낮으면 이웃에게 특산물을 산다(이미 그 나라 지역에 공급하던 것도)."""
+    fid = f.id
+    if (g.turn + fid) % C.AI_TRADE_EVERY:
+        return
+    partners = trade_partners(g, fid)
+    if not partners:
+        return
+    busy = {(c["from"], c["to"], c["res"]) for c in D.contracts(g)}
+    sup = g.energy_supply(fid)
+    _, left, room = D.energy_eval(g, fid, sup)
+    # 1) 남는 석유·석탄·전기 팔기
+    for k in ("oil", "elec", "coal"):
+        n = int(left[k])
+        if n < 1:
+            continue
+        floor = energy_unit_cost(g, fid, k, n)
+        best = None
+        for x in partners:
+            if (fid, x, k) in busy:
+                continue
+            val = energy_unit_value(g, x, k, n, military=g.factions[x].is_ai and mil_oil_want(g, g.factions[x]) > 0)
+            if val > floor * C.AI_TRADE_GAIN and (best is None or val > best[0]):
+                best = (val, x)
+        if best:
+            _propose_trade(g, fid, best[1], k, n, (floor + best[0]) / 2, sell=True)
+            break
+    # 2) 공장 빈 칸·군 생산 석유가 모자라면 사기
+    want_oil = mil_oil_want(g, f)
+    for k in ("elec", "coal", "oil"):
+        need = room if k != "oil" else max(room, want_oil)
+        if k == "oil" and not room:
+            need = want_oil
+        if need < 1:
+            continue
+        best = None
+        for x in partners:
+            if (x, fid, k) in busy:
+                continue
+            _, lx, _ = D.energy_eval(g, x, g.energy_supply(x))
+            q = int(min(need, lx[k]))
+            if q < 1:
+                continue
+            cost = energy_unit_cost(g, x, k, q)
+            val = energy_unit_value(g, fid, k, q, military=want_oil > 0)
+            if val > cost * C.AI_TRADE_GAIN and (best is None or val - cost > best[0]):
+                best = (val - cost, x, q, cost, val)
+        if best:
+            _, x, q, cost, val = best
+            if f.money >= (cost + val) / 2 * q * 3:
+                _propose_trade(g, fid, x, k, q, (cost + val) / 2, sell=False)
+            break
+    # 3) 불행하면 이웃에게 특산물 사기
+    if g.avg_happiness(fid) < C.AI_SPEC_BUY_H:
+        regs = g.regions_of(fid)
+        want = min(C.AI_SPEC_BUY_MAX, sum(1 for r in regs if g.eff_happy(r) < C.AI_SPEC_BUY_H
+                                          and len(r.supplied) < C.SPECIALTY_MAX_TYPES))
+        if want >= 1:
+            price = D.spec_price(g, fid)
+            nbrs = {g.regions[n].owner for r in regs for n in g.world.land_adj[r.id]} - {NEUTRAL, fid}
+            cands = []
+            for x in partners:
+                if x not in nbrs or (x, fid, "specialty") in busy:
+                    continue
+                q = min(want, D.spec_supply(g, x))
+                if q < 1:
+                    continue
+                cost = D.spec_cost(g, x, q) / q
+                if price >= cost:
+                    cands.append((cost, -q, x, q))
+            if cands and f.money >= price * min(c[3] for c in cands) * 3:
+                _, _, x, q = min(cands)
+                _propose_trade(g, fid, x, "specialty", q, price, sell=False)
 
 
 def _tax(g, f):
@@ -1127,6 +1271,51 @@ def _merge_idle(g, fid):
             g.merge_armies(base.id, other.id)
 
 
+def occ_importance(g, fid, rid) -> float:
+    """중립 지역의 가치·중요도: 지역 가치(1~10) + 석유·석탄 2 + 특산물 1 + 내 수도와 맞닿음 2."""
+    info = g.info(rid)
+    v = g.region_value(rid)[0]
+    v += 2 if (info.is_oil or info.is_coal) else 0
+    v += 1 if info.specialties else 0
+    v += 2 if rid in g.world.land_adj.get(g.factions[fid].capital, ()) else 0
+    return v
+
+
+def occ_contests(g, fid) -> dict:
+    """내가 무력 점령 중인 중립 지역 가운데, 같은 턴에 끝날 상대의 병력 규모(최대 체력 합)가 나보다 크거나 같고
+    중요도가 AI_OCC_CONTEST_MIN 이상인 곳: {지역: 더 필요한 최대 체력}."""
+    out = {}
+    for rr in g.regions.values():
+        if rr.owner != NEUTRAL or fid not in rr.occs:
+            continue
+        o = rr.occs[fid]
+        left = o["need"] - o["progress"]
+        rivals = [x for x, ox in rr.occs.items() if x != fid and ox["need"] - ox["progress"] == left]
+        if not rivals:
+            continue
+        top = max(g.occ_force(x, rr.id) for x in rivals)
+        mine = g.occ_force(fid, rr.id)
+        if top >= mine and occ_importance(g, fid, rr.id) >= C.AI_OCC_CONTEST_MIN:
+            out[rr.id] = top - mine + 1
+    return out
+
+
+def _occ_keep(g, fid, a):
+    """중립 지역을 무력 점령 중인 부대가 남길 유닛 수(None = 전부 남는다).
+    점령 속도는 병력 수와 상관없으니, 경쟁자·적이 없으면 1개만 남기고 나머지는 다음 일을 하러 간다."""
+    rr = g.regions[a.loc]
+    if any(x != fid for x in rr.occs):
+        return None                               # 동시 점령 경쟁: 병력 규모가 우선순위라 남는다
+    for n in g.world.land_adj[a.loc]:
+        o = g.regions[n].owner
+        if o not in (NEUTRAL, fid) and D.at_war(g, fid, o):
+            return None                           # 적과 맞닿아 있으면 지킨다
+    # 남아 있을 다른 부대(이번 턴 이동 명령을 받은 부대는 빼고)
+    others = sum(x.count(("land",)) for x in g.armies_at(a.loc, fid)
+                 if x.id != a.id and x.domain() == "land" and not (x.order or x.goto))
+    return 0 if others >= 1 else 1
+
+
 def _army_orders(g, f, threat):
     fid = f.id
     w = g.world
@@ -1158,10 +1347,20 @@ def _army_orders(g, f, threat):
     if p1:
         border_keep = {r.id for r in g.regions_of(fid)
                        if any(g.regions[n].owner not in (NEUTRAL, fid) for n in w.land_adj[r.id])}
+    # 중립 지역 동시 점령에서 병력 규모(최대 체력 합)가 밀리면, 가치·중요도가 높은 곳에 이웃 병력을 더 보낸다
+    contest = occ_contests(g, fid) if f.is_ai and not crisis else {}
     for a in armies:
         if a.id not in g.armies:
             continue
         rr = g.regions[a.loc]
+        if contest and a.loc != f.capital and a.loc not in guards and rr.owner == fid and not rr.occs:
+            need_at = next((rid for rid in w.land_adj[a.loc] if contest.get(rid, 0) > 0), None)
+            if need_at is not None:
+                force = sum(C.UNITS[k]["hp"] * n for k, n in a.units.items())
+                ok, _ = g.order_army(a.id, need_at)
+                if ok:
+                    contest[need_at] -= force
+                    continue
         # 수도 방위군: 최소 병력은 수도에 남긴다(넘는 병력만 움직인다)
         if a.loc == f.capital:
             others = sum(x.count(("land",)) for x in g.armies_at(a.loc, fid)
@@ -1194,7 +1393,12 @@ def _army_orders(g, f, threat):
         neutral_ok = not crisis and (not at_war or a.count() <= 2)
         # 점령 중이면 자리를 지킨다(중립 땅인데 지금은 그럴 때가 아니면 점령을 버리고 전선으로)
         if fid in rr.occs and (rr.owner != NEUTRAL or neutral_ok):
-            continue
+            keep = _occ_keep(g, fid, a) if rr.owner == NEUTRAL and f.is_ai else None
+            if keep is None or keep >= a.count():
+                continue
+            if keep > 0:                          # 가장 가벼운 유닛 하나만 남기고 나머지는 다음 일을 하러 간다
+                k = min(a.units, key=lambda u: (C.UNITS[u]["hp"], C.UNITS[u]["cost"], u))
+                g.split_army(a.id, {k: 1})
         # 저항 중인 점령지: 옛 주인이 맞닿아 있고 아직 전쟁 중이면 작은 부대는 남아 지킨다(비우면 바로 탈환된다)
         if rr.owner == fid and g.resisting(rr) and a.count() <= 3:
             old = rr.resist.get("from")
@@ -1974,9 +2178,9 @@ def _step_toward(g, fid, start, dest, reach):
 
 
 def fuel_balance(g, fid) -> dict:
-    """턴당 공장 연료 수급 추정(채굴만, 재고 제외): supply 공장에 넣을 수 있는 연료, demand 공장 단계 합,
+    """턴당 공장 연료 수급 추정(채굴·계약): supply 공장에 넣을 수 있는 연료, demand 공장 단계 합,
     spare = supply − demand, plant_room 남는 발전소 용량, raw_left 발전소에 못 넣은 석탄·석유."""
-    mined = g.energy_mined(fid)
+    mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
     plants, facts = g.energy_sites(fid)
     cap = sum(r.b["power"] for r in plants)
     conv_oil = min(cap, mined["oil"])
@@ -2484,7 +2688,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             cost = R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1)
             start(r, key, border, cost)
     # ② 발전소: 발전소 용량(단계 합)이 석탄·석유 채굴량에 닿을 때까지
-    mined = g.energy_mined(fid)
+    mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
     plants, facts = g.energy_sites(fid)
     room = mined["coal"] + mined["oil"] - sum(r.b["power"] for r in regs) - sum(
         1 for r in regs if r.project and r.project.key == "power")

@@ -897,6 +897,9 @@ def draw_nation_tab(app, body):
     y += 24
     # 자원 시장
     y = section(gui, x, y + 4, w, "자원 시장 (구매/판매가, 같은 턴 추가 구매 +10%)")
+    gui.text((x, y - 2), "석유·석탄·전기는 쌓이지 않습니다: 이번 턴 확보량을 쓰고 남으면 턴 종료 때 저절로 팝니다.", 11, t.muted,
+             max_w=w)
+    y += 18
     for res in C.RESOURCES:
         gui.text((x, y + 5), C.RESOURCE_NAMES[res], 13, weight="semibold")
         gui.text((x + 40, y + 5), f"{f.res.get(res, 0):,.0f}", 13)
@@ -920,7 +923,8 @@ def draw_nation_tab(app, body):
             modals.open_qty(app, f"{name} 구매", g.max_buyable(pid, res), 0, do_buy,
                             preview=lambda n, res=res: f"비용 {g.buy_cost(pid, res, n):,.0f} (자금 {f.money:,.0f})",
                             ok_label="구매")
-        if gui.button((bx + 58, y, 54, 24), "판매", size=11, tooltip=f"보유 {int(f.res.get(res, 0)):,}개"):
+        if gui.button((bx + 58, y, 54, 24), "판매", size=11,
+                      tooltip=f"{'비축' if res == 'food' else '이번 턴 확보'} {int(f.res.get(res, 0)):,}개"):
             modals.open_qty(app, f"{name} 판매", int(f.res.get(res, 0)), 0, do_sell,
                             preview=lambda n, sp=sp: f"수입 +{n * sp:,.0f}", ok_label="판매")
         y += 30
@@ -930,7 +934,7 @@ def draw_nation_tab(app, body):
     # 특산물
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     supplied = sum(len(r.supplied) for r in g.regions_of(pid))
-    y = section(gui, x, y, w, f"특산물 (재고 {sum(stock.values())}개 · 공급 {supplied}건, 자동 배분)")
+    y = section(gui, x, y, w, f"특산물 (이번 턴 {sum(stock.values())}개 · 공급 {supplied}건, 남는 것은 사라짐)")
     f.auto_specialty = gui.checkbox((x, y, w - 110, 24), "행복도 낮은 지역부터 자동", f.auto_specialty, size=12)
     if gui.button((x + w - 100, y - 2, 100, 26), "배분 수정", size=12):
         app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
@@ -1263,15 +1267,15 @@ def draw_nation_status(app, body):
     bonus = sum(C.POP_OUTPUT * r.pop * C.FOCUS_POP_BONUS for r in focus)
     y = kv(gui, x, y, w, "생산 집중 지역", f"{len(focus)}곳 (+{bonus:,.0f})")
     # 자원
-    y = section(gui, x, y + 6, w, "자원 비축")
+    y = section(gui, x, y + 6, w, "자원")
     y = kv(gui, x, y, w, "식량", f"{f.res.get('food', 0):,.0f} (생산 {last.get('food_prod', 0):,.0f} / 소비 "
            f"{last.get('food_cons', 0):,.0f})")
-    y = kv(gui, x, y, w, "석유 / 석탄 / 전기",
+    y = kv(gui, x, y, w, "이번 턴 석유 / 석탄 / 전기",
            f"{f.res.get('oil', 0):,.0f} / {f.res.get('coal', 0):,.0f} / {f.res.get('elec', 0):,.0f}")
     # 특산물 재고
     stock = {k: v for k, v in f.specialty.items() if v > 0}
     kinds = sorted(set(stock) | set(g.specialty_kinds(pid)))
-    y = section(gui, x, y + 6, w, f"특산물 재고 {sum(stock.values())}개 · {len(kinds)}종 (눌러서 생산지 열기)")
+    y = section(gui, x, y + 6, w, f"이번 턴 특산물 {sum(stock.values())}개 · {len(kinds)}종 (눌러서 생산지 열기)")
     producer = {sp: r.id for r in regs for sp in app.world.regions[r.id].specialties}
     supplied = {}
     for r in regs:
@@ -1284,7 +1288,7 @@ def draw_nation_status(app, body):
         if hov:
             gui.rect(t.panel_alt, row, radius=6)
         gui.text((x + 6, y + 4), k, 13, t.accent if src else t.text, "semibold" if src else "regular", max_w=w * 0.55)
-        info = f"재고 {stock.get(k, 0)} · 공급 {supplied.get(k, 0)}곳"
+        info = f"이번 턴 {stock.get(k, 0)} · 공급 {supplied.get(k, 0)}곳"
         gui.text((x + w - 4, y + 5), info, 11, t.muted, anchor="topright")
         if hov:
             gui.tooltip = f"생산지: {app.world.regions[src].name} (클릭하면 지역 정보·행동 메뉴)"
@@ -1483,12 +1487,11 @@ def draw_energy_tab(app, body):
     p_elec = sum(a["elec_out"] for a in plan["plants"].values())
     fu = {k: sum(a[k] for a in plan["factories"].values()) for k in ("coal", "oil", "elec")}
     st, mi, af = plan["stock"], plan["mined"], plan["after"]
-    rows = [("재고", (st["coal"], st["oil"], st["elec"]), False),
-            ("① 채굴·자체 발전", (mi["coal"], mi["oil"], mi["elec"]), True),
+    rows = [("① 이번 턴 확보", (st["coal"], st["oil"], st["elec"]), False),
             ("② 발전소 투입", (-p_coal, -p_oil, 0), True),
             ("③ 발전", (0, 0, p_elec), True),
             ("④ 공장 투입", (-fu["coal"], -fu["oil"], -fu["elec"]), True),
-            ("턴 뒤 재고", (af["coal"], af["oil"], af["elec"]), False)]
+            ("남는 양 → 판매", (af["coal"], af["oil"], af["elec"]), False)]
     for label, vals, signed in rows:
         bold = not signed
         gui.text((x, fy), label, 12, t.text if bold else t.muted, "semibold" if bold else "regular")
@@ -1500,8 +1503,12 @@ def draw_energy_tab(app, body):
                 col = (t.good if v > 0 else t.bad) if signed else t.text
             gui.text((cx + 40, fy), txt, 12, col, "semibold" if bold else "regular", anchor="topright")
         fy += 20
-        if label in ("재고", "④ 공장 투입"):
+        if label in ("① 이번 턴 확보", "④ 공장 투입"):
             gui.line(t.border, (x, fy - 2), (x + w, fy - 2))
+    sold = sum(int(af[k]) * g.sell_price(pid, k) for k in C.ENERGY)
+    gui.text((x, fy + 2), f"채굴·자체 발전 {mi['coal']:,.0f} / {mi['oil']:,.0f} / {mi['elec']:,.0f} · 자원은 쌓이지 않고, "
+             f"남는 양은 턴 종료 때 시장 판매(+{sold:,.0f})", 11, t.muted, max_w=w)
+    fy += 20
     units = sum(a["units"] for a in plan["factories"].values())
     cap = sum(r.b["factory"] for r in facts)
     m = g.mods(pid)

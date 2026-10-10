@@ -136,7 +136,12 @@ def player_turn(g, rng):
         g.resolve_rebellion(pid, rid, rng.choice(["pay", "tax", "suppress"]))
     for prop in list(g.pending_proposals):
         if rng.random() < 0.5 and g.factions[prop["from"]].alive:
-            D.sign_treaty(g, prop["from"], pid, prop["kind"])
+            if prop["kind"] == "trade":                    # AI 자원 거래 제의
+                fid = prop["from"]
+                seller, buyer = (fid, pid) if prop["sell"] else (pid, fid)
+                D.make_trade(g, seller, buyer, prop["res"], prop["n"], prop["price"], fid)
+            elif prop["kind"] != "coalition_war":
+                D.sign_treaty(g, prop["from"], pid, prop["kind"])
         g.pending_proposals.remove(prop)
     # 슬롯
     for rid in rng.sample(mine, min(len(mine), 6)):

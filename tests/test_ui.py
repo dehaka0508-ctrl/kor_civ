@@ -59,6 +59,13 @@ def test_screens_render(app):
     g.pending_proposals.append({"from": other, "kind": "nonaggr"})
     frame(app)
     g.pending_proposals.clear()
+    # AI 자원 거래 제의(판매·구매) 창
+    from korciv import diplomacy as D
+    if not D.at_war(g, other, g.player_id):
+        for sell, res in ((True, "coal"), (False, "specialty")):
+            g.pending_proposals.append({"from": other, "kind": "trade", "res": res, "n": 2, "price": 55.0, "sell": sell})
+            frame(app)
+            g.pending_proposals.clear()
     app.select("SEA2")
     frame(app)
 

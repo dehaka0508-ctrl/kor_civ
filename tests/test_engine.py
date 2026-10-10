@@ -71,6 +71,7 @@ def test_energy_cannot_be_bought_but_sold():
     m0, o0 = f.money, f.res["oil"]
     assert g.market_buy(0, "oil", 3) == (0, 0.0) and g.max_buyable(0, "coal") == 0
     assert f.money == m0 and f.res["oil"] == o0
+    f.res["coal"] = 5                                   # 이번 턴 확보량에서 판다
     k, gain = g.market_sell(0, "coal", 2)
     assert k == 2 and gain > 0
     assert g.market_buy(0, "food", 1)[0] == 1
@@ -975,7 +976,7 @@ def test_occupation_not_cancelled_by_other_army():
     assert not g.armies_at(tgt, 1)                      # 진 쪽 병력은 귀환
 
 
-def test_annex_allowed_while_other_occupies_and_tie_goes_to_bigger_neighbor():
+def test_annex_allowed_while_other_occupies_and_occupation_wins_tie():
     g, tgt, other = _contest_setup()
     g.new_army(0, tgt, {"inf": 2})
     g.begin_occupation(0, tgt)
@@ -990,7 +991,22 @@ def test_annex_allowed_while_other_occupies_and_tie_goes_to_bigger_neighbor():
     g.factions[1].money = 1e6
     g._fund_projects()
     g._phase_claims()
-    assert g.regions[tgt].owner == 1                    # 맞닿은 지역 인구가 많은 쪽
+    assert g.regions[tgt].owner == 0                    # 같은 턴: 병력이 있는 무력 점령이 편입보다 먼저
+
+
+def test_simultaneous_occupation_goes_to_bigger_force():
+    g, tgt, other = _contest_setup()
+    _neutral_ai(g, 1)
+    g.new_army(0, tgt, {"inf": 4})                      # 최대 체력 40
+    g.begin_occupation(0, tgt)
+    g.new_army(1, tgt, {"tank": 1})                     # 최대 체력 50 (유닛 수는 적어도 규모가 크다)
+    g.begin_occupation(1, tgt)
+    rr = g.regions[tgt]
+    assert g.occ_force(0, tgt) == 40 and g.occ_force(1, tgt) == 50
+    for fid in (0, 1):
+        rr.occs[fid]["need"] = rr.occs[fid]["progress"] + 1
+    g._phase_claims()
+    assert rr.owner == 1
 
 
 def test_empty_enemy_region_taken_at_once():
@@ -1012,6 +1028,7 @@ def test_priority_auto_sort_and_market_max():
     near = sorted(g.world.land_adj["S002"])[:3]
     _own(g, 0, near)
     g.factions[0].money = 1e6
+    g.factions[0].res["oil"] = 1                        # 이번 턴 석유
     assert g.start_project(0, near[0], "unit", "tank")[0]
     assert g.start_project(0, near[1], "build", "bank")[0]
     t = next(o for o in g.annex_targets(0, "S002"))
@@ -1042,9 +1059,10 @@ def test_ai_army_leaves_neutral_occupation_when_country_in_crisis():
     army = g.new_army(1, neutral, {"inf": 11})
     g.begin_occupation(1, neutral)
     assert 1 in g.regions[neutral].occs
-    # 평시: 점령을 계속한다
+    # 평시: 점령을 계속하되(1개만 남기면 속도는 같다), 나머지는 다음 일을 하러 간다
     AI._army_orders(g, f, AI.threat_map(g, 1))
-    assert army.order is None
+    stay = [a for a in g.armies_at(neutral, 1) if not a.order]
+    assert 1 in g.regions[neutral].occs and sum(a.count() for a in stay) == 1
     # 전쟁에서 땅을 잃는 중: 중립 땅 점령을 버리고 움직인다
     D.declare_war(g, 0, 1)
     g.dip.wars[D.pair(0, 1)]["taken"][0] = 1
@@ -1210,10 +1228,8 @@ def test_unique_debuffs_setup_and_economy():
             for x in spec:
                 g.regions[x].b["specialty"] = lv
                 g.regions[x].resist = None
-            g.player.specialty = {}
-            g._phase_resources(g.player)
             made = sum(len(g.world.regions[x].specialties) * lv for x in spec)
-            have = sum(g.player.specialty.values()) + sum(len(x.supplied) for x in g.regions_of(0))
+            have = sum(g.specialty_made(g.player).values())
             assert have == made - (made // 10 if lk == "sej" else 0)
     _lead(g, 0, "egg")                                                              # 교대 계승
     g.turn = 48
@@ -1501,16 +1517,18 @@ def _energy_setup():
 def test_energy_plan_auto_and_flow():
     g, r, f = _energy_setup()
     assert R.factory_output(5) == 10000 and R.factory_output(3, 2) == 2800
-    f.auto_energy = True                                       # AI 방식: 매 턴 자동, 군 생산용 석유는 남긴다
-    f.res.update(coal=3, oil=C.AUTO_OIL_RESERVE + 1)
+    f.auto_energy = True                                       # AI 방식: 매 턴 자동
+    f.res.update(coal=3, oil=1)                                # 이번 턴 확보량(쌓이지 않는다)
     plan = g.energy_plan(0)
     assert plan["plants"]["S002"] == {"coal": 1, "oil": 1, "elec_out": 6}   # 발전소에 석유 먼저, 그다음 석탄
     fu = plan["factories"]["S002"]
     assert fu["units"] == 3 and fu["elec"] == 3                # 공장은 전기부터
-    assert plan["after"]["oil"] == C.AUTO_OIL_RESERVE
-    after = dict(plan["after"])
+    assert plan["after"] == pytest.approx({"oil": 0, "coal": 2, "elec": 3})
+    sell0 = f.trade_sell
     g._phase_resources(f)
-    assert {k: f.res[k] for k in C.ENERGY} == pytest.approx(after)    # 미리보기 = 실제 처리
+    assert all(f.res[k] == 0 for k in C.ENERGY)                 # 남는 것은 쌓이지 않고
+    assert f.last["energy"]["sold"] == {"coal": 2, "elec": 3}   # 턴 종료 때 시장 판매가로 팔린다
+    assert f.trade_sell - sell0 == pytest.approx(2 * g.sell_price(0, "coal") + 3 * g.sell_price(0, "elec"))
     assert r.fuel_used == 3
     assert r.output == pytest.approx(g.calc_output("S002", full=True))
 
@@ -1533,10 +1551,6 @@ def test_assign_energy_command_priority():
     assert (units, cap) == (7, 8) and not f.auto_energy
     f.res.update(coal=0, oil=0, elec=0)                        # 배정은 다음에 누를 때까지 그대로(재고만큼만 쓰임)
     assert g.regions[other].energy["f"]["elec"] == 4
-    # 남아 있는 전기 재고는 턴당 생산량을 넘어도 공장에 최대한 배정한다
-    f.res.update(coal=50, oil=50, elec=50)
-    units, cap = g.assign_energy(0)
-    assert g.regions[other].energy["f"]["elec"] == 5 and r.energy["f"]["elec"] == 3 and units == 8
 
 
 def test_energy_manual_assignment():
@@ -1915,10 +1929,10 @@ def test_gift_opinion_follows_income():
     assert D.gift_opinion(g, 1, inc) == 3.37
     f.last["tax"] = 0                                  # 세율 0%여도 GDP × 10% 기준
     assert D.gift_income(g, 1) == pytest.approx(max(1.0, g.gdp(1) * C.TAX_DEFAULT * f.income_mult))
-    # 자원 선물은 주는 쪽의 시장 판매가로 환산
+    # 식량 선물은 주는 쪽의 시장 판매가로 환산(턴당 100개 × 12턴)
     offer = D.empty_offer()
     offer["give"]["food"] = 100
-    assert D.gift_value(g, offer["give"], 0) == pytest.approx(100 * g.sell_price(0, "food"))
+    assert D.gift_value(g, offer["give"], 0) == pytest.approx(100 * g.sell_price(0, "food") * C.CONTRACT_TURNS)
     f.aggression, f.gov = 5.0, "philosopher"
     op0 = D.opinion(g, 1, 0)
     offer = D.empty_offer()
@@ -2202,10 +2216,7 @@ def test_yelu_tribute_and_cession():
     _neutral_ai(g, 1, 2)
     g.dip.op[(1, 0)] = g.dip.op[(2, 0)] = 0.0
     assert D.declare_friendship(g, 0, 1)[0] and D.declare_friendship(g, 0, 2)[0]
-    before = g.player.specialty.get(C.TRIBUTE_SPECIALTY, 0)
-    g._phase_resources(g.player)
-    got = g.player.specialty.get(C.TRIBUTE_SPECIALTY, 0) + sum(
-        1 for r in g.regions_of(0) if C.TRIBUTE_SPECIALTY in r.supplied) - before
+    got = g.specialty_made(g.player).get(C.TRIBUTE_SPECIALTY, 0)
     assert got == 2                                       # 우호 선언 2곳 → 공물 2
     # 강동 6주: 강화하면 상대와 맞닿은 내 지역 1곳(수도 제외)이 넘어간다
     cap = g.player.capital
@@ -3102,20 +3113,11 @@ def test_start_message_uses_level_names_and_unchecks_focus():
     assert not rr.focus
 
 
-def test_auto_energy_uses_stored_elec():
-    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
-    rr = g.regions["S002"]
-    rr.b["factory"] = 5
-    g.player.res.update({"elec": 50, "coal": 0, "oil": 0})
-    g.assign_energy(0)
-    assert rr.energy["f"]["elec"] == 5
-
-
 def test_small_resource_gift_still_raises_opinion():
     g = new_game(player_start="S002", n_enemies=2)
     g.factions[1].last["tax"] = 1e7                    # 세수가 아주 큰 나라
-    for k in ("food", "oil", "coal", "elec", "specialty"):
-        g.player.res.update(food=50, oil=50, coal=50, elec=50)
+    for k in ("food", "specialty"):
+        g.player.res.update(food=500)
         g.player.specialty = {"쌀": 5}
         g.dip.rejected.clear()
         o = D.empty_offer()
@@ -3123,3 +3125,162 @@ def test_small_resource_gift_still_raises_opinion():
         b = D.opinion(g, 1, 0)
         assert D.respond_offer(g, 1, 0, o)[0] == "accept"
         assert D.opinion(g, 1, 0) >= b + 0.01 - 1e-9, k
+
+
+# ------------------------------------------------------------------ v1.45.0 자원 흐름·계약·거래
+def _mined(g, table):
+    """세력별 턴당 채굴량을 고정한다."""
+    orig = g.energy_mined
+    g.energy_mined = lambda fid: dict(table[fid]) if fid in table else orig(fid)
+
+
+def test_resources_do_not_accumulate():
+    g = new_game(player_start="S002", n_enemies=1)
+    _mined(g, {0: {"oil": 2, "coal": 3, "elec": 1}})
+    f = g.player
+    for _ in range(3):
+        g.end_turn()
+        assert {k: f.res[k] for k in C.ENERGY} == {"oil": 2, "coal": 3, "elec": 1}   # 이번 턴 생산량만
+    f.specialty = {"쌀": 99}
+    g.end_turn()
+    assert sum(f.specialty.values()) == sum(g.specialty_made(f).values())             # 특산물도 쌓이지 않는다
+
+
+def test_resource_trade_is_12_turn_contract():
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    _mined(g, {0: {"oil": 0, "coal": 5, "elec": 0}, 1: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    offer = D.empty_offer()
+    offer["give"]["coal"] = 2
+    offer["take"]["money"] = 0
+    offer["give"]["money"] = 0
+    D.execute_offer(g, 0, 1, offer)
+    cs = D.contracts_between(g, 0, 1)
+    assert len(cs) == 1 and cs[0]["n"] == 2 and cs[0]["left"] == C.CONTRACT_TURNS - 1   # 이번 턴분은 바로
+    assert g.player.res["coal"] == 3 and g.factions[1].res["coal"] == 2
+    for _ in range(C.CONTRACT_TURNS - 1):
+        g.end_turn()
+        assert g.factions[1].res["coal"] == 2 and g.player.res["coal"] == 3
+    g.end_turn()
+    assert not D.contracts_between(g, 0, 1) and g.factions[1].res["coal"] == 0   # 12턴이 지나면 끝
+
+
+def test_trade_accept_raises_both_opinions_by_count():
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    _mined(g, {1: {"oil": 0, "coal": 4, "elec": 0}})
+    g._refresh_pools()
+    a0, b0 = D.opinion(g, 1, 2), D.opinion(g, 2, 1)
+    D.make_trade(g, 1, 2, "coal", 3, 50.0, proposer=1)
+    assert D.opinion(g, 1, 2) == pytest.approx(a0 + 3) and D.opinion(g, 2, 1) == pytest.approx(b0 + 3)
+    g.end_turn()                                       # 받는 턴마다 개당 50을 낸다
+    assert D.contracts_between(g, 1, 2)[0]["last_q"] == 3
+
+
+def test_energy_gift_opinion_uses_factory_output():
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    _neutral_ai(g, 1)
+    _lead(g, 1, "cus")
+    cap = g.factions[1].capital
+    rr = g.regions[cap]
+    rr.b["factory"], rr.b["power"] = 3, 0
+    _mined(g, {1: {"oil": 0, "coal": 0, "elec": 0}})
+    side = D.empty_offer()["give"]
+    side["coal"] = 2
+    # 받는 쪽 공장 3단계에 석탄 2 → 산출 2 × 1400, × 기준 세율 10% × 12턴
+    assert D.gift_value(g, side, 0, 1) == pytest.approx(2 * C.FACTORY_UNIT_OUTPUT[2] * C.TAX_DEFAULT * C.CONTRACT_TURNS)
+    rr.b["factory"] = 0
+    assert D.gift_value(g, side, 0, 1) == 0                     # 공장이 없으면 우호도도 오르지 않는다
+
+
+def test_spec_price_rises_when_unhappy():
+    g = new_game(player_start="S002", n_enemies=1)
+    for r in g.regions_of(0):
+        r.happy = 0.0
+    p0 = D.spec_price(g, 0)
+    for r in g.regions_of(0):
+        r.happy = -50.0
+    p_low = D.spec_price(g, 0)
+    for r in g.regions_of(0):
+        r.happy = 50.0
+    p_high = D.spec_price(g, 0)
+    assert p_high < p0 < p_low and p_low == pytest.approx(p0 * math.e, rel=0.05)
+
+
+def test_ai_sells_surplus_to_ai_with_factory_room():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    for fid in (1, 2):
+        _lead(g, fid, "cus")
+        g.dip.op[(1, 2)] = g.dip.op[(2, 1)] = 10.0
+    g.regions[g.factions[1].capital].b["factory"] = 0
+    g.regions[g.factions[2].capital].b.update(factory=4, power=0)
+    _mined(g, {1: {"oil": 0, "coal": 4, "elec": 0}, 2: {"oil": 0, "coal": 0, "elec": 0},
+               0: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    while (g.turn + 1) % C.AI_TRADE_EVERY:
+        g.turn += 1
+    AI._trade_offers(g, g.factions[1])
+    cs = D.contracts_between(g, 1, 2)
+    assert cs and cs[0]["from"] == 1 and cs[0]["res"] == "coal" and cs[0]["price"] > g.sell_price(1, "coal")
+
+
+def test_ai_trade_offer_to_player_is_queued():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    _lead(g, 1, "cus")
+    g.dip.op[(1, 0)] = g.dip.op[(0, 1)] = 10.0
+    g.regions[g.factions[1].capital].b["factory"] = 0
+    g.regions["S002"].b.update(factory=4, power=0)
+    _mined(g, {1: {"oil": 0, "coal": 4, "elec": 0}, 0: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    while (g.turn + 1) % C.AI_TRADE_EVERY:
+        g.turn += 1
+    AI._trade_offers(g, g.factions[1])
+    prop = [p for p in g.pending_proposals if p["kind"] == "trade"]
+    assert prop and prop[0]["sell"] and prop[0]["res"] == "coal"
+
+
+def test_occ_contest_reinforcement_target():
+    from korciv import ai as AI
+    g, tgt, other = _contest_setup()
+    g.new_army(0, tgt, {"inf": 1})
+    g.begin_occupation(0, tgt)
+    g.new_army(1, tgt, {"tank": 2})
+    g.begin_occupation(1, tgt)
+    rr = g.regions[tgt]
+    rr.occs[0]["progress"] = rr.occs[1]["progress"]
+    rr.occs[0]["need"] = rr.occs[1]["need"]
+    imp = AI.occ_importance(g, 0, tgt)
+    got = AI.occ_contests(g, 0)
+    if imp >= C.AI_OCC_CONTEST_MIN:
+        assert got.get(tgt) == 100 - 10 + 1                         # 상대 100 vs 나 10
+    else:
+        assert tgt not in got
+
+
+def test_unhappy_ai_offers_to_buy_specialty_from_neighbor():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    _lead(g, 1, "cus")
+    _lead(g, 0, "cus")
+    nb = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 1, nb)                                     # 1은 플레이어와 맞닿은 이웃
+    for r in g.regions_of(1):
+        r.happy, r.resist, r.supplied = -60.0, None, set()
+    spec = next(x for x in g.world.order if g.world.regions[x].specialties and g.regions[x].owner == NEUTRAL)
+    _own(g, 0, [spec])
+    g.regions[spec].resist = None
+    g.regions[spec].b["specialty"] = 3
+    g.dip.op[(1, 0)] = g.dip.op[(0, 1)] = 10.0
+    g.factions[1].money = 1e6
+    g._refresh_pools()
+    while (g.turn + 1) % C.AI_TRADE_EVERY:
+        g.turn += 1
+    AI._trade_offers(g, g.factions[1])
+    prop = [p for p in g.pending_proposals if p["kind"] == "trade" and p["res"] == "specialty"]
+    assert prop and not prop[0]["sell"] and prop[0]["price"] == pytest.approx(D.spec_price(g, 1), rel=0.01)

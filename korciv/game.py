@@ -279,6 +279,7 @@ class Game:
                       "food_prod": sum(r.food for r in regs), "food_cons": sum(r.pop for r in regs)}
         self._update_power()
         self._update_fog(initial=True)
+        self._refresh_pools()
         for f in self.factions:
             if not f.is_ai:
                 self.assign_energy(f.id)          # 플레이어: 시작 배정을 한 번 해 둔다(이후는 [자동 배정] 명령)
@@ -1865,6 +1866,50 @@ class Game:
             out["elec"] += info.power_self
         return out
 
+    def energy_supply(self, fid) -> dict:
+        """턴당 확보량(명목): 채굴·자체 발전 + 계약으로 받는 양 − 계약으로 주는 양."""
+        out = {k: float(v) for k, v in self.energy_mined(fid).items()}
+        for c in D.contracts(self):
+            if c["res"] in C.ENERGY:
+                if c["to"] == fid:
+                    out[c["res"]] += c["n"]
+                elif c["from"] == fid:
+                    out[c["res"]] = max(0.0, out[c["res"]] - c["n"])
+        return out
+
+    def specialty_made(self, f) -> dict:
+        """이번 턴 특산물 생산(세종대왕 수라상·야율융서 공물 반영). {종류: 개수}"""
+        made = {}
+        for r in self.regions_of(f.id):
+            if r.occ or self.resisting(r) or not r.b["specialty"]:
+                continue
+            for sp in self.info(r.id).specialties:
+                made[sp] = made.get(sp, 0) + r.b["specialty"]
+        tithe = self.mods(f.id).value("specialty_tithe")     # 세종대왕 '고기 없이는 못살아'
+        if tithe:
+            cut = sum(made.values()) // int(tithe)
+            for _ in range(cut):                              # 가장 많이 나는 특산물부터 1개씩 수라상으로
+                sp = max(made, key=lambda k: (made[k], k))
+                made[sp] -= 1
+            f.last["specialty_tithe"] = cut
+        cap = self.regions.get(f.capital)
+        if self.mods(f.id).value("tribute") and cap and cap.owner == f.id and not cap.occ and not self.resisting(cap):
+            n = sum(1 for x in self.alive_ids() if x != f.id and D.declared_friends(self, f.id, x))
+            if n:                                             # 야율융서 '전연의 맹약': 우호 선언 1곳마다 공물 1
+                made[C.TRIBUTE_SPECIALTY] = made.get(C.TRIBUTE_SPECIALTY, 0) + n * self.mods(f.id).value("tribute")
+        return {k: v for k, v in made.items() if v > 0}
+
+    def _refresh_pools(self):
+        """턴 시작: 석유·석탄·전기·특산물은 쌓이지 않고 이번 턴 생산량으로 새로 잡는다. 그다음 자원 계약을 이행."""
+        for f in self.factions:
+            if not f.alive:
+                continue
+            mined = self.energy_mined(f.id)
+            for k in C.ENERGY:
+                f.res[k] = float(mined[k])
+            f.specialty = self.specialty_made(f)
+        D.run_contracts(self)
+
     def energy_sites(self, fid):
         """연료를 받는 시설: (발전소 지역들, 공장 지역들). 공장은 단계가 높은 순."""
         act = [r for r in self.regions_of(fid) if not r.occ and not self.resisting(r)]
@@ -1875,10 +1920,10 @@ class Game:
     def auto_energy_plan(self, fid, stock, oil_reserve=None) -> dict:
         """자원 자동 배정 우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 →
         ⑤ 공장에 석유. 발전소·공장 모두 단계가 높은 곳부터 채운다.
-        oil_reserve: 남겨 둘 석유(AI는 군 생산용 AUTO_OIL_RESERVE, 플레이어 명령은 0).
+        oil_reserve: 남겨 둘 석유(v1.45.0부터 자원이 쌓이지 않아 기본 0: 유닛은 배정 전에 이미 석유를 냈다).
         반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
         plants, facts = self.energy_sites(fid)
-        reserve = C.AUTO_OIL_RESERVE if oil_reserve is None else oil_reserve
+        reserve = 0 if oil_reserve is None else oil_reserve
         left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": int(stock["coal"]), "elec": int(stock["elec"])}
         plan = {r.id: {"coal": 0, "oil": 0} for r in plants}
         room = {r.id: r.b["power"] for r in plants}
@@ -1901,13 +1946,10 @@ class Game:
         return {"p": plan, "f": fplan}
 
     def assign_energy(self, fid):
-        """[자동 배정] 명령: 턴마다 생산되는 양(채굴·자체 발전)을 기준으로 우선순위대로 배정해 수동 배정에
-        적어 둔다(다음에 누를 때까지 그대로, 재고는 쓰지 않으니 매 턴 같은 배정을 유지할 수 있다)."""
+        """[자동 배정] 명령: 턴당 확보량(채굴·자체 발전 + 계약)을 기준으로 우선순위대로 배정해 수동 배정에
+        적어 둔다(다음에 누를 때까지 그대로. 자원은 쌓이지 않으니 매 턴 같은 배정을 유지할 수 있다)."""
         f = self.factions[fid]
-        mined = self.energy_mined(fid)
-        base = {k: float(mined[k]) for k in C.ENERGY}
-        base["elec"] += float(f.res.get("elec", 0))   # 남는 전기는 턴당 생산량을 넘어도 공장에 최대한
-        want = self.auto_energy_plan(fid, base, oil_reserve=0)
+        want = self.auto_energy_plan(fid, self.energy_supply(fid), oil_reserve=0)
         for r in self.regions_of(fid):
             r.energy = {}
         for rid, a in want["p"].items():
@@ -1926,9 +1968,9 @@ class Game:
         반환: stock(지금 재고), mined, plants{rid: {coal, oil, elec_out}}, factories{rid: {coal, oil, elec, units}},
               after(턴 뒤 재고)"""
         f = self.factions[fid]
-        stock = {k: float(f.res.get(k, 0)) for k in C.ENERGY}
+        stock = {k: float(f.res.get(k, 0)) for k in C.ENERGY}     # 이번 턴 확보량(생산·계약, 유닛에 쓴 것 제외)
         mined = self.energy_mined(fid)
-        s = {k: stock[k] + mined[k] for k in C.ENERGY}
+        s = dict(stock)
         plants, facts = self.energy_sites(fid)
         if f.auto_energy:
             want = self.auto_energy_plan(fid, s)
@@ -2458,6 +2500,7 @@ class Game:
             self._half_ranking()
         # 12. 다음 턴 시작: 반란 판정
         self._phase_rebellion()
+        self._refresh_pools()                # 석유·석탄·전기·특산물: 이번 턴 생산량 + 자원 계약
         self._update_fog()
         self._advance_gotos()
         if self.player.alive and self.player.is_ai is False:
@@ -3011,6 +3054,19 @@ class Game:
                 best = left if best is None else min(best, left)
         return best
 
+    def occ_force(self, fid, rid) -> float:
+        """무력 점령 병력 규모: rid 에 있는 fid 육군 유닛의 최대 체력 합."""
+        return float(sum(C.UNITS[k]["hp"] * n for a in self.armies_at(rid, fid) if a.domain() == "land"
+                         for k, n in a.units.items() if C.UNITS[k]["kind"] == "land"))
+
+    def _claim_key(self, claim, rid):
+        """같은 턴에 둘 이상이 다 채웠을 때 순서: 무력 점령(병력 규모 = 최대 체력 합이 큰 순)이 편입보다 먼저,
+        편입끼리는 대상과 맞닿은 지역 인구 합이 많은 순."""
+        kind, fid, _ = claim
+        if kind == "occ":
+            return (0, -self.occ_force(fid, rid), fid)
+        return (1, -self.claim_pop(fid, rid), fid)
+
     def claim_pop(self, fid, rid) -> float:
         """동시에 완료됐을 때의 우선순위: 대상과 맞닿은 내 지역들의 인구 합."""
         regs = {n: self.regions[n] for n in self.world.land_adj[rid] if self.regions[n].owner == fid}
@@ -3020,7 +3076,8 @@ class Game:
 
     def _phase_claims(self):
         """6. 점령·편입: 무력 점령과 편입 게이지가 함께 차고, 먼저 다 채운 쪽이 그 지역을 차지한다.
-        같은 턴에 둘 이상이 다 채우면 대상과 맞닿은 지역의 인구 합이 많은 쪽이 차지한다."""
+        같은 턴에 둘 이상이 다 채우면: 무력 점령끼리는 그 자리 병력 규모(최대 체력 합)가 큰 쪽, 편입끼리는 대상과
+        맞닿은 지역 인구 합이 많은 쪽, 점령과 편입이 겹치면 병력이 있는 무력 점령이 먼저."""
         claims = {}
         for rid, fid in self._advance_occupations():
             claims.setdefault(rid, []).append(("occ", fid, None))
@@ -3028,10 +3085,12 @@ class Game:
             claims.setdefault(tgt, []).append(("annex", fid, (lead, members)))
         for rid, cl in claims.items():
             if len(cl) > 1:
-                cl.sort(key=lambda c: (-self.claim_pop(c[1], rid), c[1]))
+                cl.sort(key=lambda c: self._claim_key(c, rid))
                 names = ", ".join(self.fname(c[1]) for c in cl)
+                why = ("병력 규모(최대 체력 합)가 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
+                       else "무력 점령 중인" if cl[0][0] == "occ" else "맞닿은 지역 인구 합이 가장 많은")
                 self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
-                           f"맞닿은 지역 인구 합이 가장 많은 {self.fname(cl[0][1])}이(가) 차지합니다.",
+                           f"{why} {self.fname(cl[0][1])}이(가) 차지합니다.",
                            region=rid, fids=tuple(c[1] for c in cl))
             kind, fid, extra = cl[0]
             if kind == "occ":
@@ -3263,32 +3322,19 @@ class Game:
         regs = self.regions_of(f.id)
         active = [r for r in regs if not r.occ and not self.resisting(r)]   # 점령당하는 중·저항 지역은 생산 없음
         res = f.res
-        made = {}
-        for r in active:
-            info = self.info(r.id)
-            if r.b["specialty"]:
-                for sp in info.specialties:
-                    made[sp] = made.get(sp, 0) + r.b["specialty"]
-        tithe = self.mods(f.id).value("specialty_tithe")     # 세종대왕 '고기 없이는 못살아'
-        if tithe:
-            cut = sum(made.values()) // int(tithe)
-            for _ in range(cut):                              # 가장 많이 나는 특산물부터 1개씩 수라상으로
-                sp = max(made, key=lambda k: (made[k], k))
-                made[sp] -= 1
-            f.last["specialty_tithe"] = cut
-        if self.mods(f.id).value("tribute") and any(r.id == f.capital for r in active):
-            n = sum(1 for x in self.alive_ids() if x != f.id and D.declared_friends(self, f.id, x))
-            if n:                                             # 야율융서 '전연의 맹약': 우호 선언 1곳마다 공물 1
-                made[C.TRIBUTE_SPECIALTY] = made.get(C.TRIBUTE_SPECIALTY, 0) + n * self.mods(f.id).value("tribute")
-        for sp, n in made.items():
-            if n > 0:
-                f.specialty[sp] = f.specialty.get(sp, 0) + n
-        # 에너지: 채굴 → 발전소 → 전기 → 공장 (미리보기와 같은 계산)
+        # 에너지: 이번 턴 확보량 → 발전소 → 전기 → 공장 (미리보기와 같은 계산). 남는 것은 시장에 팔린다
         plan = self.energy_plan(f.id)
-        for k in C.ENERGY:
-            res[k] = plan["after"][k]
         for r in regs:
             r.fuel_used = plan["factories"].get(r.id, {}).get("units", 0)
+        left = {k: int(math.floor(plan["after"][k] + 1e-9)) for k in C.ENERGY}
+        gain = sum(left[k] * self.sell_price(f.id, k) for k in C.ENERGY)
+        if gain > 0:
+            f.money += gain
+            f.trade_sell += gain
+        plan["sold"] = {k: left[k] for k in C.ENERGY if left[k] > 0}
+        plan["sold_money"] = gain
+        for k in C.ENERGY:
+            res[k] = 0.0                                     # 쌓이지 않는다
         f.last["energy"] = plan
         live = {r.id for r in active}
         for r in regs:
@@ -3309,6 +3355,8 @@ class Game:
             if famine:
                 r.h_delta += C.FAMINE_HAPPY * famine
         self._distribute_specialties(f, regs)
+        f.last["specialty_lost"] = sum(v for v in f.specialty.values() if v > 0)
+        f.specialty = {}                                     # 남은 특산물은 쌓이지 않고 사라진다
         f.last.update(food_prod=prod, food_cons=cons, famine=famine)
 
     def _distribute_specialties(self, f, regs):
