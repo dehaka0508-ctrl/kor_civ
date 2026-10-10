@@ -549,11 +549,13 @@ def draw_setup(app):
     gui.rect(mix(t.panel, t.accent, 0.07), pr2, radius=3)
     pygame.draw.rect(gui.screen, t.accent, gui.R(pr2), 1, border_radius=int(3 * gui.u))
     draw_flag(gui, (pr2.x + 8, pr2.y + 8, 24, 16), s.flag)
-    gui.text((pr2.x + 40, pr2.centery), "내 나라", 11, t.accent if not t.dark else t.gold_lt, "bold", anchor="midleft")
+    nr_ = gui.text((pr2.x + 40, pr2.centery), (s.name or "").strip() or "대한", 13,
+                   t.accent if not t.dark else t.gold_lt, "serif", anchor="midleft", max_w=110)   # 위에서 정한 국호
     st_name = app.world.regions[s.start].name if s.start else "무작위"
     if s.start and app.world.regions[s.start].island == "무연륙 섬":
         st_name += " (섬 도전)"             # 무작위로는 나오지 않는 섬 시작
-    gui.text((pr2.x + 92, pr2.centery), st_name, 13, t.text, "bold", anchor="midleft", max_w=w2 - 270)
+    gui.text((nr_.right + 12, pr2.centery), st_name, 13, t.text, "bold", anchor="midleft",
+             max_w=pr2.right - 180 - nr_.right - 12)
 
     def go_pick(scene):
         app.scene = scene

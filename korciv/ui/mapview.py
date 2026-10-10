@@ -159,8 +159,39 @@ def dashed(surf, p1, p2, color, width=2, dash=6):
                          (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), width)
 
 
+def _chains(segs):
+    """선분 목록 [(a, b), ...] 을 끝점끼리 이어 꺾은선 목록으로."""
+    adj = {}
+    for i, (a, b) in enumerate(segs):
+        adj.setdefault(a, []).append(i)
+        adj.setdefault(b, []).append(i)
+    used = [False] * len(segs)
+    out = []
+    for i in range(len(segs)):
+        if used[i]:
+            continue
+        used[i] = True
+        a, b = segs[i]
+        line = [a, b]
+        for end in (1, 0):                  # 뒤로, 앞으로 늘린다
+            while True:
+                p = line[-1] if end else line[0]
+                nxt = next((j for j in adj.get(p, ()) if not used[j]), None)
+                if nxt is None:
+                    break
+                used[nxt] = True
+                q = segs[nxt][1] if segs[nxt][0] == p else segs[nxt][0]
+                if end:
+                    line.append(q)
+                else:
+                    line.insert(0, q)
+        out.append(np.array(line, np.float64))
+    return out
+
+
 class MapView:
     MIN_Z, MAX_Z = 0.8, 40.0
+    FX_RES = 1.5            # 번짐·전선 그림자 층: 기준 좌표 1당 픽셀(지도 전체를 한 번에 만들어 두고 잘라 쓴다)
 
     def __init__(self, world):
         self.world = world
@@ -190,6 +221,22 @@ class MapView:
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
+        # 지역 경계 선분: 두 지역이 함께 쓰는 선분(국경 후보)과 한 지역만 쓰는 선분(해안·바깥 경계)
+        seg = {}
+        for rid, arr, bbox in self.polys:
+            pts = [(round(x, 4), round(y, 4)) for x, y in arr.tolist()]
+            for p0, p1 in zip(pts, pts[1:] + pts[:1]):
+                if p0 != p1:
+                    seg.setdefault((p0, p1) if p0 < p1 else (p1, p0), []).append(rid)
+        shared, coast = {}, {}
+        for k, rids in seg.items():
+            rs = sorted(set(rids))
+            if len(rs) == 2:
+                shared.setdefault((rs[0], rs[1]), []).append(k)
+            elif len(rs) == 1:
+                coast.setdefault(rs[0], []).append(k)
+        self.pair_lines = [(a_, b_, c) for (a_, b_), segs in shared.items() for c in _chains(segs)]
+        self.coast_lines = [(r_, c) for r_, segs in coast.items() for c in _chains(segs)]
         # 좌표 변환을 한 번에: 모든 꼭짓점을 한 배열에 모아 두고 다각형·선은 구간만 기억한다
         bufs, n = [], 0
 
@@ -202,9 +249,15 @@ class MapView:
         self.sea_span = {sid: [put(ext) for ext, _ in parts] for sid, parts in self.sea_polys.items()}
         self.province_span = [put(a) for a in self.province_lines]
         self.terrain_span = [(kind, [put(a) for a in lines], conn) for kind, lines, conn in self.terrain_lines]
+        self.pair_span = [(a_, b_, put(c)) for a_, b_, c in self.pair_lines]
+        self.coast_span = [(r_, put(c)) for r_, c in self.coast_lines]
+        # 경계 사슬의 사각형(화면 밖 사슬은 건너뛴다)
+        self.pair_box = np.array([[*c.min(axis=0), *c.max(axis=0)] for _, _, c in self.pair_lines] or np.zeros((0, 4)))
+        self.coast_box = np.array([[*c.min(axis=0), *c.max(axis=0)] for _, c in self.coast_lines] or np.zeros((0, 4)))
         self.verts = np.concatenate(bufs) if bufs else np.zeros((0, 2))
         self.rid_list = list(world.order)
         self.ridx = {rid: i for i, rid in enumerate(self.rid_list, 1)}     # 번호 지도용(1부터)
+        self._fx = None             # (키, 번짐 층 Surface, 기준 좌표 원점)
         self.polys_by_rid = {}
         for i, (rid, arr, bbox) in enumerate(self.polys):
             self.polys_by_rid.setdefault(rid, []).append((arr, bbox))
@@ -374,7 +427,7 @@ class MapView:
         """colors: rid -> (fill, outline). 화면보다 CACHE_MARGIN 만큼 넓게 그린다.
         extra: {"owners": rid -> 세력 코드(1=중립·미상, 2+세력 id), "deep": 코드 -> 진한 색, "wars": {(코드, 코드)},
                 "glow": 국경 안쪽 번짐 여부} — 국경선·번짐·전선 그림자에 쓴다.
-        무거운 계산(번짐·국경·해안)은 절반 해상도에서 하고 부드럽게 키워 덮는다."""
+        국경·해안선은 미리 이어 둔 경계 사슬로 바로 긋고, 번짐·전선 그림자는 지도 전체 층(_fx_layer)을 잘라 붙인다."""
         extra = extra or {}
         u = ui_scale()
         mx, my = int(self.view.w * CACHE_MARGIN), int(self.view.h * CACHE_MARGIN)
@@ -405,63 +458,55 @@ class MapView:
         for sid, spans in self.sea_span.items():
             for span in spans:
                 pygame.draw.lines(surf, theme.sea_line, True, sp(span), 1)
-        # 보이는 지역 목록
         view = surf.get_rect()
-        vis = []
-        Th = T * 0.5
+        owners = extra.get("owners", {})
+
+        def on_screen(boxes):
+            if not len(boxes):
+                return np.zeros(0, bool)
+            return ((boxes[:, 2] * s + ox >= 0) & (boxes[:, 0] * s + ox <= W_)
+                    & (boxes[:, 3] * s + oy >= 0) & (boxes[:, 1] * s + oy <= H_))
+        coast_vis = [cs for cs, v in zip(self.coast_span, on_screen(self.coast_box)) if v]
+        pair_vis = [ps for ps, v in zip(self.pair_span, on_screen(self.pair_box))
+                    if v and owners.get(ps[0], 1) != owners.get(ps[1], 1)]
+        # 얕은 바다: 해안선을 굵고 밝게 먼저 긋고, 땅을 칠하면 바다 쪽 절반만 남는다
+        light = mix(theme.sea, (255, 255, 255), 0.3 if not theme.dark else 0.1)
+        cw = max(4, int(9 * u))
+        for rid, span in coast_vis:
+            pts = sp(span)
+            if len(pts) >= 2:
+                pygame.draw.lines(surf, light, False, pts, cw)
+        # 땅 칠하기
         for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
             x0, y0, x1, y1 = bbox
             if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
                 continue
-            tiny = (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5
-            vis.append((rid, sp(span) if not tiny else None, (int(x0 * s + ox), int(y0 * s + oy)), span))
-        # 절반 해상도 지역 번호 지도(국경·해안·번짐 계산용)
-        hw, hh = (W_ + 1) // 2, (H_ + 1) // 2
-        idm = pygame.Surface((hw, hh))
-        idm.fill((0, 0, 0))
-        for rid, pts, p0, span in vis:
-            idx = self.ridx[rid]
-            c = (0, idx >> 8, idx & 255)
-            if pts is None:
-                if 0 <= p0[0] // 2 < hw and 0 <= p0[1] // 2 < hh:
-                    idm.set_at((p0[0] // 2, p0[1] // 2), c)
-            elif len(pts) >= 3:
-                pygame.draw.polygon(idm, c, Th[span[0]:span[1]].tolist())
-        pix = pygame.surfarray.pixels3d(idm)
-        reg = (pix[..., 1].astype(np.int32) << 8) | pix[..., 2]
-        del pix
-        land = reg > 0
-        n = len(self.rid_list) + 1
-        own_lut = np.ones(n, np.int32)
-        own_lut[0] = 0
-        owners = extra.get("owners", {})
-        for i, rid in enumerate(self.rid_list, 1):
-            own_lut[i] = owners.get(rid, 1)
-        own = own_lut[reg]
-
-        def overlay(rgb, alpha):
-            """절반 해상도 색(h,w,3 또는 색 하나)·알파(0~1) → 원래 크기로 부드럽게 키운 덮개."""
-            o = pygame.Surface((hw, hh), pygame.SRCALPHA)
-            px = pygame.surfarray.pixels3d(o)
-            px[...] = rgb
-            del px
-            pa = pygame.surfarray.pixels_alpha(o)
-            pa[...] = np.clip(alpha * 255, 0, 255).astype(np.uint8)
-            del pa
-            return pygame.transform.smoothscale(o, (W_, H_))
-
-        # 얕은 바다: 해안 가까이 밝게(땅을 칠하기 전에 덮는다)
-        r1 = max(1, int(2 * u))
-        near = np.clip(_box(_box(land.astype(np.float32), r1), r1) * 2.4, 0, 1) * ~land * 0.6
-        surf.blit(overlay(mix(theme.sea, (255, 255, 255), 0.35 if not theme.dark else 0.12), near), (0, 0))
-        # 땅 칠하기 + 시군구 경계(가는 선)
-        for rid, pts, p0, _ in vis:
             fill = colors[rid][0]
-            if pts is None:
+            if (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5:
+                p0 = (int(x0 * s + ox), int(y0 * s + oy))
                 if view.collidepoint(p0):
                     surf.set_at(p0, fill)
                 continue
-            pygame.draw.polygon(surf, fill, pts)
+            pygame.draw.polygon(surf, fill, sp(span))
+        # 국경 안쪽 번짐 + 전선 그림자: 지도 전체 층을 한 번 만들어 두고 보이는 부분만 잘라 붙인다
+        fx = self._fx_layer(extra)
+        if fx is not None:
+            layer, (bx0, by0) = fx
+            res = self.FX_RES
+            # 캐시 화면 → 기준 좌표 → 층 픽셀
+            vx0, vy0 = (0 - ox) / s, (0 - oy) / s
+            vx1, vy1 = (W_ - ox) / s, (H_ - oy) / s
+            lx0, ly0 = max(0.0, (vx0 - bx0) * res), max(0.0, (vy0 - by0) * res)
+            lx1, ly1 = min(layer.get_width(), (vx1 - bx0) * res), min(layer.get_height(), (vy1 - by0) * res)
+            if lx1 - lx0 >= 1 and ly1 - ly0 >= 1:
+                ix0, iy0 = int(lx0), int(ly0)
+                ix1, iy1 = int(math.ceil(lx1)), int(math.ceil(ly1))
+                part = layer.subsurface((ix0, iy0, ix1 - ix0, iy1 - iy0))
+                tx, ty = (ix0 / res + bx0) * s + ox, (iy0 / res + by0) * s + oy
+                tw, th = (ix1 - ix0) / res * s, (iy1 - iy0) / res * s
+                if tw * th < 6e7:
+                    surf.blit(pygame.transform.smoothscale(part, (max(1, round(tw)), max(1, round(th)))),
+                              (round(tx), round(ty)))
         # 한지 결
         if not theme.dark:
             tex = paper_texture()
@@ -469,55 +514,31 @@ class MapView:
             for yy in range(0, H_, th_):
                 for xx in range(0, W_, tw_):
                     surf.blit(tex, (xx, yy), special_flags=pygame.BLEND_RGB_MULT)
+        # 시군구 경계(가는 선)
         thin = s < 1.2
-        for rid, pts, p0, _ in vis:
-            if pts is None:
+        for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
+            x0, y0, x1, y1 = bbox
+            if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
+                continue
+            if (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5:
                 continue
             line = mix(colors[rid][0], (40, 32, 24), 0.2)
             if thin:
-                pygame.draw.aalines(surf, line, True, pts)
+                pygame.draw.aalines(surf, line, True, sp(span))
             else:
-                pygame.draw.lines(surf, line, True, pts, 1)
-        # 덮개 한 장(절반 해상도): 국경 번짐 → 전선 그림자 → 먹선(국경·해안)
-        fb = _edges(own, land, thick=False)
-        cb = _edges(land, thick=False) & ~fb
-        rgb = np.zeros(own.shape + (3,), np.float32)
-        alp = np.zeros(own.shape, np.float32)
-        deep = extra.get("deep", {})
-        if extra.get("glow") and deep and fb.any():
-            # 국경 안쪽 번짐(수채화): 세력 색이 국경 쪽으로 짙어진다
-            r2 = max(1, int(2 * u))
-            alp = np.clip(_box(_box(fb.astype(np.float32), r2), r2) * 2.6, 0, 1) ** 1.3 * 0.55
-            alp *= own >= 2
-            deep_lut = np.zeros((max(int(own_lut.max()), max(deep)) + 1, 3), np.float32)
-            for k, c in deep.items():
-                deep_lut[k] = c
-            rgb = deep_lut[own]
-        wars = extra.get("wars")
-        if wars:
-            # 전쟁 중인 두 세력의 국경: 국경 그림자 정도의 붉은 기운
-            m = max(int(own_lut.max()), max(max(p) for p in wars)) + 1
-            wl = np.zeros((m, m), bool)
-            for a_, b_ in wars:
-                wl[a_, b_] = wl[b_, a_] = True
-            wb = np.zeros(own.shape, bool)
-            ex = wl[own[1:, :], own[:-1, :]]
-            ey = wl[own[:, 1:], own[:, :-1]]
-            wb[1:, :] |= ex
-            wb[:-1, :] |= ex
-            wb[:, 1:] |= ey
-            wb[:, :-1] |= ey
-            if wb.any():
-                r3 = max(1, int(2 * u))
-                w = np.clip(_box(_box(wb.astype(np.float32), r3), r3) * 2.0, 0, 1) * 0.34 * land
-                k = w / np.maximum(alp + w, 1e-6)
-                rgb += (np.array((150, 52, 40), np.float32) - rgb) * k[..., None]
-                alp = alp + w * (1 - alp)
-        rgb[cb] = (62, 74, 76) if not theme.dark else (140, 160, 165)
-        alp[cb] = np.maximum(alp[cb], 0.7)
-        rgb[fb] = (74, 60, 46) if not theme.dark else (12, 10, 8)
-        alp[fb] = 0.85
-        surf.blit(overlay(rgb.astype(np.uint8), alp), (0, 0))
+                pygame.draw.lines(surf, line, True, sp(span), 1)
+        # 해안선·국경(먹선): 미리 이어 둔 경계 사슬을 바로 긋는다
+        coast_ink = (62, 74, 76) if not theme.dark else (140, 160, 165)
+        for rid, span in coast_vis:
+            pts = sp(span)
+            if len(pts) >= 2:
+                pygame.draw.lines(surf, coast_ink, False, pts, max(1, int(1.3 * u)))
+        border_ink = (74, 60, 46) if not theme.dark else (12, 10, 8)
+        bw = max(2, int(2.2 * u))
+        for a_, b_, span in pair_vis:
+            pts = sp(span)
+            if len(pts) >= 2:
+                pygame.draw.lines(surf, border_ink, False, pts, bw)
 
         pw = max(1, int((2 if self.z >= 2.5 else 1) * u))
         closed = not self.world_outlines_open
@@ -607,9 +628,75 @@ class MapView:
         self.cache_meta = {"key": full_key, "s": s, "cx": self.cx, "cy": self.cy,
                            "ox": ox, "oy": oy}    # 캐시 픽셀 = 기준 좌표 × s + (ox, oy)
 
-    def outline_overlay(self, overlay, rid, rgba, width=2):
-        """반투명 윤곽(overlay 는 지도 view 크기의 SRCALPHA 면)."""
-        ox, oy = self.view.x, self.view.y
+    def _fx_layer(self, extra):
+        """국경 안쪽 번짐(정치 지도)과 전쟁 국경 그림자: 지도 전체 크기의 반투명 층(내용이 바뀔 때만 다시 만든다).
+        돌려주는 값: (층, 층 원점의 기준 좌표) 또는 None."""
+        if not extra:
+            return None
+        owners = extra.get("owners", {})
+        deep = extra.get("deep", {}) if extra.get("glow") else {}
+        wars = extra.get("wars") or set()
+        if not deep and not wars:
+            return None
+        key = (tuple(owners.get(r, 1) for r in self.rid_list), tuple(sorted(deep.items())), tuple(sorted(wars)))
+        if self._fx is not None and self._fx[0] == key:
+            return self._fx[1]
+        res = self.FX_RES
+        vx0, vy0 = self.verts.min(axis=0) - 4
+        vx1, vy1 = self.verts.max(axis=0) + 4
+        w, h = int((vx1 - vx0) * res) + 1, int((vy1 - vy0) * res) + 1
+        idm = pygame.Surface((w, h))
+        idm.fill((0, 0, 0))
+        for rid, arr, bbox in self.polys:
+            code = owners.get(rid, 1)
+            pts = ((arr - (vx0, vy0)) * res).tolist()
+            if len(pts) >= 3:
+                pygame.draw.polygon(idm, (code, 0, 0), pts)
+        own = pygame.surfarray.array3d(idm)[..., 0].astype(np.int32)
+        land = own > 0
+        fb = _edges(own, land, thick=False)
+        rgb = np.zeros(own.shape + (3,), np.float32)
+        alp = np.zeros(own.shape, np.float32)
+        r1 = max(1, int(2.5 * res))
+        if deep and fb.any():
+            g = np.clip(_box(_box(fb.astype(np.float32), r1), r1) * 2.6, 0, 1) ** 1.3 * 0.55
+            g *= own >= 2
+            lut = np.zeros((max(int(own.max()), max(deep)) + 1, 3), np.float32)
+            for k, c in deep.items():
+                lut[k] = c
+            rgb = lut[own]
+            alp = g
+        if wars:
+            m = max(int(own.max()), max(max(p) for p in wars)) + 1
+            wl = np.zeros((m, m), bool)
+            for a_, b_ in wars:
+                wl[a_, b_] = wl[b_, a_] = True
+            wb = np.zeros(own.shape, bool)
+            ex = wl[own[1:, :], own[:-1, :]]
+            ey = wl[own[:, 1:], own[:, :-1]]
+            wb[1:, :] |= ex
+            wb[:-1, :] |= ex
+            wb[:, 1:] |= ey
+            wb[:, :-1] |= ey
+            if wb.any():
+                wv = np.clip(_box(_box(wb.astype(np.float32), r1), r1) * 2.0, 0, 1) * 0.34 * land
+                k = wv / np.maximum(alp + wv, 1e-6)
+                rgb += (np.array((150, 52, 40), np.float32) - rgb) * k[..., None]
+                alp = alp + wv * (1 - alp)
+        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        px = pygame.surfarray.pixels3d(layer)
+        px[...] = np.clip(rgb, 0, 255).astype(np.uint8)
+        del px
+        pa = pygame.surfarray.pixels_alpha(layer)
+        pa[...] = np.clip(alp * 255, 0, 255).astype(np.uint8)
+        del pa
+        out = (layer, (float(vx0), float(vy0)))
+        self._fx = (key, out)
+        return out
+
+    def outline_overlay(self, overlay, rid, rgba, width=2, origin=None):
+        """반투명 윤곽(overlay 의 왼쪽 위 = 화면 좌표 origin, 기본은 지도 view 왼쪽 위)."""
+        ox, oy = origin or (self.view.x, self.view.y)
         for arr, bbox in self.polys_by_rid.get(rid, ()):
             if self._visible_bbox(bbox):
                 pts = [(x - ox, y - oy) for x, y in self._screen_poly(arr)]
@@ -621,8 +708,26 @@ class MapView:
             if self._visible_bbox(bbox):
                 pygame.draw.lines(screen, color, True, self._screen_poly(arr), width)
 
-    def fill_overlay(self, overlay, rid, rgba):
-        ox, oy = self.view.x, self.view.y
+    def screen_bbox(self, nodes, pad=0):
+        """지역·해역들의 화면 사각형(지도 view 안으로 자름). 반투명 덮개를 필요한 크기만 만들 때 쓴다."""
+        s = self.scale
+        ox, oy = self.offset()
+        r = None
+        for n in nodes:
+            if n in self.rbbox:
+                x0, y0, x1, y1 = self.rbbox[n]
+            elif n in self.sea_polys:
+                pts = np.concatenate([ext for ext, _ in self.sea_polys[n]])
+                (x0, y0), (x1, y1) = pts.min(axis=0), pts.max(axis=0)
+            else:
+                continue
+            rr = pygame.Rect(int(x0 * s + ox) - pad, int(y0 * s + oy) - pad,
+                             int((x1 - x0) * s) + 2 * pad + 2, int((y1 - y0) * s) + 2 * pad + 2)
+            r = rr if r is None else r.union(rr)
+        return r.clip(self.view) if r is not None else None
+
+    def fill_overlay(self, overlay, rid, rgba, origin=None):
+        ox, oy = origin or (self.view.x, self.view.y)
         for arr, bbox in self.polys_by_rid.get(rid, ()):
             if self._visible_bbox(bbox):
                 pts = [(x - ox, y - oy) for x, y in self._screen_poly(arr)]
@@ -634,9 +739,9 @@ class MapView:
             for h in holes:
                 pygame.draw.lines(screen, color, True, self._screen_poly(h), max(1, width - 1))
 
-    def sea_overlay(self, overlay, sid, rgba):
+    def sea_overlay(self, overlay, sid, rgba, origin=None):
         """해역을 반투명하게 칠한다. 섬(구멍)은 투명하게 비운다 — 육지 오버레이보다 먼저 호출."""
-        ox, oy = self.view.x, self.view.y
+        ox, oy = origin or (self.view.x, self.view.y)
         for ext, holes in self.sea_polys[sid]:
             pygame.draw.polygon(overlay, rgba, [(x - ox, y - oy) for x, y in self._screen_poly(ext)])
             for h in holes:

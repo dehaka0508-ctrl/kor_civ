@@ -183,14 +183,22 @@ class Gui:
             pygame.draw.lines(self.screen, color, False, [(cx + sx * sz * 0.95, cy + sy * s2), (cx + sx * s2, cy + sy * s2),
                                                          (cx + sx * s2, cy + sy * sz * 0.95)], max(1, w // 2))
 
+    _shadow_cache: dict = {}
+
     def shadow(self, rect, radius=6, spread=6, alpha=None):
         pr = self.R(rect)
         m = self.W(spread)
         a = self.t.shadow[3] if alpha is None else alpha
-        sh = pygame.Surface((pr.w + 2 * m, pr.h + 2 * m), pygame.SRCALPHA)
-        for i in range(3):                    # 겹친 사각형으로 번진 그림자
-            pygame.draw.rect(sh, (*self.t.shadow[:3], a // 3), sh.get_rect().inflate(-m * (1 + i) // 2, -m * (1 + i) // 2),
-                             border_radius=int((radius + spread) * self.u))
+        key = (pr.w, pr.h, m, a, self.t.shadow[:3], int((radius + spread) * self.u))
+        sh = Gui._shadow_cache.get(key)
+        if sh is None:                        # 같은 크기의 그림자는 한 번만 만든다
+            sh = pygame.Surface((pr.w + 2 * m, pr.h + 2 * m), pygame.SRCALPHA)
+            for i in range(3):                # 겹친 사각형으로 번진 그림자
+                pygame.draw.rect(sh, (*self.t.shadow[:3], a // 3), sh.get_rect().inflate(-m * (1 + i) // 2, -m * (1 + i) // 2),
+                                 border_radius=key[5])
+            if len(Gui._shadow_cache) > 300:
+                Gui._shadow_cache.clear()
+            Gui._shadow_cache[key] = sh
         self.screen.blit(sh, (pr.x - m, pr.y - m + self.W(spread * 0.4)))
 
     # ------------------------------------------------------------ 그리기

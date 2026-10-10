@@ -492,6 +492,13 @@ class App:
                 if (a in met and b in met or self.fog_reveal) and D.at_war(g, a, b)}
         return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political"}
 
+    def order_colors(self):
+        """이동 범위·명령 화살표 색: 이동은 내 나라 색(직접 만든 국기의 배경 색 1), 공격·상륙·폭격은 정해진 색."""
+        cols = dict(ORDER_COLORS)
+        if self.game:
+            cols["move"] = mix(self.faction_rgb(self.game.player_id), (0, 0, 0), 0.15)
+        return cols
+
     def faction_rgb(self, fid):
         if fid == NEUTRAL:
             return self.theme.neutral
@@ -631,17 +638,19 @@ class App:
         army = g.armies.get(self.sel_army) if self.sel_army else None
         if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 전투한 부대는 범위 없음
             reach = g.reachable(army)
-            ov = pygame.Surface(mv.view.size, pygame.SRCALPHA)
-            # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
-            for node, opt in sorted(reach.items(), key=lambda kv: not self.world.is_sea(kv[0])):
-                col = {"move": (47, 111, 222), "attack": (201, 42, 42), "land": (12, 166, 120),
-                       "bombard": (230, 119, 0)}[opt["action"]]
-                a = 115 if opt["strong"] else 60
-                if self.world.is_sea(node):
-                    mv.sea_overlay(ov, node, (*col, 45))
-                else:
-                    mv.fill_overlay(ov, node, (*col, a))
-            self.screen.blit(ov, mv.view.topleft)
+            box = mv.screen_bbox(reach)
+            if box and box.w > 0 and box.h > 0:
+                ov = pygame.Surface(box.size, pygame.SRCALPHA)     # 이동 범위가 걸친 만큼만
+                cols = self.order_colors()
+                # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
+                for node, opt in sorted(reach.items(), key=lambda kv: not self.world.is_sea(kv[0])):
+                    col = cols[opt["action"]]
+                    a = 115 if opt["strong"] else 60
+                    if self.world.is_sea(node):
+                        mv.sea_overlay(ov, node, (*col, 45), origin=box.topleft)
+                    else:
+                        mv.fill_overlay(ov, node, (*col, a), origin=box.topleft)
+                self.screen.blit(ov, box.topleft)
             if not self.world.is_sea(army.loc):
                 for n in self.world.land_adj[army.loc]:
                     if self.world.is_bridge(army.loc, n):
@@ -655,11 +664,13 @@ class App:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
             else:
-                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽
-                glow = pygame.Surface(mv.view.size, pygame.SRCALPHA)
-                for wdt, a in ((12, 30), (8, 50), (4, 90)):
-                    mv.outline_overlay(glow, self.sel, (*self.theme.gold_lt, a), max(2, int(wdt * u)))
-                self.screen.blit(glow, mv.view.topleft)
+                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만)
+                box = mv.screen_bbox([self.sel], pad=int(10 * u))
+                if box and box.w > 0 and box.h > 0:
+                    glow = pygame.Surface(box.size, pygame.SRCALPHA)
+                    for wdt, a in ((12, 30), (8, 50), (4, 90)):
+                        mv.outline_overlay(glow, self.sel, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
+                    self.screen.blit(glow, box.topleft)
                 mv.outline(self.screen, self.sel, (255, 248, 230), max(3, int(3 * u)))
                 mv.outline(self.screen, self.sel, self.theme.gold, max(2, int(2 * u)))
         # 전투 강조 (1초)
@@ -701,11 +712,28 @@ class App:
             rr = r if i % 2 == 0 else r * 0.42
             pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
         u = ui_scale()
-        sh = pygame.Surface((int(r * 3), int(r * 3)), pygame.SRCALPHA)
-        pygame.draw.polygon(sh, (0, 0, 0, 70), [(x - cx + r * 1.5 + u, y - cy + r * 1.5 + 2 * u) for x, y in pts])
+        key = (int(r * 10), int(u * 10))
+        cache = self.__dict__.setdefault("_star_shadow", {})
+        sh = cache.get(key)
+        if sh is None:
+            sh = pygame.Surface((int(r * 3), int(r * 3)), pygame.SRCALPHA)
+            pygame.draw.polygon(sh, (0, 0, 0, 70), [(x - cx + r * 1.5 + u, y - cy + r * 1.5 + 2 * u) for x, y in pts])
+            cache[key] = sh
         self.screen.blit(sh, (cx - r * 1.5, cy - r * 1.5))
         pygame.draw.polygon(self.screen, color, pts)
         pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(1, int(1.5 * u)))
+
+    def _ellipse_shadow(self, w, h):
+        """부대 깃발 밑 그림자(크기별 캐시)."""
+        cache = self.__dict__.setdefault("_ell_shadow", {})
+        sh = cache.get((w, h))
+        if sh is None:
+            sh = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+            pygame.draw.ellipse(sh, (0, 0, 0, 55), sh.get_rect())
+            if len(cache) > 200:
+                cache.clear()
+            cache[(w, h)] = sh
+        return sh
 
     def draw_battle_marks(self):
         """이번 턴 전투가 난 지역: 작은 주홍 원 + 칼 교차."""
@@ -813,7 +841,7 @@ class App:
             p0 = mv.label_screen(a.loc)
             if o["type"] == "move":
                 pts = [p0] + [mv.label_screen(n) for n in o["path"]]
-                self.arrow(pts, ORDER_COLORS["move"])
+                self.arrow(pts, self.order_colors()["move"])
             elif o["type"] in ("attack", "land"):
                 pts = [p0] + [mv.label_screen(n) for n in o.get("path", [])]
                 if pts[-1] != mv.label_screen(o["target"]):
@@ -833,8 +861,8 @@ class App:
                 pts = [mv.label_screen(end)] + [mv.label_screen(n) for n in route]
                 for p, q in zip(pts, pts[1:]):
                     self.dashed(p, q, (255, 255, 255), width_k=4)
-                    self.dashed(p, q, ORDER_COLORS["move"])
-                self.arrowhead(pts[-2], pts[-1], ORDER_COLORS["move"], outline=True)
+                    self.dashed(p, q, self.order_colors()["move"])
+                self.arrowhead(pts[-2], pts[-1], self.order_colors()["move"], outline=True)
 
     def arrow(self, pts, color):
         """얇은 직선 화살표(한지색 테두리로 영토 색과 구분)."""
@@ -903,9 +931,7 @@ class App:
                 else:
                     pts = [(x0, y0), (x0 + fw, y0), (x0 + fw - notch, y0 + fh / 2), (x0 + fw, y0 + fh), (x0, y0 + fh)]
                 base_y = y0 + fh + 6 * u
-                sh = pygame.Surface((int(fw * 0.9), max(3, int(5 * u))), pygame.SRCALPHA)
-                pygame.draw.ellipse(sh, (0, 0, 0, 55), sh.get_rect())
-                self.screen.blit(sh, (x0 - int(3 * u), base_y - int(2 * u)))
+                self.screen.blit(self._ellipse_shadow(int(fw * 0.9), max(3, int(5 * u))), (x0 - int(3 * u), base_y - int(2 * u)))
                 pygame.draw.line(self.screen, ink, (x0, y0 - 3 * u), (x0, base_y), max(1, int(1.5 * u)))
                 if a.id == self.sel_army:
                     pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(3, int(4 * u)))
@@ -1331,10 +1357,15 @@ class App:
         r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
         gui.shadow(r, 22, 6)
         pr = gui.R(r)
-        band = indigo_band(pr.w, pr.h, t.indigo, t.indigo_dk, lattice=False).convert_alpha()
-        mask = pygame.Surface(pr.size, pygame.SRCALPHA)
-        pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=pr.h // 2)
-        band.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        cache = self.__dict__.setdefault("_mode_band", {})
+        band = cache.get(pr.size)
+        if band is None:                       # 알약 모양 쪽빛 띠는 크기별로 한 번만 만든다
+            band = indigo_band(pr.w, pr.h, t.indigo, t.indigo_dk, lattice=False).convert_alpha()
+            mask = pygame.Surface(pr.size, pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=pr.h // 2)
+            band.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            cache.clear()
+            cache[pr.size] = band
         self.screen.blit(band, pr)
         pygame.draw.rect(self.screen, t.gold, pr, 1, border_radius=pr.h // 2)
         gui.block(r)
@@ -1458,9 +1489,14 @@ class App:
         R = 34
         pc = gui.P(cx, cy)
         Rp = int(R * u)
-        g = pygame.Surface((Rp * 2 + 8, Rp * 2 + 8), pygame.SRCALPHA)
         o = Rp + 4
         ink = getattr(t, "sea_ink", t.muted)
+        cached = getattr(self, "_compass", None)
+        if cached and cached[0] == (Rp, t.dark):
+            self.screen.blit(cached[1], (pc[0] - o, pc[1] - o - cached[2]))
+            self._draw_scale(cx, cy, R, u, ink)
+            return
+        g = pygame.Surface((Rp * 2 + 8, Rp * 2 + 8), pygame.SRCALPHA)
         pygame.draw.circle(g, (*t.panel, 150), (o, o), Rp)
         pygame.draw.circle(g, (*ink, 200), (o, o), Rp, max(1, int(2 * u)))
         pygame.draw.circle(g, (*ink, 150), (o, o), int(Rp * 0.78), 1)
@@ -1475,8 +1511,17 @@ class App:
             l_ = (o + math.cos(a + math.pi / 2) * Rp * 0.12, o + math.sin(a + math.pi / 2) * Rp * 0.12)
             r_ = (o + math.cos(a - math.pi / 2) * Rp * 0.12, o + math.sin(a - math.pi / 2) * Rp * 0.12)
             pygame.draw.polygon(g, (*col, 230), [tip, l_, (o, o), r_])
-        self.screen.blit(g, (pc[0] - o, pc[1] - o))
-        gui.text((cx, cy - R - 10), "北", 12, t.vermilion, "title", anchor="center")
+        north = __import__("korciv.ui.theme", fromlist=["render_text"]).render_text("北", 12, t.vermilion, "title")
+        g2 = pygame.Surface((g.get_width(), g.get_height() + north.get_height()), pygame.SRCALPHA)
+        g2.blit(g, (0, north.get_height()))
+        g2.blit(north, north.get_rect(midtop=(o, 0)))
+        self._compass = ((Rp, t.dark), g2, north.get_height())
+        self.screen.blit(g2, (pc[0] - o, pc[1] - o - north.get_height()))
+        self._draw_scale(cx, cy, R, u, ink)
+
+    def _draw_scale(self, cx, cy, R, u, ink):
+        gui = self.gui
+        t = self.theme
         # 축척: 기준 좌표 1 = 위도 0.01° ≈ 1.11km
         km_per_px = 1.11 * u / max(1e-6, self.map.scale)
         target = 90 * km_per_px
