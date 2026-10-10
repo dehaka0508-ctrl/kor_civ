@@ -1394,7 +1394,8 @@ def key_guards(g, f, threat) -> dict:
     if PH.phase(f) < 2:
         return {}
     keys = [r.id for r in g.regions_of(fid) if EG.key_value(g, r.id) >= 6 and r.id != f.capital]
-    if not keys:
+    zone, ring = econ_zone(g, f)
+    if not keys and not ring:
         return {}
     at_war = bool(D.enemies(g, fid))
     hunted = bool(harassed_by(g, fid)) if at_war else False
@@ -1405,15 +1406,62 @@ def key_guards(g, f, threat) -> dict:
     for rid in keys:
         n = C.AI_KEY_GUARD + (2 if threat.get(rid, 0) >= 0.5 else 0) + (1 if hunted else 0)
         out[rid] = n + round(C.AI_P3_LEAD_GUARD * d)
+    # 경제 3페이즈: 금융 권역을 둘러싼 내 지역(완충지)에도 병력을 둔다(권역은 한데 모여 있어 지키기 쉽다)
+    for rid in ring:
+        if rid != f.capital and rid not in out:
+            out[rid] = 1 + (1 if at_war else 0) + (2 if threat.get(rid, 0) >= 0.5 else 0) + (1 if hunted else 0)
     return out
 
 
+def econ_zone(g, f):
+    """경제 3페이즈의 금융 권역(없으면 계획한 권역)과 그를 둘러싼 내 지역(완충지). 경제 3페이즈가 아니면 빈 집합."""
+    if PH.p3_kind(f) != "economic":
+        return set(), set()
+    fid = f.id
+    zone = g.finance_cluster(fid) or {r for r in finance_plan(g, fid) if g.regions[r].owner == fid}
+    ring = {n for r in zone for n in g.world.land_adj[r] if n not in zone and g.regions[n].owner == fid}
+    return zone, ring
+
+
+def _econ_zone_defense(g, f, idle_ids, cands, at_war):
+    """경제 3페이즈: 금융 권역 지역마다 방공호, 권역을 둘러싼 경계(다른 나라·해안선 먼저, 내 완충지 쪽은 1단계)에 방어선.
+    과학 승리 거점과 같은 수준(방공호 2단계, 전쟁 중이거나 견제를 받으면 3단계 / 방어선 2단계, 전쟁 중 3단계)."""
+    fid = f.id
+    zone, _ = econ_zone(g, f)
+    if not zone:
+        return
+    hunted = bool(harassed_by(g, fid)) if at_war else False
+    top = C.AI_KEY_SHELTER + (1 if (hunted or at_war) else 0)
+    line_top = 2 + (1 if at_war else 0)
+    for rid in sorted(zone):
+        if rid not in idle_ids:
+            continue
+        rr = g.regions[rid]
+        if rr.b["shelter"] < top:
+            lv = rr.b["shelter"]
+            cands.append((52.5, rid, "build", "shelter", None, R.def_building_cost("shelter", lv + 1) / C.DEF_TURNS[lv]))
+            continue
+        out = [n for n in g.world.land_adj[rid] if n not in zone]
+        foreign = [n for n in out if g.regions[n].owner != fid]
+        if g.info(rid).coastal:
+            foreign.append("coast")
+        opts = [(rr.lines.get(b, 0), 0, b) for b in foreign if rr.lines.get(b, 0) < line_top]
+        opts += [(rr.lines.get(b, 0), 1, b) for b in out if g.regions[b].owner == fid and rr.lines.get(b, 0) < 1]
+        if opts:
+            lv, _, b = min(opts)
+            cost = R.def_building_cost("line", lv + 1) * g.mods(fid).mult("cost_line")
+            cands.append((51.8, rid, "build", "line", b, cost / C.DEF_TURNS[lv]))
+
+
 def patrol_seas(g, f) -> set:
-    """우세한 나라(수비 강도 0.3 이상)의 해안 승리 거점 앞바다: 구축함을 띄워 둘 해역."""
-    if EG.lead_defense(f) < C.AI_P3_LEAD_PATROL:
-        return set()
-    return {s_ for r in g.regions_of(f.id) if g.info(r.id).coastal and EG.key_value(g, r.id) >= 6
-            for s_ in g.world.regions[r.id].seas}
+    """우세한 나라(수비 강도 0.3 이상)의 해안 승리 거점 앞바다, 경제 3페이즈면 해안 금융 권역의 앞바다: 구축함을 띄워 둘 해역."""
+    w = g.world
+    zone, _ = econ_zone(g, f)
+    out = {s_ for r in zone if g.info(r).coastal for s_ in w.regions[r].seas}
+    if EG.lead_defense(f) >= C.AI_P3_LEAD_PATROL:
+        out |= {s_ for r in g.regions_of(f.id) if g.info(r.id).coastal and EG.key_value(g, r.id) >= 6
+                for s_ in w.regions[r.id].seas}
+    return out
 
 
 def _patrol_production(g, f, regs, idle, idle_ids, cands):
@@ -1465,6 +1513,7 @@ def _key_defense(g, f, idle_ids, cands, threat, at_war):
     top = C.AI_KEY_SHELTER + (1 if (hunted or at_war) else 0) + (1 if d >= 0.5 else 0)
     aa_top = max(min(2, top - 1) if (hunted or at_war) else 0, round(1 + 2 * d) if d > 0 else 0)
     line_top = max(2 if hunted else 0, round(1 + 2 * d) if d > 0 else 0)
+    _, ring = econ_zone(g, f)
     for rid, need in guards.items():
         if rid not in idle_ids:
             continue
@@ -1473,6 +1522,8 @@ def _key_defense(g, f, idle_ids, cands, threat, at_war):
         if garrison < need:
             cands.append((3.0 + threat.get(rid, 0), rid, "unit", "inf", None, g.unit_cost(fid, rid, "inf")))
             continue
+        if rid in ring and EG.key_value(g, rid) < 6:
+            continue                              # 금융 권역 완충지: 병력만(방어 건물은 권역 안에)
         if rr.b["shelter"] < top:
             lv = rr.b["shelter"]
             cands.append((53.0, rid, "build", "shelter", None, R.def_building_cost("shelter", lv + 1) / C.DEF_TURNS[lv]))
@@ -2145,6 +2196,7 @@ def _slots(g, f, threat, military=True):
     # 승리 거점 수비(과학·경제를 짓는 쪽): 수비대가 모자라면 그 자리에서 보병, 그다음 방공호(폭격 피해 ↓)·대공포
     if f.is_ai and military:
         _key_defense(g, f, idle_ids, cands, threat, at_war)
+        _econ_zone_defense(g, f, idle_ids, cands, at_war)
         _patrol_production(g, f, regs, idle, idle_ids, cands)
     # 공군: 전쟁 중이거나 호전적이고 넉넉하면 공항 → 전투기(지상전 지원)·폭격기
     airports = [r for r in regs if r.b["airport"]]
@@ -2366,6 +2418,8 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
         # 질주: 승리 조건 공사 몇 턴분은 남겨 두고 나머지 여윳돈으로 지킨다
         big = sum(r.project.per_turn for r in regs if r.project and r.project.kind in ("science", "econ"))
         budget -= max(big, C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE) * C.AI_P3_SPRINT_KEEP
+    if f.ai.get("victory_goal") == "economic":
+        budget -= econ_saving_target(g, fid)          # 다음 경제 단계 비용은 남겨 두고 '남는 돈'만
     if budget <= 0:
         return
     pool = sorted(idle, key=lambda r: (-r.pop, r.id))
@@ -2381,6 +2435,20 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             return True
         return False
 
+    # ⓪ 경제 3페이즈: 남는 돈은 금융 권역 방어부터(권역 지역 방공호, 권역을 둘러싼 경계·해안선 방어선) — 질주와 같은 4단계까지
+    zone, _ = econ_zone(g, f)
+    for r in sorted((g.regions[z] for z in zone), key=lambda r: r.id):
+        if r.id in used or r.project or r.occ or g.resisting(r) or r not in pool:
+            continue
+        outs = [n for n in g.world.land_adj[r.id] if n not in zone and g.regions[n].owner != fid]
+        if g.info(r.id).coastal:
+            outs.append("coast")
+        opts = [(r.b["shelter"], 0, "shelter", None)] + [(r.lines.get(b, 0), 1, "line", b) for b in outs]
+        lv, _, key, border = min(opts)
+        if lv >= C.AI_P3_SPRINT_DEF_LV:
+            continue
+        cost = R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1)
+        start(r, key, border, cost)
     # ① 경계(또는 3페이즈 질주): 국경·해안 지역 방어 시설(같은 단계면 방어선 우선, 3단계까지, 질주면 4단계)
     if post == "defend" or spr:
         top = C.AI_P3_SPRINT_DEF_LV if spr else C.AI_DEF_MAX_LEVEL

@@ -2591,6 +2591,29 @@ def test_ai_bomb_value_science_units():
     g.new_army(1, rid, {"booster": 1, "module": 1})
     assert ai._bomb_value(g, 0, rid, None) == pytest.approx(base + 2 * C.AI_SCI_UNIT_BOMB)
 
+def test_ai_econ_zone_defense():
+    """경제 3페이즈: 금융 권역 둘레 내 지역에 수비대, 권역 지역에 방공호·방어선 후보."""
+    from korciv import ai
+    g = _p2_game()
+    f = g.factions[0]
+    cap = f.capital
+    near = [n for n in g.world.land_adj[cap] if g.regions[n].owner == NEUTRAL]
+    _own(g, 0, near + [m for n in near for m in g.world.land_adj[n] if g.regions[m].owner == NEUTRAL][:6])
+    zone = ai.finance_plan(g, 0)
+    for rid in zone:
+        g.regions[rid].b["bank"] = 5
+    f.ai["phase"] = 3
+    f.ai["p3"] = {"kind": "economic", "turn": g.turn}
+    z, ring = ai.econ_zone(g, f)
+    assert z == g.finance_cluster(0) and ring and not (ring & z)
+    guards = ai.key_guards(g, f, {})
+    assert all(guards.get(r, 0) >= 1 for r in ring if r != f.capital)
+    for rid in z:
+        g.regions[rid].project = None
+    cands = []
+    ai._econ_zone_defense(g, f, set(z), cands, False)
+    assert cands and all(c[1] in z and c[3] in ("shelter", "line") for c in cands)
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai
