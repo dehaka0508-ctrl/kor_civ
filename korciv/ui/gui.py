@@ -299,8 +299,9 @@ class Gui:
                 new = i
         return new
 
-    def slider(self, rect, value, lo, hi, step, sid, enabled=True):
-        """(값, 확정 여부). 끄는 동안 값이 따라 움직이고, 놓는 순간 확정(True)된다."""
+    def slider(self, rect, value, lo, hi, step, sid, enabled=True, track=None):
+        """(값, 확정 여부). 끄는 동안 값이 따라 움직이고, 놓는 순간 확정(True)된다.
+        track: 왼쪽→오른쪽 색 목록을 주면 막대를 그 색 그라데이션으로 그린다(색조 스펙트럼 등)."""
         r = pygame.Rect(rect)
         t = self.t
         if not hasattr(self, "_slider_vals"):
@@ -318,8 +319,15 @@ class Gui:
             done = True
         value = result
         frac = (value - lo) / (hi - lo) if hi > lo else 0
-        self.rect(t.panel_alt, (r.x, r.centery - 3, r.w, 6), radius=3)
-        self.rect(t.accent if enabled else t.muted, (r.x, r.centery - 3, max(1, int(r.w * frac)), 6), radius=3)
+        if track:
+            n = len(track)
+            seg = r.w / n
+            for i, c in enumerate(track):
+                self.rect(c, (r.x + i * seg, r.centery - 6, seg + 1, 12))
+            self.rect(t.border, (r.x, r.centery - 6, r.w, 12), 1, radius=2)
+        else:
+            self.rect(t.panel_alt, (r.x, r.centery - 3, r.w, 6), radius=3)
+            self.rect(t.accent if enabled else t.muted, (r.x, r.centery - 3, max(1, int(r.w * frac)), 6), radius=3)
         knob = (int(r.x + r.w * frac), r.centery)
         self.circle(t.panel, knob, 10)
         self.circle(t.accent if enabled else t.muted, knob, 10, 2)

@@ -545,3 +545,11 @@ def test_player_color_from_custom_flag():
     assert g.player.color == "#0AC81E"
     g = Game(Settings(seed=3, n_enemies=2, player_flag={"preset": "taeguk"}))
     assert g.player.color == "#2F6FDE"
+
+
+def test_flag_hsl_roundtrip():
+    from korciv.ui.modals import hsl_rgb, rgb_hsl
+    for rgb in ((47, 111, 222), (0, 0, 0), (255, 255, 255), (200, 30, 30), (12, 150, 90)):
+        back = hsl_rgb(*rgb_hsl(rgb))
+        assert all(abs(a - b) <= 3 for a, b in zip(rgb, back))
+    assert hsl_rgb(0, 100, 50) == (255, 0, 0) and hsl_rgb(120, 0, 100) == (255, 255, 255)

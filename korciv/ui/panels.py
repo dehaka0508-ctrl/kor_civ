@@ -764,9 +764,13 @@ def draw_army_tab(app, body):
         label = "합치기" if merge is None else f"합치기 ({len(merge)})"
         if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
                       enabled=bool(others),
-                      tooltip="누르면 부대 칸에 체크 상자가 생깁니다. 합칠 부대를 고른 뒤 Enter나 [합치기]를 한 번 더\n"
-                              "누르면 고른 부대만 하나로 합칩니다(같은 유닛끼리 남은 체력 합산). Esc: 취소"):
-            if merge is None:
+                      tooltip="이 지역에 부대가 둘뿐이면 바로 합칩니다. 셋 이상이면 부대 칸에 체크 상자가 생기고,\n"
+                              "합칠 부대를 고른 뒤 Enter나 [합치기]를 한 번 더 누르면 고른 부대만 하나로 합칩니다\n"
+                              "(같은 유닛끼리 남은 체력 합산). Esc: 취소"):
+            if merge is None and len(others) == 1:
+                app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
+                go = True
+            elif merge is None:
                 app.merge_pick, app.merge_node = {army.id}, node
                 merge = app.merge_pick
             else:
@@ -1374,13 +1378,10 @@ def draw_energy_tab(app, body):
     if f.auto_energy:
         g.set_auto_energy(pid, False)        # 예전 세이브: 지금 자동안을 수동 배정으로 옮긴다
     if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12,
-                  tooltip="턴마다 생산되는 양(채굴·자체 발전) 기준으로 배정합니다(다음에 누를 때까지 유지).\n"
-                          "우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 → "
-                          "⑤ 공장에 석유\n발전소·공장 모두 단계가 높은 곳부터 채웁니다."):
+                  tooltip="턴마다 생산되는 양(채굴·자체 발전) 기준으로 배정합니다(다음에 누를 때까지 유지)."):
         units, cap = g.assign_energy(pid)
         app.toast(f"자원 자동 배정: 공장 연료 {units}/{cap}")
         app.changed()
-    gui.text((x + 130, y + 12), "배정은 아래에서 직접 고칠 수 있습니다", 11, t.muted, anchor="midleft", max_w=w - 130)
     y += 30
     plan = g.energy_plan(pid)
     plants, facts = g.energy_sites(pid)

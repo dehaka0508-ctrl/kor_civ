@@ -101,6 +101,19 @@ def draw_qty(app):
             on_ok(v)
 
 
+def rgb_hsl(rgb):
+    """RGB(0~255) → (색조 0~360, 채도 0~100, 명도 0~100)."""
+    import colorsys
+    h, l, s_ = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    return round(h * 360) % 361, round(s_ * 100), round(l * 100)
+
+
+def hsl_rgb(h, s_, l):
+    """(색조 0~360, 채도 0~100, 명도 0~100) → RGB(0~255)."""
+    import colorsys
+    return tuple(round(c * 255) for c in colorsys.hls_to_rgb((h % 360) / 360, l / 100, s_ / 100))
+
+
 def parse_byte(text: str) -> int:
     """0~255 직접 입력: 255를 넘으면 255, 숫자가 아니면(빈칸·음수·문자) 0."""
     text = (text or "").strip()
@@ -322,7 +335,7 @@ FLAG_TARGET_USED = {"c1": lambda fl: True, "c2": FL.uses_c2, "ec": FL.uses_ec, "
 
 
 def draw_flag_editor(app):
-    """국기 만들기: 배경 무늬(5×2)·문양(6×4)·색(RGB 각 00~FF 슬라이더), 또는 역사 국기."""
+    """국기 만들기: 배경 무늬(5×2)·문양(6×4)·색(색조·채도·명도 슬라이더 + RGB 0~255 직접 입력), 또는 역사 국기."""
     gui = app.gui
     t = app.theme
     s = app.setup
@@ -348,17 +361,40 @@ def draw_flag_editor(app):
     gui.rect(t.border, (x, y, 44, 30), 1, radius=4)
     gui.text((x + 56, y + 15), "역사 국기는 색을 바꿀 수 없습니다" if preset else FL.rgb2hex(col),
              13 if preset else 18, t.muted if preset else t.text, "bold", anchor="midleft")
-    y += 44
-    for i, (ch, cc) in enumerate((("R", (220, 60, 60)), ("G", (40, 160, 70)), ("B", (50, 100, 220)))):
-        gui.text((x, y + i * 40 + 8), ch, 15, cc if not preset else t.muted, "bold", anchor="midleft")
-        v, _ = gui.slider((x + 26, y + i * 40, 200, 16), col[i], 0, 255, 1, f"flag_{ck}_{i}", enabled=not preset)
-        col[i] = int(v)
+    y += 42
+    # 색조·채도·명도 슬라이더(색조는 스펙트럼, 채도는 회색→색, 명도는 검은색→흰색)
+    hs = s.__dict__.setdefault("flag_hsl", {})
+    h, sa, li = hs[ck] if ck in hs and hsl_rgb(*hs[ck]) == tuple(col) else rgb_hsl(col)
+    rows = (("색조", h, 360, [hsl_rgb(k * 360 / 36, 100, 50) for k in range(37)]),
+            ("채도", sa, 100, [hsl_rgb(h, k * 100 / 16, li) for k in range(17)]),
+            ("명도", li, 100, [(round(k * 255 / 16),) * 3 for k in range(17)]))
+    vals = []
+    for i, (lab, v, hi, track) in enumerate(rows):
+        gui.text((x, y + i * 36 + 8), lab, 13, t.muted if preset else t.text, "semibold", anchor="midleft")
+        nv, _ = gui.slider((x + 44, y + i * 36, 256, 16), v, 0, hi, 1, f"flag_{ck}_hsl{i}", enabled=not preset,
+                           track=track)
+        vals.append(int(nv))
+    if vals != [h, sa, li] and not preset:
+        hs[ck] = tuple(vals)
+        col = list(hsl_rgb(*vals))
+    else:
+        hs[ck] = (h, sa, li)
+    y += 3 * 36 + 4
+    # RGB 0~255 직접 입력(슬라이더를 움직이면 바로 따라 바뀌고, 입력하고 Enter면 슬라이더에 반영)
+    cw3 = (300 - 2 * 8) / 3
+    for i, ch in enumerate("RGB"):
+        cx = x + i * (cw3 + 8)
+        gui.text((cx, y + 15), ch, 13, t.muted, "bold", anchor="midleft")
         if not preset:
-            col[i] = _num_input(gui, s, (x + 236, y + i * 40 - 7, 64, 30), f"flagnum_{ck}_{i}", col[i])
+            nv = _num_input(gui, s, (cx + 18, y, cw3 - 18, 30), f"flagnum_{ck}_{i}", col[i])
+            if nv != col[i]:
+                col[i] = nv
+                hs[ck] = rgb_hsl(col)
         else:
-            gui.text((x + 300, y + i * 40 + 8), str(col[i]), 13, t.muted, anchor="midright")
+            gui.text((cx + cw3 - 4, y + 15), str(col[i]), 13, t.muted, anchor="midright")
+    y += 36
     fl[ck] = tuple(col)
-    y += 3 * 40 + 6
+    y += 6
     gui.text((x, y), "역사 국기", 14, weight="bold")
     y += 24
     pw = (300 - 3 * 8) / 4
@@ -757,7 +793,12 @@ def draw_battle(app):
     if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
         close(app)
         return
-    if gui.button((r.right - 144, r.bottom - 60, 120, 42), "전투", "danger", size=15, weight="bold"):
+    fight = gui.button((r.right - 144, r.bottom - 60, 120, 42), "전투", "danger", size=15, weight="bold")
+    for k in list(gui.keys):
+        if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not gui.focus:
+            gui.keys.remove(k)                   # Enter = [전투](턴 종료로 넘어가지 않게)
+            fight = True
+    if fight:
         ok, msg = g.order_army(army.id, node, st["mode"])
         app.attack_mode = st["mode"]
         close(app)
@@ -1230,7 +1271,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
 · 좌측 [내정]: 세율·자원 시장·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
 · [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
-· [부대] 탭의 [합치기]: 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
+· [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
 · 각 내 지역은 턴마다 슬롯 1개: 건물 착공, 유닛 생산, 인접 중립 지역 편입 중 하나.
