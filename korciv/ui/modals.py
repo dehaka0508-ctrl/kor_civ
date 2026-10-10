@@ -351,7 +351,7 @@ def _label(gui, x, y, text, hanja=None):
 
 
 def draw_setup(app):
-    """게임 설정(건국): 두루마리처럼 펼친 한지 위에 왼쪽 국호·국기·지도자, 오른쪽 천하의 형세·시작 지역."""
+    """게임 설정(건국): 두루마리처럼 펼친 한지 위에 왼쪽 국호·국기·지도자, 오른쪽 판도·시작 지역."""
     from ..game import player_color
     from .art import portrait_path
     gui = app.gui
@@ -490,11 +490,11 @@ def draw_setup(app):
     gui.line(mix(t.gold, t.panel, 0.2), (mx_, r.y + 84), (mx_, r.bottom - 90))
     gui.polygon(t.gold, [(mx_, r.y + 380), (mx_ + 5, r.y + 386), (mx_, r.y + 392), (mx_ - 5, r.y + 386)])
 
-    # ---------------------------------------------------------- 오른쪽: 천하의 형세
+    # ---------------------------------------------------------- 오른쪽: 판도(적 세력·난이도·안개·승리 조건)
     x2 = r.x + 676
     w2 = r.right - 40 - x2
     y = r.y + 84
-    _label(gui, x2, y, "천하의 형세", "天下形勢")
+    _label(gui, x2, y, "판도", "版圖")
     y += 30
     gui.text((x2, y + 7), "적 세력", 13, t.text, "semibold")
     s.n_enemies = gui.stepper((x2 + 64, y, 120, 30), s.n_enemies, 1, C.MAX_ENEMIES)

@@ -217,7 +217,6 @@ class MapView:
                           for sid, parts in world.sea_shapes.items()}
         self.label.update({sid: proj(*p) for sid, p in world.sea_labels.items()})
         self.world_outlines_open = getattr(world, "outlines_open", False)
-        self.province_lines = [proj_arr(r) for rings in world.province_outlines.values() for r in rings]
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
@@ -228,13 +227,25 @@ class MapView:
             for p0, p1 in zip(pts, pts[1:] + pts[:1]):
                 if p0 != p1:
                     seg.setdefault((p0, p1) if p0 < p1 else (p1, p0), []).append(rid)
-        shared, coast = {}, {}
+        shared, coast, single = {}, {}, []
         for k, rids in seg.items():
             rs = sorted(set(rids))
             if len(rs) == 2:
                 shared.setdefault((rs[0], rs[1]), []).append(k)
             elif len(rs) == 1:
-                coast.setdefault(rs[0], []).append(k)
+                single.append((rs[0], k))
+        # 한 지역만 쓰는 선분 가운데 절반쯤은 이웃 지역과 꼭짓점이 조금 어긋난 내륙 경계다.
+        # 양옆을 찍어 이웃(바다면 None)을 찾고, 같은 경계가 두 판(A의 것·B의 것)으로 있으면 한쪽만 남긴다.
+        mism = {}
+        for (rid, k), nb in zip(single, self._side_neighbors(world, single)):
+            if nb is None:
+                coast.setdefault(rid, []).append(k)
+            elif nb != rid:
+                mism.setdefault((rid, nb), []).append(k)
+        for (r1, r2), segs in mism.items():
+            if r1 > r2 and (r2, r1) in mism:
+                continue                     # 같은 경계의 다른 판은 작은 쪽 것만
+            shared.setdefault((min(r1, r2), max(r1, r2)), []).extend(segs)
         self.pair_lines = [(a_, b_, c) for (a_, b_), segs in shared.items() for c in _chains(segs)]
         self.coast_lines = [(r_, c) for r_, segs in coast.items() for c in _chains(segs)]
         # 좌표 변환을 한 번에: 모든 꼭짓점을 한 배열에 모아 두고 다각형·선은 구간만 기억한다
@@ -247,9 +258,11 @@ class MapView:
             return (n - len(arr), n)
         self.poly_span = [put(arr) for _, arr, _ in self.polys]
         self.sea_span = {sid: [put(ext) for ext, _ in parts] for sid, parts in self.sea_polys.items()}
-        self.province_span = [put(a) for a in self.province_lines]
         self.terrain_span = [(kind, [put(a) for a in lines], conn) for kind, lines, conn in self.terrain_lines]
         self.pair_span = [(a_, b_, put(c)) for a_, b_, c in self.pair_lines]
+        # 광역(시·도)이 다른 두 지역 사이의 경계 = 광역 경계(같은 사슬로 한 번만 긋는다)
+        self.pair_prov = {i for i, (a_, b_, _) in enumerate(self.pair_lines)
+                          if world.regions[a_].province != world.regions[b_].province}
         self.coast_span = [(r_, put(c)) for r_, c in self.coast_lines]
         # 경계 사슬의 사각형(화면 밖 사슬은 건너뛴다)
         self.pair_box = np.array([[*c.min(axis=0), *c.max(axis=0)] for _, _, c in self.pair_lines] or np.zeros((0, 4)))
@@ -467,8 +480,8 @@ class MapView:
             return ((boxes[:, 2] * s + ox >= 0) & (boxes[:, 0] * s + ox <= W_)
                     & (boxes[:, 3] * s + oy >= 0) & (boxes[:, 1] * s + oy <= H_))
         coast_vis = [cs for cs, v in zip(self.coast_span, on_screen(self.coast_box)) if v]
-        pair_vis = [ps for ps, v in zip(self.pair_span, on_screen(self.pair_box))
-                    if v and owners.get(ps[0], 1) != owners.get(ps[1], 1)]
+        pair_all = [(ps, i in self.pair_prov) for i, (ps, v) in enumerate(zip(self.pair_span, on_screen(self.pair_box))) if v]
+        pair_vis = [ps for ps, _ in pair_all if owners.get(ps[0], 1) != owners.get(ps[1], 1)]
         # 얕은 바다: 해안선을 굵고 밝게 먼저 긋고, 땅을 칠하면 바다 쪽 절반만 남는다
         light = mix(theme.sea, (255, 255, 255), 0.3 if not theme.dark else 0.1)
         cw = max(4, int(9 * u))
@@ -514,19 +527,22 @@ class MapView:
             for yy in range(0, H_, th_):
                 for xx in range(0, W_, tw_):
                     surf.blit(tex, (xx, yy), special_flags=pygame.BLEND_RGB_MULT)
-        # 시군구 경계(가는 선)
+        # 시군구 경계(가는 선)·광역 경계(조금 짙고 굵게): 이웃한 두 지역의 경계 사슬을 한 번만 긋는다
         thin = s < 1.2
-        for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
-            x0, y0, x1, y1 = bbox
-            if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
+        pw = max(1, int((2 if self.z >= 2.5 else 1) * u))
+        prov_ink = mix(theme.province_line, (40, 32, 24), 0.35) if not theme.dark else theme.province_line
+        for (a_, b_, span), is_prov in pair_all:
+            pts = sp(span)
+            if len(pts) < 2:
                 continue
-            if (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5:
+            if is_prov:
+                pygame.draw.lines(surf, prov_ink, False, pts, pw)
                 continue
-            line = mix(colors[rid][0], (40, 32, 24), 0.2)
+            line = mix(colors[a_][0], (40, 32, 24), 0.2)
             if thin:
-                pygame.draw.aalines(surf, line, True, sp(span))
+                pygame.draw.aalines(surf, line, False, pts)
             else:
-                pygame.draw.lines(surf, line, True, sp(span), 1)
+                pygame.draw.lines(surf, line, False, pts, 1)
         # 해안선·국경(먹선): 미리 이어 둔 경계 사슬을 바로 긋는다
         coast_ink = (62, 74, 76) if not theme.dark else (140, 160, 165)
         for rid, span in coast_vis:
@@ -540,12 +556,6 @@ class MapView:
             if len(pts) >= 2:
                 pygame.draw.lines(surf, border_ink, False, pts, bw)
 
-        pw = max(1, int((2 if self.z >= 2.5 else 1) * u))
-        closed = not self.world_outlines_open
-        prov = mix(theme.province_line, theme.paper, 0.35)
-        for span in self.province_span:
-            if span[1] - span[0] >= 2:
-                pygame.draw.lines(surf, prov, closed, sp(span), max(1, pw - 1))
         if show_terrain:
             tw = max(2, int((2 if self.z < 2 else (3 if self.z < 4 else 4)) * u))
             halo = mix(theme.sea, (255, 255, 255), 0.4)
@@ -707,6 +717,45 @@ class MapView:
         for arr, bbox in self.polys_by_rid.get(rid, ()):
             if self._visible_bbox(bbox):
                 pygame.draw.lines(screen, color, True, self._screen_poly(arr), width)
+
+    def _side_neighbors(self, world, single, res=3.0, d=0.8):
+        """선분마다 양옆(법선 방향 ±d)을 지역 번호 래스터에서 찍어, 자기 지역이 아닌 쪽 지역(바다면 None)."""
+        if not single:
+            return []
+        allp = np.concatenate([arr for _, arr, _ in self.polys])
+        x0, y0 = allp.min(axis=0) - 2
+        x1, y1 = allp.max(axis=0) + 2
+        w, h = int((x1 - x0) * res) + 1, int((y1 - y0) * res) + 1
+        idm = pygame.Surface((w, h))
+        idm.fill((0, 0, 0))
+        order = list(world.order)
+        idx = {rid: i for i, rid in enumerate(order, 1)}
+        for rid, arr, bbox in self.polys:              # 큰 지역부터: 작은 지역이 위에 남는다
+            i = idx[rid]
+            pygame.draw.polygon(idm, (0, i >> 8, i & 255), ((arr - (x0, y0)) * res).tolist())
+        px = pygame.surfarray.pixels3d(idm)
+        reg = (px[..., 1].astype(np.int32) << 8) | px[..., 2]
+        del px
+        a = np.array([k[0] for _, k in single], np.float64)
+        b = np.array([k[1] for _, k in single], np.float64)
+        m = (a + b) / 2
+        dv = b - a
+        L = np.hypot(dv[:, 0], dv[:, 1]) + 1e-12
+        nrm = np.stack([-dv[:, 1] / L, dv[:, 0] / L], 1)
+        lim = np.array([w - 1, h - 1])
+        p1 = np.clip(((m + nrm * d - (x0, y0)) * res).astype(int), 0, lim)
+        p2 = np.clip(((m - nrm * d - (x0, y0)) * res).astype(int), 0, lim)
+        v1 = reg[p1[:, 0], p1[:, 1]]
+        v2 = reg[p2[:, 0], p2[:, 1]]
+        out = []
+        for (rid, _), i1, i2 in zip(single, v1.tolist(), v2.tolist()):
+            own = idx[rid]
+            if i1 == 0 or i2 == 0:
+                out.append(None)                      # 한쪽이 바다: 해안
+            else:
+                other = i2 if i1 == own else i1
+                out.append(order[other - 1])         # 자기 지역이면(겹침) 자기 자신 → 그리지 않음
+        return out
 
     def screen_bbox(self, nodes, pad=0):
         """지역·해역들의 화면 사각형(지도 view 안으로 자름). 반투명 덮개를 필요한 크기만 만들 때 쓴다."""
