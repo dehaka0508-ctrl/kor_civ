@@ -393,7 +393,6 @@ class App:
         self.draw_compass()
         self.draw_mode_chips()
         self.draw_end_turn()
-        self.draw_gazette()
         self.draw_toasts()
         if self.ctx_menu:
             self.draw_ctx_menu()
@@ -1440,69 +1439,6 @@ class App:
             gui.text(c, str(len(queue)), 12, t.indigo_dk, "bold", anchor="center")
         elif gui.button(r, "턴 종료", "seal", size=19, weight="title", enabled=not g.game_over):
             self.end_turn()
-
-    GAZETTE_ICONS = {"battle": "swords", "war": "swords", "bomb": "swords", "captured": "flag", "peace": "scroll",
-                     "diplo": "scroll", "complete": "hammer", "rebel": "face", "famine": "rice", "eliminated": "flag"}
-    GAZETTE_PRIORITY = ("war", "eliminated", "captured", "battle", "rebel", "peace", "famine", "diplo", "bomb")
-
-    def draw_gazette(self):
-        """주간 조보: 지난 턴에 일어난 일을 오른쪽 위 쪽지로(닫으면 다음 턴까지 숨김)."""
-        from .art import ui_icon
-        g = self.game
-        if not g or self.active_modal() or getattr(self, "gazette_closed", None) == g.turn:
-            return
-        pid = g.player_id
-        evs = []
-        for e in getattr(g, "events", []) or []:
-            if not (pid in e["fids"] or e["kind"] in ("war", "peace", "eliminated", "ranking", "victory", "diplo", "alert")):
-                continue
-            txt = g.event_for_player(e)
-            if txt:
-                evs.append((e["kind"], txt))
-        if not evs:
-            return
-        gui = self.gui
-        t = self.theme
-        u = ui_scale()
-        sw, _ = self.lsize()
-        pri = {k: i for i, k in enumerate(self.GAZETTE_PRIORITY)}
-        head = min(range(len(evs)), key=lambda i: (pri.get(evs[i][0], 99), i))
-        rest = [ev for i, ev in enumerate(evs) if i != head]
-        w = 312
-        x = sw - w - 12
-        lines_h = 22 * min(4, len(rest))
-        r = pygame.Rect(x, TOP_H + 10, w, 106 + lines_h + (18 if len(rest) > 4 else 0))
-        gui.panel(r, radius=3)
-        from ..rules import date_of_turn
-        hr = gui.text((r.x + 14, r.y + 8), "朝報", 24, t.text, "title")
-        gui.text((hr.right + 10, r.y + 11), "주간 조보", 14, t.text, "serif")
-        y_, m_, w_ = date_of_turn(max(1, g.turn - 1))
-        gui.text((hr.right + 10, r.y + 29), f"{y_}년 {m_}월 {w_}주 소식", 10, t.muted, "semibold")
-        close = pygame.Rect(r.right - 30, r.y + 8, 22, 22)
-        if gui.button(close, "×", "ghost", size=15):
-            self.gazette_closed = g.turn
-            return
-        gui.line(t.text, (r.x + 12, r.y + 50), (r.right - 12, r.y + 50), 2)
-        gui.line(t.text, (r.x + 12, r.y + 54), (r.right - 12, r.y + 54), 1)
-        kind, txt = evs[head]
-        col = t.vermilion if kind in ("war", "battle", "rebel", "eliminated") else t.text
-        gui.text((r.x + 14, r.y + 62), txt, 14, col, "title", max_w=w - 28)
-        y = r.y + 88
-        gui.line(t.border, (r.x + 12, y - 4), (r.right - 12, y - 4))
-        for kind, txt in rest[:4]:
-            icol = t.vermilion if kind in ("battle", "war", "bomb") else (t.jade if kind in ("captured", "peace") else t.muted)
-            ui_icon(self.screen, self.GAZETTE_ICONS.get(kind, "box"), gui.P(r.x + 22, y + 9), icol, 0.7 * u)
-            gui.text((r.x + 36, y + 1), txt, 12, t.text, max_w=w - 50)
-            y += 22
-        if len(rest) > 4:
-            gui.text((r.x + 36, y), f"외 {len(rest) - 4}건", 11, t.muted, "semibold")
-        link = pygame.Rect(r.right - 150, r.bottom - 22, 140, 18)
-        hov = gui.hover(link)
-        gui.text((link.right, link.centery), "이벤트 로그 전체 보기 ›", 11, t.accent if not hov else t.vermilion, "semibold",
-                 anchor="midright")
-        if hov and gui.clicked:
-            gui.clicked = False
-            self.modal = ("log", None)
 
     def draw_compass(self):
         """지도 오른쪽 아래 나침반(윤도)과 축척."""

@@ -417,7 +417,9 @@ def draw_setup(app):
     shown = [LEADER_BY_KEY[k] for k in LEADER_CATEGORIES[s.leader_cat][2]] + [LEADER_BY_KEY["cus"]]
     cols, gap = 7, 6
     cw = (w - (cols - 1) * gap) / cols
-    ch = 102
+    pw = int(cw) - 8
+    ph = pw * 4 // 3                          # 초상화 칸은 세로 3:4(그림이 잘리지 않게)
+    ch = ph + 26
     for i, l in enumerate(shown):
         cx = x + (i % cols) * (cw + gap)
         cy = y + (i // cols) * (ch + gap)
@@ -426,7 +428,7 @@ def draw_setup(app):
         hov = gui.hover(cr)
         gui.shadow(cr, 3, 3, 90 if sel else 40)
         gui.rect(t.panel, cr, radius=3)
-        pr_ = pygame.Rect(cr.x + 4, cr.y + 4, cr.w - 8, 70)
+        pr_ = pygame.Rect(cr.x + 4, cr.y + 4, pw, ph)
         if portrait_path(l["key"]) and l["key"] != "cus":
             draw_portrait(gui, pr_, l["key"], t)
             if not sel and not hov:                 # 고르지 않은 카드는 살짝 바랜 느낌
@@ -436,10 +438,11 @@ def draw_setup(app):
         else:
             gui.rect(mix(t.panel_alt, t.indigo, 0.1), pr_)
             col = mix(t.panel_alt, t.indigo, 0.35)
-            gui.circle(col, (pr_.centerx, pr_.y + 25), 12)
-            gui.rect(col, (pr_.centerx - 20, pr_.y + 42, 40, 28), radius=12)
             if l["key"] == "cus":
-                gui.text((pr_.centerx, pr_.centery - 4), "+", 24, (255, 255, 255), "bold", anchor="center")
+                gui.text(pr_.center, "+", 30, col, "bold", anchor="center")
+            else:
+                gui.circle(col, (pr_.centerx, pr_.y + ph * 0.36), pw * 0.17)
+                gui.rect(col, (pr_.centerx - pw * 0.28, pr_.y + ph * 0.58, pw * 0.56, ph * 0.42), radius=12)
         nm = "직접 입력" if l["key"] == "cus" else l["name"]
         gui.text((cr.centerx, cr.bottom - 14), nm, 11 if len(nm) <= 5 else 10, t.text if sel else mix(t.text, t.panel, 0.2),
                  "serif", anchor="center", max_w=cr.w - 4)
@@ -455,7 +458,7 @@ def draw_setup(app):
     y += 2 * (ch + gap) + 6
     # 고른 지도자: 족자 초상 + 이름 + 버프·디버프 패
     lead = LEADER_BY_KEY[s.leader]
-    fr2 = pygame.Rect(x + 8, y + 10, 100, 132)
+    fr2 = pygame.Rect(x + 8, y + 10, 96, 136)    # 안쪽 초상화 84×112(3:4)
     gui.shadow(fr2, 2, 6, 90)
     gui.rect((60, 78, 94), fr2)
     inner = fr2.inflate(-12, -24)
