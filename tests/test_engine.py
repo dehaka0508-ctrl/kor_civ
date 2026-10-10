@@ -2614,6 +2614,20 @@ def test_ai_econ_zone_defense():
     ai._econ_zone_defense(g, f, set(z), cands, False)
     assert cands and all(c[1] in z and c[3] in ("shelter", "line") for c in cands)
 
+def test_ai_econ_sprints_when_only_currency_left():
+    """경제 3페이즈: 기축통화 하나만 남으면 경쟁자와 견주지 않고 질주."""
+    from korciv import ai_endgame as EG
+    g = _p2_game()
+    f = g.factions[0]
+    f.ai["phase"] = 3
+    f.ai["p3"] = {"kind": "economic", "turn": g.turn}
+    g.econ_stage = lambda fid: C.ECON_STAGES - 1 if fid == 0 else 0
+    assert EG.assess(g, f)["sprint"] and EG.sprint(f) == "economic"
+    f.ai["p3"] = {"kind": "economic", "turn": g.turn}
+    g.econ_stage = lambda fid: 2
+    EG.assess(g, f)
+    assert EG.sprint(f) == "" or f.ai["p3"]["eta"] <= (1 + C.AI_P3_TOL) * f.ai["p3"]["rival_eta"]
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai

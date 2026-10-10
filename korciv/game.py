@@ -43,6 +43,72 @@ def unit_power(key: str) -> float:
     return max(u.get("atk", 0), u.get("df", 0), u.get("bomb", 0) / 2)
 
 
+def land_dist(world, a, b, cap):
+    """육상 최단 거리(cap 이상이면 cap+1)."""
+    dist = {a: 0}
+    frontier = [a]
+    for d in range(1, cap + 1):
+        nxt = []
+        for u in frontier:
+            for v in world.land_adj[u]:
+                if v not in dist:
+                    dist[v] = d
+                    if v == b:
+                        return d
+                    nxt.append(v)
+        frontier = nxt
+    return 0 if a == b else cap + 1
+
+
+def start_gap(world, a, b, min_d=None):
+    """두 수도 사이에 필요한 육상 거리: START_MIN_DIST(6), 황해·강원 수도가 끼면 한 칸 더."""
+    d = C.START_MIN_DIST if min_d is None else min_d
+    return d + (1 if (world.regions[a].do8 in C.START_WIDE_DO8 or world.regions[b].do8 in C.START_WIDE_DO8) else 0)
+
+
+def player_color(flag):
+    """플레이어 국가 색: 직접 만든 국기면 배경 색 1, 역사 국기(또는 국기 없음)면 None(기본 파란색 #2F6FDE)."""
+    if not flag or flag.get("preset") or not flag.get("c1"):
+        return None
+    return "#{:02X}{:02X}{:02X}".format(*(int(v) for v in flag["c1"]))
+
+
+def pick_starts(world, rng, n, requested=()):
+    """시작 수도 n곳(칸 번호 순서 유지): requested[i]가 있으면 그 칸은 그대로, 없으면(None) 무작위.
+    무작위 수도는 다른 모든 수도와 육상 최단 거리 START_MIN_DIST(6)칸 이상(5칸 안에 다른 수도 없음),
+    황해·강원 수도는 한 칸 더(6칸 안에 다른 수도 없음). 무연륙 섬(제주·서귀포·울릉)은 무작위로 뽑지 않는다(직접 고를 때만).
+    여러 번 섞어 보아도 안 되면(국가가 아주 많을 때) 거리를 1칸씩 줄인다. 같은 곳을 두 칸이 고르면 뒤 칸은 무작위."""
+    fixed = [None] * n
+    seen = set()
+    for i, rid in enumerate(list(requested)[:n]):
+        if rid and rid in world.regions and rid not in seen:
+            fixed[i] = rid
+            seen.add(rid)
+    base = [r for r in fixed if r]
+    cands = [r for r in world.order
+             if not (C.START_NO_RANDOM_ISLAND and world.regions[r].island == "무연륙 섬")]
+    free = [i for i in range(n) if fixed[i] is None]
+    for min_d in range(C.START_MIN_DIST, 0, -1):
+        for _ in range(C.START_PICK_TRIES):
+            picked = list(base)
+            rng.shuffle(cands)
+            for rid in cands:
+                if len(picked) >= len(base) + len(free):
+                    break
+                if rid in picked:
+                    continue
+                if all(land_dist(world, rid, c, start_gap(world, rid, c, min_d)) >= start_gap(world, rid, c, min_d)
+                       for c in picked):
+                    picked.append(rid)
+            if len(picked) >= len(base) + len(free):
+                out = list(fixed)
+                for i, rid in zip(free, picked[len(base):]):
+                    out[i] = rid
+                return out
+    rest = iter(r for r in cands if r not in base)
+    return [r if r else next(rest) for r in fixed]
+
+
 class Game:
     def __init__(self, settings: Settings | None = None, world=None):
         self.settings = settings or Settings()
@@ -135,13 +201,14 @@ class Game:
         st = self.settings
         n_ai = max(1, min(9, st.n_enemies))
         leaders = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus"]
-        ai_leaders = list(st.ai_leaders or [])
+        # AI 칸별 지도자: 정한 칸은 그대로, 빈 칸(None)은 남은 지도자 가운데 무작위
+        ai_leaders = (list(st.ai_leaders or []) + [None] * n_ai)[:n_ai]
         pool = [k for k in leaders if k != st.player_leader and k not in ai_leaders]
         self.rng.shuffle(pool)
-        while len(ai_leaders) < n_ai:
-            ai_leaders.append(pool.pop() if pool else self.rng.choice(leaders))
+        ai_leaders = [k or (pool.pop() if pool else self.rng.choice(leaders)) for k in ai_leaders]
 
-        starts = self._pick_starts(1 + n_ai, [st.player_start] + list(st.ai_starts or []))
+        ai_starts = (list(st.ai_starts or []) + [None] * n_ai)[:n_ai]
+        starts = self._pick_starts(1 + n_ai, [st.player_start] + ai_starts)
         diff = C.DIFFICULTIES[st.difficulty]
         for i in range(1 + n_ai):
             is_player = i == 0
@@ -150,7 +217,10 @@ class Game:
             rid = starts[i]
             name = st.player_name if is_player else faction_name_from(self.world.regions[rid].short)
             lname = (st.player_leader_name or leader["name"]) if is_player else leader["name"]
-            f = Faction(id=i, name=name, color=C.FACTION_COLORS[i % len(C.FACTION_COLORS)], leader=lk,
+            color = C.FACTION_COLORS[i % len(C.FACTION_COLORS)]
+            if is_player:
+                color = player_color(st.player_flag) or color
+            f = Faction(id=i, name=name, color=color, leader=lk,
                         leader_name=lname, gov=None, is_ai=(not is_player) or st.all_ai, capital=rid,
                         aggression=leader["aggr"])
             if not is_player:
@@ -168,51 +238,10 @@ class Game:
             self.finalize_setup()
 
     def _pick_starts(self, n, requested):
-        """시작 수도: 직접 고른 곳은 그대로, 무작위 수도는 다른 모든 수도와 육상 최단 거리 START_MIN_DIST(6)칸 이상
-        (5칸 안에 다른 수도 없음). 황해·강원 수도는 한 칸 더(6칸 안에 다른 수도 없음).
-        무연륙 섬(제주·서귀포·울릉)은 무작위로 뽑지 않는다(직접 고를 때만).
-        여러 번 섞어 보아도 안 되면(국가가 아주 많을 때) 거리를 1칸씩 줄인다."""
-        chosen = []
-        for rid in requested:
-            if rid and rid in self.regions and rid not in chosen:
-                chosen.append(rid)
-        base = list(chosen)
-        w = self.world
-        cands = [r for r in w.order
-                 if not (C.START_NO_RANDOM_ISLAND and w.regions[r].island == "무연륙 섬")]
-
-        def need(a, b, d):
-            return d + (1 if (w.regions[a].do8 in C.START_WIDE_DO8 or w.regions[b].do8 in C.START_WIDE_DO8) else 0)
-        for min_d in range(C.START_MIN_DIST, 0, -1):
-            for _ in range(C.START_PICK_TRIES):
-                picked = list(base)
-                self.rng.shuffle(cands)
-                for rid in cands:
-                    if len(picked) >= n:
-                        break
-                    if rid in picked:
-                        continue
-                    if all(self._land_dist(rid, c, need(rid, c, min_d)) >= need(rid, c, min_d) for c in picked):
-                        picked.append(rid)
-                if len(picked) >= n:
-                    return picked[:n]
-        return (base + [r for r in cands if r not in base])[:n]
+        return pick_starts(self.world, self.rng, n, requested)
 
     def _land_dist(self, a, b, cap):
-        """육상 최단 거리(cap 이상이면 cap+1)."""
-        dist = {a: 0}
-        frontier = [a]
-        for d in range(1, cap + 1):
-            nxt = []
-            for u in frontier:
-                for v in self.world.land_adj[u]:
-                    if v not in dist:
-                        dist[v] = d
-                        if v == b:
-                            return d
-                        nxt.append(v)
-            frontier = nxt
-        return 0 if a == b else cap + 1
+        return land_dist(self.world, a, b, cap)
 
     def _give_start_region(self, f: Faction, rid: str):
         r = self.regions[rid]

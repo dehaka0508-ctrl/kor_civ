@@ -129,9 +129,11 @@ def assess(g, f):
     rivals = {x: best_eta(g, x) for x in g.alive_ids() if x != f.id}
     leader = min(rivals, key=lambda x: (rivals[x][1], x), default=None)
     lead_eta = rivals[leader][1] if leader is not None else ETA_NONE
+    # 경제: 기축통화 하나만 남았으면 경쟁자와 견주지 않고 질주(그것부터 짓고 남는 돈으로 수비·생산 건물)
+    last_step = kind == "economic" and g.econ_stage(f.id) >= C.ECON_STAGES - 1
     p3.update(eta=round(mine, 1), rival=leader, rival_kind=rivals[leader][0] if leader is not None else "",
               rival_eta=round(lead_eta, 1),
-              sprint=mine < ETA_NONE and mine <= (1 + C.AI_P3_TOL) * lead_eta)
+              sprint=last_step or (mine < ETA_NONE and mine <= (1 + C.AI_P3_TOL) * lead_eta))
     # 우세한 나라의 수비 강도: 내 승리가 가까울수록 0 → 1(질주 중일 때만)
     p3["defense"] = round(max(0.0, min(1.0, (C.AI_P3_URGENT_ETA - mine) / C.AI_P3_URGENT_ETA)), 2) \
         if p3["sprint"] else 0.0

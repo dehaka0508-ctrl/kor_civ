@@ -498,3 +498,50 @@ def test_dialogue_popup_enter_and_cjk(app):
     app.gui.begin([ev])
     app.frame()
     assert not g.dialogues and app.active_modal() == "gameover"     # 대사를 닫으면 게임 종료 화면
+
+
+def test_enemy_nation_slots_and_pick_ai(app):
+    """적 국가: 모두 무작위 지도자·지역, 지도에서 칸별 시작 지역 고르기, 게임 시작 때 칸 순서 그대로 반영."""
+    from korciv.game import land_dist, start_gap
+    from korciv.ui import modals
+    s = modals.SetupState()
+    s.n_enemies = 4
+    app.setup, app.scene, app.game = s, "setup", None
+    frame(app)
+    modals.random_ai_leaders(s)
+    assert all(s.ai_leaders[:4]) and len(set(s.ai_leaders[:4])) == 4 and s.leader not in s.ai_leaders
+    modals.random_ai_starts(app)                       # 내 지역을 안 골랐으면 적 국가끼리만
+    st = s.ai_starts[:4]
+    assert all(st) and all(land_dist(app.world, a, b, start_gap(app.world, a, b)) >= start_gap(app.world, a, b)
+                           for i, a in enumerate(st) for b in st[i + 1:])
+    s.start = "S001"
+    modals.random_ai_starts(app)                       # 내 지역을 골랐으면 거기에 맞춰서
+    assert all(land_dist(app.world, "S001", a, start_gap(app.world, "S001", a)) >= start_gap(app.world, "S001", a)
+               for a in s.ai_starts[:4])
+    frame(app)
+    # 지도 화면: AI 2를 고르고 지역을 누르면 그 칸에 배치, 다른 나라 시작 지역은 무시
+    app.scene = "pick_ai"
+    s.ai_place = 1
+    target = next(r for r in app.world.order if r not in s.ai_starts and r != s.start)
+    app.pick_popup = target
+    frame(app)
+    assert s.ai_starts[1] == target
+    s.ai_place = 2
+    app.pick_popup = s.start
+    frame(app)
+    assert s.ai_starts[2] != s.start
+    app.scene = "setup"
+    s.ai_leaders[0] = None
+    modals.start_from_setup(app)
+    g = app.game
+    assert [f.capital for f in g.factions[1:5]] == s.ai_starts[:4] and g.player.capital == "S001"
+    assert [f.leader for f in g.factions[2:5]] == s.ai_leaders[1:4]
+
+
+def test_player_color_from_custom_flag():
+    from korciv.game import Game
+    custom = {"bg": "solid", "c1": (10, 200, 30), "em": "disc"}
+    g = Game(Settings(seed=3, n_enemies=2, player_flag=custom))
+    assert g.player.color == "#0AC81E"
+    g = Game(Settings(seed=3, n_enemies=2, player_flag={"preset": "taeguk"}))
+    assert g.player.color == "#2F6FDE"

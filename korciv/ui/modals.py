@@ -26,6 +26,8 @@ class SetupState:
         self.victories = {k: True for k in C.VICTORY_TYPES}
         self.start = None
         self.ai_leaders = []          # 빈 칸은 무작위
+        self.ai_starts = []           # 칸별 시작 지역(빈 칸은 무작위)
+        self.ai_place = 0             # 적 국가 지역 선택 화면에서 고른 칸
         self.seed = ""
         self.max_turns = C.TIME_VICTORY_TURNS
         self.flag = FL.normalize({"bg": "solid", "c1": FL.hex2rgb(C.FACTION_COLORS[0]), "em": "disc"})
@@ -270,18 +272,36 @@ def draw_setup(app):
     if gui.button((x2 + 366, y - 6, 100, 30), "무작위"):
         s.start = None
     y += 40
-    gui.text((x2, y), "적 지도자", 13, t.muted, "semibold")
-    y += 24
-    while len(s.ai_leaders) < s.n_enemies:
-        s.ai_leaders.append(None)
+    gui.text((x2, y + 6), "적 국가", 13, t.muted, "semibold")
+    fit_ai_slots(s)
+    for j, (lab, tip) in enumerate((("모두 무작위 지도자", "기존 규칙대로 남은 지도자 가운데 무작위로 정합니다"),
+                                    ("모두 무작위 지역", "기존 규칙(수도끼리 6칸 이상 등)대로 시작 지역을 정합니다.\n"
+                                                      "내 시작 지역을 골랐으면 거기에 맞춰서"),
+                                    ("적 국가 지역 선택", "지도에서 적 국가마다 시작 지역을 고릅니다"))):
+        if gui.button((x2 + 62 + j * 136, y, 130, 28), lab, size=11, tooltip=tip):
+            if j == 0:
+                random_ai_leaders(s)
+            elif j == 1:
+                random_ai_starts(app)
+            else:
+                app.scene = "pick_ai"
+                s.ai_place = 0
+                app.map.z = 1.0
+                app.map.cx, app.map.cy = 280, 520
+                app.map.invalidate()
+    y += 36
     for i in range(s.n_enemies):
         cx = x2 + (i % 3) * 158
-        cy = y + (i // 3) * 36
+        cy = y + (i // 3) * 50
         cur = s.ai_leaders[i]
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
-        if gui.button((cx, cy, 152, 30), f"AI {i+1}: {lab}", size=12):
+        rid = s.ai_starts[i]
+        place = app.world.regions[rid].name if rid else "무작위 지역"
+        if gui.button((cx, cy, 152, 44), "", tooltip=f"AI {i + 1}: {lab}\n{place}\n누르면 지도자를 고릅니다"):
             s.ai_pick = i                        # 지도자 고르기 창
-    y += 3 * 36 + 8
+        gui.text((cx + 76, cy + 13), f"AI {i + 1}: {lab}", 12, weight="semibold", anchor="center", max_w=144)
+        gui.text((cx + 76, cy + 31), place, 11, t.muted if not rid else t.text, anchor="center", max_w=144)
+    y += 3 * 50 + 4
     gui.text((x2, y + 8), "시드", 13, t.muted)
     s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
     # 하단 버튼
@@ -439,7 +459,38 @@ def _unique_ai_leaders(s):
         if k and k not in used:
             out.append(k)
             used.add(k)
+        else:
+            out.append(None)                     # 칸 순서를 지킨다(시작 지역과 짝): 빈 칸은 무작위
     return out
+
+
+def fit_ai_slots(s):
+    """적 국가 칸 수(지도자·시작 지역 목록)를 적 세력 수에 맞춘다."""
+    s.ai_leaders = (list(s.ai_leaders) + [None] * s.n_enemies)[: max(s.n_enemies, len(s.ai_leaders))]
+    s.ai_starts = (list(s.ai_starts) + [None] * s.n_enemies)[: max(s.n_enemies, len(s.ai_starts))]
+
+
+def random_ai_leaders(s):
+    """모두 무작위 지도자: 내 지도자를 뺀 지도자 가운데 겹치지 않게 무작위(게임 시작 때와 같은 규칙)."""
+    fit_ai_slots(s)
+    pool = [l["key"] for l in LEADERS if l["key"] not in ("cus", s.leader)]
+    random.shuffle(pool)
+    for i in range(s.n_enemies):
+        s.ai_leaders[i] = pool.pop() if pool else None
+
+
+def random_ai_starts(app):
+    """모두 무작위 지역: 게임 시작 때와 같은 규칙(수도끼리 육상 6칸 이상, 황해·강원 7칸, 무연륙 섬 제외).
+    내 시작 지역을 골랐으면 거기에 맞춰서, 안 골랐으면 적 국가끼리만 규칙에 맞게(내 수도는 시작할 때 거기에 맞춰 정한다)."""
+    from ..game import pick_starts
+    s = app.setup
+    fit_ai_slots(s)
+    n = s.n_enemies
+    if s.start:
+        s.ai_starts[:n] = pick_starts(app.world, random.Random(), 1 + n, [s.start] + [None] * n)[1:]
+    else:
+        s.ai_starts[:n] = pick_starts(app.world, random.Random(), n, [None] * n)
+    app.map.invalidate()
 
 
 def start_from_setup(app):
@@ -452,7 +503,7 @@ def start_from_setup(app):
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
         player_leader_name=(s.custom_name.strip() or "이름 없는 지도자") if s.leader == "cus" else "",
         player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
-        ai_leaders=_unique_ai_leaders(s), seed=seed, max_turns=s.max_turns)
+        ai_leaders=_unique_ai_leaders(s), ai_starts=list(s.ai_starts[: s.n_enemies]), seed=seed, max_turns=s.max_turns)
     app.start_game(settings)
 
 
@@ -557,6 +608,7 @@ def draw_start_popup(app, rid):
     by = r.bottom - 68
     if gui.button((x, by, bw, 46), f"{info.short}{josa_euro(info.short)} 시작", "primary", size=15, weight="bold"):
         app.setup.start = rid
+        app.setup.ai_starts = [None if a == rid else a for a in app.setup.ai_starts]   # 적 국가와 겹치면 그 칸은 무작위로
         app.pick_popup = None
         start_from_setup(app)
         return

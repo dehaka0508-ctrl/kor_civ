@@ -12,6 +12,7 @@ from .. import config as C
 from .. import diplomacy as D
 from ..data import SEA_NAMES, load_world
 from ..game import Game, initial_buildings
+from ..leaders import LEADER_BY_KEY
 from ..state import NEUTRAL, Army, Settings
 from ..version import VERSION, compatible
 from . import modals, panels
@@ -269,6 +270,8 @@ class App:
                 modals.draw_ai_leader_picker(self)
         elif self.scene == "pick_start":
             self.draw_pick_start()
+        elif self.scene == "pick_ai":
+            self.draw_pick_ai()
         elif self.scene in ("government", "main"):
             self.draw_main()
         self.gui.draw_tooltip()
@@ -304,6 +307,71 @@ class App:
         else:
             self.gui.input_enabled = True
             modals.draw_start_popup(self, popup)
+
+    # ------------------------------------------------------------ 적 국가 지역 고르기
+    def draw_pick_ai(self):
+        """적 국가 지역 선택: 왼쪽 아래 목록에서 국가를 고르고 지도에서 지역을 누르면 그곳에 배치."""
+        sw, sh = self.lsize()
+        s = self.setup
+        modals.fit_ai_slots(s)
+        n = s.n_enemies
+        s.ai_place = max(0, min(n - 1, s.ai_place or 0))
+        self.set_map_view()
+        self.draw_map(pick_mode=True)
+        g = self.gui
+        t = self.theme
+        g.panel((0, 0, sw, TOP_H), radius=0, shadow=False)
+        if g.button((12, 10, 120, 36), "← 설정으로"):
+            self.scene = "setup"
+            return
+        g.text((148, TOP_H // 2), "왼쪽 아래 목록에서 국가를 고르고 지도에서 시작 지역을 클릭하세요 · 휠로 확대, 드래그로 이동",
+               15, weight="bold", anchor="midleft", max_w=sw - 300)
+        if g.button((sw - 150, 10, 138, 36), "모두 무작위 지역", size=12):
+            modals.random_ai_starts(self)
+        # 왼쪽 아래: AI1~n 목록
+        rowh = 34
+        ph = 40 + n * (rowh + 4)
+        pr = pygame.Rect(12, sh - ph - 12, 300, ph)
+        g.panel(pr, radius=10)
+        g.text((pr.x + 14, pr.y + 12), "적 국가", 13, t.muted, "semibold")
+        for i in range(n):
+            k = s.ai_leaders[i]
+            rid = s.ai_starts[i]
+            lab = f"AI {i + 1}: {LEADER_BY_KEY[k]['name'] if k else '무작위'}"
+            place = self.world.regions[rid].short if rid else "무작위"
+            cell = (pr.x + 10, pr.y + 34 + i * (rowh + 4), pr.w - 20, rowh)
+            if g.button(cell, "", selected=i == s.ai_place, tooltip=self.world.regions[rid].name if rid else "무작위 지역"):
+                s.ai_place = i
+            g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + 10, 14, 14), radius=3)
+            g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, weight="semibold", anchor="midleft", max_w=150)
+            g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12, t.muted if not rid else t.text,
+                   anchor="midright", max_w=90)
+        self.map_input(pick_mode=True)
+        if self.hover in self.world.regions:
+            taken = self.start_owner(self.hover)
+            g.tooltip = self.world.regions[self.hover].name + (f"\n{taken}의 시작 지역" if taken else "")
+        if self.pick_popup:                    # 지도 클릭: 고른 국가를 그 지역에 배치(다른 나라 시작 지역이면 무시)
+            rid = self.pick_popup
+            self.pick_popup = None
+            if self.start_owner(rid) is None or s.ai_starts[s.ai_place] == rid:
+                s.ai_starts[s.ai_place] = rid
+                nxt = [j for j in range(n) if s.ai_starts[j] is None]
+                if nxt:
+                    s.ai_place = nxt[0]
+            self.map.invalidate()
+        for k in g.keys:
+            if k.key == pygame.K_ESCAPE:
+                self.scene = "setup"
+
+    def start_owner(self, rid):
+        """설정 중인 시작 지역 주인: '내 국가'·'AI n' 또는 None."""
+        s = self.setup
+        if rid == s.start:
+            return "내 국가"
+        for i, a in enumerate(s.ai_starts[: s.n_enemies]):
+            if a == rid:
+                return f"AI {i + 1}"
+        return None
 
     # ------------------------------------------------------------ 메인 화면
     def draw_main(self):
@@ -356,12 +424,16 @@ class App:
         out = {}
         pid = g.player_id if g else None
         fog_on = g and g.settings.fog > 0 and not self.fog_reveal
+        ai_starts = list(self.setup.ai_starts[: self.setup.n_enemies]) if pick_mode else []
         for rid in self.world.order:
             info = self.world.regions[rid]
             if not g or pick_mode:
                 fill = t.neutral
                 if pick_mode and rid in (self.pick_popup, self.setup.start):
                     fill = t.accent
+                elif pick_mode and rid in ai_starts:
+                    fill = mix(hex2rgb(C.FACTION_COLORS[(ai_starts.index(rid) + 1) % len(C.FACTION_COLORS)]),
+                               (255, 255, 255), 0.25)
                 out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
                 continue
             r = g.regions[rid]
@@ -499,7 +571,7 @@ class App:
         mv = self.map
         busy = 0 if pick_mode or not self.game else hash(frozenset(
             r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
-        key = ("pick", self.setup.start, self.pick_popup) if pick_mode else (
+        key = ("pick", self.setup.start, self.pick_popup, tuple(self.setup.ai_starts[: self.setup.n_enemies])) if pick_mode else (
             self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "", self.fog_reveal, id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
@@ -513,6 +585,18 @@ class App:
                 mv.outline(self.screen, self.hover, self.theme.text, max(2, int(2 * u)))
             if self.setup.start:
                 mv.outline(self.screen, self.setup.start, (255, 255, 255), max(3, int(3 * u)))
+            # 적 국가 시작 지역: 'AI n' 표시(적 국가 지역 선택 화면에서는 고른 칸을 굵게)
+            for i, rid in enumerate(self.setup.ai_starts[: self.setup.n_enemies]):
+                if not rid:
+                    continue
+                if self.scene == "pick_ai" and i == self.setup.ai_place:
+                    mv.outline(self.screen, rid, (255, 212, 59), max(3, int(3 * u)))
+                x, y = mv.label_screen(rid)
+                lab = render_text(f"AI {i + 1}", 11, (255, 255, 255), "bold")
+                box = lab.get_rect(center=(x, y - int(14 * u))).inflate(int(8 * u), int(4 * u))
+                pygame.draw.rect(self.screen, hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), box,
+                                 border_radius=4)
+                self.screen.blit(lab, lab.get_rect(center=box.center))
             self.screen.set_clip(None)
             return
         g = self.game
