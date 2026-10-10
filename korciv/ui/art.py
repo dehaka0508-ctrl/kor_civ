@@ -17,7 +17,7 @@ PORTRAIT_DIR = os.path.join(ASSETS, "portraits")
 _masks: dict = {}
 _presets: dict = {}
 # 마스크 문양의 크기(문양 반지름 R 대비 상자 한 변)
-MASK_BOX = {"pine": 2.3, "flower": 2.2, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
+MASK_BOX = {"pine": 2.3, "flower": 2.2, "phoenix": 2.3, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.2, "cheonma": 2.6, "samjogo": 2.3}
 PORTRAIT_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 

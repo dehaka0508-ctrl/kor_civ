@@ -24,17 +24,20 @@ BACKGROUNDS = (
 
 # 문양: 키, 이름 (편집 창에 6×4로 놓인다). "none" 포함 24칸.
 EMBLEMS = (
-    # 도형
-    ("none", "없음"), ("disc", "원"), ("ring", "고리"), ("taegeuk", "태극"), ("star5", "오각별"),
-    ("shield", "방패"), ("crown", "왕관"), ("flower", "무궁화"), ("pine", "소나무"), ("saltire", "X자"),
-    ("diamond", "마름모"), ("wave", "물결"), ("mountain", "산"), ("cloud", "구름"),
-    # 종교
-    ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "초승달과 별"),
-    ("om", "옴(ॐ)"), ("yinyang", "도교 태극"),
-    # 동물
-    ("tiger", "호랑이 머리"), ("dragon", "용"), ("cheonma", "천마(천마도)"), ("samjogo", "삼족오"),
+    ("none", "없음"), ("taegeuk", "태극"), ("disc", "원"), ("star5", "별"), ("diamond", "마름모"), ("shield", "방패"),
+    ("crown", "왕관"), ("pine", "소나무"), ("flower", "무궁화"), ("wave", "물결"), ("mountain", "산"), ("cloud", "구름"),
+    ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "별과 초승달"), ("om", "옴(ॐ)"),
+    ("yinyang", "도교 태극"),
+    ("dragon", "용"), ("tiger", "호랑이"), ("phoenix", "봉황"), ("cheonma", "천마"), ("samjogo", "삼족오"),
 )
-MASK_EMBLEMS = {"pine", "flower", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
+# 편집 창 줄 배치(줄마다 6칸)
+EMBLEM_ROWS = (
+    ("none", "taegeuk", "disc", "star5", "diamond", "shield"),
+    ("crown", "pine", "flower", "wave", "mountain", "cloud"),
+    ("manji", "hexagram", "cross", "crescent_star", "om", "yinyang"),
+    ("dragon", "tiger", "phoenix", "cheonma", "samjogo"),
+)
+MASK_EMBLEMS = {"pine", "flower", "phoenix", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
 TWO_TONE_EMBLEMS = {"taegeuk", "yinyang", "flower"}      # 문양 색 2를 쓰는 문양   # assets/emblems/<키>.png
 
 # 역사 국기: 고르면 배경·문양·색 대신 그대로 쓴다

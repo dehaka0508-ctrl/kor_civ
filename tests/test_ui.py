@@ -181,7 +181,8 @@ def test_flags_and_diplo_detail(app):
         for em in FL.EMBLEM_KEYS:
             surf = render_flag({"bg": bg, "em": em, "c1": (10, 20, 30), "c2": (200, 0, 0), "ec": (255, 255, 0)}, 30, 20)
             assert surf.get_size() == (30, 20)
-    assert len(FL.EMBLEMS) == 24 and len(FL.BACKGROUNDS) == 10
+    assert len(FL.EMBLEMS) == 23 and len(FL.BACKGROUNDS) == 10
+    assert sorted(k for row in FL.EMBLEM_ROWS for k in row) == sorted(FL.EMBLEM_KEYS)
     for pk in FL.PRESET_KEYS:             # 역사 국기(이미지·그림)
         assert render_flag({"preset": pk}, 30, 20).get_size() == (30, 20)
     assert FL.normalize({"bg": "nordic", "em": "star6"}) ["bg"] == "cross"   # 예전 저장 키

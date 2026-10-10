@@ -746,8 +746,11 @@ def draw_flag_editor(app):
     y2 += 24
     gap = 8
     cw, chh = (rw - 5 * gap) / 6, 58
-    for i, (ek, en) in enumerate(FL.EMBLEMS):
-        cell = pygame.Rect(x2 + (i % 6) * (cw + gap), y2 + (i // 6) * (chh + gap), cw, chh)
+    names = dict(FL.EMBLEMS)
+    cells = [(ri, ci, ek) for ri, row in enumerate(FL.EMBLEM_ROWS) for ci, ek in enumerate(row)]
+    for ri, ci, ek in cells:
+        en = names[ek]
+        cell = pygame.Rect(x2 + ci * (cw + gap), y2 + ri * (chh + gap), cw, chh)
         if gui.button(cell, "", selected=not preset and fl["em"] == ek, tooltip=en):
             fl["em"] = ek
             fl.pop("preset", None)
