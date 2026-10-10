@@ -2628,6 +2628,25 @@ def test_ai_econ_sprints_when_only_currency_left():
     EG.assess(g, f)
     assert EG.sprint(f) == "" or f.ai["p3"]["eta"] <= (1 + C.AI_P3_TOL) * f.ai["p3"]["rival_eta"]
 
+def test_observatory_bombed_blocks_science_until_rebuilt():
+    """폭격이 건물을 맞히면 천체관측소가 파괴될 수 있다: 과학 단계에서 빠져, 다른 단계를 다 마쳤어도 다시 지어야 발사."""
+    from korciv import ai
+    g = _p2_game()
+    f = g.factions[1]
+    rid = g.regions_of(1)[0].id
+    rr = g.regions[rid]
+    rr.sci.add("observatory")
+    f.science = list(C.SCIENCE_STEPS)
+    D.declare_war(g, 0, 1)
+    g.is_visible = lambda fid, loc: True
+    assert ai._bomb_value(g, 0, rid, None) >= C.AI_SCI_OBS_BOMB          # 시야에 든 적 관측소는 폭격 대상
+    a = g.new_army(0, rid, {"bmb": 1})
+    g.air_defense = lambda fid, tgt: (0, 0, 0)
+    g.rng.random = lambda: 0.0                                          # 건물 명중·관측소 50% 모두 통과
+    g._bombard(a, rid, {"bmb": 1})
+    assert "observatory" not in rr.sci and "observatory" not in f.science
+    assert g.science_next(1) == "observatory" and g.launch_ready(1) is None
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai

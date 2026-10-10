@@ -137,6 +137,8 @@ def assess(g, f):
     # 우세한 나라의 수비 강도: 내 승리가 가까울수록 0 → 1(질주 중일 때만)
     p3["defense"] = round(max(0.0, min(1.0, (C.AI_P3_URGENT_ETA - mine) / C.AI_P3_URGENT_ETA)), 2) \
         if p3["sprint"] else 0.0
+    if last_step:
+        p3["defense"] = max(p3["defense"], C.AI_P3_LAST_STEP_DEF)   # 기축통화만 남음: 견제가 몰리니 수비도 최소 이만큼
     _set_urgency(g, f, p3, leader, lead_eta, mine, p3["sprint"], kind)
     n = f.ai.setdefault("p3s", {})
     n["eval"] = n.get("eval", 0) + 1
@@ -185,6 +187,8 @@ def _key_value(g, rr, rid, sci_units) -> float:
     v = 0.0
     if "pad" in rr.sci:
         v = 10.0
+    elif "observatory" in rr.sci:
+        v = 8.0                                   # 부서지면 과학승리를 다시 지을 때까지 막는다: 지키고 노릴 거점
     elif rr.sci:
         v = 2.0
     if rr.econ & {"currency", "ifc", "sez"}:

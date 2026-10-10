@@ -1409,7 +1409,8 @@ def key_guards(g, f, threat) -> dict:
     # 경제 3페이즈: 금융 권역을 둘러싼 내 지역(완충지)에도 병력을 둔다(권역은 한데 모여 있어 지키기 쉽다)
     for rid in ring:
         if rid != f.capital and rid not in out:
-            out[rid] = 1 + (1 if at_war else 0) + (2 if threat.get(rid, 0) >= 0.5 else 0) + (1 if hunted else 0)
+            out[rid] = (1 + (1 if at_war else 0) + (2 if threat.get(rid, 0) >= 0.5 else 0) + (1 if hunted else 0)
+                        + round(C.AI_P3_LEAD_GUARD * d))     # 질주 중이면 승리가 가까울수록 완충지 수비대도 늘린다
     return out
 
 
@@ -1425,14 +1426,17 @@ def econ_zone(g, f):
 
 def _econ_zone_defense(g, f, idle_ids, cands, at_war):
     """경제 3페이즈: 금융 권역 지역마다 방공호, 권역을 둘러싼 경계(다른 나라·해안선 먼저, 내 완충지 쪽은 1단계)에 방어선.
-    과학 승리 거점과 같은 수준(방공호 2단계, 전쟁 중이거나 견제를 받으면 3단계 / 방어선 2단계, 전쟁 중 3단계)."""
+    과학 승리 거점과 같은 수준(방공호 2단계, 전쟁 중이거나 견제를 받으면 3단계 / 방어선 2단계, 전쟁 중 3단계).
+    질주 중이면 수비 강도 d만큼 더: 방공호 +1(d ≥ 0.5), 대공포·방어선 1 + 2d 단계."""
     fid = f.id
     zone, _ = econ_zone(g, f)
     if not zone:
         return
     hunted = bool(harassed_by(g, fid)) if at_war else False
-    top = C.AI_KEY_SHELTER + (1 if (hunted or at_war) else 0)
-    line_top = 2 + (1 if at_war else 0)
+    d = EG.lead_defense(f)                     # 질주 중(기축통화만 남았을 때 포함): 승리가 가까울수록 더 단단히
+    top = C.AI_KEY_SHELTER + (1 if (hunted or at_war) else 0) + (1 if d >= 0.5 else 0)
+    line_top = max(2 + (1 if at_war else 0), round(1 + 2 * d) if d > 0 else 0)
+    aa_top = round(1 + 2 * d) if d > 0 else 0
     for rid in sorted(zone):
         if rid not in idle_ids:
             continue
@@ -1440,6 +1444,10 @@ def _econ_zone_defense(g, f, idle_ids, cands, at_war):
         if rr.b["shelter"] < top:
             lv = rr.b["shelter"]
             cands.append((52.5, rid, "build", "shelter", None, R.def_building_cost("shelter", lv + 1) / C.DEF_TURNS[lv]))
+            continue
+        if rr.b["aa"] < aa_top:
+            lv = rr.b["aa"]
+            cands.append((52.2, rid, "build", "aa", None, R.def_building_cost("aa", lv + 1) / C.DEF_TURNS[lv]))
             continue
         out = [n for n in g.world.land_adj[rid] if n not in zone]
         foreign = [n for n in out if g.regions[n].owner != fid]
@@ -1552,6 +1560,9 @@ def _bomb_value(g, fid, rid, h_tgt):
         # 과학승리 견제(낮은 적극성): 보이는 적의 추진체·탑승 모듈·발사체 연료 유닛이 있으면 조금 더 노린다
         n_sci = sum(n for a in g.hostile_units_at(fid, rid) for k, n in a.units.items() if k in C.SCIENCE_UNITS)
         v += C.AI_SCI_UNIT_BOMB * n_sci
+        rr = g.regions[rid]
+        if "observatory" in rr.sci and rr.owner not in (NEUTRAL, fid):
+            v += C.AI_SCI_OBS_BOMB                   # 과학 견제: 시야에 든 적 천체관측소(부수면 다시 지어야 발사 가능)
     return v
 
 

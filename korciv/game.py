@@ -2681,6 +2681,10 @@ class Game:
             hit = self.bomb_targets(tgt)
             if units.get("dd", 0) and rr.b.get("port"):
                 hit = ["port"]                    # 함포 사격은 항구를 먼저 노린다(상륙·해군 기지 무력화)
+            if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
+                hit = []                          # 천체관측소: 맞으면 파괴(과학승리는 다시 지을 때까지 불가)
+                self._destroy_observatory(rr, a.owner)
+                notes.append("천체관측소 파괴")
             if hit:
                 k = self.rng.choice(hit)
                 if k.startswith("line:"):
@@ -2702,6 +2706,16 @@ class Game:
                    region=tgt, fids=(a.owner, rr.owner))
 
     # ---- 5. 지상 공격
+    def _destroy_observatory(self, rr, by):
+        """폭격으로 천체관측소 파괴: 과학 단계에서 빠져 다시 지어야 한다(다른 단계를 다 마쳐도 발사 불가)."""
+        rr.sci.discard("observatory")
+        f = self.factions[rr.owner] if rr.owner != NEUTRAL else None
+        if f and "observatory" in f.science and not any("observatory" in r.sci for r in self.regions_of(f.id)):
+            f.science.remove("observatory")
+        if f:
+            self.event("alert", f"{self.fname(by)}의 폭격으로 {self.info(rr.id).name}의 천체관측소가 파괴되었습니다"
+                                f"({f.name}: 다시 지어야 과학승리 가능).", region=rr.id, fids=(by, f.id))
+
     def bomb_targets(self, rid):
         """폭격으로 부술 수 있는 건물: 생산 건물·방공호·대공포 키와 'line:경계' 방어선."""
         rr = self.regions[rid]

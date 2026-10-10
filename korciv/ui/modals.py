@@ -142,7 +142,8 @@ VICTORY_TIPS = {
     "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 은행 5단계(금융 단지) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 석유 생산 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
-               f"(단계마다 {C.SCIENCE_TURNS}턴, 턴당 {C.SCIENCE_COST_PER_TURN:,}부터 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})",
+               f"(단계마다 {C.SCIENCE_TURNS}턴, 턴당 {C.SCIENCE_COST_PER_TURN:,}부터 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})\n"
+               "천체관측소가 폭격으로 파괴되면 다른 단계를 다 마쳤어도 다시 지을 때까지 발사할 수 없습니다",
     "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 금융 단지(은행 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
                 f"증권거래소(수도 포함 {C.ECON_EXCHANGES}곳) → ③ 수도에 경제특구 → ④ 우호 선언 이상 관계 {C.ECON_IFC_FRIENDS}개국이면\n"
                 f"국제금융센터 → ⑤ 우호 선언 이상 {C.ECON_CURRENCY_FRIENDS}개국(동맹 {C.ECON_CURRENCY_ALLIES}곳 이상)이면 "
