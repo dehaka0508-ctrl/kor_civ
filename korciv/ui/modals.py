@@ -1379,10 +1379,11 @@ def draw_dialogue(app):
     gui.text((r.right - 28, r.bottom - 34), "Enter 또는 X로 닫기" + (f" · 다음 {len(q) - 1}건" if len(q) > 1 else ""),
              12, t.muted, anchor="topright")
     done = gui.button((r.right - 52, r.y + 14, 36, 36), "×", "ghost", size=18, tooltip="닫기 (Enter)")
+    guard = pygame.time.get_ticks() < getattr(app, "enter_guard", 0)
     for k in list(gui.keys):
         if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             gui.keys.remove(k)
-            done = True
+            done = done or not guard               # 턴 종료 Enter가 이어서 대사를 넘기지 않게
     if done and q:
         q.pop(0)
 

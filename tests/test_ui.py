@@ -487,6 +487,7 @@ def test_dialogue_popup_enter_and_cjk(app):
     g.set_player_government("presidential")
     app.scene = "main"
     g.dialogues = [{"kind": "war", "fid": 1, "turn": 1}, {"kind": "peace", "fid": 2, "turn": 1}]
+    app.enter_guard = 0
     assert app.active_modal() == "dialogue"
     frame(app)
     ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r")
@@ -553,3 +554,36 @@ def test_flag_hsl_roundtrip():
         back = hsl_rgb(*rgb_hsl(rgb))
         assert all(abs(a - b) <= 3 for a, b in zip(rgb, back))
     assert hsl_rgb(0, 100, 50) == (255, 0, 0) and hsl_rgb(120, 0, 100) == (255, 255, 255)
+
+
+def test_enter_end_turn_does_not_skip_new_dialogue(app):
+    """Enter로 턴을 넘기면 그 턴에 뜬 지도자 대사 창이 같은 Enter(또는 바로 이어진 Enter)로 닫히지 않는다."""
+    app.start_game(Settings(seed=4, n_enemies=2, ai_leaders=["mao", "sta"]))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    g.pending_rebellions.clear()
+    g.dialogues = []
+    app.next_region = lambda: False
+    real = g.end_turn
+
+    def end_turn():
+        real()
+        g.pending_proposals.clear()
+        g.pending_rebellions.clear()
+        g.dialogues = [{"kind": "war", "fid": 1, "turn": g.turn}]
+    g.end_turn = end_turn
+    ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r")
+    t0 = g.turn
+    app.gui.begin([ev])
+    app.frame()
+    assert g.turn == t0 + 1 and len(g.dialogues) == 1        # 같은 Enter로 닫히지 않음
+    app.gui.begin([ev])
+    app.frame()
+    assert len(g.dialogues) == 1                                # 바로 이어진 Enter(키 반복)도 무시
+    app.enter_guard = 0
+    app.gui.begin([ev])
+    app.frame()
+    assert not g.dialogues and g.turn == t0 + 1                 # 잠시 뒤 Enter는 대사만 닫는다
+    del app.next_region

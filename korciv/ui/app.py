@@ -1046,6 +1046,7 @@ class App:
             if g.focus:
                 continue
             if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                g.keys.remove(k)                     # 이 Enter는 여기서 소비(새로 뜬 대사 창이 같은 Enter로 닫히지 않게)
                 if pygame.key.get_mods() & pygame.KMOD_SHIFT or not self.next_region():
                     self.end_turn()
             elif k.key == pygame.K_ESCAPE:
@@ -1112,6 +1113,7 @@ class App:
             return
         before = self.snapshot()
         g.end_turn()
+        self.enter_guard = pygame.time.get_ticks() + 400   # 턴 종료 직후 잠깐은 Enter로 대사 창을 넘기지 않는다(키 반복·연타 방지)
         self.visited = set()
         self.prev_values = before
         self.prev_t = pygame.time.get_ticks()
