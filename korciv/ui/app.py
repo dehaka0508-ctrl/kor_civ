@@ -203,7 +203,7 @@ class App:
             self.toast(f"이 버전({VERSION})에서 이어서 할 수 없는 저장 파일입니다.", self.theme.bad)
             return
         if any(not hasattr(f, "met") for f in g.factions):
-            g._update_fog()                      # v1.0.0 세이브: 조우 기록을 지금 시야로 채운다
+            g._update_fog()                      # v0.0.0 세이브: 조우 기록을 지금 시야로 채운다
         self.game = g
         self.modal = None
         self.reset_ui()

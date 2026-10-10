@@ -2291,7 +2291,7 @@ def test_greeting_needs_contact_even_without_fog():
         assert ("meet", far[0]) in [(d["kind"], d["fid"]) for d in g.dialogues], fog
 
 
-# ---------------------------------------------------------------- v1.20.0 패치
+# ---------------------------------------------------------------- v0.20.0 패치
 def test_v120_leader_changes():
     from korciv.leaders import LEADER_BY_KEY, Mods
     g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
@@ -3127,7 +3127,7 @@ def test_small_resource_gift_still_raises_opinion():
         assert D.opinion(g, 1, 0) >= b + 0.01 - 1e-9, k
 
 
-# ------------------------------------------------------------------ v1.45.0 자원 흐름·계약·거래
+# ------------------------------------------------------------------ v0.45.0 자원 흐름·계약·거래
 def _mined(g, table):
     """세력별 턴당 채굴량을 고정한다."""
     orig = g.energy_mined

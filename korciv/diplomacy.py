@@ -717,7 +717,7 @@ def empty_offer():
             "take": {k: 0 for k in TRADE_KEYS} | {"passage": False, "regions": []}}
 
 
-# ---- 자원 계약(v1.45.0): 자원은 '턴당 n개 × 12턴'으로 주고받는다
+# ---- 자원 계약(v0.45.0): 자원은 '턴당 n개 × 12턴'으로 주고받는다
 def contracts(g) -> list:
     """진행 중인 자원 계약 [{from, to, res, n, price, left, start}] (예전 세이브 호환)."""
     d = g.dip.__dict__

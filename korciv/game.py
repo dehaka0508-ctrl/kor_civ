@@ -1939,7 +1939,7 @@ class Game:
     def auto_energy_plan(self, fid, stock, oil_reserve=None) -> dict:
         """자원 자동 배정 우선순위: ① 발전소에 석유 → ② 발전소에 석탄 → ③ 공장에 전기 → ④ 공장에 석탄 →
         ⑤ 공장에 석유. 발전소·공장 모두 단계가 높은 곳부터 채운다.
-        oil_reserve: 남겨 둘 석유(v1.45.0부터 자원이 쌓이지 않아 기본 0: 유닛은 배정 전에 이미 석유를 냈다).
+        oil_reserve: 남겨 둘 석유(v0.45.0부터 자원이 쌓이지 않아 기본 0: 유닛은 배정 전에 이미 석유를 냈다).
         반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
         plants, facts = self.energy_sites(fid)
         reserve = 0 if oil_reserve is None else oil_reserve
@@ -2833,7 +2833,7 @@ class Game:
         done = getattr(self, "fought_targets", {}).get((fid, owner), set())
         return snap.get((fid, owner), set()) | done
 
-    # ---- 플레이어 즉시 전투(v1.49.0): 전투 확인 창에서 [전투]를 누르면 바로 싸운다. AI는 턴 종료 때 그대로
+    # ---- 플레이어 즉시 전투(v0.49.0): 전투 확인 창에서 [전투]를 누르면 바로 싸운다. AI는 턴 종료 때 그대로
     def fought_armies(self) -> set:
         return getattr(self, "fought", set())
 
