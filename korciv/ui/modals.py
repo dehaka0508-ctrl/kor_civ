@@ -973,7 +973,7 @@ def draw_start_popup(app, rid):
         app.setup.start = rid
         app.setup.ai_starts = [None if a == rid else a for a in app.setup.ai_starts]   # 적 국가와 겹치면 그 칸은 무작위로
         app.pick_popup = None
-        start_from_setup(app)
+        app.scene = "setup"              # 시작 지역만 정하고 시작 설정 화면으로 돌아간다
         return
     if gui.button((x + bw + 12, by, bw, 46), "이전", size=15):
         app.pick_popup = None            # 팝업만 닫고 지도로 돌아가 다른 지역 고르기
