@@ -1,6 +1,8 @@
 """설정 화면과 모달: 정치체제, 반란, 조약 제안, 외교, 반기 랭킹, 로그, 도움말, 게임 종료."""
 from __future__ import annotations
 
+import math
+import os
 import random
 
 import pygame
@@ -38,14 +40,14 @@ class SetupState:
 
 def modal_frame(app, w, h, title=None):
     dim = pygame.Surface(app.screen.get_size(), pygame.SRCALPHA)
-    dim.fill((0, 0, 0, 90))
+    dim.fill((17, 30, 49, 110))
     app.screen.blit(dim, (0, 0))
     sw, sh = app.gui.size()
     r = pygame.Rect(0, 0, w, h)
     r.center = (sw // 2, sh // 2)
-    app.gui.panel(r, radius=12)
+    app.gui.panel(r, radius=6, ornament=True)
     if title:
-        app.gui.text((r.x + 24, r.y + 20), title, 20, weight="bold")
+        app.gui.text((r.x + 26, r.y + 18), title, 22, weight="title")
     return r
 
 
@@ -156,24 +158,70 @@ VICTORY_TIPS = {
 
 # ------------------------------------------------------------------ 시작 페이지
 _logo = {}
+_bg = {}
+ASSET_UI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "ui")
+
+
+def draw_backdrop(app):
+    """시작·설정 화면 배경(수묵 산수, assets/ui/title_bg.jpg — tools/build_title_bg.py): 창을 꽉 채운다."""
+    screen = app.gui.screen
+    size = screen.get_size()
+    if "src" not in _bg:
+        try:
+            _bg["src"] = pygame.image.load(os.path.join(ASSET_UI, "title_bg.jpg")).convert()
+        except Exception:
+            _bg["src"] = None
+    src = _bg["src"]
+    if src is None:
+        screen.fill(app.theme.indigo_dk)
+        return
+    if _bg.get("size") != size:
+        bw, bh = src.get_size()
+        k = max(size[0] / bw, size[1] / bh)
+        big = pygame.transform.smoothscale(src, (max(1, round(bw * k)), max(1, round(bh * k))))
+        _bg["img"] = big.subsurface(((big.get_width() - size[0]) // 2, (big.get_height() - size[1]) // 2,
+                                     size[0], size[1])).copy()
+        _bg["size"] = size
+    screen.blit(_bg["img"], (0, 0))
+
+
+def _latest_save(app):
+    """가장 최근 저장 슬롯 설명(시작 화면 [이어하기] 아래 줄). 저장 파일이 바뀌었을 때만 다시 읽는다."""
+    from .app import SAVE_DIR
+    stamp = []
+    for i in range(1, C.SAVE_SLOTS + 1):
+        path = os.path.join(SAVE_DIR, f"slot{i}.sav")
+        stamp.append(os.path.getmtime(path) if os.path.exists(path) else None)
+    stamp = tuple(stamp)
+    c = getattr(app, "_title_save", None)
+    if c is None or c[0] != stamp:
+        infos = [(i, app.slot_info(i)) for i, m in enumerate(stamp, 1) if m is not None]
+        infos = [(i, inf) for i, inf in infos if inf]
+        text = None
+        if infos:
+            i, inf = max(infos, key=lambda p: p[1]["mtime"])
+            text = f"슬롯 {i} · {inf['label']}"
+        c = (stamp, text)
+        app._title_save = c
+    return c[1]
 
 
 def draw_title(app):
-    """시작 페이지: 가운데 로고, 아래 [새로 시작]·[이어하기]."""
-    import os
+    """시작 페이지: 수묵 산수 배경, 가운데 로고, 아래 메뉴([새로 시작]·[이어하기]·[도움말]·[종료])."""
     gui = app.gui
+    t = app.theme
     sw, sh = gui.size()
+    draw_backdrop(app)
     if "src" not in _logo:
         try:
-            _logo["src"] = pygame.image.load(os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                                          "assets", "ui", "logo.png"))
+            _logo["src"] = pygame.image.load(os.path.join(ASSET_UI, "logo.png"))
         except Exception:
             _logo["src"] = None
     src = _logo["src"]
-    bw, bh, gap = 220, 54, 20
-    lw = min(sw * 0.72, (sh - bh - 120) * 0.9 * (src.get_width() / src.get_height()) if src else 600, 1100)
+    bw = 300
+    lw = min(sw * 0.62, (sh - 330) * (src.get_width() / src.get_height()) if src else 600, 900)
     lh = lw * src.get_height() / src.get_width() if src else 120
-    top = (sh - (lh + 48 + bh)) / 2
+    top = max(20, (sh - (lh + 28 + 50 + 50 + 40 + 40 + 30)) / 2 - 10)
     lr = pygame.Rect(int((sw - lw) / 2), int(top), int(lw), int(lh))
     if src:
         pr = gui.R(lr)
@@ -181,159 +229,424 @@ def draw_title(app):
             _logo["size"], _logo["img"] = pr.size, pygame.transform.smoothscale(src, pr.size)
         gui.screen.blit(_logo["img"], pr.topleft)
     else:
-        gui.text(lr.center, "한반도의 문명", 48, weight="bold", anchor="center")
-    by = lr.bottom + 48
-    bx = sw / 2 - bw - gap / 2
-    if gui.button((bx, by, bw, bh), "새로 시작", "primary", size=18, weight="bold"):
+        gui.text(lr.center, "한반도의 문명", 48, (247, 241, 227), "title", anchor="center")
+    paper = (247, 241, 227)
+    y = lr.bottom + 26
+    # 새로 시작: 한지 버튼 + 금테 + 모서리 꺾쇠 + 좌우 장식선
+    r = pygame.Rect(int(sw / 2 - bw / 2), int(y), bw, 50)
+    hov = gui.hover(r)
+    gui.shadow(r, 4, 8, 120)
+    gui.rect(mix((244, 236, 219), (255, 255, 255), 0.3) if hov else (244, 236, 219), r)
+    gui.paper(r)
+    pygame.draw.rect(gui.screen, t.gold, gui.R(r), max(1, int(2 * gui.u)))
+    pygame.draw.rect(gui.screen, mix(t.gold, paper, 0.3), gui.R(r.inflate(-8, -8)), 1)
+    gui.ornament(r.inflate(-8, -8), mix(t.gold, t.ink, 0.3), 9, 2)
+    gui.text((r.centerx, r.y + 7), "새로 시작", 19, t.indigo_dk, "title", anchor="midtop")
+    gui.text((r.centerx, r.y + 33), "새 나라를 세웁니다", 10, mix(t.indigo, paper, 0.25), "semibold", anchor="midtop")
+    for sx in (-1, 1):
+        x0, x1 = r.centerx + sx * (bw / 2 + 14), r.centerx + sx * (bw / 2 + 84)
+        gui.line(t.gold, (x0, r.centery), (x1, r.centery), 1)
+        gui.polygon(t.gold, [(x0, r.centery - 4), (x0 + sx * 6, r.centery), (x0, r.centery + 4), (x0 - sx * 6, r.centery)])
+    if hov and gui.clicked:
+        gui.clicked = False
         app.scene = "setup"
-    if gui.button((bx + bw + gap, by, bw, bh), "이어하기", size=18, weight="bold"):
+    y = r.bottom + 10
+    latest = _latest_save(app)
+
+    def dark_button(rect, label, sub=None, enabled=True):
+        rr = pygame.Rect(rect)
+        hv = enabled and gui.hover(rr)
+        g = pygame.Surface(gui.R(rr).size, pygame.SRCALPHA)
+        g.fill((*mix(t.indigo_dk, (255, 255, 255), 0.08 if hv else 0.0), 170))
+        gui.screen.blit(g, gui.R(rr).topleft)
+        pygame.draw.rect(gui.screen, mix(t.gold, t.indigo, 0.2 if hv else 0.35), gui.R(rr), 1)
+        fg = paper if enabled else mix(paper, t.indigo, 0.5)
+        if sub:
+            gui.text((rr.centerx, rr.y + 6), label, 17, fg, "title", anchor="midtop")
+            gui.text((rr.centerx, rr.y + 30), sub, 10, mix(t.gold_lt, t.indigo, 0.2), "semibold", anchor="midtop",
+                     max_w=rr.w - 20)
+        else:
+            gui.text(rr.center, label, 15, fg, "title", anchor="center")
+        gui.block(rr)
+        if hv and gui.clicked:
+            gui.clicked = False
+            return True
+        return False
+
+    if dark_button((r.x, y, bw, 48 if latest else 40), "이어하기", latest or None):
         app.open_slots("load")
+    y += (48 if latest else 40) + 10
+    if dark_button((r.x, y, bw, 38), "도움말"):
+        app.modal = ("help", None)
+    y += 48
+    if dark_button((r.x, y, bw, 38), "종료"):
+        app.running = False
     from ..version import RELEASE_DATE, VERSION
-    gui.text((sw - 16, sh - 12), f"v{VERSION} · {RELEASE_DATE} 업데이트", 11, app.theme.muted, anchor="bottomright")
+    gui.text((sw - 16, sh - 12), f"v{VERSION} · {RELEASE_DATE} 업데이트", 11, mix(t.gold_lt, t.indigo, 0.4), "semibold",
+             anchor="bottomright")
 
 
 # ------------------------------------------------------------------ 게임 설정
+_mini = {}
+
+
+def _minimap(app, rect):
+    """시작 지역 미니맵(실제 지도, 크기별 캐시)."""
+    gui = app.gui
+    pr = gui.R(rect)
+    key = (pr.size, app.theme.dark)
+    img = _mini.get(key)
+    if img is None:
+        mv = app.map
+        img = pygame.Surface(pr.size)
+        img.fill(app.theme.sea)
+        from .mapview import BASE_H, BASE_W
+        k = min(pr.w / (BASE_W - 60), pr.h / (BASE_H - 40)) * 1.02
+        ox, oy = pr.w / 2 - 285 * k, pr.h / 2 - 500 * k
+        land, line = app.theme.neutral, mix(app.theme.neutral, (40, 32, 24), 0.35)
+        for rid, arr, bbox in mv.polys:
+            pts = (arr * k + (ox, oy)).tolist()
+            if len(pts) >= 3:
+                pygame.draw.polygon(img, land, pts)
+        for rid, arr, bbox in mv.polys:
+            pts = (arr * k + (ox, oy)).tolist()
+            if len(pts) >= 3 and (bbox[2] - bbox[0]) * k > 2:
+                pygame.draw.aalines(img, line, True, pts)
+        _mini.clear()
+        _mini[key] = img
+        _mini["xf"] = (k, ox, oy)
+    gui.screen.blit(img, pr.topleft)
+    k, ox, oy = _mini["xf"]
+
+    def at(rid):
+        x, y = app.map.label[rid]
+        return pr.x + x * k + ox, pr.y + y * k + oy
+    return at
+
+
+def _star_poly(cx, cy, r):
+    return [(cx + (r if i % 2 == 0 else r * 0.42) * math.cos(-math.pi / 2 + i * math.pi / 5),
+             cy + (r if i % 2 == 0 else r * 0.42) * math.sin(-math.pi / 2 + i * math.pi / 5)) for i in range(10)]
+
+
+def _scroll_rods(gui, r):
+    """두루마리 좌우 나무 축."""
+    for x in (r.x - 16, r.right - 8):
+        rod = pygame.Rect(x, r.y - 12, 24, r.h + 24)
+        gui.shadow(rod, 6, 4, 110)
+        gui.rect((58, 42, 30), rod, radius=8)
+        gui.rect((90, 66, 48), rod.inflate(-10, -4), radius=6)
+        for yy in (rod.y - 9, rod.bottom - 7):
+            gui.rect(gui.t.gold, (rod.x + 3, yy, 18, 16), radius=4)
+            pygame.draw.rect(gui.screen, mix(gui.t.gold, gui.t.ink, 0.4), gui.R((rod.x + 3, yy, 18, 16)), 1,
+                             border_radius=int(4 * gui.u))
+
+
+def _label(gui, x, y, text, hanja=None):
+    t = gui.t
+    r = gui.text((x, y), text, 14, t.accent if not t.dark else t.gold_lt, "serif")
+    if hanja:
+        gui.text((r.right + 6, y + 1), hanja, 12, mix(t.accent if not t.dark else t.gold_lt, t.panel, 0.4), "serif")
+    return r
+
+
 def draw_setup(app):
+    """게임 설정(건국): 두루마리처럼 펼친 한지 위에 왼쪽 국호·국기·지도자, 오른쪽 천하의 형세·시작 지역."""
+    from ..game import player_color
+    from .art import portrait_path
     gui = app.gui
     t = app.theme
     s = app.setup
     sw, sh = app.gui.size()
+    draw_backdrop(app)
+    dim = pygame.Surface(gui.screen.get_size(), pygame.SRCALPHA)
+    dim.fill((*t.indigo_dk, 110))
+    gui.screen.blit(dim, (0, 0))
     r = pygame.Rect(0, 0, 1180, 760)
     r.center = (sw // 2, sh // 2)
-    gui.panel(r, radius=14)
-    gui.text((r.x + 32, r.y + 24), "한반도의 문명", 28, weight="bold")
-    gui.text((r.x + 34, r.y + 64), "426개 시군구 · 1턴 = 1주 · 2026년 1월 1주 시작", 14, t.muted)
-    # 좌측: 국가·지도자
-    x, y = r.x + 32, r.y + 104
-    gui.text((x, y), "국가 이름", 13, t.muted, "semibold")
-    s.name = gui.text_input((x, y + 22, 260, 34), "name", s.name, max_len=10)
-    y += 70
-    gui.text((x, y), "내 지도자", 13, t.muted, "semibold")
+    gui.shadow(r, 4, 14, 140)
+    gui.rect(t.panel, r)
+    gui.paper(r)
+    pygame.draw.rect(gui.screen, mix(t.gold, t.panel, 0.2), gui.R(r.inflate(-20, -20)), 1)
+    pygame.draw.rect(gui.screen, mix(t.gold, t.panel, 0.45), gui.R(r.inflate(-26, -26)), 1)
+    gui.block(r)
+    _scroll_rods(gui, r)
+    # 머리글
+    hr = gui.text((r.x + 40, r.y + 22), "건국", 28, t.text, "title")
+    gui.text((hr.right + 10, r.y + 27), "建國", 22, mix(t.text, t.vermilion, 0.55), "title")
+    gui.text((hr.right + 80, r.y + 34), "새 나라를 세웁니다 · 426개 시군구 · 1턴 = 1주 · 2026년 1월 1주(소한) 시작 · 정치체제는 첫 턴에 고릅니다",
+             11, t.muted, "semibold", max_w=r.right - 60 - hr.right - 80)
+    gui.line(t.text, (r.x + 40, r.y + 66), (r.right - 40, r.y + 66), 2)
+    gui.line(t.text, (r.x + 40, r.y + 70), (r.right - 40, r.y + 70), 1)
+
+    # ---------------------------------------------------------- 왼쪽: 국호·국기·지도자
+    x, w = r.x + 40, 600
+    y = r.y + 84
+    _label(gui, x, y, "국호", "國號")
+    s.name = gui.text_input((x, y + 24, 230, 34), "name", s.name, max_len=10)
+    fx = x + 270
+    _label(gui, fx, y, "국기", "國旗")
+    fr = pygame.Rect(fx, y + 22, 60, 40)
+    gui.rect(t.gold, fr.inflate(4, 4))
+    draw_flag(gui, fr, s.flag)
+    if gui.button((fx + 74, y + 27, 112, 32), "국기 만들기"):
+        s.flag_draft = dict(s.flag)
+    y += 76
+    _label(gui, x, y, "지도자", "君主")
     y += 24
-    # 분류 탭(4개) + 직접 입력
-    cats = [c[1] for c in LEADER_CATEGORIES]
+    # 분류 책갈피 탭
     cur_cat = getattr(s, "leader_cat", None)
     if cur_cat is None:
         cur_cat = next((i for i, c in enumerate(LEADER_CATEGORIES) if s.leader in c[2]), 0)
-    s.leader_cat = gui.segmented((x, y, 618, 32), cats, cur_cat, size=11)
-    y += 40
+    tx = x
+    for i, c in enumerate(LEADER_CATEGORIES):
+        tw = measure(c[1], 11, "semibold")[0] + 20
+        tr = pygame.Rect(tx, y, tw, 28)
+        act = i == cur_cat
+        hov = gui.hover(tr)
+        gui.rect(t.accent if act else (mix(t.panel_alt, t.text, 0.06) if hov else t.panel_alt), tr, radius=5)
+        gui.text(tr.center, c[1], 11, (255, 255, 255) if act else t.muted, "bold" if act else "semibold", anchor="center")
+        if hov and gui.clicked and not act:
+            gui.clicked = False
+            cur_cat = i
+        tx += tw + 4
+    s.leader_cat = cur_cat
+    gui.line(t.accent, (x, y + 28), (x + w, y + 28), 2)
+    y += 38
+    # 지도자 초상 카드(7열 × 2줄)
     shown = [LEADER_BY_KEY[k] for k in LEADER_CATEGORIES[s.leader_cat][2]] + [LEADER_BY_KEY["cus"]]
-    cols, bw, bh = 4, 150, 34
+    cols, gap = 7, 6
+    cw = (w - (cols - 1) * gap) / cols
+    ch = 102
     for i, l in enumerate(shown):
-        cx = x + (i % cols) * (bw + 6)
-        cy = y + (i // cols) * (bh + 6)
-        tip = f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
-        if gui.button((cx, cy, bw, bh), l["name"], selected=s.leader == l["key"], size=13 if len(l["name"]) <= 7 else 11,
-                      tooltip=tip):
-            s.leader = l["key"]
-    y += 4 * (bh + 6) + 8
+        cx = x + (i % cols) * (cw + gap)
+        cy = y + (i // cols) * (ch + gap)
+        cr = pygame.Rect(int(cx), int(cy), int(cw), ch)
+        sel = s.leader == l["key"]
+        hov = gui.hover(cr)
+        gui.shadow(cr, 3, 3, 90 if sel else 40)
+        gui.rect(t.panel, cr, radius=3)
+        pr_ = pygame.Rect(cr.x + 4, cr.y + 4, cr.w - 8, 70)
+        if portrait_path(l["key"]) and l["key"] != "cus":
+            draw_portrait(gui, pr_, l["key"], t)
+            if not sel and not hov:                 # 고르지 않은 카드는 살짝 바랜 느낌
+                fade = pygame.Surface(gui.R(pr_).size, pygame.SRCALPHA)
+                fade.fill((*t.panel, 60))
+                gui.screen.blit(fade, gui.R(pr_).topleft)
+        else:
+            gui.rect(mix(t.panel_alt, t.indigo, 0.1), pr_)
+            col = mix(t.panel_alt, t.indigo, 0.35)
+            gui.circle(col, (pr_.centerx, pr_.y + 25), 12)
+            gui.rect(col, (pr_.centerx - 20, pr_.y + 42, 40, 28), radius=12)
+            if l["key"] == "cus":
+                gui.text((pr_.centerx, pr_.centery - 4), "+", 24, (255, 255, 255), "bold", anchor="center")
+        nm = "직접 입력" if l["key"] == "cus" else l["name"]
+        gui.text((cr.centerx, cr.bottom - 14), nm, 11 if len(nm) <= 5 else 10, t.text if sel else mix(t.text, t.panel, 0.2),
+                 "serif", anchor="center", max_w=cr.w - 4)
+        if sel:
+            pygame.draw.rect(gui.screen, t.vermilion, gui.R(cr.inflate(4, 4)), max(2, int(2 * gui.u)), border_radius=int(4 * gui.u))
+        else:
+            pygame.draw.rect(gui.screen, t.border, gui.R(cr), 1, border_radius=int(3 * gui.u))
+        if hov:
+            gui.tooltip = f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
+            if gui.clicked:
+                gui.clicked = False
+                s.leader = l["key"]
+    y += 2 * (ch + gap) + 6
+    # 고른 지도자: 족자 초상 + 이름 + 버프·디버프 패
     lead = LEADER_BY_KEY[s.leader]
+    fr2 = pygame.Rect(x + 8, y + 10, 100, 132)
+    gui.shadow(fr2, 2, 6, 90)
+    gui.rect((60, 78, 94), fr2)
+    inner = fr2.inflate(-12, -24)
+    inner.y += 1
+    draw_portrait(gui, inner, s.leader, t)
+    pygame.draw.rect(gui.screen, t.gold_lt, gui.R(inner), 1)
+    for yy in (fr2.y - 4, fr2.bottom - 5):
+        gui.rect(t.indigo_dk, (fr2.x - 6, yy, fr2.w + 12, 9), radius=4)
+        gui.rect(t.gold, (fr2.x - 10, yy + 1, 5, 7), radius=2)
+        gui.rect(t.gold, (fr2.right + 5, yy + 1, 5, 7), radius=2)
+    dx = x + 128
     if s.leader == "cus":
-        gui.text((x, y + 8), "지도자 이름", 13, t.muted)
-        s.custom_name = gui.text_input((x + 90, y, 200, 32), "custom", s.custom_name, max_len=10)
-        y += 40
-    gui.text((x, y), f"버프 · {lead['buff'][0]}: {lead['buff'][1]}", 13, t.good, max_w=618)
-    gui.text((x, y + 22), f"디버프 · {lead['debuff'][0]}: {lead['debuff'][1]}", 13, t.bad, max_w=618)
-    # 초상화(세로 3:4)와 국기
-    y += 54
-    ph = min(160, r.bottom - 56 - y)
-    draw_portrait(gui, (x, y, ph * 3 // 4, ph), s.leader, t)
-    fx = x + ph * 3 // 4 + 24
-    gui.text((fx, y), "국기", 13, t.muted, "semibold")
-    draw_flag(gui, (fx, y + 22, 132, 88), s.flag)
-    if gui.button((fx, y + 118, 132, 32), "국기 만들기"):
-        s.flag_draft = dict(s.flag)
-    # 우측: 게임 설정
-    x2 = r.x + 680
-    y = r.y + 104
-    gui.text((x2, y), "적 세력 수", 13, t.muted, "semibold")
-    s.n_enemies = gui.stepper((x2 + 110, y - 6, 120, 30), s.n_enemies, 1, C.MAX_ENEMIES)
-    gui.text((x2 + 290, y), "시드", 13, t.muted)
-    s.seed = gui.text_input((x2 + 330, y - 8, 120, 32), "seed", s.seed, max_len=9)
-    y += 40
-    gui.text((x2, y), "난이도", 13, t.muted, "semibold")
-    s.difficulty = gui.segmented((x2, y + 22, 468, 32), [d[0] for d in C.DIFFICULTIES], s.difficulty, size=11)
+        gui.text((dx, y + 4), "지도자 이름", 12, t.muted, "semibold")
+        s.custom_name = gui.text_input((dx + 80, y, 200, 32), "custom", s.custom_name, max_len=10)
+    else:
+        gui.text((dx, y), lead["name"], 22, t.text, "title")
+    cat = next((c[1] for c in LEADER_CATEGORIES if lead["key"] in c[2]), "직접 입력")
+    gui.text((dx, y + 36), cat, 11, t.muted, "semibold")
+    for j, (kind, (nm, desc), col) in enumerate((("버프", lead["buff"], t.good), ("디버프", lead["debuff"], t.bad))):
+        tg = pygame.Rect(dx, y + 56 + j * 46, w - (dx - x), 40)
+        gui.rect(mix(t.panel, col, 0.08), tg, radius=3)
+        gui.rect(col, (tg.x, tg.y, 4, tg.h))
+        kr = gui.text((tg.x + 12, tg.y + 4), kind, 11, col, "bold")
+        gui.text((kr.right + 8, tg.y + 3), nm, 13, t.text, "serif", max_w=tg.right - kr.right - 18)
+        gui.text((tg.x + 12, tg.y + 22), desc, 11, t.text, max_w=tg.w - 20)
+
+    # 가운데 세로 구분선
+    mx_ = r.x + 655
+    gui.line(mix(t.gold, t.panel, 0.2), (mx_, r.y + 84), (mx_, r.bottom - 90))
+    gui.polygon(t.gold, [(mx_, r.y + 380), (mx_ + 5, r.y + 386), (mx_, r.y + 392), (mx_ - 5, r.y + 386)])
+
+    # ---------------------------------------------------------- 오른쪽: 천하의 형세
+    x2 = r.x + 676
+    w2 = r.right - 40 - x2
+    y = r.y + 84
+    _label(gui, x2, y, "천하의 형세", "天下形勢")
+    y += 30
+    gui.text((x2, y + 7), "적 세력", 13, t.text, "semibold")
+    s.n_enemies = gui.stepper((x2 + 64, y, 120, 30), s.n_enemies, 1, C.MAX_ENEMIES)
+    gui.text((x2 + 192, y + 7), "나라", 12, t.muted, "semibold")
+    gui.text((x2 + w2 - 160, y + 7), "시드", 13, t.text, "semibold")
+    s.seed = gui.text_input((x2 + w2 - 120, y, 120, 30), "seed", s.seed, max_len=9)
+    y += 42
+    gui.text((x2, y), "난이도", 13, t.text, "semibold")
     d = C.DIFFICULTIES[s.difficulty]
-    gui.text((x2, y + 58), f"AI 인구 성장률 ×{d[1]:.2f} · 생산 수입 ×{d[2]:.2f}", 12, t.muted)
-    y += 86
-    gui.text((x2, y), "전장의 안개", 13, t.muted, "semibold")
-    s.fog = gui.segmented((x2, y + 22, 468, 32), C.FOG_MODES, s.fog, size=12)
-    y += 66
-    gui.text((x2, y), "승리 조건", 13, t.muted, "semibold")
+    gui.text((x2 + w2, y + 2), f"AI 인구 성장률 ×{d[1]:.2f} · 생산 수입 ×{d[2]:.2f}", 11, t.muted, anchor="topright")
+    s.difficulty = gui.segmented((x2, y + 22, w2, 30), [d[0] for d in C.DIFFICULTIES], s.difficulty, size=11)
+    y += 62
+    gui.text((x2, y), "전장의 안개", 13, t.text, "semibold")
+    s.fog = gui.segmented((x2, y + 22, w2, 30), C.FOG_MODES, s.fog, size=12)
+    y += 62
+    gui.text((x2, y), "승리 조건", 13, t.text, "semibold")
+    gui.text((x2 + w2, y + 2), "켠 조건으로만 승부가 납니다", 11, t.muted, anchor="topright")
     y += 22
-    for i, (k, nm) in enumerate(C.VICTORY_TYPES.items()):
-        cb = (x2 + (i % 3) * 156, y + (i // 3) * 28, 150, 24)
-        s.victories[k] = gui.checkbox(cb, nm, s.victories[k])
-        if gui.hover(pygame.Rect(cb)):
-            gui.tooltip = VICTORY_TIPS.get(k, nm)
-    y += 58
+    keys = list(C.VICTORY_TYPES)
+    vw = (w2 - (len(keys) - 1) * 6) / len(keys)
+    short = {"time": "시간승리"}
+    for i, k in enumerate(keys):
+        vr = pygame.Rect(int(x2 + i * (vw + 6)), y, int(vw), 32)
+        on = s.victories[k]
+        hov = gui.hover(vr)
+        if on:
+            gui.rect(t.accent, vr, radius=3)
+            pygame.draw.rect(gui.screen, t.gold, gui.R(vr), 1, border_radius=int(3 * gui.u))
+            gui.lines(t.gold_lt, False, [(vr.x + 8, vr.centery), (vr.x + 12, vr.centery + 4), (vr.x + 18, vr.centery - 4)], 2)
+        else:
+            gui.rect(t.panel, vr, radius=3)
+            pygame.draw.rect(gui.screen, t.border, gui.R(vr), 1, border_radius=int(3 * gui.u))
+        gui.text((vr.x + 23, vr.centery), short.get(k, C.VICTORY_TYPES[k]), 12,
+                 (255, 255, 255) if on else mix(t.text, t.panel, 0.45), "serif", anchor="midleft", max_w=vr.w - 26)
+        if hov:
+            gui.tooltip = VICTORY_TIPS.get(k, C.VICTORY_TYPES[k])
+            if gui.clicked:
+                gui.clicked = False
+                s.victories[k] = not on
+    y += 44
     on = s.victories.get("time", False)
-    gui.text((x2, y + 2), f"시간 종료: {s.max_turns}턴 ({s.max_turns / C.TURNS_PER_YEAR:g}년)", 12,
+    gui.text((x2, y + 2), f"시간 종료  {s.max_turns}턴 ({s.max_turns / C.TURNS_PER_YEAR:g}년)", 12,
              t.text if on else t.muted, "semibold")
-    v, _ = gui.slider((x2 + 200, y + 4, 260, 16), s.max_turns, C.TIME_VICTORY_MIN, C.TIME_VICTORY_MAX,
+    v, _ = gui.slider((x2 + 200, y + 4, w2 - 206, 16), s.max_turns, C.TIME_VICTORY_MIN, C.TIME_VICTORY_MAX,
                       C.TIME_VICTORY_STEP, "max_turns", enabled=on)
     s.max_turns = int(v)
-    y += 34
-    gui.text((x2, y), "시작 구역", 13, t.muted, "semibold")
+    y += 32
+    _label(gui, x2, y, "시작 지역", "封地")
+    y += 26
+    # 내 시작 지역: 지도에서 선택 · 무작위
+    pr2 = pygame.Rect(x2, y, w2, 32)
+    gui.rect(mix(t.panel, t.accent, 0.07), pr2, radius=3)
+    pygame.draw.rect(gui.screen, t.accent, gui.R(pr2), 1, border_radius=int(3 * gui.u))
+    draw_flag(gui, (pr2.x + 8, pr2.y + 8, 24, 16), s.flag)
+    gui.text((pr2.x + 40, pr2.centery), "내 나라", 11, t.accent if not t.dark else t.gold_lt, "bold", anchor="midleft")
     st_name = app.world.regions[s.start].name if s.start else "무작위"
     if s.start and app.world.regions[s.start].island == "무연륙 섬":
         st_name += " (섬 도전)"             # 무작위로는 나오지 않는 섬 시작
-    gui.text((x2 + 80, y), st_name, 14, weight="semibold")
-    if gui.button((x2 + 250, y - 6, 110, 30), "지도에서 선택"):
-        app.scene = "pick_start"
+    gui.text((pr2.x + 92, pr2.centery), st_name, 13, t.text, "bold", anchor="midleft", max_w=w2 - 270)
+
+    def go_pick(scene):
+        app.scene = scene
         app.pick_popup = None
         app.map.z = 1.0
         app.map.cx, app.map.cy = 280, 520
         app.map.invalidate()
-    if gui.button((x2 + 366, y - 6, 100, 30), "무작위"):
+    if gui.button((pr2.right - 170, pr2.y + 4, 104, 24), "지도에서 선택", size=12):
+        go_pick("pick_start")
+    if gui.button((pr2.right - 60, pr2.y + 4, 54, 24), "무작위", size=12):
         s.start = None
     y += 40
-    gui.text((x2, y + 6), "적 국가", 13, t.muted, "semibold")
+    # 미니맵 + 적 국가 목록
     fit_ai_slots(s)
-    for j, (lab, tip) in enumerate((("모두 무작위 지도자", "기존 규칙대로 남은 지도자 가운데 무작위로 정합니다"),
-                                    ("모두 무작위 지역", "기존 규칙(수도끼리 6칸 이상 등)대로 시작 지역을 정합니다.\n"
-                                                      "내 시작 지역을 골랐으면 거기에 맞춰서"),
-                                    ("적 국가 지역 선택", "지도에서 적 국가마다 시작 지역을 고릅니다"))):
-        if gui.button((x2 + 62 + j * 136, y, 130, 28), lab, size=11):
-            if j == 0:
-                random_ai_leaders(s)
-            elif j == 1:
-                random_ai_starts(app)
-            else:
-                app.scene = "pick_ai"
-                s.ai_place = 0
-                app.map.z = 1.0
-                app.map.cx, app.map.cy = 280, 520
-                app.map.invalidate()
-    y += 36
-    # 적 국가 칸: 9곳까지는 3열, 그보다 많으면 4열로 줄여 15곳까지 한 화면에
-    cols = 3 if s.n_enemies <= 9 else 4
-    cw = (468 - (cols - 1) * 6) / cols
-    ch = 44 if s.n_enemies <= 9 else 40
+    mm = pygame.Rect(x2, y, 130, 176)
+    at = _minimap(app, mm)
+    pygame.draw.rect(gui.screen, mix(t.gold, t.text, 0.2), gui.R(mm), 1)
+    if gui.hover(mm):
+        gui.tooltip = "누르면 지도에서 내 시작 지역을 고릅니다"
+        if gui.clicked:
+            gui.clicked = False
+            go_pick("pick_start")
+    u = gui.u
+    gui.screen.set_clip(gui.R(mm))
     for i in range(s.n_enemies):
-        cx = x2 + (i % cols) * (cw + 6)
-        cy = y + (i // cols) * (ch + 4)
+        rid = s.ai_starts[i]
+        if rid:
+            px, py = at(rid)
+            col = hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)])
+            pygame.draw.circle(gui.screen, col, (int(px), int(py)), max(3, int(4 * u)))
+            pygame.draw.circle(gui.screen, (247, 241, 227), (int(px), int(py)), max(3, int(4 * u)), 1)
+    if s.start:
+        px, py = at(s.start)
+        pc = hex2rgb(player_color(s.flag) or C.FACTION_COLORS[0])
+        pts = _star_poly(px, py, 5.5 * u)
+        pygame.draw.polygon(gui.screen, pc, pts)
+        pygame.draw.polygon(gui.screen, (247, 241, 227), pts, 1)
+    gui.screen.set_clip(None)
+    ax = mm.right + 10
+    aw = x2 + w2 - ax
+    two = s.n_enemies > 7
+    colw = (aw - 6) / 2 if two else aw
+    for i in range(s.n_enemies):
+        col_i, row_i = (i // 8, i % 8) if two else (0, i)
+        rr = pygame.Rect(int(ax + col_i * (colw + 6)), y + row_i * 22, int(colw), 20)
         cur = s.ai_leaders[i]
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
         rid = s.ai_starts[i]
         place = app.world.regions[rid].name if rid else "무작위 지역"
-        if gui.button((cx, cy, cw, ch), "", tooltip=None):
-            s.ai_pick = i                        # 지도자 고르기 창
-        gui.text((cx + cw / 2, cy + ch * 0.3), f"AI {i + 1}: {lab}", 12 if cols == 3 else 11, weight="semibold",
-                 anchor="center", max_w=cw - 8)
-        gui.text((cx + cw / 2, cy + ch * 0.72), place, 11 if cols == 3 else 10, t.muted if not rid else t.text,
-                 anchor="center", max_w=cw - 8)
+        hov = gui.hover(rr)
+        gui.rect(mix(t.panel, t.panel_alt, 0.8 if hov else 0.4), rr, radius=3)
+        gui.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (rr.x + 5, rr.y + 5, 14, 10))
+        gui.text((rr.x + 24, rr.centery), f"AI {i + 1}", 10, t.muted, "bold", anchor="midleft")
+        nr_ = gui.text((rr.x + 56, rr.centery), lab, 12, t.text, "serif", anchor="midleft", max_w=colw - 60 if two else 100)
+        if not two:
+            gui.text((rr.right - 6, rr.centery), place, 10, t.muted if not rid else t.text, "semibold", anchor="midright",
+                     max_w=rr.right - nr_.right - 14)
+        if hov:
+            gui.tooltip = f"AI {i + 1}: {lab}\n{place}\n누르면 지도자를 고릅니다"
+            if gui.clicked:
+                gui.clicked = False
+                s.ai_pick = i                        # 지도자 고르기 창
+    yb = y + (8 if two else max(1, s.n_enemies)) * 22 + 4
+    yb = max(yb, y + 150)
+    for j, (lab, tip) in enumerate((("모두 무작위 지도자", "기존 규칙대로 남은 지도자 가운데 무작위로 정합니다"),
+                                    ("모두 무작위 지역", "기존 규칙(수도끼리 6칸 이상 등)대로 시작 지역을 정합니다.\n"
+                                                      "내 시작 지역을 골랐으면 거기에 맞춰서"),
+                                    ("지도에서 고르기", "지도에서 적 국가마다 시작 지역을 고릅니다"))):
+        bw_ = (aw - 8) / 3
+        br = pygame.Rect(int(ax + j * (bw_ + 4)), yb, int(bw_), 22)
+        hov = gui.hover(br)
+        gui.text(br.center, lab, 11, t.vermilion if hov else (t.accent if not t.dark else t.gold_lt), "bold", anchor="center",
+                 max_w=br.w)
+        gui.line(t.accent if not hov else t.vermilion, (br.x + 6, br.bottom), (br.right - 6, br.bottom))
+        if hov:
+            gui.tooltip = tip
+            if gui.clicked:
+                gui.clicked = False
+                if j == 0:
+                    random_ai_leaders(s)
+                elif j == 1:
+                    random_ai_starts(app)
+                else:
+                    go_pick("pick_ai")
+                    s.ai_place = 0
     # 하단 버튼
-    if gui.button((r.right - 524, r.bottom - 64, 150, 44), "이전"):
+    by = r.bottom - 74
+    gui.line(mix(t.gold, t.panel, 0.2), (r.x + 40, by - 8), (r.right - 40, by - 8))
+    if gui.button((r.right - 512, by + 6, 116, 44), "이전", size=15, weight="title"):
         app.scene = "title"
         return
-    if gui.button((r.right - 360, r.bottom - 64, 150, 44), "이어하기"):
+    if gui.button((r.right - 386, by + 6, 116, 44), "불러오기", size=15, weight="title"):
         app.open_slots("load")
-    if gui.button((r.right - 196, r.bottom - 64, 170, 44), "게임 시작", "primary", size=16, weight="bold",
+    if gui.button((r.right - 260, by, 220, 56), "건국하기", "seal", size=20, weight="title",
                   enabled=any(s.victories.values())):
         start_from_setup(app)
-    gui.text((r.x + 32, r.bottom - 44), "조작: 좌클릭 선택 · 우클릭 명령 · 휠 확대 · 드래그 이동 · Enter 턴 종료 · F1 도움말",
-             12, t.muted)
 
 
 FLAG_TARGETS = (("c1", "배경 색 1"), ("c2", "배경 색 2"), ("ec", "문양 색 1"), ("ec2", "문양 색 2"))
@@ -1361,7 +1674,7 @@ def draw_log(app):
 HELP = """[조작]
 좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
-Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~8: 지도 모드
+Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드
 P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.

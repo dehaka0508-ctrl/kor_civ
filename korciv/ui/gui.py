@@ -9,7 +9,7 @@ import re
 
 import pygame
 
-from .theme import UI, measure, mix, render_text
+from .theme import UI, measure, mix, paper_texture, render_text
 
 
 class Gui:
@@ -156,19 +156,62 @@ class Gui:
         from .panels import unit_icon
         unit_icon(self.screen, key, self.P(*center), color, s * self.u)
 
+    # ------------------------------------------------------------ 장식
+    def paper(self, rect, radius=0):
+        """한지 결을 곱하기로 덮는다(패널 바탕 위에)."""
+        pr = self.R(rect).inflate(-2 * int(radius * self.u * 0.3), -2 * int(radius * self.u * 0.3))
+        if pr.w <= 0 or pr.h <= 0 or self.t.dark:
+            return
+        tex = paper_texture()
+        tw, th = tex.get_size()
+        old = self.screen.get_clip()
+        self.screen.set_clip(pr.clip(old) if old else pr)
+        for y in range(pr.y, pr.bottom, th):
+            for x in range(pr.x, pr.right, tw):
+                self.screen.blit(tex, (x, y), special_flags=pygame.BLEND_RGB_MULT)
+        self.screen.set_clip(old)
+
+    def ornament(self, rect, color, size=10, width=2):
+        """단청·창살풍 모서리 꺾쇠."""
+        r = self.R(rect)
+        k = self.u
+        sz, s2 = size * k, size * k * 0.45
+        w = max(1, int(width * k))
+        for cx, cy, sx, sy in ((r.x, r.y, 1, 1), (r.right - 1, r.y, -1, 1), (r.x, r.bottom - 1, 1, -1),
+                               (r.right - 1, r.bottom - 1, -1, -1)):
+            pygame.draw.lines(self.screen, color, False, [(cx + sx * sz, cy), (cx, cy), (cx, cy + sy * sz)], w)
+            pygame.draw.lines(self.screen, color, False, [(cx + sx * sz * 0.95, cy + sy * s2), (cx + sx * s2, cy + sy * s2),
+                                                         (cx + sx * s2, cy + sy * sz * 0.95)], max(1, w // 2))
+
+    def shadow(self, rect, radius=6, spread=6, alpha=None):
+        pr = self.R(rect)
+        m = self.W(spread)
+        a = self.t.shadow[3] if alpha is None else alpha
+        sh = pygame.Surface((pr.w + 2 * m, pr.h + 2 * m), pygame.SRCALPHA)
+        for i in range(3):                    # 겹친 사각형으로 번진 그림자
+            pygame.draw.rect(sh, (*self.t.shadow[:3], a // 3), sh.get_rect().inflate(-m * (1 + i) // 2, -m * (1 + i) // 2),
+                             border_radius=int((radius + spread) * self.u))
+        self.screen.blit(sh, (pr.x - m, pr.y - m + self.W(spread * 0.4)))
+
     # ------------------------------------------------------------ 그리기
-    def panel(self, rect, color=None, radius=10, shadow=True, border=True, block=True):
+    def panel(self, rect, color=None, radius=6, shadow=True, border=True, block=True, ornament=False):
+        """한지 패널: 바탕 + 결 + 금빛 테두리(ornament=True 면 안쪽 선과 모서리 꺾쇠)."""
         r = pygame.Rect(rect)
         pr = self.R(r)
+        t = self.t
+        radius = min(radius, 6)
         if shadow:
-            m = self.W(4)
-            sh = pygame.Surface((pr.w + 2 * m, pr.h + 2 * m), pygame.SRCALPHA)
-            pygame.draw.rect(sh, self.t.shadow, sh.get_rect().inflate(-m, -m).move(0, m // 2),
-                             border_radius=int((radius + 2) * self.u))
-            self.screen.blit(sh, (pr.x - m, pr.y - m + m // 4))
-        pygame.draw.rect(self.screen, color or self.t.panel, pr, border_radius=int(radius * self.u))
+            self.shadow(r, radius)
+        pygame.draw.rect(self.screen, color or t.panel, pr, border_radius=int(radius * self.u))
+        if color is None or color == t.panel:
+            self.paper(r, radius)
         if border:
-            pygame.draw.rect(self.screen, self.t.border, pr, 1, border_radius=int(radius * self.u))
+            pygame.draw.rect(self.screen, mix(t.border, t.text, 0.15), pr, 1, border_radius=int(radius * self.u))
+        if ornament:
+            inner = r.inflate(-10, -10)
+            pygame.draw.rect(self.screen, mix(t.border, t.panel, 0.3), self.R(inner), 1,
+                             border_radius=int(max(0, radius - 3) * self.u))
+            self.ornament(inner, mix(t.gold, t.text, 0.1), 11, 2)
         if block:
             self.block(r)
         return r
@@ -231,31 +274,42 @@ class Gui:
         return y
 
     def button(self, rect, label, kind="default", enabled=True, selected=False, size=13, tooltip=None,
-               weight="semibold", radius=8, color=None):
+               weight="semibold", radius=4, color=None):
+        """kind: default(한지·금테) / primary(쪽빛) / danger(주홍) / seal(주홍 + 모서리 꺾쇠, 건국하기·턴 종료) /
+        ghost(바탕 없음)."""
         r = pygame.Rect(rect)
         hov = enabled and self.hover(r)
         t = self.t
+        radius = min(radius, 6)
+        line = None
         if kind == "primary":
-            bg, fg = (color or t.accent), (255, 255, 255)
-        elif kind == "danger":
-            bg, fg = t.bad, (255, 255, 255)
+            bg, fg, line = (color or t.accent), (255, 255, 255), t.gold
+        elif kind in ("danger", "seal"):
+            bg, fg = (color or t.vermilion), (255, 248, 236)
         elif kind == "ghost":
             bg, fg = None, t.text
         else:
-            bg, fg = t.panel_alt, t.text
+            bg, fg, line = t.panel, (t.accent if not t.dark else t.text), mix(t.border, t.text, 0.15)
         if selected:
-            bg, fg = (color or t.accent), (255, 255, 255)
+            bg, fg, line = (color or t.accent), (255, 255, 255), t.gold
         if not enabled:
             bg = mix(bg or t.panel, t.panel, 0.55) if bg else None
             fg = mix(fg, t.panel, 0.55)
+            line = mix(line, t.panel, 0.5) if line else None
         elif hov and bg:
             bg = mix(bg, (0, 0, 0) if not t.dark else (255, 255, 255), 0.08)
+        if kind == "seal" and enabled:
+            self.shadow(r, radius, 8)
         if bg:
             self.rect(bg, r, radius=radius)
         if kind == "ghost" and hov:
             self.rect(t.panel_alt, r, radius=radius)
-        if kind == "default" and not selected:
-            pygame.draw.rect(self.screen, t.border, self.R(r), 1, border_radius=int(radius * self.u))
+        if line:
+            pygame.draw.rect(self.screen, line, self.R(r), 1, border_radius=int(radius * self.u))
+        if kind == "seal":
+            inner = r.inflate(-8, -8)
+            pygame.draw.rect(self.screen, mix(bg, (255, 230, 200), 0.5), self.R(inner), 1, border_radius=int(3 * self.u))
+            self.ornament(inner, t.gold_lt, 9, 2)
         self.text(r.center, label, size, fg, weight, anchor="center", max_w=r.w - 6)
         if tooltip and self.hover(r):          # 비활성 버튼도 이유·미리보기를 보여 준다
             self.tooltip = tooltip
@@ -269,9 +323,9 @@ class Gui:
         bs = 18
         box = pygame.Rect(r.x, r.centery - bs // 2, bs, bs)
         t = self.t
-        self.rect(t.accent if value else t.panel, box, radius=4)
-        pygame.draw.rect(self.screen, t.accent if value else t.muted, self.R(box), max(1, self.W(1)),
-                         border_radius=int(4 * self.u))
+        self.rect(t.accent if value else t.panel, box, radius=3)
+        pygame.draw.rect(self.screen, t.gold if value else t.muted, self.R(box), max(1, self.W(1)),
+                         border_radius=int(3 * self.u))
         if value:
             self.lines((255, 255, 255), False,
                        [(box.x + 4, box.centery), (box.x + 8, box.bottom - 4), (box.right - 3, box.y + 4)], 2)
@@ -287,16 +341,20 @@ class Gui:
         n = len(options)
         w = r.w / n
         new = index
-        self.rect(self.t.panel_alt, r, radius=8)
+        t = self.t
+        self.rect(t.panel, r, radius=4)
         for i, opt in enumerate(options):
             cell = pygame.Rect(int(r.x + i * w) + 2, r.y + 2, int(w) - 4, r.h - 4)
             if i == index:
-                self.rect(self.t.accent, cell, radius=6)
-            col = (255, 255, 255) if i == index else (self.t.text if enabled else self.t.muted)
+                self.rect(t.accent, cell, radius=3)
+            elif i and i != index + 1:
+                self.line(t.border, (cell.x - 2, cell.y + 6), (cell.x - 2, cell.bottom - 6))
+            col = (255, 255, 255) if i == index else (t.text if enabled else t.muted)
             self.text(cell.center, opt, size, col, "semibold", anchor="center", max_w=cell.w - 4)
             if enabled and self.hover(cell) and self.clicked:
                 self.clicked = False
                 new = i
+        pygame.draw.rect(self.screen, mix(t.border, t.text, 0.15), self.R(r), 1, border_radius=int(4 * self.u))
         return new
 
     def slider(self, rect, value, lo, hi, step, sid, enabled=True, track=None):
@@ -330,7 +388,7 @@ class Gui:
             self.rect(t.accent if enabled else t.muted, (r.x, r.centery - 3, max(1, int(r.w * frac)), 6), radius=3)
         knob = (int(r.x + r.w * frac), r.centery)
         self.circle(t.panel, knob, 10)
-        self.circle(t.accent if enabled else t.muted, knob, 10, 2)
+        self.circle(t.accent if enabled else t.muted, knob, 10, 3)
         return value, done
 
     def progress(self, rect, frac, color=None, bg=None):
@@ -355,9 +413,9 @@ class Gui:
         if self.focus == tid and self.released and not r.collidepoint(self.mouse):
             self.blur()                   # 입력칸 밖을 클릭하면 포커스 해제
         focused = self.focus == tid
-        self.rect(t.panel, r, radius=6)
-        pygame.draw.rect(self.screen, t.accent if focused else t.border, self.R(r), self.W(2 if focused else 1),
-                         border_radius=int(6 * self.u))
+        self.rect(t.panel, r, radius=3)
+        pygame.draw.rect(self.screen, t.accent if focused else mix(t.border, t.text, 0.15), self.R(r),
+                         self.W(2 if focused else 1), border_radius=int(3 * self.u))
         if self.hover(r) and self.clicked:
             self.focus = tid
             self.clicked = False
@@ -409,7 +467,8 @@ class Gui:
             off = self.scroll.get(sid, 0)
             bar_h = max(30, r.h * r.h / content_h)
             y = r.y + (r.h - bar_h) * off / (content_h - r.h)
-            self.rect(self.t.border, (r.right - 6, y, 5, bar_h), radius=2)
+            self.rect(mix(self.t.border, self.t.panel, 0.4), (r.right - 6, r.y, 4, r.h), radius=2)
+            self.rect(mix(self.t.gold, self.t.text, 0.2), (r.right - 6, y, 4, bar_h), radius=2)
 
     def draw_tooltip(self):
         if not self.tooltip:
@@ -425,6 +484,11 @@ class Gui:
             x = self.mouse[0] - w - 10
         if y + h > sh - 4:
             y = self.mouse[1] - h - 10
-        self.rect((33, 37, 41), (x, y, w, h), radius=6)
+        t = self.t
+        self.shadow((x, y, w, h), 4, 6)
+        self.rect(t.panel, (x, y, w, h), radius=4)
+        self.paper((x, y, w, h))
+        pygame.draw.rect(self.screen, mix(t.gold, t.text, 0.2), self.R((x, y, w, h)), 1, border_radius=int(4 * self.u))
+        self.rect(t.vermilion, (x, y, 3, h))
         for i, l in enumerate(lines):
-            self.text((x + 12, y + 7 + i * lh), l, size, (240, 242, 245))
+            self.text((x + 12, y + 7 + i * lh), l, size, t.text)

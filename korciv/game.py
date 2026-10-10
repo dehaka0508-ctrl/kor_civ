@@ -2485,6 +2485,7 @@ class Game:
         self._phase_happiness()
         D.update_turn(self)
         self._update_power()
+        self._record_stats()
         self._check_victory()
         for f in self.factions:
             f.buy_count = {}
@@ -2510,6 +2511,21 @@ class Game:
         self._advance_gotos()
         if self.player.alive and self.player.is_ai is False:
             ai.propose_to_player(self)
+
+    STAT_HIST_LEN = 104
+
+    def _record_stats(self):
+        """국가 현황 추이 그래프용 기록 (턴, GDP, 지역 수, 인구) — 최근 STAT_HIST_LEN 턴.
+        예전 세이브에는 이 기록이 없으므로 처음 기록할 때 만든다."""
+        hist = self.__dict__.setdefault("stat_hist", {})
+        for f in self.factions:
+            if not f.alive:
+                continue
+            regs = self.regions_of(f.id)
+            h = hist.setdefault(f.id, [])
+            h.append((self.turn, f.last.get("gdp", 0.0), len(regs), sum(r.pop for r in regs)))
+            if len(h) > self.STAT_HIST_LEN:
+                del h[:-self.STAT_HIST_LEN]
 
     # ---- 2. 이동
     def _phase_move(self):

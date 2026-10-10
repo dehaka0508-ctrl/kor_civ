@@ -290,3 +290,92 @@ def draw_portrait(gui, rect, leader_key, theme):
     pygame.draw.rect(gui.screen, theme.border, gui.R(r), 1, border_radius=int(6 * gui.u))
     gui.text((r.centerx, r.bottom - 8), "초상화 없음", 10, theme.muted, anchor="midbottom")
     return False
+
+
+# ------------------------------------------------------------------ 화면 장식(쪽빛 띠·아이콘)
+_band_cache: dict = {}
+
+
+def indigo_band(w, h, top=(30, 53, 80), bottom=(17, 30, 49), lattice=True):
+    """쪽빛 띠(실제 픽셀): 세로 그라데이션 + 옅은 창살 무늬. 크기별로 한 번만 만든다."""
+    key = (w, h, top, bottom, lattice)
+    s = _band_cache.get(key)
+    if s is None:
+        s = pygame.Surface((max(1, w), max(1, h)))
+        for y in range(h):
+            s.fill(_mix(top, bottom, y / max(1, h - 1)), (0, y, w, 1))
+        if lattice:
+            lat = pygame.Surface((w, h), pygame.SRCALPHA)
+            g = max(8, int(h * 0.36))
+            for x in range(0, w, g):
+                pygame.draw.line(lat, (255, 255, 255, 9), (x, 0), (x, h))
+            for y in range(0, h, g):
+                pygame.draw.line(lat, (255, 255, 255, 9), (0, y), (w, y))
+            s.blit(lat, (0, 0))
+        if len(_band_cache) > 40:
+            _band_cache.clear()
+        _band_cache[key] = s
+    return s
+
+
+def star_points(cx, cy, r, inner=0.42):
+    return _star(cx, cy, r, 5, inner)
+
+
+def ui_icon(surf, kind, center, col, k=1.0):
+    """상단 바·패널용 단색 아이콘(실제 픽셀 좌표, 크기 배율 k)."""
+    x, y = center
+    w2 = max(1, int(2 * k))
+    dark = _mix(col, (17, 30, 49), 0.6)
+    if kind == "coin":                                # 엽전
+        pygame.draw.circle(surf, col, (x, y), int(8 * k))
+        pygame.draw.rect(surf, dark, (x - 3 * k, y - 3 * k, 6 * k, 6 * k))
+    elif kind == "rice":                              # 쌀가마
+        pygame.draw.ellipse(surf, col, (x - 8 * k, y - 6 * k, 16 * k, 14 * k))
+        pygame.draw.polygon(surf, col, [(x - 4 * k, y - 5 * k), (x, y - 10 * k), (x + 4 * k, y - 5 * k)])
+        pygame.draw.line(surf, dark, (x - 7 * k, y), (x + 7 * k, y), 1)
+        pygame.draw.line(surf, dark, (x - 3 * k, y - 5 * k), (x + 3 * k, y - 5 * k), w2)
+    elif kind == "face":
+        pygame.draw.circle(surf, col, (x, y), int(8.5 * k), w2)
+        pygame.draw.circle(surf, col, (int(x - 3 * k), int(y - 2 * k)), max(1, int(1.4 * k)))
+        pygame.draw.circle(surf, col, (int(x + 3 * k), int(y - 2 * k)), max(1, int(1.4 * k)))
+        pygame.draw.arc(surf, col, (x - 4.5 * k, y - 3 * k, 9 * k, 8 * k), math.pi * 1.15, math.pi * 1.85, w2)
+    elif kind == "tax":                               # 저울
+        pygame.draw.line(surf, col, (x, y - 8 * k), (x, y + 7 * k), w2)
+        pygame.draw.line(surf, col, (x - 8 * k, y - 5 * k), (x + 8 * k, y - 5 * k), w2)
+        pygame.draw.line(surf, col, (x - 5 * k, y + 7 * k), (x + 5 * k, y + 7 * k), w2)
+        for sx in (-1, 1):
+            pygame.draw.arc(surf, col, (x + sx * 7 * k - 4 * k, y - 2 * k, 8 * k, 6 * k), math.pi, 2 * math.pi, w2)
+    elif kind == "swords":
+        pygame.draw.line(surf, col, (x - 7 * k, y - 7 * k), (x + 7 * k, y + 7 * k), w2)
+        pygame.draw.line(surf, col, (x + 7 * k, y - 7 * k), (x - 7 * k, y + 7 * k), w2)
+        pygame.draw.line(surf, col, (x - 7 * k, y + 3 * k), (x - 3 * k, y + 7 * k), w2)
+        pygame.draw.line(surf, col, (x + 7 * k, y + 3 * k), (x + 3 * k, y + 7 * k), w2)
+    elif kind == "pause":
+        pygame.draw.rect(surf, col, (x - 5 * k, y - 6 * k, 3.5 * k, 12 * k))
+        pygame.draw.rect(surf, col, (x + 1.5 * k, y - 6 * k, 3.5 * k, 12 * k))
+    elif kind == "flag":
+        pygame.draw.line(surf, col, (x - 5 * k, y - 8 * k), (x - 5 * k, y + 8 * k), w2)
+        pygame.draw.polygon(surf, col, [(x - 4 * k, y - 8 * k), (x + 7 * k, y - 5 * k), (x - 4 * k, y - 1 * k)])
+    elif kind == "people":
+        for dx in (-5, 5):
+            pygame.draw.circle(surf, col, (int(x + dx * k), int(y - 4 * k)), int(3 * k))
+            pygame.draw.ellipse(surf, col, (x + dx * k - 5 * k, y, 10 * k, 9 * k))
+    elif kind == "hammer":
+        pygame.draw.line(surf, col, (x - 6 * k, y + 7 * k), (x + 3 * k, y - 2 * k), max(2, int(2.5 * k)))
+        pygame.draw.polygon(surf, col, [(x - 1 * k, y - 8 * k), (x + 7 * k, y), (x + 9 * k, y - 2 * k), (x + 1 * k, y - 10 * k)])
+    elif kind == "scroll":
+        pygame.draw.rect(surf, col, (x - 7 * k, y - 6 * k, 14 * k, 12 * k), w2)
+        for i in range(3):
+            pygame.draw.line(surf, col, (x - 4 * k, y - 3 * k + i * 3 * k), (x + 4 * k, y - 3 * k + i * 3 * k), 1)
+    elif kind == "shield":
+        pygame.draw.polygon(surf, col, [(x - 7 * k, y - 8 * k), (x + 7 * k, y - 8 * k), (x + 7 * k, y), (x, y + 9 * k),
+                                        (x - 7 * k, y)], w2)
+    elif kind == "coal":
+        pygame.draw.polygon(surf, col, [(x - 8 * k, y + 5 * k), (x - 5 * k, y - 2 * k), (x - 1 * k, y - 4 * k),
+                                        (x + 2 * k, y + 1 * k), (x - 1 * k, y + 6 * k)])
+        pygame.draw.polygon(surf, col, [(x + 1 * k, y + 6 * k), (x + 3 * k, y - 3 * k), (x + 7 * k, y - 6 * k),
+                                        (x + 9 * k, y + 1 * k), (x + 6 * k, y + 6 * k)])
+    elif kind == "box":
+        pygame.draw.rect(surf, col, (x - 7 * k, y - 5 * k, 14 * k, 11 * k), w2)
+        pygame.draw.line(surf, col, (x - 7 * k, y - 1 * k), (x + 7 * k, y - 1 * k), w2)

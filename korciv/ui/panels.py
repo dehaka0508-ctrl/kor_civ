@@ -47,14 +47,26 @@ def unit_icon(surf, key, center, color, s=1.0):
 
 
 def section(gui, x, y, w, title):
-    gui.text((x, y), title, 12, gui.t.muted, "semibold")
-    gui.line(gui.t.border, (x, y + 20), (x + w, y + 20))
+    """소제목: 명조 쪽빛 글자 + 오른쪽으로 이어지는 금빛 선."""
+    t = gui.t
+    r = gui.text((x, y), title, 13, t.accent if not t.dark else t.gold_lt, "serif", max_w=w - 20)
+    if r.right + 10 < x + w - 8:
+        gui.line(mix(t.gold, t.panel, 0.25), (r.right + 10, y + 9), (x + w - 8, y + 9))
+        gui.rect(t.gold, (x + w - 6, y + 6, 6, 6))
     return y + 26
 
 
 def kv(gui, x, y, w, k, v, vcol=None):
-    gui.text((x, y), k, 13, gui.t.muted)
-    gui.text((x + w, y), v, 13, vcol or gui.t.text, "semibold", anchor="topright")
+    """이름 ······ 값 (장부식 점선)."""
+    t = gui.t
+    kr = gui.text((x, y), k, 13, t.muted)
+    vr = gui.text((x + w, y), v, 13, vcol or t.text, "semibold", anchor="topright")
+    x0, x1 = kr.right + 8, vr.x - 8
+    if x1 - x0 > 12:
+        col = mix(t.border, t.text, 0.12)
+        yy = y + 13
+        for dx in range(int(x0), int(x1), 6):
+            gui.rect(col, (dx, yy, 1.5, 1.5))
     return y + 21
 
 
@@ -63,33 +75,43 @@ def kv(gui, x, y, w, k, v, vcol=None):
 SIDE_TABS = (("nation", "내정", "세율·자원 시장·특산물·지출 우선순위"), ("diplo", "외교", "세력별 관계·외교 창"),
              ("army", "군사", "전체 군사 유닛 수·유지비"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
              ("status", "국가\n현황", "국가 통계·재정·승리 조건 진행"))
-RAIL_W = 64
+RAIL_W = 44
 
 
 def draw_side(app, rail, panel_rect):
-    """좌측 끝 세로 탭 + 바로 옆 패널. 지역을 누르면 패널에 [행동]/[지역 정보]가 뜬다.
+    """좌측 끝 세로 탭(세로쓰기 책갈피) + 바로 옆 패널. 지역을 누르면 패널에 [행동]/[지역 정보]가 뜬다.
     같은 탭을 한 번 더 누르면 패널을 접는다."""
     gui = app.gui
     t = app.theme
-    gui.panel(rail)
-    bh = 58
+    y = rail.y
     for i, (k, label, tip) in enumerate(SIDE_TABS):
-        r = pygame.Rect(rail.x + 6, rail.y + 8 + i * (bh + 6), rail.w - 12, bh)
+        chars = label.replace("\n", "")
+        r = pygame.Rect(rail.x, y, rail.w, 22 + len(chars) * 19)
         sel = app.left_open and app.left_tab == k
-        if gui.button(r, "", selected=sel):
-            if sel:
-                app.left_open = False
-            else:
-                app.left_open, app.left_tab = True, k
-                if k == "diplo":
-                    app.dip_view = None          # 외교 탭은 항상 세력 목록부터
-        lines = label.split("\n")
-        for j, ln in enumerate(lines):
-            gui.text((r.centerx, r.centery + (j - (len(lines) - 1) / 2) * 17), ln, 13,
-                     (255, 255, 255) if sel else t.text, "semibold", anchor="center")
+        hov = gui.hover(r)
+        gui.shadow(r, 4, 4)
+        bg = t.vermilion if sel else (mix(t.indigo, (255, 255, 255), 0.08) if hov else t.indigo)
+        gui.rect(bg, r, radius=5)
+        pygame.draw.rect(gui.screen, t.gold if sel else mix(t.gold, t.indigo, 0.45), gui.R(r), 1,
+                         border_radius=int(5 * gui.u))
+        for j, ch in enumerate(chars):
+            gui.text((r.centerx, r.y + 20 + j * 19), ch, 14, (247, 241, 227) if sel else mix((247, 241, 227), t.indigo, 0.2),
+                     "title", anchor="center")
+        gui.block(r)
+        if hov:
+            gui.tooltip = tip
+            if gui.clicked:
+                gui.clicked = False
+                if sel:
+                    app.left_open = False
+                else:
+                    app.left_open, app.left_tab = True, k
+                    if k == "diplo":
+                        app.dip_view = None          # 외교 탭은 항상 세력 목록부터
+        y = r.bottom + 7
     if not app.left_open:
         return
-    gui.panel(panel_rect)
+    gui.panel(panel_rect, ornament=True)
     k = app.left_tab
     if k == "region":
         tabs = (("action", "행동"), ("army", "부대"), ("info", "지역 정보"))
@@ -101,7 +123,7 @@ def draw_side(app, rail, panel_rect):
         top = 48
     else:
         title = next(lb for kk, lb, _ in SIDE_TABS if kk == k).replace("\n", " ")
-        gui.text((panel_rect.x + 16, panel_rect.y + 14), title, 17, weight="bold")
+        gui.text((panel_rect.x + 18, panel_rect.y + 12), title, 19, weight="title")
         top = 46
     if gui.button((panel_rect.right - 40, panel_rect.y + 10, 30, 32), "‹", "ghost", size=16):
         app.left_open = False
@@ -1161,6 +1183,66 @@ def draw_victory_progress(app, x, y, w, pid):
     return y
 
 
+def sparkline(gui, rect, vals, col):
+    """작은 꺾은선(최근 추이). 값이 둘 미만이면 가로선만."""
+    r = pygame.Rect(rect)
+    pr = gui.R(r)
+    if len(vals) < 2:
+        pygame.draw.line(gui.screen, mix(col, gui.t.panel, 0.5), (pr.x, pr.bottom - 1), (pr.right, pr.bottom - 1), 1)
+        return
+    lo, hi = min(vals), max(vals)
+    hi = hi if hi > lo else lo + 1
+    n = len(vals)
+    pts = [(pr.x + i / (n - 1) * pr.w, pr.bottom - (v - lo) / (hi - lo) * pr.h) for i, v in enumerate(vals)]
+    fill = pygame.Surface(pr.size, pygame.SRCALPHA)
+    pygame.draw.polygon(fill, (*col, 40), [(px - pr.x, py - pr.y) for px, py in pts] + [(pr.w, pr.h), (0, pr.h)])
+    gui.screen.blit(fill, pr.topleft)
+    pygame.draw.lines(gui.screen, col, False, pts, max(1, int(2 * gui.u)))
+    pygame.draw.circle(gui.screen, col, (int(pts[-1][0]), int(pts[-1][1])), max(2, int(3 * gui.u)))
+
+
+def draw_victory_bars(app, x, y, w, pid):
+    """승리 조건별 진행 막대(국가 현황): 이름 · 다음 할 일 · 진행값."""
+    g, gui, t = app.game, app.gui, app.theme
+    vs = g.settings.victories
+    f = g.factions[pid]
+    rows = []
+    if "conquest" in vs:
+        cs = g.conquest_status(pid)
+        desc = "2/3 영토 · 반란 없음" + (f" · 반란 가능 {cs['risky']}곳" if cs["risky"] is not None else "")
+        rows.append(("정복", desc, f"{cs['have']} / {cs['need']}곳", cs["have"] / max(1, cs["need"]), t.vermilion))
+    if "science" in vs:
+        txt = science_progress_text(g, pid)
+        head, _, rest = txt.partition(" · ")
+        total = len(C.SCIENCE_STEPS) + 1
+        done = sum(1 for st in C.SCIENCE_STEPS if st in f.science)
+        rows.append(("과학", "다음: " + rest, head, done / total, t.indigo_lt))
+    if "economic" in vs:
+        txt = econ_progress_text(g, pid)
+        head, _, rest = txt.partition(" · ")
+        rows.append(("경제", rest, head, g.econ_stage(pid) / max(1, C.ECON_STAGES), (160, 122, 44)))
+    if "diplomatic" in vs:
+        alive = g.alive_ids()
+        cid = D.coalition_of(g, pid)
+        n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
+        rows.append(("외교", "모두 한 연합", f"{n} / {len(alive)}개국", n / max(1, len(alive)), t.jade))
+    if "time" in vs:
+        sc = g.time_scores()
+        rank = sorted(sc, key=lambda k: -sc[k]).index(pid) + 1 if pid in sc else "-"
+        mt = getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS)
+        left = max(0, mt - g.turn)
+        rows.append(("시간", f"{left}턴 남음", f"{sc.get(pid, 0):.1f}점 · {rank}위", 1 - left / max(1, mt), t.muted))
+    for name, desc, val, frac, col in rows:
+        nr = gui.text((x, y), name, 13, t.text, "serif")
+        vr = gui.text((x + w, y + 1), val, 11, t.text, "semibold", anchor="topright")
+        gui.text((nr.right + 8, y + 2), desc, 10, t.muted, "semibold", max_w=max(20, vr.x - nr.right - 14))
+        br = pygame.Rect(x, y + 19, w, 6)
+        gui.rect(mix(t.border, t.panel, 0.45), br, radius=3)
+        gui.rect(col, (br.x, br.y, max(6, int(br.w * min(1.0, frac))), br.h), radius=3)
+        y += 31
+    return y
+
+
 def draw_nation_status(app, body):
     gui = app.gui
     g = app.game
@@ -1175,35 +1257,47 @@ def draw_nation_status(app, body):
     y0 = y
     regs = g.regions_of(pid)
     last = f.last
-    # 국가 통계
-    y = section(gui, x, y, w, "국가 통계")
-    y = kv(gui, x, y, w, "GDP", f"{last.get('gdp', 0):,.0f} /턴")
-    y = kv(gui, x, y, w, "국력", f"{g.power.get(pid, 0):.2f}" + (" (패권)" if g.hegemon == pid else ""))
-    y = kv(gui, x, y, w, "지역 / 인구", f"{len(regs)}곳 / {g.total_pop(pid):,.0f}만")
-    y = kv(gui, x, y, w, "평균 행복도", f"{g.avg_happiness(pid, effective=False):+.1f} "
-                                        f"(실질 {g.avg_happiness(pid):+.1f})")
+    # 국력 타일(최근 추이)
+    hist = getattr(g, "stat_hist", {}).get(pid, [])[-52:]
+    tiles = [("GDP / 턴", f"{last.get('gdp', 0):,.0f}", [h[1] for h in hist], t.indigo_lt),
+             ("영토", f"{len(regs)}곳", [h[2] for h in hist], t.jade),
+             ("인구", f"{g.total_pop(pid):,.0f}만", [h[3] for h in hist], (138, 106, 58))]
+    tw = (w - 12) / 3
+    for i, (lab, val, vals, col) in enumerate(tiles):
+        r = pygame.Rect(int(x + i * (tw + 6)), y, int(tw), 72)
+        gui.rect(mix(t.panel, t.panel_alt, 0.6), r, radius=4)
+        pygame.draw.rect(gui.screen, t.border, gui.R(r), 1, border_radius=int(4 * gui.u))
+        gui.text((r.x + 7, r.y + 5), lab, 10, t.muted, "semibold")
+        gui.text((r.x + 7, r.y + 18), val, 14, t.text, "bold", max_w=r.w - 10)
+        sparkline(gui, (r.x + 7, r.y + 44, r.w - 14, 22), vals, col)
+    y += 82
+    # 핵심 지표: 행복도(명목·실질), 군 전력(사기), 국력(패권), 전쟁 피로(턴당 변화)
     ww = f.war_weary
     if D.enemies(g, pid):
-        rec = f"전쟁 중 턴당 +{D.war_weary_rate(g, pid):.1f}"
+        rec, rec_col = f"턴당 +{D.war_weary_rate(g, pid):.1f}", t.bad
     else:
-        rec = f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복" if ww > 0 else "평시"
-    y = kv(gui, x, y, w, "전쟁 피로도", f"{ww:.1f} / {C.WAR_WEARY_MAX:.0f} ({rec})", t.bad if ww >= 1 else None)
-    if f.war_weary_def >= 0.05:
-        y = kv(gui, x, y, w, "  그중 당한 전쟁", f"{f.war_weary_def:.1f} (반란 판정에서는 빼지 않음)")
+        rec, rec_col = (f"턴당 −{C.WAR_WEARY_RECOVERY:.0f}" if ww > 0 else "평시"), t.muted
     morale = g.morale(pid)
-    if morale < 1:
-        y = kv(gui, x, y, w, "군 사기", f"전투력 ×{morale:.2f} (실질 평균 행복도 −10 이하)", t.bad)
-    y = kv(gui, x, y, w, "군 전력", f"{g.mil_power(pid):,.0f}")
-    y = draw_victory_progress(app, x, y, w, pid)
-    lead = LEADER_BY_KEY[f.leader]
-    gov = GOV_BY_KEY.get(f.gov, {})
-    y = gui.wrap((x, y + 2), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
-                 f"{lead['debuff'][0]}({lead['debuff'][1]})", w, 11, t.muted)
-    if gov:
-        buff = gov['buff'][1]
-        if gov_buff_scale(f.leader) != 1.0 and gov.get("buff_keys"):
-            buff = f"{buff} ({lead['debuff'][0]}: 효과 {gov_buff_scale(f.leader):.0%})"
-        y = gui.wrap((x, y), f"체제 {gov['name']}: {buff} / {gov['debuff'][1]}", w, 11, t.muted)
+    eff = g.avg_happiness(pid)
+    cells = [("행복도", f"{g.avg_happiness(pid, effective=False):+.1f}", f"실질 {eff:+.1f}", t.bad if eff < 0 else t.good,
+              "평균 행복도(실질: 전쟁 피로·점령 저항 반영). 산출·반란·인구·사기는 실질로 판정"),
+             ("군 전력", f"{g.mil_power(pid):,.0f}", f"사기 ×{morale:.2f}", t.bad if morale < 1 else t.muted,
+              "군 사기: 실질 평균 행복도 −10 이하이면 전투력이 줄어듭니다"),
+             ("국력", f"{g.power.get(pid, 0):.2f}", "패권" if g.hegemon == pid else "패권 아님", t.muted, None),
+             ("전쟁 피로", f"{ww:.1f}", rec, rec_col,
+              f"전쟁 피로도 {ww:.1f} / {C.WAR_WEARY_MAX:.0f}"
+              + (f"\n그중 당한 전쟁 {f.war_weary_def:.1f} (반란 판정에서는 빼지 않음)" if f.war_weary_def >= 0.05 else ""))]
+    cw = (w - 9) / 4
+    for i, (k, v, sub, sc, tip) in enumerate(cells):
+        r = pygame.Rect(int(x + i * (cw + 3)), y, int(cw), 48)
+        if i:
+            gui.line(t.border, (r.x - 2, r.y + 6), (r.x - 2, r.bottom - 6))
+        gui.text((r.centerx, r.y + 1), k, 10, t.muted, "semibold", anchor="midtop")
+        gui.text((r.centerx, r.y + 14), v, 14, t.text, "bold", anchor="midtop", max_w=r.w - 4)
+        gui.text((r.centerx, r.y + 33), sub, 10, sc, "semibold", anchor="midtop", max_w=r.w - 4)
+        if tip and gui.hover(r):
+            gui.tooltip = tip
+    y += 56
     # 재정
     items = g.projects_by_priority(pid)
     spend = {}
@@ -1243,6 +1337,9 @@ def draw_nation_status(app, body):
     focus = [r for r in regs if g.focus_active(r)]
     bonus = sum(C.POP_OUTPUT * r.pop * C.FOCUS_POP_BONUS for r in focus)
     y = kv(gui, x, y, w, "생산 집중 지역", f"{len(focus)}곳 (+{bonus:,.0f})")
+    # 승리의 길
+    y = section(gui, x, y + 6, w, "승리의 길")
+    y = draw_victory_bars(app, x, y, w, pid)
     # 자원
     y = section(gui, x, y + 6, w, "자원")
     y = kv(gui, x, y, w, "식량", f"{f.res.get('food', 0):,.0f} (생산 {last.get('food_prod', 0):,.0f} / 소비 "
@@ -1280,6 +1377,17 @@ def draw_nation_status(app, body):
     if not kinds:
         gui.text((x, y), "없음", 13, t.muted)
         y += 24
+    # 지도자·체제
+    lead = LEADER_BY_KEY[f.leader]
+    gov = GOV_BY_KEY.get(f.gov, {})
+    y = section(gui, x, y + 6, w, "지도자·체제")
+    y = gui.wrap((x, y), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
+                 f"{lead['debuff'][0]}({lead['debuff'][1]})", w, 11, t.muted)
+    if gov:
+        buff = gov['buff'][1]
+        if gov_buff_scale(f.leader) != 1.0 and gov.get("buff_keys"):
+            buff = f"{buff} ({lead['debuff'][0]}: 효과 {gov_buff_scale(f.leader):.0%})"
+        y = gui.wrap((x, y), f"체제 {gov['name']}: {buff} / {gov['debuff'][1]}", w, 11, t.muted)
     app._nation_h = y - y0 + 20
     gui.end_scroll("nation_status", area, app._nation_h)
 
