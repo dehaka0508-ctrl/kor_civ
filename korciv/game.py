@@ -1757,6 +1757,11 @@ class Game:
     def tax_max(self, fid):
         return self.mods(fid).value("tax_max", C.TAX_MAX)
 
+    def set_food_mode(self, fid, mode):
+        """잉여 식량 처리: store 비축 / sell 판매 / ration 배급."""
+        if mode in ("store", "sell", "ration"):
+            self.factions[fid].food_mode = mode
+
     def set_tax(self, fid, t):
         f = self.factions[fid]
         t = max(0.0, min(self.tax_max(fid), round(t, 2)))
@@ -3343,6 +3348,19 @@ class Game:
         prod = sum(r.food for r in regs)
         cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
         res["food"] += prod - cons
+        # 잉여 식량: 비축(쌓임) / 판매(전량 자동 판매) / 배급(전국 인구 성장률 + 잉여/소비 × 0.25%p)
+        surplus = max(0.0, prod - cons)
+        mode = getattr(f, "food_mode", "store")
+        f.ration_bonus = 0.0
+        if surplus > 0 and mode == "sell":
+            q = math.floor(surplus)
+            res["food"] -= q
+            gain = q * self.sell_price(f.id, "food")
+            f.money += gain
+            f.trade_sell += gain
+        elif surplus > 0 and mode == "ration":
+            res["food"] -= surplus
+            f.ration_bonus = min(C.FOOD_RATION_MAX, surplus / max(1.0, cons)) * C.POP_FOCUS_GROWTH
         if res["food"] < 0 and f.auto_food:
             self.market_buy(f.id, "food", math.ceil(-res["food"]))
         famine = 0.0
@@ -3477,6 +3495,7 @@ class Game:
                 g = R.pop_growth_rate(self.growth_happy(r)) * f.pop_mult
                 if self.pop_focus_active(r):
                     g += C.POP_FOCUS_GROWTH          # 인구 성장 집중
+                g += getattr(f, "ration_bonus", 0.0)  # 잉여 식량 배급
                 if g > 0:
                     r.pop += r.pop * g
             if self.eff_happy(r) <= C.MIGRATION_H:        # 이주는 전쟁 피로를 포함한 실질 행복도로 판정

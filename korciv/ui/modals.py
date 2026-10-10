@@ -294,7 +294,7 @@ def draw_setup(app):
                                     ("모두 무작위 지역", "기존 규칙(수도끼리 6칸 이상 등)대로 시작 지역을 정합니다.\n"
                                                       "내 시작 지역을 골랐으면 거기에 맞춰서"),
                                     ("적 국가 지역 선택", "지도에서 적 국가마다 시작 지역을 고릅니다"))):
-        if gui.button((x2 + 62 + j * 136, y, 130, 28), lab, size=11, tooltip=tip):
+        if gui.button((x2 + 62 + j * 136, y, 130, 28), lab, size=11):
             if j == 0:
                 random_ai_leaders(s)
             elif j == 1:
@@ -317,17 +317,17 @@ def draw_setup(app):
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
         rid = s.ai_starts[i]
         place = app.world.regions[rid].name if rid else "무작위 지역"
-        if gui.button((cx, cy, cw, ch), "", tooltip=f"AI {i + 1}: {lab}\n{place}\n누르면 지도자를 고릅니다"):
+        if gui.button((cx, cy, cw, ch), "", tooltip=None):
             s.ai_pick = i                        # 지도자 고르기 창
         gui.text((cx + cw / 2, cy + ch * 0.3), f"AI {i + 1}: {lab}", 12 if cols == 3 else 11, weight="semibold",
                  anchor="center", max_w=cw - 8)
         gui.text((cx + cw / 2, cy + ch * 0.72), place, 11 if cols == 3 else 10, t.muted if not rid else t.text,
                  anchor="center", max_w=cw - 8)
     # 하단 버튼
-    if gui.button((r.right - 524, r.bottom - 64, 150, 44), "이전", tooltip="시작 페이지로"):
+    if gui.button((r.right - 524, r.bottom - 64, 150, 44), "이전"):
         app.scene = "title"
         return
-    if gui.button((r.right - 360, r.bottom - 64, 150, 44), "이어하기", tooltip="저장한 게임 불러오기"):
+    if gui.button((r.right - 360, r.bottom - 64, 150, 44), "이어하기"):
         app.open_slots("load")
     if gui.button((r.right - 196, r.bottom - 64, 170, 44), "게임 시작", "primary", size=16, weight="bold",
                   enabled=any(s.victories.values())):
@@ -435,7 +435,7 @@ def draw_flag_editor(app):
             fl.pop("preset", None)
         draw_flag(gui, cell.inflate(-12, -10), {**fl, "preset": None, "bg": "solid", "em": ek})
     # 하단 버튼
-    if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위", tooltip="무작위 색으로 AI 국기 규칙에 따라 만듭니다"):
+    if gui.button((r.x + 24, r.bottom - 56, 110, 38), "무작위"):
         s.flag_draft = FL.random_flag()         # AI 국기 규칙을 따른다
     if gui.button((r.right - 220, r.bottom - 56, 92, 38), "취소"):
         s.flag_draft = None
@@ -1302,7 +1302,7 @@ def draw_ranking(app):
     gui.text((x0 + 50, y + 8), "국가", 13, t.muted, "semibold")
     for i, (k, nm) in enumerate(cols):
         if gui.button((cx[i], y, unit * wts[i] - 6, 32), nm, "primary" if k == sel else "default",
-                      size=12, tooltip="눌러서 이 항목 순으로 보기"):
+                      size=12):
             app.rank_col = sel = k
     y += 42
     order = sorted(rows, key=lambda rr: (-rr.get(sel, 0), -rr.get("regions", 0)))
@@ -1426,7 +1426,7 @@ def draw_dialogue(app):
     gui.wrap((x, r.y + 140), body, w, 17, line_h=32, words=True, center=True)
     gui.text((r.right - 28, r.bottom - 34), "Enter 또는 X로 닫기" + (f" · 다음 {len(q) - 1}건" if len(q) > 1 else ""),
              12, t.muted, anchor="topright")
-    done = gui.button((r.right - 52, r.y + 14, 36, 36), "×", "ghost", size=18, tooltip="닫기 (Enter)")
+    done = gui.button((r.right - 52, r.y + 14, 36, 36), "×", "ghost", size=18)
     guard = pygame.time.get_ticks() < getattr(app, "enter_guard", 0)
     for k in list(gui.keys):
         if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -1543,14 +1543,14 @@ def draw_specialty(app):
             gui.text((x + 250, yy + 6), st, 12, col, "semibold")
             bx = x + w - 170
             if gui.button((bx, yy + 2, 54, 26), "고정", size=11, selected=k in rr.spec_pin,
-                          tooltip="이 지역에 우선 공급"):
+                          ):
                 ok, msg = g.set_specialty(pid, rid, k, "auto" if k in rr.spec_pin else "pin")
                 if not ok:
                     app.toast(msg, t.bad)
             if gui.button((bx + 58, yy + 2, 54, 26), "제외", size=11, selected=k in rr.spec_block,
-                          tooltip="이 지역에는 공급하지 않음", color=t.bad):
+                          color=t.bad):
                 g.set_specialty(pid, rid, k, "auto" if k in rr.spec_block else "block")
-            if gui.button((bx + 116, yy + 2, 54, 26), "자동", size=11, tooltip="수동 지정 해제"):
+            if gui.button((bx + 116, yy + 2, 54, 26), "자동", size=11):
                 g.set_specialty(pid, rid, k, "auto")
             yy += 34
         gui.end_scroll("spec_kinds", area, len(rows) * 34)

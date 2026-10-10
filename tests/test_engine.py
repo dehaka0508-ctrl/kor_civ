@@ -1766,7 +1766,7 @@ def test_starts_six_apart_market_upkeep_power_sites():
         caps = [f.capital for f in g.factions]
         assert all(g._land_dist(a, b, 6) >= 6 for i, a in enumerate(caps) for b in caps[i + 1:])
     g = new_game(player_start="S002", n_enemies=1)
-    assert (C.MARKET_BUY["elec"], C.MARKET_SELL["elec"], C.MARKET_SELL["food"]) == (20, 10, 3)
+    assert (C.MARKET_BUY["elec"], C.MARKET_SELL["elec"], C.MARKET_SELL["food"]) == (20, 10, 2)
     g.player.money = 1000
     assert g.max_buyable(0, "oil") == 0 and g.max_buyable(0, "coal") == 0
     k, _ = g.market_buy(0, "elec", 2)
@@ -3284,3 +3284,23 @@ def test_unhappy_ai_offers_to_buy_specialty_from_neighbor():
     AI._trade_offers(g, g.factions[1])
     prop = [p for p in g.pending_proposals if p["kind"] == "trade" and p["res"] == "specialty"]
     assert prop and not prop[0]["sell"] and prop[0]["price"] == pytest.approx(D.spec_price(g, 1), rel=0.01)
+
+
+def test_surplus_food_modes():
+    g = new_game(player_start="S002", n_enemies=1)
+    f = g.player
+    regs = g.regions_of(0)
+    cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
+    g.food_prod = lambda fid, r: (2 * cons / len(regs)) if fid == 0 else 0.0   # 생산 = 소비 × 2
+    for mode in ("store", "sell", "ration"):
+        g.set_food_mode(0, mode)
+        f.res["food"] = 100.0
+        m0 = f.money
+        g._phase_resources(f)
+        if mode == "store":
+            assert f.res["food"] == pytest.approx(100 + cons)
+        elif mode == "sell":
+            assert f.res["food"] == pytest.approx(100, abs=1) and f.money - m0 == pytest.approx(
+                math.floor(cons) * 2 * g.mods(0).mult("market_sell"), rel=0.01)
+        else:
+            assert f.res["food"] == pytest.approx(100) and f.ration_bonus == pytest.approx(C.POP_FOCUS_GROWTH)

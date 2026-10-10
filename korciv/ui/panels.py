@@ -76,7 +76,7 @@ def draw_side(app, rail, panel_rect):
     for i, (k, label, tip) in enumerate(SIDE_TABS):
         r = pygame.Rect(rail.x + 6, rail.y + 8 + i * (bh + 6), rail.w - 12, bh)
         sel = app.left_open and app.left_tab == k
-        if gui.button(r, "", selected=sel, tooltip=tip):
+        if gui.button(r, "", selected=sel):
             if sel:
                 app.left_open = False
             else:
@@ -103,7 +103,7 @@ def draw_side(app, rail, panel_rect):
         title = next(lb for kk, lb, _ in SIDE_TABS if kk == k).replace("\n", " ")
         gui.text((panel_rect.x + 16, panel_rect.y + 14), title, 17, weight="bold")
         top = 46
-    if gui.button((panel_rect.right - 40, panel_rect.y + 10, 30, 32), "‹", "ghost", size=16, tooltip="접기"):
+    if gui.button((panel_rect.right - 40, panel_rect.y + 10, 30, 32), "‹", "ghost", size=16):
         app.left_open = False
         return
     body = pygame.Rect(panel_rect.x, panel_rect.y + top, panel_rect.w, panel_rect.h - top - 6)
@@ -568,7 +568,7 @@ def auto_slot_controls(app, x, y, w):
     f = g.player
     from .. import ai
     if gui.button((x, y, w, 30), "빈 슬롯 자동 지정 (AI 추천)", "primary", size=12,
-                  tooltip="AI 유틸리티 판단으로 편입·건설을 지정합니다 (단축키 A)"):
+                  ):
         n = ai.auto_slots(g, f.id, military=f.ai.get("auto_military", False))
         app.toast(f"슬롯 {n}곳을 지정했습니다.")
     y += 36
@@ -635,7 +635,7 @@ def draw_military_tab(app, body):
             k = v
             row = pygame.Rect(x, yy - 2, w, h - 2)
             if gui.button(row, "", "ghost", selected=k in opened,
-                          tooltip="이 병종이 있는 부대 목록 펼치기/접기"):
+                          ):
                 opened.symmetric_difference_update({k})
             gui.icon(k, (x + 10, yy + 9), t.text)
             gui.text((x + 26, yy), C.UNITS[k]["name"] + (" ▼" if k in opened else " ▶"), 13)
@@ -647,8 +647,7 @@ def draw_military_tab(app, body):
             lab = f"{loc} · {C.UNITS[k]['name']} {a.units[k]}" + (f" (부대: {a.label()})" if len(a.units) > 1 else "")
             if a.order or a.goto:
                 lab += " ▶"
-            clicked = gui.button((x + 18, yy, w - 18, h - 2), "", "ghost",
-                                 tooltip="이 부대가 있는 지역의 [부대] 메뉴로 이동")
+            clicked = gui.button((x + 18, yy, w - 18, h - 2), "", "ghost")
             gui.text((x + 26, yy + (h - 2) / 2), lab, 11, t.text, anchor="midleft", max_w=w - 30)
             if clicked:
                 app.select(a.loc)
@@ -758,9 +757,7 @@ def draw_army_tab(app, body):
         nb = 4 if merge is not None else 3
         bw = (w - 4 * (nb - 1)) / nb
         sel_n = sum(app.split.values())
-        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0,
-                      tooltip="선택한 수량을 새 부대로(남은 체력은 수에 비례해 정수로 나눔)\n"
-                              "한 턴 동안 아무것도 하지 않은 부대는 다음 턴 체력 10% 회복"):
+        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0):
             b, msg = g.split_army(army.id, app.split)
             if b:
                 app.sel_army = b.id
@@ -779,10 +776,7 @@ def draw_army_tab(app, body):
                     app.merge_pick = merge = None
         label = "합치기" if merge is None else f"합치기 ({len(merge)})"
         if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
-                      enabled=bool(others),
-                      tooltip="이 지역에 부대가 둘뿐이면 바로 합칩니다. 셋 이상이면 부대 칸에 체크 상자가 생기고,\n"
-                              "합칠 부대를 고른 뒤 Enter나 [합치기]를 한 번 더 누르면 고른 부대만 하나로 합칩니다\n"
-                              "(같은 유닛끼리 남은 체력 합산). Esc: 취소"):
+                      enabled=bool(others)):
             if merge is None and len(others) == 1:
                 app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
                 go = True
@@ -791,8 +785,7 @@ def draw_army_tab(app, body):
                 merge = app.merge_pick
             else:
                 go = True
-        if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12,
-                                            tooltip="이 지역의 내 부대를 모두 하나로 합칩니다"):
+        if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12):
             app.merge_pick = merge = {a.id for a in here}
             go = True
         if go and merge is not None:
@@ -820,8 +813,7 @@ def draw_army_tab(app, body):
         ship = g.boarding_target(army.id)
         if ship is not None:
             what = "상륙함" if army.domain() == "land" else "항공모함"
-            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary",
-                          tooltip=f"이 부대를 같은 지역에 주둔한 {what}에 태웁니다(수송·탑재 칸 안에서)"):
+            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary"):
                 ok, msg, fleet = g.board(army.id)
                 app.toast(msg, None if ok else t.bad)
                 if ok:
@@ -878,11 +870,11 @@ def draw_nation_tab(app, body):
     locked = f.tax_locked_until > g.turn
     cur = round(f.tax * 100)
     new_val = None
-    if gui.button((x, y, 28, 28), "−", size=14, enabled=not locked and cur > 0, tooltip="세율 1%p 내리기"):
+    if gui.button((x, y, 28, 28), "−", size=14, enabled=not locked and cur > 0, tooltip=None):
         new_val = cur - 1
     val, released = gui.slider((x + 40, y + 4, w - 122, 20), cur, 0, tmax * 100, 1, "tax", enabled=not locked)
     if gui.button((x + w - 74, y, 28, 28), "+", size=14, enabled=not locked and cur < tmax * 100,
-                  tooltip="세율 1%p 올리기"):
+                  ):
         new_val = cur + 1
     gui.text((x + w, y + 4), f"{val:.0f}%", 15, weight="semibold", anchor="topright")
     if released:
@@ -895,39 +887,24 @@ def draw_nation_tab(app, body):
     eff = g.tax_happy(pid, val)
     gui.text((x, y), f"예상 세수 {gdp * val / 100:,.0f}/턴 · 행복도 {eff:+.1f}/턴" + (" · 잠김" if locked else ""), 12, t.muted)
     y += 24
-    # 자원 시장
-    y = section(gui, x, y + 4, w, "자원 시장 (구매/판매가, 같은 턴 추가 구매 +10%)")
-    gui.text((x, y - 2), "석유·석탄·전기는 쌓이지 않습니다: 이번 턴 확보량을 쓰고 남으면 턴 종료 때 저절로 팝니다.", 11, t.muted,
-             max_w=w)
-    y += 18
-    for res in C.RESOURCES:
-        gui.text((x, y + 5), C.RESOURCE_NAMES[res], 13, weight="semibold")
-        gui.text((x + 40, y + 5), f"{f.res.get(res, 0):,.0f}", 13)
-        bp, sp = g.buy_price(pid, res), g.sell_price(pid, res)
-        gui.text((x + 96, y + 5), f"{bp:,.0f}/{sp:,.0f}", 11, t.muted)
-        bx = x + w - 112
-        name = C.RESOURCE_NAMES[res]
-        from . import modals
-
-        def do_buy(n, res=res, name=name):
-            k, s_ = g.market_buy(pid, res, n)
-            app.toast(f"{name} {k}개 구매 ({s_:,.0f})")
-
-        def do_sell(n, res=res, name=name):
-            k, s_ = g.market_sell(pid, res, n)
-            app.toast(f"{name} {k}개 판매 (+{s_:,.0f})")
-        energy = res in C.UNBUYABLE
-        if gui.button((bx, y, 54, 24), "구매", size=11, enabled=not energy,
-                      tooltip="석유·석탄은 돈으로 살 수 없습니다(판매만)" if energy
-                      else f"최대 {g.max_buyable(pid, res):,}개까지"):
-            modals.open_qty(app, f"{name} 구매", g.max_buyable(pid, res), 0, do_buy,
-                            preview=lambda n, res=res: f"비용 {g.buy_cost(pid, res, n):,.0f} (자금 {f.money:,.0f})",
-                            ok_label="구매")
-        if gui.button((bx + 58, y, 54, 24), "판매", size=11,
-                      tooltip=f"{'비축' if res == 'food' else '이번 턴 확보'} {int(f.res.get(res, 0)):,}개"):
-            modals.open_qty(app, f"{name} 판매", int(f.res.get(res, 0)), 0, do_sell,
-                            preview=lambda n, sp=sp: f"수입 +{n * sp:,.0f}", ok_label="판매")
-        y += 30
+    # 잉여 식량: 비축 / 판매 / 배급 중 하나
+    last = f.last
+    surplus = max(0.0, last.get("food_prod", 0) - last.get("food_cons", 0))
+    y = section(gui, x, y + 4, w, f"잉여 식량 (지난 턴 +{surplus:,.0f} · 비축 {f.res.get('food', 0):,.0f})")
+    mode = getattr(f, "food_mode", "store")
+    bw3 = (w - 8) / 3
+    for i, (key, lab) in enumerate((("store", "잉여 식량 비축"), ("sell", "잉여 식량 판매"), ("ration", "잉여 식량 배급"))):
+        if gui.button((x + i * (bw3 + 4), y, bw3, 30), lab, "primary" if mode == key else "default", size=11):
+            g.set_food_mode(pid, key)
+            app.changed()
+    y += 36
+    cons = max(1.0, last.get("food_cons", 1))
+    desc = {"store": "잉여분을 비축합니다.",
+            "sell": f"잉여분을 모두 개당 {g.sell_price(pid, 'food'):,.0f}에 팝니다 (약 +{surplus * g.sell_price(pid, 'food'):,.0f}/턴).",
+            "ration": f"전국 인구 성장률 +{min(C.FOOD_RATION_MAX, surplus / cons) * C.POP_FOCUS_GROWTH * 100:.2f}%p/턴 "
+                      f"(잉여 ÷ 소비 × 0.25%p)."}[mode]
+    gui.text((x, y), desc, 11, t.muted, max_w=w)
+    y += 20
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
     y += 4
@@ -946,7 +923,7 @@ def draw_nation_tab(app, body):
     bw2 = (w - 4) / 2
     for i, (mode, lab) in enumerate(g.PRIORITY_SORTS.items()):
         if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, enabled=bool(items),
-                      tooltip=f"{lab}으로 자동 정렬"):
+                      ):
             g.sort_priority(pid, mode)
             items = g.projects_by_priority(pid)
             app.toast(f"지출 우선순위: {lab}")
@@ -980,7 +957,7 @@ def draw_diplo_tab(app, body):
     for o in others:
         st = D.stage(g, o.id, pid)
         op = D.opinion(g, o.id, pid)
-        if gui.button((x - 4, y, w + 8, 46), "", "ghost", tooltip="눌러서 상세 보기"):
+        if gui.button((x - 4, y, w + 8, 46), "", "ghost"):
             app.dip_view = o.id
             app.war_confirm = None
         draw_flag(gui, (x, y + 9, 42, 28), faction_flag(o))
@@ -1416,8 +1393,7 @@ def draw_energy_tab(app, body):
     y = body.y + 4
     if f.auto_energy:
         g.set_auto_energy(pid, False)        # 예전 세이브: 지금 자동안을 수동 배정으로 옮긴다
-    if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12,
-                  tooltip="턴마다 생산되는 양(채굴·자체 발전) 기준으로 배정합니다(다음에 누를 때까지 유지)."):
+    if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12):
         units, cap = g.assign_energy(pid)
         app.toast(f"자원 자동 배정: 공장 연료 {units}/{cap}")
         app.changed()

@@ -42,7 +42,7 @@ START_RESOURCES = {"oil": 0, "coal": 0, "elec": 0}   # 식량은 인구 * 5
 RESOURCES = ("food", "oil", "coal", "elec")
 RESOURCE_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "전기"}
 MARKET_BUY = {"food": 4, "oil": 40, "coal": 20, "elec": 20}     # 석유·석탄은 구매 불가(UNBUYABLE)
-MARKET_SELL = {"food": 3, "oil": 20, "coal": 10, "elec": 10}
+MARKET_SELL = {"food": 2, "oil": 20, "coal": 10, "elec": 10}
 MARKET_STEP = 0.10         # 식량 제외 자원은 같은 턴 1개 살 때마다 +10%
 SPECIALTY_VALUE = 20         # (예전 거래 가치. v1.45.0부터 특산물 값은 spec_price)
 # 외교 자원 거래(v1.45.0): 자원은 '턴당 n개 × 12턴' 계약으로 주고받는다
@@ -137,6 +137,7 @@ AIRPORT_CAPACITY = 20
 # ---------------------------------------------------------------- 인구·행복도 (5절)
 G_MAX = 0.0025             # 원안 값 0.01 도 가능
 POP_GROWTH_MIN_H = 5
+FOOD_RATION_MAX = 4.0       # 배급: 잉여/소비 비율 상한(성장률 최대 +1%p)
 POP_FOCUS_GROWTH = 0.0025    # 인구 성장 집중: 성장률 턴당 +0.25%p (성장 행복도 5 이상, 건설·생산 중이 아닐 때)
 POP_FOCUS_MIN_H = 5
 # 과밀: (시작 인구 상한(만), −2 시작 증가율, −4 시작 증가율). 시작 인구 대비 그만큼 늘면 그 지역 행복도 감소

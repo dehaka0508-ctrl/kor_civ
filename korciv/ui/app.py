@@ -1103,8 +1103,7 @@ class App:
     # ------------------------------------------------------------ 턴 종료
     def snapshot(self):
         f = self.game.player
-        return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "oil": f.res["oil"],
-                "coal": f.res["coal"], "elec": f.res["elec"], "happy": round(self.game.avg_happiness(f.id)),
+        return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
                 "weary": round(f.war_weary), "tax": round(f.tax * 100)}
 
     def end_turn(self):
@@ -1152,7 +1151,7 @@ class App:
         gui.line(self.theme.border, (0, TOP_H - 1), (sw, TOP_H - 1))
         # 좌상단 일시정지: 저장·불러오기·도움말 등 게임 메뉴
         pb = pygame.Rect(10, 10, 36, 36)
-        if gui.button(pb, "", tooltip="일시정지 (P, 선택이 없을 때 Esc) — 저장·불러오기·도움말"):
+        if gui.button(pb, "", tooltip=None):
             self.modal = ("pause", None)
         for dx in (-5, 5):
             gui.rect(self.theme.text, (pb.centerx + dx - 2, pb.centery - 8, 5, 16), radius=1)
@@ -1171,31 +1170,20 @@ class App:
         last = f.last
         items = [
             ("happy", "행복도", f"{snap['happy']:+d}", None,
-             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f}\n(전쟁 피로·징집 피로·점령 저항 반영 전 "
-             f"{g.avg_happiness(f.id, effective=False):+.1f})\n세율 효과 {0.1*(10-f.tax*100):+.1f}/턴"),
+             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f} (피로·저항 반영 전 {g.avg_happiness(f.id, effective=False):+.1f})"),
             ("weary", "전쟁 피로", f"{snap['weary']:d}", self.theme.bad if f.war_weary >= 1 else None,
              f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
-             f"선포당한 전쟁에서 쌓인 {f.war_weary_def:.1f}은 반란 판정에서는 빼지 않습니다.\n"
              + (f"전쟁 중 턴당 +{D.war_weary_rate(g, f.id):.1f}" if D.enemies(g, f.id)
                 else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
-             + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
-             f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
+),
             ("tax", "세율", f"{snap['tax']}%", None,
-             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"
-             "\n바꾸기: 좌측 [내정] 탭"),
-            ("elec", "전기", f"{snap['elec']:.0f}", None, f"전기: 발전소(석탄 1→{g.power_elec(f.id, 'coal')}, 석유 1→{g.power_elec(f.id, 'oil')})·자체 발전으로 생산, 공장 연료\n"
-             "석유·석탄·전기는 쌓이지 않습니다: 이번 턴 확보량(생산·계약)을 쓰고, 남으면 턴 종료 때 저절로 팝니다.\n"
-             "석유·석탄은 살 수 없습니다(전기는 이번 턴 몫으로 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),
-            ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄(이번 턴 확보량): 탄광 생산, 공장·발전소 연료, "
-             "석유 대신 군 생산(석유 1 = 석탄 2)"),
-            ("oil", "석유", f"{snap['oil']:.0f}", None, f"석유(이번 턴 확보량): 유전 생산, 군 생산·발전소(전기 "
-             f"{g.power_elec(f.id, 'oil')})·공장 연료"),
+             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"),
             ("food", "식량", f"{snap['food']:,.0f}", None,
              f"식량 생산 {last.get('food_prod',0):,.0f} / 소비 {last.get('food_cons',0):,.0f}"
              + (f"\n기근 {last.get('famine',0)*100:.0f}%" if last.get('famine') else "")),
             ("net", "턴당 순수익", f"{snap['net']:+,.0f}", self.theme.good if snap["net"] >= 0 else self.theme.bad,
              f"세수 {last.get('tax',0):,.0f} (세율 {f.tax*100:.0f}%)\n유지비 −{last.get('upkeep',0):,.0f}\n"
-             f"시장 구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
+             f"구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
             ("money", "자금(만원)", f"{snap['money']:,.0f}", self.theme.bad if f.money < 0 else None,
              f"자금 {fmt_money(f.money)}원\n진행 중 슬롯 턴당 지출 "
              f"{sum(r.project.per_turn for r in g.regions_of(f.id) if r.project):,.0f}"),
@@ -1228,11 +1216,7 @@ class App:
         gui.panel(r)
         popup = getattr(self, "mode_popup", None)
         for i, (key, label) in enumerate(MAP_MODES):
-            tip = f"지도 모드 ({i+1})" + ("\n내 영토 중 진한 색 = 생산·행동 진행 중" if key == "political" else "")
-            if key in SUB_MODES:
-                tip += "\n누르면 위로 세부 메뉴가 펼쳐집니다"
-                if self.mode == key:
-                    tip += f"\n지금: {self.sub_mode(key)[1]}"
+            tip = None
             bx = r.x + 8 + i * (w + 4)
             if gui.button((bx, r.y + 8, w, 32), label, selected=self.mode == key, tooltip=tip,
                           size=12 if len(label) > 4 else 13):
@@ -1270,7 +1254,7 @@ class App:
         cur = self.sub_mode(mode)[0]
         for i, (key, name, col, top) in enumerate(opts):
             row = pygame.Rect(p.x + 6, p.y + 6 + i * (bh + 4), pw - 12, bh)
-            tip = "단계가 오를수록 진한 색" if top else "있는 곳만 표시"
+            tip = None
             if gui.button(row, "", "ghost", selected=key == cur, tooltip=tip):
                 self.sub_modes[mode] = key
                 self.mode = mode
@@ -1310,18 +1294,16 @@ class App:
         queue = self.review_queue() if not g.game_over else []
         if queue:
             if gui.button(r, "다음 지역", "primary", size=17, weight="bold", radius=10, color=self.theme.warn,
-                          tooltip="생산·행동이 비어 있는 지역을 수도부터 획득 순서대로 엽니다 (Enter)"):
+                          tooltip=None):
                 self.next_region()
             skip = pygame.Rect(r.x, r.y - 36, r.w, 30)
             gui.block(skip)
-            if gui.button(skip, "바로 턴 종료", "default", size=12, tooltip="남은 지역을 건너뛰고 턴 종료 (Shift+Enter)"):
+            if gui.button(skip, "바로 턴 종료", "default", size=12):
                 self.end_turn()
             c = (r.right - 6, r.y + 6)
             gui.circle(self.theme.bad, c, 14)
             gui.text(c, str(len(queue)), 12, (255, 255, 255), "bold", anchor="center")
-            if gui.hover(pygame.Rect(c[0] - 13, c[1] - 13, 26, 26)):
-                gui.tooltip = f"확인하지 않은 빈 슬롯 지역 {len(queue)}곳"
-        elif gui.button(r, "턴 종료", "primary", size=17, weight="bold", tooltip="Enter", radius=10,
+        elif gui.button(r, "턴 종료", "primary", size=17, weight="bold", radius=10,
                         enabled=not g.game_over):
             self.end_turn()
 
