@@ -1497,6 +1497,10 @@ def _bomb_value(g, fid, rid, h_tgt):
     v = visible_hostile_power(g, fid, rid) + 2 * _building_levels(g, rid)
     if h_tgt is not None and g.regions[rid].owner == h_tgt:
         v += 3 + 2 * EG.key_value(g, rid)                # 견제: 승리 거점의 수비대·시설을 먼저 깎는다
+    if g.is_visible(fid, rid):
+        # 과학승리 견제(낮은 적극성): 보이는 적의 추진체·탑승 모듈·발사체 연료 유닛이 있으면 조금 더 노린다
+        n_sci = sum(n for a in g.hostile_units_at(fid, rid) for k, n in a.units.items() if k in C.SCIENCE_UNITS)
+        v += C.AI_SCI_UNIT_BOMB * n_sci
     return v
 
 

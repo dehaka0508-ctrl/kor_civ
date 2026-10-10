@@ -2576,6 +2576,17 @@ def test_ai_p2_science_early_when_sites_ready():
     assert after["scores"]["science"] == pytest.approx(before["scores"]["science"] * C.AI_P2_SCI_EARLY, rel=0.01)
     assert "조건 완비" in after["why"]["science"] and "조건 완비" not in before["why"]["science"]
 
+def test_ai_bomb_value_science_units():
+    """폭격 대상 가치: 보이는 적의 과학 유닛 1개당 + AI_SCI_UNIT_BOMB(낮은 적극성)."""
+    from korciv import ai
+    g = _p2_game()
+    rid = g.regions_of(1)[0].id
+    D.declare_war(g, 0, 1)
+    g.is_visible = lambda fid, loc: True
+    base = ai._bomb_value(g, 0, rid, None)
+    g.new_army(1, rid, {"booster": 1, "module": 1})
+    assert ai._bomb_value(g, 0, rid, None) == pytest.approx(base + 2 * C.AI_SCI_UNIT_BOMB)
+
 def test_ai_fill_idle_slots_when_rich():
     """돈이 남는 2페이즈 AI는 노는 땅에 완공 뒤 비용이 없는 생산 건물을 채운다. 경계면 국경·해안 방어 시설부터."""
     from korciv import ai
