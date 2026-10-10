@@ -20,7 +20,7 @@ class SetupState:
         self.name = "대한"
         self.leader = "sej"
         self.custom_name = ""
-        self.n_enemies = 4
+        self.n_enemies = 7
         self.difficulty = 2
         self.fog = 1
         self.victories = {k: True for k in C.VICTORY_TYPES}
@@ -246,7 +246,9 @@ def draw_setup(app):
     x2 = r.x + 680
     y = r.y + 104
     gui.text((x2, y), "적 세력 수", 13, t.muted, "semibold")
-    s.n_enemies = gui.stepper((x2 + 110, y - 6, 120, 30), s.n_enemies, 1, 9)
+    s.n_enemies = gui.stepper((x2 + 110, y - 6, 120, 30), s.n_enemies, 1, C.MAX_ENEMIES)
+    gui.text((x2 + 290, y), "시드", 13, t.muted)
+    s.seed = gui.text_input((x2 + 330, y - 8, 120, 32), "seed", s.seed, max_len=9)
     y += 40
     gui.text((x2, y), "난이도", 13, t.muted, "semibold")
     s.difficulty = gui.segmented((x2, y + 22, 468, 32), [d[0] for d in C.DIFFICULTIES], s.difficulty, size=11)
@@ -303,20 +305,23 @@ def draw_setup(app):
                 app.map.cx, app.map.cy = 280, 520
                 app.map.invalidate()
     y += 36
+    # 적 국가 칸: 9곳까지는 3열, 그보다 많으면 4열로 줄여 15곳까지 한 화면에
+    cols = 3 if s.n_enemies <= 9 else 4
+    cw = (468 - (cols - 1) * 6) / cols
+    ch = 44 if s.n_enemies <= 9 else 40
     for i in range(s.n_enemies):
-        cx = x2 + (i % 3) * 158
-        cy = y + (i // 3) * 50
+        cx = x2 + (i % cols) * (cw + 6)
+        cy = y + (i // cols) * (ch + 4)
         cur = s.ai_leaders[i]
         lab = LEADER_BY_KEY[cur]["name"] if cur else "무작위"
         rid = s.ai_starts[i]
         place = app.world.regions[rid].name if rid else "무작위 지역"
-        if gui.button((cx, cy, 152, 44), "", tooltip=f"AI {i + 1}: {lab}\n{place}\n누르면 지도자를 고릅니다"):
+        if gui.button((cx, cy, cw, ch), "", tooltip=f"AI {i + 1}: {lab}\n{place}\n누르면 지도자를 고릅니다"):
             s.ai_pick = i                        # 지도자 고르기 창
-        gui.text((cx + 76, cy + 13), f"AI {i + 1}: {lab}", 12, weight="semibold", anchor="center", max_w=144)
-        gui.text((cx + 76, cy + 31), place, 11, t.muted if not rid else t.text, anchor="center", max_w=144)
-    y += 3 * 50 + 4
-    gui.text((x2, y + 8), "시드", 13, t.muted)
-    s.seed = gui.text_input((x2 + 40, y, 120, 32), "seed", s.seed, max_len=9)
+        gui.text((cx + cw / 2, cy + ch * 0.3), f"AI {i + 1}: {lab}", 12 if cols == 3 else 11, weight="semibold",
+                 anchor="center", max_w=cw - 8)
+        gui.text((cx + cw / 2, cy + ch * 0.72), place, 11 if cols == 3 else 10, t.muted if not rid else t.text,
+                 anchor="center", max_w=cw - 8)
     # 하단 버튼
     if gui.button((r.right - 524, r.bottom - 64, 150, 44), "이전", tooltip="시작 페이지로"):
         app.scene = "title"
@@ -745,26 +750,36 @@ def draw_battle(app):
     if bd is None:
         close(app)
         return
-    r = modal_frame(app, 780, 600, f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
+    n_oc = len(bd["outcomes"])
+    box_h = 112 + 20 * max(1, min(6, max(len(bd["att_factors"]), len(bd["def_factors"]))))
+    r = modal_frame(app, 820, box_h + 124 + n_oc * 118 + 76,
+                    f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
     pv = bd["preview"]
     if can_surprise:
         idx = gui.segmented((r.right - 244, r.y + 18, 220, 30), ["돌격", "기습"], 0 if st["mode"] == "assault" else 1,
                             size=12)
         st["mode"] = "assault" if idx == 0 else "surprise"
+    # 양측 체력: 지금 남은 체력 / 가득 찬 체력
+    att_hp = sum(army.hp_left(k) for k in bd["att_units"] if k in army.units)
+    att_max = sum(C.UNITS[k]["hp"] * n for k, n in bd["att_units"].items())
+    def_max = sum(C.UNITS[k]["hp"] * n for u in bd["def_units"].values() for k, n in u.items())
+    def_hp = pv["def_hp"]
     colw = (r.w - 72) / 2
-    for i, (title, units_txt, val, factors, color) in enumerate((
+    for i, (title, units_txt, val, factors, color, hp, mx) in enumerate((
             (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
-             bd["att_factors"], t.accent),
+             bd["att_factors"], t.accent, att_hp, att_max),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
              " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.1f}",
-             bd["def_factors"], t.bad))):
+             bd["def_factors"], t.bad, def_hp, def_max))):
         x = r.x + 24 + i * (colw + 24)
         y = r.y + 64
-        gui.rect(t.panel_alt, (x, y, colw, 250), radius=10)
+        gui.rect(t.panel_alt, (x, y, colw, box_h), radius=10)
         gui.text((x + 14, y + 10), title, 14, color, "bold", max_w=colw - 28)
-        y = gui.wrap((x + 14, y + 36), units_txt, colw - 28, 13)
-        gui.text((x + 14, y + 4), val, 16, weight="bold")
-        y += 34
+        y = gui.wrap((x + 14, y + 34), units_txt, colw - 28, 13)
+        gui.text((x + 14, y + 2), val, 16, weight="bold")
+        gui.text((x + colw - 14, y + 4), f"체력 {hp:,.0f} / {max(hp, mx):,.0f}", 13, t.text, "semibold",
+                 anchor="topright")
+        y += 30
         gui.text((x + 14, y), "적용 보정", 12, t.muted, "semibold")
         y += 20
         if not factors:
@@ -774,22 +789,38 @@ def draw_battle(app):
             gui.text((x + 14, y), label, 12, max_w=colw - 100)
             gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if good else t.bad, "semibold", anchor="topright")
             y += 20
-    # 예상 결과
-    y = r.y + 330
+    # 예상 결과: 양측 체력 막대(남은 체력 · 예상 피해 · 피해 뒤 남는 체력)와 생존 여부
+    y = r.y + 64 + box_h + 14
     gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
+    lx = r.right - 24
+    for lab, c in (("이미 잃은 체력", t.panel), ("예상 피해", t.warn), ("피해 뒤 남는 체력", t.muted)):
+        tw = measure(lab, 11)[0]
+        gui.text((lx, y + 9), lab, 11, t.muted, anchor="midright")
+        lx -= tw + 18
+        gui.rect(c, (lx, y + 3, 12, 12), radius=2)
+        gui.rect(t.border, (lx, y + 3, 12, 12), 1, radius=2)
+        lx -= 12
     y += 26
     for oc in bd["outcomes"]:
-        row = pygame.Rect(r.x + 24, y, r.w - 48, 56)
+        row = pygame.Rect(r.x + 24, y, r.w - 48, 110)
         gui.rect(t.panel_alt, row, radius=8)
         gui.text((row.x + 12, row.y + 8), oc["label"], 13, weight="semibold")
-        res = "적 병력 전멸 → 진입·점령" if oc["capture"] else "적 병력이 남음 → 진입 못 함"
-        gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "semibold",
-                 anchor="topright")
-        gui.text((row.x + 12, row.y + 32),
-                 f"적 피해 {oc['def_dmg']:,.1f} (예상 손실 {_units_text(oc['def_lost'])}) · "
-                 f"아군 피해 {oc['att_dmg']:,.1f} (예상 손실 {_units_text(oc['att_lost'])})", 12, t.muted,
-                 max_w=row.w - 24)
-        y += 64
+        res = "적 전멸 → 진입·점령" if oc["capture"] else "적이 남음 → 진입 못 함"
+        gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "bold", anchor="topright")
+        for j, (who, hp, mx, dmg, lost, col) in enumerate((
+                ("아군", att_hp, att_max, oc["att_dmg"], oc["att_lost"], t.accent),
+                ("적군", def_hp, def_max, oc["def_dmg"], oc["def_lost"], t.bad))):
+            by = row.y + 34 + j * 36
+            _hp_bar(gui, t, (row.x + 64, by, row.w - 380, 14), hp, max(hp, mx), dmg, col)
+            gui.text((row.x + 12, by + 7), who, 13, col, "bold", anchor="midleft")
+            left = max(0.0, hp - dmg)
+            alive = left > 0.05 * max(1.0, hp) and not (j == 1 and oc["capture"])
+            gui.text((row.right - 300, by + 7), f"{hp:,.0f} − {dmg:,.0f} → {left:,.0f}", 12, t.text, "semibold",
+                     anchor="midleft")
+            gui.text((row.right - 12, by + 7), ("생존" if alive else "전멸") +
+                     (f" · 손실 {_units_text(lost)}" if lost else " · 손실 없음"), 12,
+                     t.good if (alive if j == 0 else not alive) else t.bad, "semibold", anchor="midright", max_w=170)
+        y += 118
     if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
         close(app)
         return
@@ -807,6 +838,22 @@ def draw_battle(app):
         if k.key == pygame.K_ESCAPE:
             gui.keys.remove(k)
             close(app)
+
+
+def _hp_bar(gui, t, rect, hp, mx, dmg, color):
+    """체력 막대: [피해 뒤 남는 체력(진영 색) | 예상 피해(주황) | 이미 잃은 체력(빈칸)]."""
+    r = pygame.Rect(rect)
+    gui.rect(t.panel, r, radius=4)
+    if mx <= 0:
+        return
+    left = max(0.0, hp - dmg)
+    w_left = r.w * left / mx
+    w_dmg = r.w * min(hp, dmg) / mx
+    if w_left > 0:
+        gui.rect(color, (r.x, r.y, max(1, w_left), r.h), radius=4)
+    if w_dmg > 0:
+        gui.rect(t.warn, (r.x + w_left, r.y, max(1, w_dmg), r.h), radius=2)
+    gui.rect(t.border, r, 1, radius=4)
 
 
 def draw_pause(app):
@@ -1191,7 +1238,9 @@ def draw_ranking(app):
     turn = app.modal[1] if app.modal[1] in g.rankings else (keys[-1] if keys else None)
     rows = g.rankings.get(turn, [])
     title = f"{g.ranking_label(turn)} 랭킹" if turn else "반기 랭킹"
-    r = modal_frame(app, 1040, 150 + 40 * max(1, len(rows)) + 60, title)
+    sh = gui.size()[1]
+    rh = max(24, min(40, int((sh - 40 - 210) / max(1, len(rows)))))    # 국가가 많으면(최대 16) 줄 간격을 좁혀 화면 안에
+    r = modal_frame(app, 1040, 150 + rh * max(1, len(rows)) + 60, title)
     pid = g.player_id
     cols = g.RANKING_COLS
     sel = getattr(app, "rank_col", "regions")
@@ -1215,17 +1264,20 @@ def draw_ranking(app):
         fid = row["fid"]
         me = fid == pid
         known = g.has_met(pid, fid)
+        fs = 14 if rh >= 34 else 12
+        ty = y + (rh - 4) // 2
         if me:
-            gui.rect(t.panel_alt, pygame.Rect(x0 - 8, y - 2, r.w - 32, 36), radius=6)
-        gui.text((x0 + 4, y + 7), f"{pos}", 14, weight="bold")
-        draw_flag(gui, (x0 + 50, y + 7, 30, 20), FL.faction_flag(g.factions[fid]))
-        gui.text((x0 + 90, y + 7), g.seen_name(fid) + (" (나)" if me else ""), 14,
-                 None if known else t.muted, "bold" if me else "regular", max_w=name_w - 46)
+            gui.rect(t.panel_alt, pygame.Rect(x0 - 8, y - 2, r.w - 32, rh - 4), radius=6)
+        gui.text((x0 + 4, ty), f"{pos}", fs, weight="bold", anchor="midleft")
+        fh = min(20, rh - 10)
+        draw_flag(gui, (x0 + 50, ty - fh // 2, fh * 3 // 2, fh), FL.faction_flag(g.factions[fid]))
+        gui.text((x0 + 90, ty), g.seen_name(fid) + (" (나)" if me else ""), fs,
+                 None if known else t.muted, "bold" if me else "regular", max_w=name_w - 46, anchor="midleft")
         for i, (k, _) in enumerate(cols):
             txt = ranking_value_text(g, row, k) if known else "?"
-            gui.text((cx[i] + 6, y + 7), txt, 13, None if known else t.muted,
-                     "bold" if k == sel and known else "regular", max_w=unit * wts[i] - 12)
-        y += 40
+            gui.text((cx[i] + 6, ty), txt, fs - 1, None if known else t.muted,
+                     "bold" if k == sel and known else "regular", max_w=unit * wts[i] - 12, anchor="midleft")
+        y += rh
     if not rows:
         gui.text((x0, y), "아직 발표된 랭킹이 없습니다.", 13, t.muted)
     # 지난 발표 보기

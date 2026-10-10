@@ -329,7 +329,7 @@ class App:
         if g.button((sw - 150, 10, 138, 36), "모두 무작위 지역", size=12):
             modals.random_ai_starts(self)
         # 왼쪽 아래: AI1~n 목록
-        rowh = 34
+        rowh = max(22, min(34, int((sh - TOP_H - 70) / n) - 4))     # 15곳이어도 화면 안에
         ph = 40 + n * (rowh + 4)
         pr = pygame.Rect(12, sh - ph - 12, 300, ph)
         g.panel(pr, radius=10)
@@ -342,7 +342,8 @@ class App:
             cell = (pr.x + 10, pr.y + 34 + i * (rowh + 4), pr.w - 20, rowh)
             if g.button(cell, "", selected=i == s.ai_place, tooltip=self.world.regions[rid].name if rid else "무작위 지역"):
                 s.ai_place = i
-            g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + 10, 14, 14), radius=3)
+            g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + rowh // 2 - 7, 14, 14),
+                   radius=3)
             g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, weight="semibold", anchor="midleft", max_w=150)
             g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12, t.muted if not rid else t.text,
                    anchor="midright", max_w=90)

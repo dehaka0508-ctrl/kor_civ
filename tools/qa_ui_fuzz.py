@@ -193,7 +193,7 @@ def force_state(app, rng):
             app.setup.ai_pick = rng.randrange(max(1, app.setup.n_enemies))
         return
     if g is None or r < RESTART_P:
-        app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 9), fog=rng.choice([0, 1, 2]),
+        app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 15), fog=rng.choice([0, 1, 2]),
                                 player_leader=rng.choice(["sej", "cus", "yis", "kim", "ito"]),
                                 player_leader_name="큐에이"))
         if rng.random() < 0.7:

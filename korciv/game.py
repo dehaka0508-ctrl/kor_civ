@@ -199,7 +199,7 @@ class Game:
             self.new_army(NEUTRAL, rid, {"inf": 1})
 
         st = self.settings
-        n_ai = max(1, min(9, st.n_enemies))
+        n_ai = max(1, min(C.MAX_ENEMIES, st.n_enemies))
         leaders = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus"]
         # AI 칸별 지도자: 정한 칸은 그대로, 빈 칸(None)은 남은 지도자 가운데 무작위
         ai_leaders = (list(st.ai_leaders or []) + [None] * n_ai)[:n_ai]
