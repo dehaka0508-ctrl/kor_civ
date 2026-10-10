@@ -1046,6 +1046,8 @@ def draw_active_modal(app):
         draw_save_slots(app)
     elif name == "pause":
         draw_pause(app)
+    elif name == "prefs":
+        draw_prefs(app)
     elif name == "battle":
         draw_battle(app)
 
@@ -1192,26 +1194,57 @@ def draw_pause(app):
     bw, bh = (r.w - 60) / 2, 48
     x0, y0 = r.x + 24, r.y + 70
     items = [
-        ("저장 F5", lambda: app.open_slots("save"), True),
-        ("저장하고 나가기", lambda: app.open_slots("save_exit"), True),
-        ("불러오기 F9", lambda: app.open_slots("load"), True),
-        ("도움말 F1", lambda: setattr(app, "modal", ("help", None)), True),
-        ("이벤트 로그", lambda: setattr(app, "modal", ("log", None)), True),
-        ("반기 랭킹", lambda: setattr(app, "modal", ("ranking", max(g.rankings) if g.rankings else None)),
-         bool(g.rankings)),
+        ("저장 F5", lambda: app.open_slots("save"), True, "default"),
+        ("저장하고 나가기", lambda: app.open_slots("save_exit"), True, "default"),
+        ("불러오기 F9", lambda: app.open_slots("load"), True, "default"),
+        ("계속하기", lambda: close(app), True, "primary"),
+        ("랭킹", lambda: setattr(app, "modal", ("ranking", max(g.rankings) if g.rankings else None)),
+         bool(g.rankings), "default"),
+        ("이벤트 로그", lambda: setattr(app, "modal", ("log", None)), True, "default"),
+        ("도움말 F1", lambda: setattr(app, "modal", ("help", None)), True, "default"),
+        ("환경설정", lambda: setattr(app, "modal", ("prefs", "pause")), True, "default"),
     ]
-    for i, (label, act, ok) in enumerate(items):
+    for i, (label, act, ok, kind) in enumerate(items):
         bx = x0 + (i % 2) * (bw + 12)
         by = y0 + (i // 2) * (bh + 10)
-        if gui.button((bx, by, bw, bh), label, size=14, enabled=ok):
+        if gui.button((bx, by, bw, bh), label, kind, size=14, enabled=ok):
             act()
             return
-    if gui.button((r.centerx - 80, r.bottom - 60, 160, 42), "계속하기", "primary", size=14):
-        close(app)
-        return
     for k in gui.keys:
         if k.key in (pygame.K_ESCAPE, pygame.K_p):
             close(app)
+
+
+def draw_prefs(app):
+    """환경설정: 음량(0~100, 소리는 추가 예정), 전체화면."""
+    from .app import save_prefs
+    gui = app.gui
+    t = app.theme
+    p = app.prefs
+    r = modal_frame(app, 460, 250, "환경설정")
+    x, w = r.x + 28, r.w - 56
+    y = r.y + 70
+    gui.text((x, y + 2), "음량", 14, weight="semibold")
+    val, released = gui.slider((x + 70, y + 4, w - 130, 20), p.get("volume", 80), 0, 100, 1, "prefs_volume")
+    p["volume"] = int(val)
+    gui.text((x + w, y + 2), f"{int(val)}", 14, weight="semibold", anchor="topright")
+    if released:
+        save_prefs(p)
+    y += 50
+    gui.text((x, y + 6), "전체화면", 14, weight="semibold")
+    on = app.is_fullscreen()
+    idx = gui.segmented((x + 110, y, w - 110, 32), ["끔", "켬"], 1 if on else 0, size=13)
+    if (idx == 1) != on:
+        app.set_fullscreen(idx == 1)
+    gui.text((x + 110, y + 38), "Alt+Enter로도 전환", 11, t.muted)
+    if gui.button((r.centerx - 70, r.bottom - 58, 140, 40), "확인", "primary", size=14):
+        save_prefs(p)
+        app.modal = ("pause", None) if app.modal[1] == "pause" else None
+        return
+    for k in gui.keys:
+        if k.key == pygame.K_ESCAPE:
+            save_prefs(p)
+            app.modal = ("pause", None) if app.modal[1] == "pause" else None
 
 
 def draw_save_slots(app):

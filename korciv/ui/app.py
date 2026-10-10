@@ -21,6 +21,29 @@ from .mapview import MapView
 from .theme import Theme, desaturate, fmt_money, hex2rgb, measure, mix, render_text, set_ui_scale, ui_scale
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".korciv", "saves")
+PREFS_PATH = os.path.join(os.path.expanduser("~"), ".korciv", "prefs.json")
+
+
+def load_prefs() -> dict:
+    """환경설정(음량 0~100, 전체화면)."""
+    import json
+    p = {"volume": 80, "fullscreen": False}
+    try:
+        with open(PREFS_PATH, encoding="utf-8") as f:
+            p.update({k: v for k, v in json.load(f).items() if k in p})
+    except Exception:
+        pass
+    return p
+
+
+def save_prefs(p: dict):
+    import json
+    try:
+        os.makedirs(os.path.dirname(PREFS_PATH), exist_ok=True)
+        with open(PREFS_PATH, "w", encoding="utf-8") as f:
+            json.dump(p, f)
+    except Exception:
+        pass
 TOP_H = 56
 LEFT_W = 360
 RIGHT_W = 320
@@ -75,6 +98,10 @@ class App:
             width = min(width, info.current_w)
             height = min(height, info.current_h)
         self.window = pygame.display.set_mode((max(800, width), max(500, height)), flags)
+        self.windowed_size = self.window.get_size()
+        self.prefs = load_prefs()
+        if self.prefs.get("fullscreen") and screenshot is None and os.environ.get("SDL_VIDEODRIVER") != "dummy":
+            self.set_fullscreen(True, save=False)
         self.screen = self.window
         self._update_scale()
         self.clock = pygame.time.Clock()
@@ -102,6 +129,27 @@ class App:
             self.gui.screen = self.screen
         if hasattr(self, "map"):
             self.map.invalidate()
+
+    def set_fullscreen(self, on, save=True):
+        """전체화면(작업표시줄·창 제목줄까지 가림) 켜기/끄기. Alt+Enter 또는 환경설정."""
+        on = bool(on)
+        try:
+            if on:
+                if not (self.window.get_flags() & pygame.FULLSCREEN):
+                    self.windowed_size = self.window.get_size()
+                self.window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            else:
+                self.window = pygame.display.set_mode(getattr(self, "windowed_size", (1440, 900)), pygame.RESIZABLE)
+        except pygame.error:
+            return
+        self.prefs["fullscreen"] = on
+        if hasattr(self, "gui"):
+            self._update_scale()
+        if save:
+            save_prefs(self.prefs)
+
+    def is_fullscreen(self) -> bool:
+        return bool(self.window.get_flags() & pygame.FULLSCREEN)
 
     def lsize(self):
         """화면 크기(논리 좌표)."""
@@ -224,9 +272,15 @@ class App:
         frames = 0
         while self.running:
             events = pygame.event.get()
-            for e in events:
+            for e in list(events):
                 if e.type == pygame.QUIT:
                     self.running = False
+                elif (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_KP_ENTER)
+                      and e.mod & pygame.KMOD_ALT):
+                    events.remove(e)            # Alt+Enter: 전체화면 전환(턴 종료로 넘어가지 않게)
+                    self.set_fullscreen(not self.is_fullscreen())
+                elif e.type == pygame.VIDEORESIZE and self.is_fullscreen():
+                    self._update_scale()
                 elif e.type == pygame.VIDEORESIZE:
                     w, h = max(800, e.w), max(500, e.h)
                     if (w, h) != self.window.get_size():

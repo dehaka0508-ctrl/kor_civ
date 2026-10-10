@@ -10,6 +10,14 @@ from korciv.game import Game
 from korciv.state import NEUTRAL, Settings
 
 
+def _meet_all(g):
+    """조우 처리(무역·외교는 조우한 나라끼리만)."""
+    ids = [f.id for f in g.factions]
+    for f in g.factions:
+        f.met = set(ids) - {f.id}
+    return g
+
+
 def new_game(**kw):
     kw.setdefault("seed", 5)
     g = Game(Settings(**kw))
@@ -124,7 +132,7 @@ def test_war_and_peace():
 
 
 def test_trade_gift_and_demand():
-    g = new_game(n_enemies=2)
+    g = _meet_all(new_game(n_enemies=2))
     g.power = {f.id: 1.0 for f in g.factions}         # 국력 차이로 요구를 받아들이지 않게
     offer = D.empty_offer()
     offer["give"]["money"] = 500
@@ -1910,7 +1918,7 @@ def test_half_year_ranking_schedule():
 
 
 def test_gift_opinion_follows_income():
-    g = new_game(n_enemies=2)
+    g = _meet_all(new_game(n_enemies=2))
     inc = D.gift_income(g, 1)
     assert inc >= g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult - 1e-6
     f = g.factions[1]
@@ -3114,7 +3122,7 @@ def test_start_message_uses_level_names_and_unchecks_focus():
 
 
 def test_small_resource_gift_still_raises_opinion():
-    g = new_game(player_start="S002", n_enemies=2)
+    g = _meet_all(new_game(player_start="S002", n_enemies=2))
     g.factions[1].last["tax"] = 1e7                    # 세수가 아주 큰 나라
     for k in ("food", "specialty"):
         g.player.res.update(food=500)
@@ -3210,7 +3218,7 @@ def test_spec_price_rises_when_unhappy():
 
 def test_ai_sells_surplus_to_ai_with_factory_room():
     from korciv import ai as AI
-    g = new_game(player_start="S002", n_enemies=2)
+    g = _meet_all(new_game(player_start="S002", n_enemies=2))
     _neutral_ai(g, 1, 2)
     for fid in (1, 2):
         _lead(g, fid, "cus")
@@ -3229,7 +3237,7 @@ def test_ai_sells_surplus_to_ai_with_factory_room():
 
 def test_ai_trade_offer_to_player_is_queued():
     from korciv import ai as AI
-    g = new_game(player_start="S002", n_enemies=1)
+    g = _meet_all(new_game(player_start="S002", n_enemies=1))
     _neutral_ai(g, 1)
     _lead(g, 1, "cus")
     g.dip.op[(1, 0)] = g.dip.op[(0, 1)] = 10.0
@@ -3264,7 +3272,7 @@ def test_occ_contest_reinforcement_target():
 
 def test_unhappy_ai_offers_to_buy_specialty_from_neighbor():
     from korciv import ai as AI
-    g = new_game(player_start="S002", n_enemies=1)
+    g = _meet_all(new_game(player_start="S002", n_enemies=1))
     _neutral_ai(g, 1)
     _lead(g, 1, "cus")
     _lead(g, 0, "cus")
@@ -3344,3 +3352,15 @@ def test_ai_still_fights_at_turn_end():
     g._phase_attack()                                            # AI 공격은 지금처럼 턴 종료 단계에서
     assert not g.fought and sum(x.count() for x in g.armies_at("S002", 0)) <= n0
     assert any(e["kind"] == "battle" for e in g.events)
+
+
+def test_trade_needs_contact():
+    g = new_game(player_start="S002", n_enemies=1)
+    g.settings.fog = 1
+    g.factions[0].met = set()
+    g.factions[1].met = set()
+    o = D.empty_offer()
+    o["give"]["money"] = 10
+    assert D.evaluate_offer(g, 1, 0, o)[0] == "reject"
+    from korciv import ai as AI
+    assert 0 not in AI.trade_partners(g, 1)

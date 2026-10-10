@@ -625,3 +625,21 @@ def test_battle_modal_enter_fights_now(app):
     app.tab = "army"
     app.left_open, app.left_tab = True, "region"
     frame(app)                                                    # 전투 완료 표시가 그려진다
+
+
+def test_pause_and_prefs(app, monkeypatch, tmp_path):
+    from korciv.ui import app as A
+    monkeypatch.setattr(A, "PREFS_PATH", str(tmp_path / "prefs.json"))
+    app.start_game(Settings(seed=5, n_enemies=1))
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    app.game.pending_proposals.clear()
+    app.game.dialogues = []
+    app.modal = ("pause", None)
+    frame(app)
+    app.modal = ("prefs", "pause")
+    frame(app)
+    app.prefs["volume"] = 35
+    A.save_prefs(app.prefs)
+    assert A.load_prefs()["volume"] == 35
+    app.modal = None

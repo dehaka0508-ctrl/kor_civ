@@ -282,6 +282,7 @@ def _market(g, f):
 def trade_partners(g, fid):
     """거래할 만한 상대: 전쟁 중이 아니고 서로 우호도가 AI_TRADE_MIN_OP 이상."""
     return [x for x in g.alive_ids() if x != fid and not D.at_war(g, fid, x)
+            and g.has_met(fid, x) and g.has_met(x, fid)            # 조우한 나라끼리만
             and D.opinion(g, fid, x) >= C.AI_TRADE_MIN_OP
             and (not g.factions[x].is_ai or D.opinion(g, x, fid) >= C.AI_TRADE_MIN_OP)]
 

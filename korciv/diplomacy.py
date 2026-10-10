@@ -922,6 +922,8 @@ def evaluate_offer(g, ai, proposer, offer):
     반환: (결과 "accept"/"counter"/"reject", 수정안 또는 None, 설명)"""
     if (proposer, ai) in g.dip.rejected:
         return "reject", None, "이번 턴에는 다시 제안할 수 없습니다."
+    if not (g.has_met(proposer, ai) and g.has_met(ai, proposer)):
+        return "reject", None, "조우한 적 없는 나라와는 거래할 수 없습니다."
     give, take = offer["give"], offer["take"]
     if is_empty(take) and is_empty(give):
         return "reject", None, "빈 제안입니다."
