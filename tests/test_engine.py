@@ -2304,9 +2304,9 @@ def test_kimdaejung_early_output():
     g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
     y = g.calc_output("S002", full=True)
     _lead(g, 0, "kdj")
-    g.turn = 12
+    g.turn = 10
     assert g.calc_output("S002", full=True) == pytest.approx(y * 0.8)
-    g.turn = 13
+    g.turn = 11
     assert g.calc_output("S002", full=True) == pytest.approx(y)
 
 
@@ -3051,3 +3051,21 @@ def test_harass_urgency_scales_with_opinion():
         g.dip.op[(0, 1)] = op
         vals.append(EG.watch(g, f)["urgency"])
     assert vals[1] > vals[0]
+
+
+def test_suro_power_elec_and_fuel_annex():
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
+    assert (g.power_elec(0, "coal"), g.power_elec(0, "oil")) == (2, 4)
+    _lead(g, 0, "sur")
+    assert (g.power_elec(0, "coal"), g.power_elec(0, "oil")) == (3, 5)
+    # 발전소 실제 변환도 +1
+    rid = "S002"
+    g.regions[rid].b["power"] = 1
+    g.factions[0].res["coal"] = 5
+    g.factions[0].res["oil"] = 0
+    g.factions[0].auto_energy = True
+    plan = g.energy_plan(0)
+    assert plan["plants"][rid]["elec_out"] == 3
+    # 편입 성향은 디버프로 줄지 않는다
+    assert AI.leader_bias(g, 0, "annex") == 1.0

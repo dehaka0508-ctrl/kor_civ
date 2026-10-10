@@ -1410,7 +1410,7 @@ def draw_energy_tab(app, body):
                 app.changed()
 
     yy = section(gui, x, yy, w, f"발전소 {len(plants)}곳 · 연료 최대 {sum(r.b['power'] for r in plants)}/턴 "
-                 f"(석탄→전기 {C.POWER_ELEC['coal']}, 석유→{C.POWER_ELEC['oil']})")
+                 f"(석탄→전기 {g.power_elec(pid, 'coal')}, 석유→{g.power_elec(pid, 'oil')})")
     for r in plants:
         u = plan["plants"].get(r.id, {})
         gui.text((x, yy), f"{app.world.regions[r.id].name} · {r.b['power']}단계", 12, weight="semibold", max_w=w - 90)

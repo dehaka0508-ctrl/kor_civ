@@ -68,6 +68,9 @@ def test_pop_growth_and_tax_happiness():
     assert R.tax_happiness(20) == pytest.approx(-1.0)
     assert R.tax_happiness(50) == pytest.approx(-4.0)
     assert R.tax_happiness(20, over10_mult=0.7) == pytest.approx(-0.7)
+    # 당 태종 '정관의 치'는 세율 20%까지: 그 위는 20%일 때 줄어든 만큼(0.2)만 덜 깎인다
+    assert R.tax_happiness(30, over10_mult=0.8) == pytest.approx(-1.8)
+    assert R.tax_happiness(30, over10_mult=0.8, over15_mult=1.5) == pytest.approx(-2.5)
 
 
 def test_surprise_chance_and_dates():
@@ -86,6 +89,9 @@ def test_surprise_chance_and_dates():
 def test_region_value_turn_table():
     assert [R.value_turns(v) for v in range(1, 11)] == [1, 2, 3, 4, 6, 8, 10, 13, 16, 20]
     assert R.value_turns(10, 1.2) == 24          # 가야 수로왕 +20%
+    # 늘어나는 쪽은 소수점 버림: 1.2 → 1, 2.4 → 2, 7.2 → 7, 9.6 → 9
+    assert [R.value_turns(v, 1.2) for v in range(1, 11)] == [1, 2, 3, 4, 7, 9, 12, 15, 19, 24]
+    assert R.value_turns(5, 0.8) == 5             # 줄어드는 쪽은 반올림 그대로(4.8 → 5)
     assert R.region_value(0.0) == 1 and R.region_value(99) == 10
     big = sum(R.region_value_parts(7000, 100, 8, 1, 0, 0, 0, 1, 0, 1).values())
     small = sum(R.region_value_parts(250, 2.5, 1, 0, 0, 0, 0, 0, 0, 0).values())

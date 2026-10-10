@@ -1633,8 +1633,8 @@ class Game:
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
-            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → 전기 {C.POWER_ELEC['coal']}, "
-                    f"석유 1 → 전기 {C.POWER_ELEC['oil']})")
+            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → 전기 {self.power_elec(fid, 'coal')}, "
+                    f"석유 1 → 전기 {self.power_elec(fid, 'oil')})")
         if key == "specialty":
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
@@ -1840,6 +1840,10 @@ class Game:
         f.res["oil"] = f.res.get("oil", 0) - use
         f.res["coal"] = f.res.get("coal", 0) - (n - use) * C.OIL_AS_COAL
 
+    def power_elec(self, fid, fuel) -> int:
+        """발전소 연료 1개당 전기(석탄 2·석유 4, 수로왕 '철의 왕국' +1)."""
+        return C.POWER_ELEC[fuel] + int(self.mods(fid).add("power_elec_add"))
+
     def energy_mined(self, fid) -> dict:
         """이번 턴 채굴·자체 발전(점령당하는 중·저항 지역 제외)."""
         out = {"oil": 0, "coal": 0, "elec": 0}
@@ -1877,7 +1881,8 @@ class Game:
                 plan[r.id][key] += k
                 room[r.id] -= k
                 left[key] -= k
-        left["elec"] += sum(C.POWER_ELEC["oil"] * a["oil"] + C.POWER_ELEC["coal"] * a["coal"] for a in plan.values())
+        left["elec"] += sum(self.power_elec(fid, "oil") * a["oil"] + self.power_elec(fid, "coal") * a["coal"]
+                            for a in plan.values())
         fplan = {r.id: {"coal": 0, "oil": 0, "elec": 0} for r in facts}
         froom = {r.id: r.b["factory"] for r in facts}
         for key in ("elec", "coal", "oil"):               # ③④⑤ 공장: 전기 → 석탄 → 석유, 단계 높은 공장부터
@@ -1931,7 +1936,7 @@ class Game:
                 used[key] = k
                 room -= k
                 s[key] -= k
-            e = C.POWER_ELEC["oil"] * used["oil"] + C.POWER_ELEC["coal"] * used["coal"]
+            e = self.power_elec(fid, "oil") * used["oil"] + self.power_elec(fid, "coal") * used["coal"]
             s["elec"] += e
             out_p[r.id] = {"coal": used["coal"], "oil": used["oil"], "elec_out": e}
         for r in facts:
@@ -2026,7 +2031,7 @@ class Game:
             if far and rid not in self.near_capital(owner, 3):
                 y *= 1 - far                                  # 전제군주제: 수도에서 3칸 밖 지역
             if self.turn <= m.value("early_output_turns", 0):
-                y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 12턴
+                y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 10턴
             y *= 1 + C.HAEDONG_OUTPUT * self.haedong_steps(owner)   # 발해 선왕 '해동성국'
         return y
 
@@ -2564,7 +2569,7 @@ class Game:
         return p * self.morale(fid) * self.lead_mult(fid, "naval_power")   # 이순신: 해전 +30%
 
     def naval_buff_off(self, fid) -> bool:
-        """이순신 '백의종군': 해전에서 진 뒤 12턴 동안 해군 버프 비활성."""
+        """이순신 '백의종군': 해전에서 진 뒤 6턴 동안 해군 버프 비활성."""
         return getattr(self.factions[fid], "naval_off_until", 0) > self.turn
 
     def lead_mult(self, fid, key) -> float:

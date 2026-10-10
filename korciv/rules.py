@@ -116,6 +116,8 @@ def region_value(score: float) -> int:
 def value_turns(value: int, time_mult=1.0) -> int:
     """가치 1~10 -> 편입·점령 턴 1,2,3,4,6,8,10,13,16,20."""
     t = C.VALUE_TURNS[max(1, min(10, value)) - 1]
+    if time_mult > 1:
+        return max(1, int(math.floor(t * time_mult + 1e-9)))   # 늘어나는 쪽(수로왕 '연맹 체제')은 소수점 버림
     return max(1, int(math.floor(t * time_mult + 0.5)))
 
 
@@ -151,14 +153,23 @@ def pop_growth_rate(h: float, g_max: float = C.G_MAX) -> float:
 
 
 def tax_happiness(t_pct: float, over10_mult=1.0, over15_mult=1.0, base_pct=10.0) -> float:
-    """0.1 (기준 − t%). 기준 세율은 10%(전제군주제 12%). 감소분에 체제·지도자 배수 적용."""
+    """0.1 (기준 − t%). 기준 세율은 10%(전제군주제 12%). 감소분에 체제·지도자 배수 적용.
+    over10_mult(당 태종 '정관의 치')는 세율 TAX_OVER10_CAP%까지만: 그 위는 그때 줄어든 만큼만 덜 깎인다."""
     base = C.TAX_HAPPY_K * (base_pct - t_pct)
     if base >= 0:
         return base
-    # 감소분을 기준~기준+5%, 그 초과 구간으로 나눠 배수 적용
-    part_10_15 = max(0.0, min(t_pct, base_pct + 5) - base_pct) * C.TAX_HAPPY_K
-    part_15 = max(0.0, t_pct - base_pct - 5) * C.TAX_HAPPY_K
-    return -(part_10_15 * over10_mult + part_15 * over10_mult * over15_mult)
+
+    def seg(lo, hi):
+        return max(0.0, min(t_pct, hi) - lo) if hi > lo else 0.0
+    cap = max(base_pct, C.TAX_OVER10_CAP)
+    mid = base_pct + 5
+    # 감소분을 기준~기준+5%, 그 초과 구간으로 나누고, 각 구간을 상한 안·밖으로 다시 나눠 배수 적용
+    p1_in = seg(base_pct, min(mid, cap))
+    p1_out = seg(base_pct, mid) - p1_in
+    p2_in = seg(mid, max(mid, cap))
+    p2_out = seg(mid, float("inf")) - p2_in
+    loss = (p1_in * over10_mult + p1_out) + (p2_in * over10_mult + p2_out) * over15_mult
+    return -loss * C.TAX_HAPPY_K
 
 
 def battle_damage(a: float, d: float, r: float) -> tuple[float, float]:

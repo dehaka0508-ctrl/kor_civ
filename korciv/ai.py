@@ -48,6 +48,8 @@ LEADER_BIAS_MAX = 0.15     # 소폭: 최대 ±15%
 
 def _bias_term(key, v) -> float:
     """효과 값을 '기준 대비 비율'로."""
+    if key == "occ_time":
+        return min(0.0, v)       # 늘어나는 디버프(수로왕)는 편입 이득 계산에 이미 들어가 있어 성향으로 또 깎지 않는다
     if key == "amphib_extra":
         return v - 1.0
     if key == "line_k":
@@ -1979,7 +1981,7 @@ def fuel_balance(g, fid) -> dict:
     cap = sum(r.b["power"] for r in plants)
     conv_oil = min(cap, mined["oil"])
     conv_coal = min(cap - conv_oil, mined["coal"])
-    supply = (mined["elec"] + C.POWER_ELEC["oil"] * conv_oil + C.POWER_ELEC["coal"] * conv_coal
+    supply = (mined["elec"] + g.power_elec(fid, "oil") * conv_oil + g.power_elec(fid, "coal") * conv_coal
               + (mined["coal"] - conv_coal) + (mined["oil"] - conv_oil))
     demand = sum(r.b["factory"] for r in facts)
     return {"supply": supply, "demand": demand, "spare": supply - demand,
@@ -2051,6 +2053,7 @@ def _slots(g, f, threat, military=True):
     cands = []
     bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
     annex_bias = bias("annex")
+    fuel_annex = C.AI_FUEL_ANNEX if g.mods(fid).add("power_elec_add") > 0 else 1.0
     if g.mods(fid).value("minority_rule") and len(regs) >= C.MINORITY_REGIONS:
         annex_bias *= 0.85                    # 홍타이지 '소수민족': 넓힐수록 민심이 깎인다
     # 군 생산 수요
@@ -2086,6 +2089,8 @@ def _slots(g, f, threat, military=True):
             if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
                 gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
             gain *= annex_bias * annex_k
+            if fuel_annex > 1 and (g.info(t["target"]).is_oil or g.info(t["target"]).is_coal):
+                gain *= fuel_annex            # 수로왕 '철의 왕국': 석탄·석유 지역을 먼저 편입
             cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
         # 1페이즈: 생산 건물은 편입할 곳이 없는 안쪽 지역부터(맞닿은 중립이 있는 지역 슬롯은 편입에 남긴다)
         place_k = 1.0
@@ -2139,7 +2144,7 @@ def _slots(g, f, threat, military=True):
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
             turns = g.build_time(fid, "power", R.prod_building_turns(lv))
-            gain = unit_val * max(0, C.AI_UTILITY_HORIZON - turns)
+            gain = unit_val * (g.power_elec(fid, "coal") - 1) * max(0, C.AI_UTILITY_HORIZON - turns)
             cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
                           r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
@@ -2493,7 +2498,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     cap = sum(r.b["power"] for r in plants)
     conv_oil = min(cap, mined["oil"])
     conv_coal = min(cap - conv_oil, mined["coal"])
-    elec = mined["elec"] + C.POWER_ELEC["oil"] * conv_oil + C.POWER_ELEC["coal"] * conv_coal
+    elec = mined["elec"] + g.power_elec(fid, "oil") * conv_oil + g.power_elec(fid, "coal") * conv_coal
     need = elec - sum(r.b["factory"] for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
     for r in sorted((r for r in pool if r.id not in used and r.b["factory"] < 5),
                     key=lambda r: (-r.b["factory"], -r.pop, r.id)):
