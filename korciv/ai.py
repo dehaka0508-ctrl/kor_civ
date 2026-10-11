@@ -1367,7 +1367,7 @@ def _army_orders(g, f, threat):
                        if any(g.regions[n].owner not in (NEUTRAL, fid) for n in w.land_adj[r.id])}
     # 중립 지역 동시 점령에서 병력 규모(최대 체력 합)가 밀리면, 가치·중요도가 높은 곳에 이웃 병력을 더 보낸다
     contest = occ_contests(g, fid) if f.is_ai and not crisis else {}
-    # 전선(v1.2.3): 전쟁 상대와 맞닿은 내 지역마다 전투 병력을 두어 끊어지지 않게 한다(한 덩어리로 몰지 않는다)
+    # 전선(v1.2.0): 전쟁 상대와 맞닿은 내 지역마다 전투 병력을 두어 끊어지지 않게 한다(한 덩어리로 몰지 않는다)
     front_set, need, cover = set(), {}, {}
     if at_war and f.is_ai:
         wf = war_front(g, fid)
