@@ -271,10 +271,13 @@ def missing_science_site(g, fid):
     step = g.science_next(fid)
     if step not in ("observatory", "pad", "propellant") or g.science_sites(fid, step):
         return []
+    if step == "propellant" and any(g.info(r.id).is_oil for r in g.regions_of(fid)):
+        return []                    # 석유 지역이 있으면 정유공장을 5단계까지 올리면 된다
+    site_ok = (lambda o, n: g.info(n).is_oil) if step == "propellant" else (lambda o, n: g.science_site_ok(o, n, step))
     mine = set(r.id for r in g.regions_of(fid))
     near = {n for rid in mine for n in g.world.land_adj[rid]} - mine
     return [n for n in sorted(near) if g.regions[n].owner not in (fid,) and g.regions[n].owner >= 0
-            and g.science_site_ok(g.regions[n].owner, n, step)]
+            and site_ok(g.regions[n].owner, n)]
 
 
 # ------------------------------------------------------------------ 외교 3페이즈: 정복 강대국에 편승

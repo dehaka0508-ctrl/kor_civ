@@ -1450,7 +1450,7 @@ class Game:
         if step in ("booster", "module"):
             return rr.b["factory"] >= 5
         if step == "propellant":
-            return info.is_oil
+            return info.is_oil and rr.b["extract"] >= 5      # 정유공장 5단계(정유공장 증설 최대)
         return False
 
     def science_sites(self, fid, step):

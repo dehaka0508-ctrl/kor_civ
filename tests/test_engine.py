@@ -343,6 +343,9 @@ def test_science_victory_chain():
     f.science += ["booster", "module"]
     oil = next(r for r in g.world.order if g.world.regions[r].is_oil)
     _own(g, 0, [oil])
+    g.regions[oil].b["extract"] = 4
+    assert not sci(oil)                                   # 석유 지역이라도 정유공장 5단계가 아니면 불가
+    g.regions[oil].b["extract"] = 5
     assert [o["key"] for o in sci(oil)] == ["propellant"]
     # 유닛을 잃으면 그 단계를 다시 만들 수 있다(다음 단계와 함께)
     assert g.science_available(0) == ["propellant", "booster", "module"]

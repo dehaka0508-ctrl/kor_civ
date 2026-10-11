@@ -78,7 +78,7 @@ SCIENCE = {
     "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역", tier=3),
     "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역", tier=4),
     "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역", tier=5),
-    "propellant": dict(name="발사체 연료", unit=True, where="석유 생산 지역", tier=6),
+    "propellant": dict(name="발사체 연료", unit=True, where="정유공장 5단계 지역", tier=6),
 }
 SCIENCE_UNITS = ("booster", "module", "propellant")
 CAPITAL_MOVE_TURNS = 4

@@ -2554,6 +2554,15 @@ def _slots(g, f, threat, military=True):
                 best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
                 if g.start_project(fid, best.id, "science", step)[0] and spr == "science":
                     best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
+            elif step == "propellant":
+                # 정유공장 5단계 지역이 없으면 석유 지역의 정유공장을 가장 높은 곳부터 올린다
+                pool_o = [r for r in idle if g.info(r.id).is_oil and r.b["extract"] < 5]
+                if pool_o:
+                    r0 = max(pool_o, key=lambda r: (r.b["extract"], r.pop))
+                    lv = r0.b["extract"] + 1
+                    cost = R.prod_building_cost("extract", lv, g.info(r0.id).power_site)
+                    turns = g.build_time(fid, "extract", R.prod_building_turns(lv))
+                    cands.append((3.0, r0.id, "build", "extract", None, cost / turns))
             elif step in ("booster", "module", "budget"):
                 # 공장(예산 편성은 은행) 5단계 지역이 없으면 가장 높은 곳부터 올린다
                 bk = "bank" if step == "budget" else "factory"
