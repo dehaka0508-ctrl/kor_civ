@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from shapely.geometry import MultiPoint, Point, Polygon
+from shapely.geometry import MultiPoint, Point, Polygon, box
 from shapely.ops import unary_union, voronoi_diagram
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -117,9 +117,9 @@ def main():
             shape = shape.difference(cut)
         shapes[sid] = shape.difference(land)
     # 경계선이 지역 땅을 가로지르면 그 지역 해안 가까운 바다는 그 지역 쪽 해역으로(SEA_HUG)
-    for keep, other, rid, dist in SEA_HUG:
+    for keep, other, rid, dist, lat_min in SEA_HUG:
         shape = unary_union([Polygon(r).buffer(0) for r in geo["regions"][rid]["polys"] if len(r) >= 3])
-        near = shapes[other].intersection(shape.buffer(dist))
+        near = shapes[other].intersection(shape.buffer(dist)).intersection(box(-180, lat_min, 180, 90))
         shapes[keep] = shapes[keep].union(near)
         shapes[other] = shapes[other].difference(near)
     seas_of = region_seas()
