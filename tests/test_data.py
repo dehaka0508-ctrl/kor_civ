@@ -5,10 +5,10 @@ from korciv.data import load_world
 
 def test_region_counts():
     w = load_world()
-    assert len(w.regions) == 426
+    assert len(w.regions) == 427
     c = Counter(r.ns for r in w.regions.values())
-    assert c == {"남": 227, "북": 196, "남북 병합": 3}
-    assert round(sum(r.pop0 for r in w.regions.values()), 1) == 8611.2
+    assert c == {"남": 228, "북": 197, "남북 병합": 2}
+    assert round(sum(r.pop0 for r in w.regions.values()), 1) == 8611.1   # 옹진 분리로 반올림 0.1 차이
 
 
 def test_geometry_for_every_region():
@@ -47,7 +47,7 @@ def test_every_mainland_region_has_neighbor_and_is_connected():
 def test_sea_coasts():
     w = load_world()
     counts = {s.name: len(s.coast) for s in w.seas.values()}
-    assert counts == {"서한만": 25, "경기만": 24, "서해 남부": 16, "남해 서부": 11, "남해 동부": 17,
+    assert counts == {"서한만": 25, "경기만": 25, "서해 남부": 16, "남해 서부": 11, "남해 동부": 17,
                       "남동해": 8, "영동 해역": 7, "동한만": 14, "북동해": 8, "독도 해역": 1, "제주도 연안": 2}
     assert w.seas["SEA1"].adj == ["SEA2"]
     assert w.seas["SEA4"].adj == ["SEA3", "SEA5", "SEA11"]
@@ -82,3 +82,14 @@ def test_mountain_pass_not_adjacent_unless_touching():
 def test_jeju_sea_only_next_to_south_west_sea():
     w = load_world()
     assert w.seas["SEA11"].adj == ["SEA4"] and "SEA11" not in w.seas["SEA5"].adj
+
+
+def test_ongjin_split():
+    """황남 옹진(반도)과 인천 옹진(섬)은 따로: 인천 옹진은 제주·울릉처럼 무연륙 섬 시작(시작 항구)."""
+    w = load_world()
+    n = w.name_to_id
+    hw, ic = w.regions[n["황남 옹진군"]], w.regions[n["인천 옹진군"]]
+    assert hw.ns == "북" and ic.ns == "남" and ic.province == "인천"
+    assert ic.island == "무연륙 섬" and ic.start_port and w.land_adj[ic.id] == set()
+    assert w.land_adj[hw.id] and ic.seas == ("SEA2",) and hw.seas == ("SEA1", "SEA2")
+    assert ic.power_site and "꽃게" in ic.specialties and ic.scenic == "두무진"

@@ -33,7 +33,7 @@ def test_setup():
     assert g.regions["S002"].owner == 0
     assert g.player.money == 3000
     assert g.player.res["food"] == pytest.approx(55.2 * 5)
-    assert sum(1 for a in g.armies.values() if a.owner == NEUTRAL) == 426 - 4
+    assert sum(1 for a in g.armies.values() if a.owner == NEUTRAL) == 427 - 4
     starts = [f.capital for f in g.factions]
     assert len(set(starts)) == 4
 
@@ -2406,7 +2406,7 @@ def test_starts_spread_and_no_random_islands():
                 need = 7 if {g.world.regions[a].do8, g.world.regions[b].do8} & set(C.START_WIDE_DO8) else 6
                 assert g._land_dist(a, b, need) >= need
         isl |= {r for r in g.world.order if g.world.regions[r].island == "무연륙 섬"}
-    assert len(isl) == 3
+    assert len(isl) == 4                                  # 제주·서귀포·울릉·인천 옹진
     # 직접 고르면 섬에서도 시작할 수 있다
     jeju = next(r for r in isl if "서귀포" in g.world.regions[r].name)
     g = new_game(player_start=jeju, n_enemies=3)
@@ -3590,3 +3590,11 @@ def test_ai_front_spreads_along_war_border():
     assert ai._fill_front(g, 0, big, set(front), need, cover)
     sent = [a for a in g.armies.values() if a.owner == 0 and (a.order or a.goto)]
     assert len(sent) >= 2                               # 한 덩어리로 가지 않는다
+
+
+def test_incheon_ongjin_island_start_gets_landing_ship():
+    rid = next(r for r, i in new_game().world.regions.items() if i.name == "인천 옹진")
+    g = new_game(player_start=rid, n_enemies=2)
+    assert g.player.capital == rid
+    assert any(a.units.get("lst") for a in g.armies_at(rid, 0))
+    assert g.region_value(rid)[0] < 6 and g.region_value(g.world.name_to_id["황남 옹진군"])[0] < 6

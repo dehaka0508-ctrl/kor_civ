@@ -313,17 +313,13 @@ def load_geometry():
     nk_geom["평북 운산군"], nk_geom["평남 은산군"] = unsan  # 북쪽이 운산(평북)
     reconcile_dmz(sk_geom, nk_geom)
 
-    # ---- 병합: 남북 고성·철원, 황남 옹진 + 인천 옹진
+    # ---- 병합: 남북 고성·철원 (황남 옹진·인천 옹진은 v1.2.1부터 따로)
     geom = {}
-    adj_geom = {}  # 인접 계산용 (옹진은 북측 본토만)
+    adj_geom = {}  # 인접 계산용
     for name, r in by_name.items():
         if r["남북"] == "남북 병합":
-            if name == "황남 옹진군":
-                g = unary_union([nk_geom[name], sk_geom["인천 옹진군"]])
-                adj_geom[name] = nk_geom[name]
-            else:
-                g = unary_union([nk_geom[name], sk_geom[name]])
-                adj_geom[name] = g
+            g = unary_union([nk_geom[name], sk_geom[name]])
+            adj_geom[name] = g
             geom[name] = g
         elif r["남북"] == "남":
             geom[name] = sk_geom[name]
@@ -334,7 +330,7 @@ def load_geometry():
 
     missing = [n for n in by_name if n not in geom]
     extra = [n for n in list(sk_geom) + list(nk_geom)
-             if n not in by_name and n != "인천 옹진군"]
+             if n not in by_name]
     if missing or extra:
         report = os.path.join(ROOT, "tools", "match-report.md")
         with open(report, "w", encoding="utf-8") as f:
