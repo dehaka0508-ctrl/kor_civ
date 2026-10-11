@@ -74,22 +74,28 @@ def crown(path):
     finish(im, path)
 
 def chiljido(path):
+    """칠지도(이소노카미 신궁 소장품 사진 비율): 곧은 칼날 + 좌우 번갈아 세 개씩 난 가지.
+    가지는 칼날에서 바깥으로 살짝 처지며 나가 팔꿈치처럼 꺾인 뒤 칼날과 나란히 곧게 서고 끝이 둥글다."""
     im, d = canvas()
-    cx = 500
-    # 칼날: 끝이 뾰족한 곧은 날
-    d.polygon(sc([(cx, 20), (cx + 30, 110), (cx + 30, 800), (cx - 30, 800), (cx - 30, 110)]), fill=255)
-    # 가지 여섯: 좌우 번갈아, 바깥으로 나가 위로 휘며 뾰족해진다
-    for i, (sx, y) in enumerate(((-1, 250), (1, 330), (-1, 410), (1, 490), (-1, 570), (1, 650))):
+    cx, hw = 500, 25                       # 칼날 가운데·반폭
+    # 칼날: 끝은 뭉툭하게 둥글고, 아래로 갈수록 아주 조금 넓어진다
+    d.polygon(sc([(cx - hw + 4, 40), (cx + hw - 4, 40), (cx + hw + 3, 905), (cx - hw - 3, 905)]), fill=255)
+    d.polygon(sc([(cx - hw + 4, 42), (cx - 8, 6), (cx + 8, 6), (cx + hw - 4, 42)]), fill=255)
+    circ(d, cx, 14, 9)
+    # 슴베: 어깨에서 좁아져 끝이 뾰족
+    d.polygon(sc([(cx - 13, 900), (cx + 13, 900), (cx + 6, 975), (cx, 996), (cx - 6, 975)]), fill=255)
+    # 가지: (방향, 갈라지는 높이, 끝 높이). 비스듬히 처지며 나가 둥글게 꺾이고, 끝은 살짝 바깥으로 기울며 가늘어진다
+    for sx, j, tip in ((-1, 300, 205), (1, 395, 305), (-1, 485, 400), (1, 585, 520), (-1, 680, 600), (1, 765, 705)):
+        p0, p1, p2 = (cx, j - 12), (cx + sx * 52, j + 34), (cx + sx * 74, j - 26)
         pts = []
-        for k in range(13):
+        for k in range(13):                 # 팔꿈치: 2차 베지어
             t = k / 12
-            px = cx + sx * (24 + 78 * math.sin(t * math.pi / 2))
-            py = y - 40 * t - 110 * t * t
-            pts.append((px, py))
-        thick(d, pts, 36, 5)
-    # 슴베(손잡이 쪽)와 고리
-    d.polygon(sc([(cx - 22, 800), (cx + 22, 800), (cx + 14, 960), (cx - 14, 960)]), fill=255)
-    circ(d, cx, 975, 22); d.ellipse([(cx - 9) * S, (975 - 9) * S, (cx + 9) * S, (975 + 9) * S], fill=0)
+            pts.append(((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+                        (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1]))
+        top = (cx + sx * 86, tip)
+        pts += [(p2[0] + (top[0] - p2[0]) * k / 6, p2[1] + (top[1] - p2[1]) * k / 6) for k in range(1, 7)]
+        thick(d, pts, 42, 24)
     finish(im, path)
+
 
 crown(sys.argv[1] + '/crown.png'); chiljido(sys.argv[1] + '/chiljido.png')
