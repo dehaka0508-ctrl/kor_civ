@@ -1359,14 +1359,15 @@ def test_friendship_declaration():
     ok, why = D.friendship_check(g, p, a)
     assert ok
     eff = D.friendship_effects(g, p, a)
-    assert (a, p, C.DECL_FRIEND_BONUS, True) in eff and (c, p, C.DECL_FRIEND_ENEMY, False) in eff
+    assert (a, p, C.DECL_FRIEND_BONUS, False) in eff and (c, p, C.DECL_FRIEND_ENEMY, False) in eff
     before_c = D.opinion(g, c, p)
     assert D.declare_friendship(g, p, a)[0]
-    assert D.opinion(g, a, p) == pytest.approx(-20 + 15)
+    assert D.opinion(g, a, p) == pytest.approx(-20 + 10)        # 한 번 +10(기한 없음)
     assert D.opinion(g, c, p) == pytest.approx(before_c - 5)
     assert not D.friendship_check(g, p, a)[0]    # 쿨타임
-    g.turn += C.DECL_FRIEND_TURNS
-    assert D.opinion(g, a, p) == pytest.approx(-20)     # 기한부 +15 만료
+    assert D.decl_cooldown(g, "friend", p, a) == C.DECL_FRIEND_COOLDOWN == 12
+    g.turn += C.DECL_FRIEND_COOLDOWN
+    assert D.opinion(g, a, p) == pytest.approx(-10)     # 기한이 끝나도 그대로
     assert D.friendship_check(g, p, a)[0]
     g.dip.op[(b, p)] = -40
     assert not D.friendship_check(g, p, b)[0]    # 우호도 −30 미만은 거절
@@ -3463,3 +3464,26 @@ def test_building_total_for_maxed_buildings():
     rr.b["bank"] = C.PROD_BUILDINGS["bank"]["max"]
     assert "산출" in g.building_total(0, "S002", "bank")
     assert not any(o["kind"] == "build" and o["key"] == "bank" for o in g.options(0, "S002"))
+
+
+def test_friendship_declaration_opinion_per_turn_during_cooldown():
+    """우호 선언 뒤 쿨타임 12턴 동안 서로 매 턴 우호도 +0.1, 그 뒤에는 없다."""
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    for x, y in ((1, 2), (2, 1)):
+        g.dip.op[(x, y)] = D.op_baseline(g, x, y)
+    assert D.declare_friendship(g, 1, 2)[0]
+    import copy
+    ref = copy.deepcopy(g)
+    _dc = D._dip_attr(ref, "declared")
+    _dc.clear()                                       # 선언이 없는 같은 상태와 비교
+    D.update_turn(g)
+    D.update_turn(ref)
+    for x, y in ((1, 2), (2, 1)):
+        assert D.opinion(g, x, y) - D.opinion(ref, x, y) == pytest.approx(C.DECL_FRIEND_TURN * C.OPINION_DECAY)
+    g.turn += C.DECL_FRIEND_COOLDOWN
+    ref = copy.deepcopy(g)
+    D._dip_attr(ref, "declared").clear()
+    D.update_turn(g)
+    D.update_turn(ref)
+    assert D.opinion(g, 1, 2) == pytest.approx(D.opinion(ref, 1, 2))

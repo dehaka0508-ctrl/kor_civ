@@ -473,7 +473,8 @@ def hostile_to(g, x, t) -> bool:
 
 def decl_cooldown(g, kind, a, b) -> int:
     last = _dip_attr(g, "decl_cd").get((kind, a, b))
-    return 0 if last is None else max(0, C.DECL_COOLDOWN - (g.turn - last))
+    cd = C.DECL_FRIEND_COOLDOWN if kind == "friend" else C.DECL_COOLDOWN
+    return 0 if last is None else max(0, cd - (g.turn - last))
 
 
 def recent_denounces(g, a) -> int:
@@ -509,7 +510,7 @@ def friendship_effects(g, a, b) -> list:
     out = []
     for x, y in ((b, a), (a, b)):
         if g.factions[x].is_ai:
-            out.append((x, y, C.DECL_FRIEND_BONUS, True))
+            out.append((x, y, C.DECL_FRIEND_BONUS, False))
     for x in g.alive_ids():
         if x not in (a, b) and g.factions[x].is_ai and hostile_to(g, x, b):
             out.append((x, a, C.DECL_FRIEND_ENEMY, False))
@@ -532,7 +533,8 @@ def declare_friendship(g, a, b, force=False):
     _dip_attr(g, "declared")[pair(a, b)] = g.turn
     g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
     _player_dialogue(g, "friend", a, b)
-    return True, f"우호 선언 성립: {C.DECL_FRIEND_TURNS}턴 동안 우호도 +{C.DECL_FRIEND_BONUS}"
+    return True, (f"우호 선언 성립: 우호도 +{C.DECL_FRIEND_BONUS}, "
+                  f"{C.DECL_FRIEND_COOLDOWN}턴 동안 매 턴 +{C.DECL_FRIEND_TURN:g}")
 
 
 def _player_dialogue(g, kind, a, b):
@@ -1140,6 +1142,10 @@ def update_turn(g):
                 delta -= pen
             if pair(a, b) in d.nonaggr or pair(a, b) in d.passage:
                 delta += C.OP_TREATY_TURN
+            # 우호 선언 직후(쿨타임 동안) 서로 매 턴 조금씩 가까워진다
+            if fa.is_ai and declared_friends(g, a, b) and (decl_cooldown(g, "friend", a, b)
+                                                          or decl_cooldown(g, "friend", b, a)):
+                delta += C.DECL_FRIEND_TURN
             if fa.is_ai:
                 if g.hegemon == b and g.hegemon_share > 0:
                     s = g.hegemon_share

@@ -1552,7 +1552,8 @@ def draw_diplomacy(app):
     sw_ = 150
     ok_f, why_f = D.friendship_check(g, pid, fid)
     tip_f = (("수락 예상: " if ok_f else "불가: ") + why_f + "\n" +
-             D.effects_text(g, D.friendship_effects(g, pid, fid)) + f"\n쿨타임 {C.DECL_COOLDOWN}턴")
+             D.effects_text(g, D.friendship_effects(g, pid, fid))
+             + f"\n쿨타임 {C.DECL_FRIEND_COOLDOWN}턴(그동안 상대 우호도 매 턴 +{C.DECL_FRIEND_TURN:g})")
     if gui.button((r.right - 24 - 2 * sw_ - 8, y - 4, sw_, 28), "우호 선언", "primary" if ok_f else "default",
                   size=12, enabled=ok_f, tooltip=tip_f):
         ok2, msg = D.declare_friendship(g, pid, fid)

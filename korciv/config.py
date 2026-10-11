@@ -342,10 +342,12 @@ OP_HEGEMON_FIGHTER = 0.3
 OP_COALITION_LEAVE = -50
 
 # 우호 선언·비난
-DECL_COOLDOWN = 24          # 같은 상대에게 다시 쓰려면 24턴
+DECL_COOLDOWN = 24          # 같은 상대를 다시 비난하려면 24턴(우호 선언은 DECL_FRIEND_COOLDOWN)
 DECL_FRIEND_MIN = -30       # 상대 우호도가 이 이상이면 우호 선언을 받아들인다
-DECL_FRIEND_BONUS = 15      # 우호 선언: 서로 24턴 동안 우호도 +15
-DECL_FRIEND_TURNS = 24
+DECL_FRIEND_BONUS = 10      # 우호 선언: 서로 우호도 +10(한 번, v1.4.0부터 기한 없이 — 다른 우호도처럼 서서히 수렴)
+DECL_FRIEND_TURNS = 24      # 예전 세이브의 기한부 보너스용(새로 생기지 않음)
+DECL_FRIEND_COOLDOWN = 12   # 같은 상대에게 다시 우호 선언하려면 12턴
+DECL_FRIEND_TURN = 0.1      # 우호 선언 뒤 쿨타임 12턴 동안 서로 매 턴 우호도 +0.1
 DECL_FRIEND_ENEMY = -5      # 선언 대상과 적대하는 세력의 선언국에 대한 우호도
 DENOUNCE_TARGET = -15       # 비난: 대상의 비난국에 대한 우호도
 DENOUNCE_OTHERS = -2        # 비난: 다른 모든 세력의 대상에 대한 우호도
