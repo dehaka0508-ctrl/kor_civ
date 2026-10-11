@@ -232,7 +232,8 @@ def force_state(app, rng):
     elif k < 0.6:
         app.modal = rng.choice([("help", None), ("log", None), ("ranking", None), ("pause", None),
                                 ("specialty", None), ("gameover", None), ("saveslots", "save"),
-                                ("saveslots", "load"), ("saveslots", "save_exit")])
+                                ("saveslots", "load"), ("saveslots", "save_exit"),
+                                ("stat_chart", rng.choice(("gdp", "regions", "pop")))])
         if app.modal[0] == "saveslots":
             app.open_slots(app.modal[1])
         others = [f.id for f in g.factions if f.alive and f.id != pid]

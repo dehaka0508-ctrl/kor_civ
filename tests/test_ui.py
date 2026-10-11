@@ -111,6 +111,63 @@ def test_tax_slider_release_commits(app):
         pygame.mouse.get_pos = orig
 
 
+def test_stat_chart_popup(app):
+    """국가 현황 위 추이 타일을 누르면 턴별 추이 팝업이 뜨고, 항목·기간을 바꿔 그려도 되며 Esc로 닫힌다."""
+    from korciv.ui import panels
+    app.start_game(Settings(seed=6, n_enemies=2))
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    g = app.game
+    app.modal = ("stat_chart", "gdp")
+    frame(app)                                   # 기록이 없을 때
+    app.modal = None
+    for _ in range(3):
+        g.pending_proposals.clear()
+        g.pending_rebellions.clear()
+        app.end_turn()
+    g.pending_proposals.clear()
+    g.dialogues = []
+    app.left_open, app.left_tab = True, "status"
+    gui = app.gui
+    u = gui.u
+    orig = pygame.mouse.get_pos
+    try:
+        x = 8 + panels.RAIL_W + 6 + 40          # 첫 타일(GDP) 안쪽
+        hit = None
+        for y in range(70, 300, 6):
+            p = (int(x * u), int(y * u))
+            pygame.mouse.get_pos = lambda p=p: p
+            gui.begin([]); app.frame()
+            if gui.tooltip == "누르면 턴별 추이를 크게 봅니다":
+                hit = p
+                break
+        assert hit is not None
+        gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=hit)]); app.frame()
+        assert app.modal == ("stat_chart", "gdp")
+        sw, sh = gui.size()
+        p = (int(sw / 2 * u), int(sh / 2 * u))            # 그래프 위(마우스를 올린 턴 표시)
+        pygame.mouse.get_pos = lambda: p
+        for key in panels.STAT_COL:
+            for ri in range(3):
+                app.modal, app.stat_range = ("stat_chart", key), ri
+                frame(app)
+        esc = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=41)
+        gui.begin([esc]); app.frame()
+        assert app.modal is None
+    finally:
+        pygame.mouse.get_pos = orig
+
+
+def test_stat_chart_ticks():
+    from korciv.ui.modals import _nice_step, _turn_ticks
+    assert _nice_step(23000, 4) == 10000
+    assert _nice_step(7, 4, integer=True) == 2
+    assert _nice_step(0.4, 4, integer=True) == 1
+    ticks, step = _turn_ticks(13, 60)
+    assert step == 12 and ticks == [13, 25, 37, 49]
+    assert len(_turn_ticks(1, 1200)[0]) <= 7
+
+
 def test_enter_ends_turn_after_setup_text_focus(app):
     """시작 화면 입력칸에 포커스가 남은 채 게임을 시작해도 Enter로 턴이 넘어간다."""
     enter = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r", scancode=40)

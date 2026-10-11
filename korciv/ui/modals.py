@@ -1038,6 +1038,8 @@ def draw_active_modal(app):
         draw_prefs(app)
     elif name == "battle":
         draw_battle(app)
+    elif name == "stat_chart":
+        draw_stat_chart(app)
 
 
 def _units_text(units):
@@ -1683,6 +1685,223 @@ def draw_ranking(app):
         app.modal = ("ranking", keys[i + 1])
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+
+
+STAT_RANGES = (("최근 1년", C.TURNS_PER_YEAR), ("최근 2년", 2 * C.TURNS_PER_YEAR), ("전체", None))
+
+
+def _nice_step(span, n, integer=False):
+    """눈금 간격: span 을 n 칸 남짓으로 나누는 1·2·2.5·5 × 10^k (정수 값이면 1 이상 정수)."""
+    raw = max(span, 1e-9) / max(1, n)
+    e = 10 ** math.floor(math.log10(raw))
+    step = next(m * e for m in (1, 2, 2.5, 5, 10) if m * e >= raw * 0.999)
+    return max(1, math.ceil(step)) if integer else step
+
+
+def _turn_ticks(t0, t1):
+    """가로축 눈금 턴(달·분기·반년·해 첫 주에 맞춤)과 간격."""
+    span = max(1, t1 - t0)
+    step = next((st for st in (1, 2, 4, 12, 24, 48, 96, 144, 240, 480) if span / st <= 6), 960)
+    return [tt for tt in range(t0, t1 + 1) if (tt - 1) % step == 0], step
+
+
+def _turn_tick_label(tt, step, first):
+    y, m, w = R.date_of_turn(tt)
+    if step >= C.TURNS_PER_YEAR:
+        return f"{y}년"
+    if step >= C.TURNS_PER_MONTH:
+        return f"{y}년 {m}월" if first or m == 1 else f"{m}월"
+    return f"{m}월 {w}주"
+
+
+def draw_stat_chart(app):
+    """국가 현황 추이 크게 보기(국가 현황 위 GDP·영토·인구 타일을 누르면): 꺾은선 그래프 + 턴별 표.
+    그래프나 표에 마우스를 올리면 그 턴의 값과 전 턴 대비 변화를 보여 준다."""
+    from . import panels as P
+    from bisect import bisect_left
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    key = app.modal[1] if app.modal[1] in P.STAT_COL else "gdp"
+    ci = P.STAT_COL[key]
+    col = P.stat_color(t, key)
+    integer = key == "regions"
+    sw, sh = gui.size()
+    r = modal_frame(app, min(1040, sw - 60), min(660, sh - 60))
+    tr = gui.text((r.x + 26, r.y + 18), f"{P.STAT_NAME[key]} 추이", 22, weight="title")
+    gui.text((tr.right + 10, tr.bottom - 4), P.STAT_UNIT[key], 12, t.muted, "semibold", anchor="bottomleft")
+    keys = list(P.STAT_COL)
+    k = gui.segmented((r.right - 26 - 228, r.y + 18, 228, 32), [P.STAT_NAME[kk] for kk in keys], keys.index(key))
+    if keys[k] != key:
+        app.modal = ("stat_chart", keys[k])
+    table_w = 330
+    tx = r.right - 26 - table_w
+    cx0, cw = r.x + 26, tx - 24 - (r.x + 26)
+    ri = getattr(app, "stat_range", 0)
+    ri = app.stat_range = gui.segmented((tx, r.y + 76, table_w, 30), [nm for nm, _ in STAT_RANGES], ri)
+
+    full = getattr(g, "stat_hist", {}).get(g.player_id, [])
+    span = STAT_RANGES[ri][1]
+    i0 = 0
+    if span and full:
+        i0 = bisect_left([h[0] for h in full], full[-1][0] - span + 1)
+    rows = full[i0:]
+    n = len(rows)
+    vals = [h[ci] for h in rows]
+    turns = [h[0] for h in rows]
+
+    def prev_of(i):                      # 전 턴 값(보이는 범위 앞 기록까지 본다)
+        j = i0 + i - 1
+        return full[j][ci] if j >= 0 else None
+
+    def delta_text(v, pv):
+        if pv is None:
+            return "", t.muted
+        d = v - pv
+        if abs(d) < (0.05 if key == "pop" else 0.5):
+            return "변화 없음", t.muted
+        txt = P.stat_text(key, d, detail=True, sign=True)
+        if key != "regions" and pv:
+            txt += f" ({d / abs(pv) * 100:+.1f}%)"
+        return txt, (t.good if d > 0 else t.bad)
+
+    # 요약: 현재 · 기간 변화 · 최고 · 최저
+    sy = r.y + 66
+    cells = []
+    if n:
+        hi_i = max(range(n), key=lambda i: vals[i])
+        lo_i = min(range(n), key=lambda i: vals[i])
+        d = vals[-1] - vals[0]
+        pct = f" · {d / abs(vals[0]) * 100:+.1f}%" if vals[0] and key != "regions" else ""
+        cells = [("현재", P.stat_text(key, vals[-1], True), R.date_label(turns[-1]).split(" · ")[0], None),
+                 ("기간 변화", P.stat_text(key, d, True, True), f"{turns[-1] - turns[0]}턴{pct}",
+                  t.good if d > 0 else t.bad if d < 0 else None),
+                 ("최고", P.stat_text(key, vals[hi_i], True), R.date_label(turns[hi_i]).split(" · ")[0], None),
+                 ("최저", P.stat_text(key, vals[lo_i], True), R.date_label(turns[lo_i]).split(" · ")[0], None)]
+    cell_w = cw / 4
+    for i, (lab, v, sub, vc) in enumerate(cells):
+        x = cx0 + i * cell_w
+        if i:
+            gui.line(t.border, (x - 6, sy + 4), (x - 6, sy + 50))
+        gui.text((x, sy), lab, 10, t.muted, "semibold")
+        gui.text((x, sy + 14), v, 16, vc or t.text, "bold", max_w=cell_w - 14)
+        gui.text((x, sy + 38), sub, 10, t.muted, "semibold", max_w=cell_w - 14)
+
+    # 그래프 틀
+    top, bottom = r.y + 136, r.bottom - 84
+    plot = pygame.Rect(cx0 + 62, top + 8, cw - 62 - 8, bottom - 24 - (top + 8))
+    hover_i = None
+    if not n:
+        gui.rect(mix(t.panel, t.panel_alt, 0.5), (cx0, top, cw, bottom - top), radius=4)
+        gui.text((cx0 + cw / 2, (top + bottom) / 2), "아직 기록이 없습니다 — 턴을 넘기면 매 턴 쌓입니다.", 13,
+                 t.muted, "semibold", anchor="center")
+    else:
+        lo, hi = min(vals), max(vals)
+        if hi - lo < 1e-9:
+            pad = 1 if integer else max(1.0, abs(hi) * 0.05)
+            lo, hi = lo - pad, hi + pad
+        step = _nice_step(hi - lo, 4, integer)
+        y0 = max(0, math.floor(lo / step) * step)
+        y1 = math.ceil(hi / step) * step
+        if y1 <= y0:
+            y1 = y0 + step
+        dec = 0 if step >= 1 else (1 if step >= 0.1 else 2)
+        grid = mix(t.border, t.panel, 0.45)
+        k_y = 0
+        while y0 + k_y * step <= y1 + step * 1e-6:
+            v = y0 + k_y * step
+            yy = plot.bottom - (v - y0) / (y1 - y0) * plot.h
+            gui.line(mix(t.border, t.text, 0.1) if k_y == 0 else grid, (plot.x, yy), (plot.right, yy))
+            gui.text((plot.x - 8, yy), f"{v:,.{dec}f}", 10, t.muted, "semibold", anchor="midright")
+            k_y += 1
+        t0, t1 = turns[0], turns[-1]
+
+        def X(tt):
+            return plot.centerx if t1 == t0 else plot.x + (tt - t0) / (t1 - t0) * plot.w
+
+        def Y(v):
+            return plot.bottom - (v - y0) / (y1 - y0) * plot.h
+        ticks, tstep = _turn_ticks(t0, t1)
+        if t1 == t0:
+            ticks = [t0]
+        last_right = -1e9
+        for j, tt in enumerate(ticks):
+            xx = X(tt)
+            lab = _turn_tick_label(tt, tstep, j == 0)
+            lw = measure(lab, 10, "semibold")[0]
+            lx = max(cx0 + lw / 2, min(xx, plot.right + 8 - lw / 2))       # 글자가 그래프 틀 밖으로 나가지 않게
+            if lx - lw / 2 < last_right + 10:
+                continue
+            gui.line(grid, (xx, plot.bottom), (xx, plot.bottom + 4))
+            last_right = gui.text((lx, plot.bottom + 7), lab, 10, t.muted, "semibold", anchor="midtop").right
+        pts = [(X(tt), Y(v)) for tt, v in zip(turns, vals)]
+        if n >= 2:
+            gui.lines(col, False, pts, 2)
+        if n == 1 or plot.w / max(1, n - 1) >= 9:            # 점 사이가 넓으면 턴마다 점
+            for p in pts:
+                gui.circle(col, p, 2.5)
+        # 마우스를 올린 턴: 그래프 위면 가장 가까운 턴, 표 위면 그 줄
+        if gui.hover(plot.inflate(16, 16)):
+            mx = gui.mouse[0]
+            j = bisect_left([p[0] for p in pts], mx)
+            cand = [c for c in (j - 1, j) if 0 <= c < n]
+            hover_i = min(cand, key=lambda c: abs(pts[c][0] - mx))
+    # 턴별 표(최근 턴부터)
+    ty = top
+    gui.rect(mix(t.panel, t.panel_alt, 0.7), (tx, ty, table_w, 26), radius=4)
+    gui.text((tx + 10, ty + 13), "날짜", 11, t.muted, "semibold", anchor="midleft")
+    gui.text((tx + 192, ty + 13), "값", 11, t.muted, "semibold", anchor="midright")
+    gui.text((tx + table_w - 14, ty + 13), "전 턴 대비", 11, t.muted, "semibold", anchor="midright")
+    area = pygame.Rect(tx, ty + 30, table_w, bottom - (ty + 30))
+    rh = 24
+    content = n * rh
+    off = gui.begin_scroll("stat_table", area, content)
+    for idx in range(n - 1, -1, -1):
+        yy = area.y + (n - 1 - idx) * rh - off
+        if yy + rh < area.y or yy > area.bottom:
+            continue
+        row = pygame.Rect(tx, yy, table_w - 8, rh)
+        if gui.hover(row):
+            hover_i = idx
+        if idx == hover_i:
+            gui.rect(t.panel_alt, row, radius=3)
+        yr, mo, wk = R.date_of_turn(turns[idx])
+        gui.text((tx + 10, yy + rh / 2), f"{yr}년 {mo}월 {wk}주", 11, t.text, "semibold", anchor="midleft")
+        gui.text((tx + 192, yy + rh / 2), P.stat_text(key, vals[idx], True), 11, t.text, "semibold",
+                 anchor="midright")
+        dt, dc = delta_text(vals[idx], prev_of(idx))
+        gui.text((tx + table_w - 14, yy + rh / 2), dt, 10, dc, "semibold", anchor="midright", max_w=table_w - 214)
+    gui.end_scroll("stat_table", area, content)
+    # 마우스를 올린 턴: 세로선 + 점 + 값 카드
+    if hover_i is not None and n:
+        px, py = pts[hover_i]
+        gui.line(mix(t.text, t.panel, 0.45), (px, plot.y), (px, plot.bottom))
+        gui.circle(t.panel, (px, py), 6.5)
+        gui.circle(col, (px, py), 4.5)
+        date = R.date_label(turns[hover_i])
+        dt, dc = delta_text(vals[hover_i], prev_of(hover_i))
+        val = P.stat_text(key, vals[hover_i], True)
+        cwd = max(measure(date, 11, "semibold")[0], measure(val, 16, "bold")[0], measure(dt, 11, "semibold")[0]) + 28
+        chh = 70 if dt else 50
+        bx = px + 14 if px + 14 + cwd <= plot.right else px - 14 - cwd
+        by = max(plot.y, min(py - chh / 2, plot.bottom - chh))
+        card = pygame.Rect(int(bx), int(by), int(cwd), chh)
+        gui.shadow(card, 4, 5)
+        gui.rect(t.panel, card, radius=4)
+        pygame.draw.rect(gui.screen, mix(t.gold, t.text, 0.2), gui.R(card), 1, border_radius=int(4 * gui.u))
+        gui.rect(col, (card.x, card.y, 3, card.h))
+        gui.text((card.x + 14, card.y + 8), date, 11, t.muted, "semibold")
+        gui.text((card.x + 14, card.y + 24), val, 16, t.text, "bold")
+        if dt:
+            gui.text((card.x + 14, card.y + 48), dt, 11, dc, "semibold")
+    gui.text((r.x + 26, r.bottom - 36), "그래프나 표에 마우스를 올리면 그 턴의 값을 봅니다. 표는 휠로 넘깁니다.", 11,
+             t.muted, "semibold", anchor="midleft")
+    if gui.button((r.right - 146, r.bottom - 56, 120, 40), "닫기", "primary"):
+        close(app)
+    for kk in list(gui.keys):
+        if kk.key == pygame.K_ESCAPE:
+            gui.keys.remove(kk)
+            close(app)
 
 
 def draw_log(app):

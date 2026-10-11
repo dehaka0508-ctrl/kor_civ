@@ -2597,7 +2597,7 @@ class Game:
         if self.player.alive and self.player.is_ai is False:
             ai.propose_to_player(self)
 
-    STAT_HIST_LEN = 104
+    STAT_HIST_LEN = 1300                 # 시간 종료 최대 턴(1200)보다 길게: 한 판 전체를 남긴다
 
     def _record_stats(self):
         """국가 현황 추이 그래프용 기록 (턴, GDP, 지역 수, 인구) — 최근 STAT_HIST_LEN 턴.
