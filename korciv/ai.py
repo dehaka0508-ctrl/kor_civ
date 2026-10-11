@@ -1423,7 +1423,7 @@ def _army_orders(g, f, threat):
                 continue
             tgt = g.regions[node]
             if tgt.owner == NEUTRAL:
-                if node in annexing or not neutral_ok:
+                if node in annexing or not neutral_ok or g.rival_ahead(fid, node):
                     continue
                 if not p1 and wts.get("military", 1) < 0.9 and a.count() < 3:
                     continue
@@ -1475,7 +1475,8 @@ def _army_orders(g, f, threat):
         # 빈 적지·중립지 점령
         for node, opt in reach.items():
             if opt["action"] == "move" and not w.is_sea(node) and g.hostile(fid, g.regions[node].owner) \
-                    and node not in annexing and (neutral_ok or g.regions[node].owner != NEUTRAL):
+                    and node not in annexing and (neutral_ok or g.regions[node].owner != NEUTRAL) \
+                    and not g.rival_ahead(fid, node):
                 g.order_army(a.id, node)
                 break
         if a.order:
@@ -1801,7 +1802,7 @@ def _p1_rally(g, fid, annexing):
         s = 0.0
         for n in w.land_adj[r.id]:
             rr = g.regions[n]
-            if rr.owner != NEUTRAL or n in annexing or fid in rr.occs:
+            if rr.owner != NEUTRAL or n in annexing or fid in rr.occs or g.rival_ahead(fid, n):
                 continue
             contested = any(g.regions[m].owner not in (NEUTRAL, fid) for m in w.land_adj[n])
             s += 1.5 if contested else 1.0
@@ -2287,6 +2288,8 @@ def _slots(g, f, threat, military=True):
                 continue
             if t.get("rival_left") is not None and t["rival_left"] < t["eff_turns"]:
                 continue                  # 다른 세력이 먼저 끝낼 곳은 경쟁하지 않는다
+            if g.rival_ahead(fid, t["target"]):
+                continue                  # 다른 세력이 더 많이 진행한 편입·점령에는 뛰어들지 않는다
             tr = g.regions[t["target"]]
             y = g.region_output_estimate(t["target"])
             food = R.food_output(tr.b["farm"], tr.b["fishery"])

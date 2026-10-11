@@ -208,12 +208,12 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
     if _role == "declare":
         # 전쟁광 평판: 대상 외 모든 세력이 선포국을 꺼린다(1년 안에 잇따라 선포하면 더 크게)
         fa = g.factions[a]
-        fa.warmonger = fa.warmonger + 1 if pen < C.OP_WARMONGER else 0
+        fa.warmonger = fa.warmonger + 1 if pen < 0 else 0      # 1년 안에 잇따른 선포 수(첫 선포는 0)
         fa.last_declare = g.turn
         for c in g.alive_ids():
-            if c not in (a, b):
+            if c not in (a, b) and pen:
                 add_opinion(g, c, a, pen)
-        note = f" (전쟁광 평판: 다른 세력 우호도 {pen:+.0f})"
+        note = f" (전쟁광 평판: 다른 세력 우호도 {pen:+.0f})" if pen else ""
     g.event("war", f"{g.fname(a)}이(가) {g.fname(b)}에 {reason}했습니다.{note}", fids=(a, b))
     joined.add((a, b))
     # 수비측 동맹·연합 자동 참전
@@ -234,14 +234,24 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
     return True, ""
 
 
-def warmonger_penalty(g, a) -> float:
-    """a 가 지금 선전포고하면 다른 세력들이 깎는 우호도: −10, 직전 전쟁 1년 안이면 5씩 더."""
+def warmonger_recent(g, a) -> bool:
+    """직전 전쟁(선포했거나, 선포한 전쟁이 끝난 지)이 1년 안이거나 선포한 전쟁이 아직 진행 중인가."""
     fa = g.factions[a]
-    recent = (g.turn - fa.last_declare <= C.WARMONGER_WINDOW
-              or g.turn - fa.last_aggr_end <= C.WARMONGER_WINDOW
-              or any(w.get("aggressor") == a for p, w in g.dip.wars.items() if a in p))
-    streak = fa.warmonger + 1 if recent else 0
-    return C.OP_WARMONGER + C.OP_WARMONGER_STEP * streak
+    return (g.turn - fa.last_declare <= C.WARMONGER_WINDOW
+            or g.turn - fa.last_aggr_end <= C.WARMONGER_WINDOW
+            or any(w.get("aggressor") == a for p, w in g.dip.wars.items() if a in p))
+
+
+def warmonger_text(g, a) -> str:
+    pen = warmonger_penalty(g, a)
+    return f"다른 모든 세력 우호도 {pen:+.0f}" if pen else "없음(1년 안의 첫 선포)"
+
+
+def warmonger_penalty(g, a) -> float:
+    """a 가 지금 선전포고하면 다른 세력들이 깎는 우호도. 1년 안의 첫 선포는 0, 두 번째 −10, 그 뒤로 5씩 더."""
+    if not warmonger_recent(g, a):
+        return 0.0
+    return C.OP_WARMONGER + C.OP_WARMONGER_STEP * g.factions[a].warmonger
 
 
 def _clear_treaties(g, a, b):
@@ -1149,7 +1159,8 @@ def update_turn(g):
             if fa.is_ai:
                 if g.hegemon == b and g.hegemon_share > 0:
                     s = g.hegemon_share
-                    delta -= min(C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
+                    delta -= C.HEGEMON_OP_PENALTY * min(C.HEGEMON_OP_MAX,
+                                                        C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
                 if g.hegemon is not None and g.hegemon not in (a, b):
                     if at_war(g, b, g.hegemon):
                         delta += C.OP_HEGEMON_FIGHTER

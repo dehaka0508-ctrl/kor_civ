@@ -684,20 +684,22 @@ def test_war_weariness_separate_from_happiness():
 
 
 def test_warmonger_reputation():
-    g = new_game(n_enemies=3)
+    """전쟁광 평판: 1년 안의 첫 선포는 영향 없음, 두 번째부터 −10, 그 뒤로 5씩 더."""
+    g = new_game(n_enemies=4)
     before = {c: D.opinion(g, c, 0) for c in (2, 3)}
+    assert D.warmonger_penalty(g, 0) == 0
     D.declare_war(g, 0, 1)
     for c in (2, 3):
-        assert D.opinion(g, c, 0) == pytest.approx(before[c] - 10)
+        assert D.opinion(g, c, 0) == pytest.approx(before[c])
     D.make_peace(g, 0, 1)
     g.turn += 30                                   # 직전 전쟁이 끝난 지 1년이 안 됐다
     before = D.opinion(g, 3, 0)
     D.declare_war(g, 0, 2)
-    assert D.opinion(g, 3, 0) == pytest.approx(before - 15)
-    assert D.warmonger_penalty(g, 0) == -20        # 또 선포하면 −20
+    assert D.opinion(g, 3, 0) == pytest.approx(before - 10)
+    assert D.warmonger_penalty(g, 0) == -15        # 또 선포하면 −15
     D.make_peace(g, 0, 2)
     g.turn += C.WARMONGER_WINDOW + 1
-    assert D.warmonger_penalty(g, 0) == -10        # 1년이 지나면 처음처럼
+    assert D.warmonger_penalty(g, 0) == 0          # 1년이 지나면 처음처럼(영향 없음)
 
 
 def test_allied_defense_counts_as_defender_weariness():
@@ -3487,3 +3489,32 @@ def test_friendship_declaration_opinion_per_turn_during_cooldown():
     D.update_turn(g)
     D.update_turn(ref)
     assert D.opinion(g, 1, 2) == pytest.approx(D.opinion(ref, 1, 2))
+
+
+def test_land_grab_only_for_neutral_land_and_halved():
+    """영토 경쟁(−1)은 중립 땅을 먼저 차지할 때만. 전쟁으로 빼앗은 땅은 해당 없음."""
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    w = g.world
+    rid = next(n for n in sorted(w.land_adj["S002"]) if g.regions[n].owner == NEUTRAL)
+    side = next(n for n in sorted(w.land_adj[rid]) if n != "S002" and g.regions[n].owner == NEUTRAL)
+    _own(g, 1, [side])
+    before = D.opinion(g, 1, 0)
+    g.transfer_region(rid, 0)                         # 중립 땅: 영토 경쟁
+    assert D.opinion(g, 1, 0) == pytest.approx(before + C.OP_LAND_GRAB) and C.OP_LAND_GRAB == -1
+    _own(g, 2, [rid])
+    D.declare_war(g, 0, 2)
+    before = D.opinion(g, 1, 0)
+    g.transfer_region(rid, 0)                         # 전쟁으로 빼앗은 땅: 해당 없음
+    assert D.opinion(g, 1, 0) == pytest.approx(before)
+
+
+def test_ai_does_not_join_annex_rival_ahead():
+    from korciv import ai
+    g = new_game(player_start="S002", n_enemies=1)
+    rid = next(n for n in sorted(g.world.land_adj["S002"]) if g.regions[n].owner == NEUTRAL)
+    assert not g.rival_ahead(1, rid)
+    g.regions[rid].occs[0] = {"by": 0, "progress": 2, "need": 6, "seq": 1}
+    assert g.rival_ahead(1, rid) and not g.rival_ahead(0, rid)
+    g.regions[rid].occs[1] = {"by": 1, "progress": 3, "need": 6, "seq": 2}
+    assert not g.rival_ahead(1, rid) and g.rival_ahead(0, rid)

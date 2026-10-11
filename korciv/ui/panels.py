@@ -1127,7 +1127,7 @@ def draw_diplo_detail(app, body, fid):
         tip = "불가침·동맹 중에는 먼저 외교 창에서 파기해야 합니다."
     else:
         tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
-               f"상대 우호도 -100,\n전쟁광 평판: 다른 모든 세력 우호도 {D.warmonger_penalty(g, pid):+.0f}\n"
+               f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}\n"
                "한 번 더 눌러야 선포됩니다.")
     confirm = getattr(app, "war_confirm", None) == fid and can_war
     if gui.button((x + bw + 8, y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger", size=14,

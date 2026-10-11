@@ -2325,7 +2325,9 @@ class Game:
                         and not D.has_passage(self, army.owner, new_owner):
                     self.teleport_home(army)
             # 영토 경쟁: 이 중립 지역과 맞닿은 다른 세력은 먼저 가져간 쪽을 못마땅하게 여긴다
-            rivals = {self.regions[n].owner for n in self.world.land_adj[rid]} - {NEUTRAL, new_owner}
+            # (중립 땅만. 전쟁으로 빼앗은 땅은 영토 경쟁이 아니다 — v1.2.0 버그 수정)
+            rivals = ({self.regions[n].owner for n in self.world.land_adj[rid]} - {NEUTRAL, new_owner}
+                      if old == NEUTRAL else set())
             for b in rivals:
                 if not D.allied(self, b, new_owner) and not D.at_war(self, b, new_owner):
                     D.add_opinion(self, b, new_owner, C.OP_LAND_GRAB)
@@ -3247,6 +3249,26 @@ class Game:
                 left = self.project_left(r.id)
                 best = left if best is None else min(best, left)
         return best
+
+    def rival_ahead(self, fid, rid) -> bool:
+        """다른 세력이 이 중립 지역의 편입·무력 점령을 fid 보다 더 많이 진행했는가(AI 는 끼어들지 않는다)."""
+        rr = self.regions[rid]
+        if rr.owner != NEUTRAL:
+            return False
+        mine, theirs = 0, 0
+        for by, o in rr.occs.items():
+            if by == fid:
+                mine = max(mine, o["progress"])
+            else:
+                theirs = max(theirs, o["progress"])
+        for r in self.regions.values():
+            p = r.project
+            if p and p.kind == "annex" and p.key == rid and r.owner != NEUTRAL:
+                if r.owner == fid:
+                    mine = max(mine, p.progress)
+                else:
+                    theirs = max(theirs, p.progress)
+        return theirs > mine
 
     def occ_force(self, fid, rid) -> float:
         """무력 점령 병력 규모: rid 에 있는 fid 육군 유닛의 최대 체력 합."""

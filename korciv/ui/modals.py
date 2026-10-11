@@ -1599,7 +1599,7 @@ def draw_diplomacy(app):
             i += 1
         can_war = not D.has_nonaggr(g, pid, fid)
         tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
-               f"상대 우호도 -100,\n전쟁광 평판: 다른 모든 세력 우호도 {D.warmonger_penalty(g, pid):+.0f}"
+               f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}"
                if can_war else "불가침·동맹 중에는 먼저 파기")
         if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war, tooltip=tip):
             ok, msg = D.declare_war(g, pid, fid)
