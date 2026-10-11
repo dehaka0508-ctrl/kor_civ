@@ -73,6 +73,14 @@ def mutual(g, a, b) -> float:
     return 0.0
 
 
+def met(g, a, b) -> bool:
+    """서로 조우했는가. 모든 외교 행동(선전포고·우호·비난·조약·거래·선물)은 조우가 먼저다."""
+    return g.has_met(a, b) and g.has_met(b, a)
+
+
+NOT_MET = "조우한 적 없는 나라입니다."
+
+
 def at_war(g, a, b) -> bool:
     if a == NEUTRAL or b == NEUTRAL:
         return a != b
@@ -179,6 +187,8 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
     _agreed: 이미 동의한 연합 회원(플레이어가 제안을 수락한 경우)."""
     if a == b or at_war(g, a, b) or not g.factions[a].alive or not g.factions[b].alive:
         return False, "이미 전쟁 중이거나 대상이 없습니다."
+    if not met(g, a, b):
+        return False, NOT_MET
     if has_nonaggr(g, a, b):
         return False, "불가침조약·동맹 중에는 먼저 조약을 파기해야 합니다."
     if _role == "declare":
@@ -210,14 +220,15 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
     for c in list(g.alive_ids()):
         if c in (a, b):
             continue
-        if allied(g, c, b) and not at_war(g, c, a) and (c, a) not in joined:
+        if allied(g, c, b) and not at_war(g, c, a) and (c, a) not in joined and met(g, c, a):
             _clear_treaties(g, c, a)
             declare_war(g, c, a, reason="동맹 참전으로 선전포고", _joined=joined, _role="ally")
     # 공격측 연합 회원 공동 참전(직접 선포일 때만: 전원 동의를 받았다)
     cid = coalition_of(g, a) if _role == "declare" else None
     if cid is not None:
         for c in list(g.dip.coalitions[cid]["members"]):
-            if c not in (a, b) and not at_war(g, c, b) and (c, b) not in joined and g.factions[c].alive:
+            if (c not in (a, b) and not at_war(g, c, b) and (c, b) not in joined and g.factions[c].alive
+                    and met(g, c, b)):
                 _clear_treaties(g, c, b)
                 declare_war(g, c, b, reason="연합 공동 선전포고", _joined=joined, _role="coalition")
     return True, ""
@@ -474,6 +485,8 @@ def friendship_check(g, a, b):
     """a 가 b 에게 우호 선언. (가능 여부, 이유). b 가 AI 면 수락 여부까지 판정한다."""
     if a == b or not g.factions[b].alive:
         return False, "대상이 없습니다."
+    if not met(g, a, b):
+        return False, NOT_MET
     cd = decl_cooldown(g, "friend", a, b)
     if cd:
         return False, f"쿨타임 {cd}턴"
@@ -551,6 +564,8 @@ def econ_partners(g, fid) -> tuple:
 def denounce_check(g, a, b):
     if a == b or not g.factions[b].alive:
         return False, "대상이 없습니다."
+    if not met(g, a, b):
+        return False, NOT_MET
     cd = decl_cooldown(g, "denounce", a, b)
     if cd:
         return False, f"쿨타임 {cd}턴"
@@ -610,6 +625,8 @@ def treaty_check(g, ai, proposer, kind):
     """AI 가 조약 제안을 받을지. (수락 여부, 이유)"""
     if (proposer, ai) in g.dip.rejected:
         return False, "이번 턴에는 다시 제안할 수 없습니다."
+    if kind != "peace" and not met(g, ai, proposer):
+        return False, NOT_MET
     op = opinion(g, ai, proposer) if g.factions[ai].is_ai else 100
     p = pair(ai, proposer)
     if kind == "peace":
@@ -922,7 +939,7 @@ def evaluate_offer(g, ai, proposer, offer):
     반환: (결과 "accept"/"counter"/"reject", 수정안 또는 None, 설명)"""
     if (proposer, ai) in g.dip.rejected:
         return "reject", None, "이번 턴에는 다시 제안할 수 없습니다."
-    if not (g.has_met(proposer, ai) and g.has_met(ai, proposer)):
+    if not met(g, proposer, ai):
         return "reject", None, "조우한 적 없는 나라와는 거래할 수 없습니다."
     give, take = offer["give"], offer["take"]
     if is_empty(take) and is_empty(give):
@@ -1046,7 +1063,7 @@ def gift_opinion(g, ai, value, giver=None) -> float:
 def ai_gift(g, giver, receiver, amount) -> float:
     """AI 끼리 돈 선물: 보내고, 받는 쪽 우호도를 선물 공식대로 올린다. 오른 우호도를 돌려준다."""
     amount = max(0.0, min(amount, g.factions[giver].money))
-    if amount <= 0:
+    if amount <= 0 or not met(g, giver, receiver):
         return 0.0
     g.factions[giver].money -= amount
     g.factions[receiver].money += amount

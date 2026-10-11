@@ -149,7 +149,8 @@ VICTORY_TIPS = {
     "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 금융 단지(은행 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
                 f"증권거래소(수도 포함 {C.ECON_EXCHANGES}곳) → ③ 수도에 경제특구 → ④ 우호 선언 이상 관계 {C.ECON_IFC_FRIENDS}개국이면\n"
                 f"국제금융센터 → ⑤ 우호 선언 이상 {C.ECON_CURRENCY_FRIENDS}개국(동맹 {C.ECON_CURRENCY_ALLIES}곳 이상)이면 "
-                "수도에서 기축통화 지정. 완료하면 승리\n(건설 중 조건이 깨지면 중단·50% 환급, 다시 지으려면 처음부터)",
+                "수도에서 기축통화 지정. 완료하면 승리\n(살아 있는 다른 나라가 적으면 관계 조건은 그 과반수 + 동맹 1곳 이상.\n"
+                "건설 중 조건이 깨지면 중단·50% 환급, 다시 지으려면 처음부터)",
     "diplomatic": "외교승리: 살아 있는 모든 나라가 하나의 연합에 속하면 연합 전원이 함께 승리",
     "time": f"시간 종료 승리: 정해진 턴(아래 슬라이더, 기본 {C.TIME_VICTORY_TURNS}턴)이 되면\n"
             "점수(점유 지역·GDP·인구 비율의 평균)가 가장 높은 세력이 승리",
@@ -1616,7 +1617,7 @@ def draw_diplomacy(app):
             ok, msg = D.declare_war(g, pid, fid)
             app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
             app.changed()
-    if D.coalition_of(g, pid) is not None and gui.button((r.right - 24 - bw, r.y + 58 + 0, bw, 28), "연합 탈퇴",
+    if D.same_coalition(g, pid, fid) and gui.button((r.right - 24 - bw, r.y + 58 + 0, bw, 28), "연합 탈퇴",
                                                          "danger", size=12, tooltip="모든 회원 우호도 -50"):
         D.leave_coalition(g, pid)
 

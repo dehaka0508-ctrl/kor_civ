@@ -1203,6 +1203,8 @@ def _p2_block(f, why):
 
 def _queue_player(g, fid, kind):
     f = g.factions[fid]
+    if not D.met(g, fid, g.player_id):
+        return                               # 조우하지 않은 나라는 제안하지 않는다
     key = f"proposed_{kind}"
     if g.turn - f.ai.get(key, -99) < 8:
         return

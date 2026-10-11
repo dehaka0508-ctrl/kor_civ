@@ -18,11 +18,12 @@ def _meet_all(g):
     return g
 
 
-def new_game(**kw):
+def new_game(meet=True, **kw):
+    """meet: 모든 나라가 서로 조우한 상태로 시작(외교 행동은 조우가 먼저라서)."""
     kw.setdefault("seed", 5)
     g = Game(Settings(**kw))
     g.set_player_government("philosopher")
-    return g
+    return _meet_all(g) if meet else g
 
 
 def test_setup():
@@ -819,7 +820,7 @@ def test_honggildong_no_monarchy():
     assert g.player.gov == "philosopher"
     assert g.mods(0).add("surprise") == 0
     # 신출귀몰: 같은 턴에 한 국가의 두 지역 이상을 공격하면 공격력 +10%
-    g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil"))
+    g = _meet_all(Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil")))
     g.set_player_government("philosopher")
     t1, t2 = sorted(g.world.land_adj["S002"])[:2]
     _own(g, 1, [t1, t2])
@@ -1164,14 +1165,17 @@ def test_fighters_support_attack_and_defense():
     g.regions["S002"].b["airport"] = 1
     g.new_army(0, "S002", {"ftr": 2})                  # 공격 측 공항 전투기(대상에서 1칸)
     A1, _, _ = g.combat_strength(0, [att], tgt)
-    assert A1 == pytest.approx(A0 + 2 * C.FTR_SUPPORT_ATK * g.morale(0))
+    if C.AIR_GROUND_SUPPORT:
+        assert A1 == pytest.approx(A0 + 2 * C.FTR_SUPPORT_ATK * g.morale(0))
+    else:
+        assert A1 == pytest.approx(A0)                 # 공군은 지상전(돌격·기습)에 끼지 않는다
     D0, _, _ = g.defense_strength(0, tgt, "S002", "assault")
     far = next(n for n in sorted(g.world.land_adj[tgt]) if n != "S002")
     _own(g, 1, [far])
     g.regions[far].b["airport"] = 1
     g.new_army(1, far, {"ftr": 3})
     D1, _, _ = g.defense_strength(0, tgt, "S002", "assault")
-    assert D1 > D0
+    assert D1 > D0 if C.AIR_GROUND_SUPPORT else D1 == pytest.approx(D0)
     g._ground_battle(0, [att], tgt, "assault", [att])   # 지원 전투기도 피해를 나눠 입을 수 있다(오류 없이)
 
 
@@ -2468,7 +2472,7 @@ def test_ai_phase1_deficit_builds_production():
 # ---------------------------------------------------------------- AI 2페이즈(경쟁기)
 def _p2_game(n=3):
     from korciv.state import Settings
-    g = Game(Settings(n_enemies=n, seed=7, all_ai=True))
+    g = _meet_all(Game(Settings(n_enemies=n, seed=7, all_ai=True)))
     for f in g.factions:
         f.ai.update(phase=2, phase_turn=0)
     _neutral_ai(g, *[f.id for f in g.factions])
@@ -2928,7 +2932,7 @@ def test_lost_science_project_resume_or_refund():
 
 def test_coalition_war_needs_consent_and_all_join():
     from korciv import ai
-    g = Game(Settings(n_enemies=3, seed=7, all_ai=True))
+    g = _meet_all(Game(Settings(n_enemies=3, seed=7, all_ai=True)))
     _neutral_ai(g, 0, 1, 2, 3)
     g.dip.coalitions[1] = {"members": {0, 1}, "leader": 0, "start": 0}
     for a, b in ((0, 3), (1, 3)):
@@ -3364,3 +3368,98 @@ def test_trade_needs_contact():
     assert D.evaluate_offer(g, 1, 0, o)[0] == "reject"
     from korciv import ai as AI
     assert 0 not in AI.trade_partners(g, 1)
+
+
+def test_diplomacy_needs_contact():
+    """조우하지 않은 나라와는 선전포고·우호·비난·조약·선물 모두 불가."""
+    g = new_game(meet=False, player_start="S002", n_enemies=2)
+    for f in g.factions:
+        f.met = set()
+    assert not D.declare_war(g, 1, 0)[0] and not D.at_war(g, 0, 1)
+    assert not D.friendship_check(g, 1, 0)[0]
+    assert not D.denounce_check(g, 0, 1)[0]
+    assert not D.treaty_check(g, 1, 0, "nonaggr")[0]
+    assert D.ai_gift(g, 1, 2, 100) == 0.0
+    _meet_all(g)
+    assert D.declare_war(g, 1, 0)[0]
+    # 동맹 자동 참전도 조우한 나라끼리만
+    g2 = new_game(meet=False, player_start="S002", n_enemies=2)
+    for f in g2.factions:
+        f.met = set()
+    g2.factions[0].met, g2.factions[1].met = {1}, {0}
+    g2.dip.alliance[D.pair(1, 2)] = 0
+    assert D.declare_war(g2, 0, 1)[0]
+    assert not D.at_war(g2, 2, 0)
+
+
+def test_eliminate_gives_victory_weariness_relief():
+    g, tgt = _war_pair()
+    g.player.war_weary = 50.0
+    g.eliminate(1, by=0)
+    assert g.player.war_weary == pytest.approx(50.0 - C.PEACE_WEARY_TERRITORY - C.PEACE_WEARY_KILLS)
+
+
+def test_capture_empty_enemy_region_now():
+    g, tgt = _war_pair()
+    a = g.new_army(0, "S002", {"inf": 2})
+    ok, msg = g.capture_now(a.id, tgt)
+    assert ok and g.regions[tgt].owner == 0 and a.loc == tgt and g.army_acted(a.id)
+    # 이미 행동한 부대는 다시 못 움직인다
+    nxt = next(n for n in g.world.land_adj[tgt] if g.regions[n].owner == 1) if any(
+        g.regions[n].owner == 1 for n in g.world.land_adj[tgt]) else None
+    if nxt:
+        assert not g.capture_now(a.id, nxt)[0]
+
+
+def test_artillery_and_air_no_ground_combat():
+    """포병·공군은 돌격·기습 공격력 0, 방어에서도 0: 포병만 있는 곳은 쉽게 떨어진다."""
+    g, tgt = _war_pair()
+    g.new_army(1, tgt, {"art": 3})
+    att = g.new_army(0, "S002", {"art": 4})
+    assert g.combat_strength(0, [att], tgt)[0] == 0
+    assert g.defense_strength(0, tgt, "S002", "assault")[0] == 0
+    inf = g.new_army(0, "S002", {"inf": 3})
+    ok, _ = g.attack_now(inf.id, tgt, "assault")
+    assert ok and not any(x.owner == 1 for x in g.armies_at(tgt))
+
+
+def test_split_at_sea_keeps_land_units_with_ships():
+    g = new_game(player_start="S002", n_enemies=1)
+    sea = g.info("S002").seas[0] if g.info("S002").seas else next(s for s in g.world.seas)
+    a = g.new_army(0, sea, {"lst": 2, "inf": 2, "dd": 1})
+    assert g.split_army(a.id, {"inf": 1})[0] is None
+    assert g.split_army(a.id, {"lst": 1})[0] is None
+    b, _ = g.split_army(a.id, {"dd": 1})
+    assert b is not None
+
+
+def test_priority_pin():
+    g = new_game(player_start="S002", n_enemies=1)
+    from korciv.state import Project
+    rids = [r.id for r in g.regions_of(0)][:1] + sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, rids)
+    for i, rid in enumerate(rids):
+        g.regions[rid].project = Project(kind="build", key="farm", level=1, per_turn=10, turns=3, priority=i + 1)
+    last = rids[-1]
+    assert g.toggle_pin(0, last)
+    assert g.projects_by_priority(0)[0].id == last
+    g.sort_priority(0, "short")
+    assert g.projects_by_priority(0)[0].id == last
+    g.set_priority_order(0, rids)                     # 끌어서 바꿔도 고정한 작업이 맨 위
+    assert g.projects_by_priority(0)[0].id == last
+    assert not g.toggle_pin(0, last)
+
+
+def test_econ_need_majority_when_few_nations():
+    g = new_game(player_start="S002", n_enemies=3)
+    assert g.econ_need(0, C.ECON_CURRENCY_FRIENDS) == 2      # 다른 나라 3 → 과반 2
+    g2 = new_game(player_start="S002", n_enemies=6)
+    assert g2.econ_need(0, C.ECON_CURRENCY_FRIENDS) == C.ECON_CURRENCY_FRIENDS
+
+
+def test_building_total_for_maxed_buildings():
+    g = new_game(player_start="S002", n_enemies=1)
+    rr = g.regions["S002"]
+    rr.b["bank"] = C.PROD_BUILDINGS["bank"]["max"]
+    assert "산출" in g.building_total(0, "S002", "bank")
+    assert not any(o["kind"] == "build" and o["key"] == "bank" for o in g.options(0, "S002"))

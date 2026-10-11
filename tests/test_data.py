@@ -23,8 +23,10 @@ def test_bridges_and_islands():
     for a, b in (("인천 영종구", "인천 서해구"), ("경남 거제시", "부산 강서구"), ("전북 군산시", "전북 부안군")):
         ia, ib = w.name_to_id[a], w.name_to_id[b]
         assert ib in w.land_adj[ia]
-    for name in ("경북 울릉군", "제주 제주시", "제주 서귀포시"):
-        assert w.land_adj[w.name_to_id[name]] == set()
+    assert w.land_adj[w.name_to_id["경북 울릉군"]] == set()
+    # 제주시–서귀포시는 같은 섬이라 서로만 육로로 잇는다
+    j, sg = w.name_to_id["제주 제주시"], w.name_to_id["제주 서귀포시"]
+    assert w.land_adj[j] == {sg} and w.land_adj[sg] == {j}
 
 
 def test_every_mainland_region_has_neighbor_and_is_connected():

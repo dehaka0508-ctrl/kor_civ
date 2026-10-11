@@ -525,8 +525,16 @@ def draw_action_tab(app, body):
     if r.project:
         return
     opts = g.options(pid, rid)
+    # 생산 건물: 최대 단계까지 지은 건물은 '… 건설 완료'와 지금 턴당 산출을 남겨 둔다
+    prod = []
+    for key, spec in C.PROD_BUILDINGS.items():
+        o = next((o for o in opts if o["kind"] == "build" and o["key"] == key), None)
+        if o:
+            prod.append(o)
+        elif r.b.get(key, 0) >= spec["max"]:
+            prod.append({"kind": "done", "key": key, "level": r.b[key], "ok": True})
     groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
-              ("생산 건물", [o for o in opts if o["kind"] == "build" and o["key"] in C.PROD_BUILDINGS]),
+              ("생산 건물", prod),
               (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 ({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
@@ -541,6 +549,18 @@ def draw_action_tab(app, body):
             continue
         yy = section(gui, x, yy, w, title)
         for o in lst:
+            if o["kind"] == "done":
+                lv = o["level"]
+                if o["key"] in C.PROD_LEVEL_NAMES:
+                    label = f"{g.building_name(rid, o['key'], lv)} 건설 완료"
+                elif o["key"] == "extract":
+                    label = f"{'정유공장' if app.world.regions[rid].is_oil else '탄광'} {lv}단계 건설 완료"
+                else:
+                    label = f"{g.building_name(rid, o['key'])} {lv}단계 건설 완료"
+                gui.text((x, yy + 2), label, 13, t.text, "semibold", max_w=w - 16)
+                gui.text((x, yy + 21), g.building_total(pid, rid, o["key"]), 11, t.good, "semibold", max_w=w - 16)
+                yy += 44
+                continue
             row = pygame.Rect(x, yy, w, 40)
             label = o["name"] + (f" {o['level']}단계" if o["kind"] == "build" and o["key"] != "line"
                                  and o["key"] not in C.SINGLE_BUILDINGS else "")
@@ -1425,9 +1445,25 @@ def draw_priority_list(app, x, y, w, items):
     ids = [rr.id for rr in items]
     if drag not in ids:
         drag = app.prio_drag = None
+    pinned = {rr.id for rr in items if getattr(rr.project, "pinned", False)}
+
+    def pin_rect(i):
+        return pygame.Rect(x + w - 64, top + i * row_h + 6, 36, row_h - 16)
+    # 고정 단추: 누르면 맨 위에 고정/해제(끌기보다 먼저)
+    if drag is None:
+        for i, rid in enumerate(ids):
+            if gui.hover(pin_rect(i)):
+                if gui.clicked:
+                    gui.clicked = False
+                    on = g.toggle_pin(g.player_id, rid)
+                    app.toast(f"{app.world.regions[rid].short}: " + ("우선순위 맨 위에 고정" if on else "고정 해제"))
+                    return draw_priority_list(app, x, y, w, g.projects_by_priority(g.player_id))
+                break
     # 끌기 시작
     if drag is None and gui.down and gui.drag_id is None:
         for i, rid in enumerate(ids):
+            if gui.hover(pin_rect(i)):
+                break
             if gui.hover(pygame.Rect(x, top + i * row_h, w, row_h - 4)):
                 app.prio_drag = drag = rid
                 gui.drag_id = "prio"
@@ -1439,6 +1475,7 @@ def draw_priority_list(app, x, y, w, items):
     if drag is not None:
         order = [r for r in ids if r != drag]
         order.insert(target, drag)
+        order.sort(key=lambda r: r not in pinned)      # 고정한 작업은 고정하지 않은 작업보다 늘 위
     for i, rid in enumerate(order):
         rr = g.regions[rid]
         p = rr.project
@@ -1448,7 +1485,7 @@ def draw_priority_list(app, x, y, w, items):
         fg = (255, 255, 255) if dragged else t.text
         sub = (235, 240, 255) if dragged else t.muted
         gui.text((row.x + 8, row.y + 3), f"{i + 1}. {app.world.regions[rid].short} · {project_name(app, p, rid)}", 12, fg,
-                 "semibold", max_w=w - 16)
+                 "semibold", max_w=w - 80)
         state = "정지" if p.stalled else f"남은 {app.game.project_left(rid)}턴"
         if p.kind == "annex":
             jn = app.game.joint_count(rr.owner, p.key)
@@ -1456,6 +1493,14 @@ def draw_priority_list(app, x, y, w, items):
                 state += f" · 공동 {jn}곳 −{R.joint_reduction(jn):.0%}"
         gui.text((row.x + 8, row.y + 21), f"턴당 {p.per_turn:,.0f} · {state}", 11,
                  (t.bad if p.stalled and not dragged else sub))
+        pr = pin_rect(i)
+        on = rid in pinned
+        gui.rect(t.gold if on else (t.panel if not dragged else t.accent), pr, radius=5)
+        gui.rect(t.border, pr, 1, radius=5)
+        gui.text(pr.center, "고정", 11, (40, 30, 10) if on else sub, "semibold", anchor="center")
+        if gui.hover(pr):
+            gui.tooltip = ("이 작업을 지출 우선순위 맨 위에 고정합니다(정렬·끌기로 바뀌지 않음). 다시 누르면 해제." if not on
+                           else "고정 해제")
         gui.text((row.right - 8, row.centery), "≡", 16, sub, anchor="midright")
     # 놓기: 움직였으면 순서 변경, 제자리면 그 행을 고른다(↑↓로 이동)
     if drag is not None and not gui.down:

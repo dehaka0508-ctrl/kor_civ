@@ -1115,6 +1115,12 @@ class App:
                 if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
+                # 병력 없는 맞닿은 적 땅: 공격처럼 바로 진입해 점령
+                if opt and opt["action"] == "attack" and army.loc in self.world.land_adj.get(node, ()):
+                    ok, msg = g.capture_now(army.id, node)
+                    if ok:
+                        self.toast(msg)
+                        return
             ok, msg = g.order_army(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             return
@@ -1165,7 +1171,9 @@ class App:
             lines.append(f"{'기습' if mode == 'surprise' else '돌격'}: {name}")
             if pv:
                 if pv["defenders"] == 0:
-                    lines.append("방어 병력 없음 → 진입 후 점령 시작")
+                    lines.append("방어 병력 없음 → 바로 진입해 점령")
+                elif pv.get("rout"):
+                    lines.append("포병·공군만 주둔 → 맞서지 못하고 궤멸, 피해 없이 점령")
                 else:
                     lines.append(f"공격력 A {pv['A']:.1f} / 방어력 D {pv['D']:.1f} (방어선 {pv['line']}단계)")
                     if pv.get("terrain"):

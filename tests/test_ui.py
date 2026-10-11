@@ -7,6 +7,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 pygame = pytest.importorskip("pygame")
 
+from korciv import config as C  # noqa: E402
 from korciv.state import NEUTRAL, Settings  # noqa: E402
 from korciv.ui.app import MAP_MODES, App  # noqa: E402
 
@@ -611,6 +612,8 @@ def test_battle_modal_enter_fights_now(app):
     for a in list(g.armies_at(tgt)):
         g.remove_army(a)
     g.new_army(other, tgt, {"inf": 2})
+    for f in g.factions:
+        f.met = {x.id for x in g.factions} - {f.id}
     D.declare_war(g, g.player_id, other)
     g.dialogues = []
     a = g.new_army(g.player_id, cap, {"inf": 8})
@@ -643,3 +646,27 @@ def test_pause_and_prefs(app, monkeypatch, tmp_path):
     A.save_prefs(app.prefs)
     assert A.load_prefs()["volume"] == 35
     app.modal = None
+
+
+def test_pinned_priority_and_done_buildings_render(app):
+    app.start_game(Settings(seed=4, n_enemies=2))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    app.modal = None
+    pid = g.player_id
+    cap = g.player.capital
+    near = sorted(g.world.land_adj[cap])[:2]
+    for r in near:
+        g.transfer_region(r, pid)
+    for r in near:
+        assert g.start_project(pid, r, "build", "farm")[0]
+    assert g.toggle_pin(pid, near[1])
+    app.left_open, app.left_tab = True, "nation"
+    frame(app)
+    assert g.projects_by_priority(pid)[0].id == near[1]
+    g.regions[cap].b["bank"] = C.PROD_BUILDINGS["bank"]["max"]
+    app.select(cap)
+    app.left_open, app.left_tab, app.tab = True, "region", "action"
+    frame(app)
