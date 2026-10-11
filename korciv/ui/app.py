@@ -21,11 +21,36 @@ from .mapview import MapView
 from .theme import Theme, desaturate, fmt_money, hex2rgb, measure, mix, render_text, set_ui_scale, ui_scale
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".korciv", "saves")
+PREFS_PATH = os.path.join(os.path.expanduser("~"), ".korciv", "prefs.json")
+
+
+def load_prefs() -> dict:
+    """환경설정(음량 0~100, 전체화면)."""
+    import json
+    p = {"volume": 80, "fullscreen": False}
+    try:
+        with open(PREFS_PATH, encoding="utf-8") as f:
+            p.update({k: v for k, v in json.load(f).items() if k in p})
+    except Exception:
+        pass
+    return p
+
+
+def save_prefs(p: dict):
+    import json
+    try:
+        os.makedirs(os.path.dirname(PREFS_PATH), exist_ok=True)
+        with open(PREFS_PATH, "w", encoding="utf-8") as f:
+            json.dump(p, f)
+    except Exception:
+        pass
 TOP_H = 56
 LEFT_W = 360
 RIGHT_W = 320
 MAP_MODES = [("political", "정치"), ("happy", "행복도"), ("pop", "인구"), ("resource", "자원"),
-             ("building", "건물"), ("military", "군사"), ("opinion", "우호도"), ("do8", "조선 8도")]
+             ("building", "건물"), ("military", "군사"), ("opinion", "우호도")]
+MODE_ICONS = {"political": "flag", "happy": "face", "pop": "people", "resource": "coal", "building": "hammer",
+              "military": "shield", "opinion": "scroll"}
 # 자원·건물·군사 모드는 누르면 위로 세부 메뉴가 펼쳐지고, 고른 한 가지만 지도에 표시한다.
 # (키, 이름, 색, 최대 단계 또는 None=단계 없음)
 SUB_MODES = {
@@ -37,8 +62,6 @@ SUB_MODES = {
                  ("academy", "사관학교", "#E67700", None), ("airport", "공항", "#1864AB", None),
                  ("port", "항구", "#0C8599", None)],
 }
-DO8_COLORS = {"경기": "#A5D8FF", "충청": "#B2F2BB", "전라": "#FFEC99", "경상": "#FFC9C9",
-              "강원": "#D0BFFF", "황해": "#FFD8A8", "평안": "#99E9F2", "함경": "#E9ECEF"}
 
 
 def _dpi_aware():
@@ -75,6 +98,10 @@ class App:
             width = min(width, info.current_w)
             height = min(height, info.current_h)
         self.window = pygame.display.set_mode((max(800, width), max(500, height)), flags)
+        self.windowed_size = self.window.get_size()
+        self.prefs = load_prefs()
+        if self.prefs.get("fullscreen") and screenshot is None and os.environ.get("SDL_VIDEODRIVER") != "dummy":
+            self.set_fullscreen(True, save=False)
         self.screen = self.window
         self._update_scale()
         self.clock = pygame.time.Clock()
@@ -102,6 +129,27 @@ class App:
             self.gui.screen = self.screen
         if hasattr(self, "map"):
             self.map.invalidate()
+
+    def set_fullscreen(self, on, save=True):
+        """전체화면(작업표시줄·창 제목줄까지 가림) 켜기/끄기. Alt+Enter 또는 환경설정."""
+        on = bool(on)
+        try:
+            if on:
+                if not (self.window.get_flags() & pygame.FULLSCREEN):
+                    self.windowed_size = self.window.get_size()
+                self.window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            else:
+                self.window = pygame.display.set_mode(getattr(self, "windowed_size", (1440, 900)), pygame.RESIZABLE)
+        except pygame.error:
+            return
+        self.prefs["fullscreen"] = on
+        if hasattr(self, "gui"):
+            self._update_scale()
+        if save:
+            save_prefs(self.prefs)
+
+    def is_fullscreen(self) -> bool:
+        return bool(self.window.get_flags() & pygame.FULLSCREEN)
 
     def lsize(self):
         """화면 크기(논리 좌표)."""
@@ -203,7 +251,7 @@ class App:
             self.toast(f"이 버전({VERSION})에서 이어서 할 수 없는 저장 파일입니다.", self.theme.bad)
             return
         if any(not hasattr(f, "met") for f in g.factions):
-            g._update_fog()                      # v1.0.0 세이브: 조우 기록을 지금 시야로 채운다
+            g._update_fog()                      # v0.0.0 세이브: 조우 기록을 지금 시야로 채운다
         self.game = g
         self.modal = None
         self.reset_ui()
@@ -224,9 +272,15 @@ class App:
         frames = 0
         while self.running:
             events = pygame.event.get()
-            for e in events:
+            for e in list(events):
                 if e.type == pygame.QUIT:
                     self.running = False
+                elif (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_KP_ENTER)
+                      and e.mod & pygame.KMOD_ALT):
+                    events.remove(e)            # Alt+Enter: 전체화면 전환(턴 종료로 넘어가지 않게)
+                    self.set_fullscreen(not self.is_fullscreen())
+                elif e.type == pygame.VIDEORESIZE and self.is_fullscreen():
+                    self._update_scale()
                 elif e.type == pygame.VIDEORESIZE:
                     w, h = max(800, e.w), max(500, e.h)
                     if (w, h) != self.window.get_size():
@@ -250,11 +304,14 @@ class App:
         self.screen.fill(self.theme.bg)
         if self.scene == "title":
             slots_open = bool(self.modal and self.modal[0] == "saveslots")
-            self.gui.input_enabled = not slots_open
+            help_open = bool(self.modal and self.modal[0] == "help")
+            self.gui.input_enabled = not (slots_open or help_open)
             modals.draw_title(self)
             self.gui.input_enabled = True
             if slots_open:
                 modals.draw_save_slots(self)
+            elif help_open:
+                modals.draw_help(self)
         elif self.scene == "setup":
             slots_open = bool(self.modal and self.modal[0] == "saveslots")
             flag_open = self.setup.flag_draft is not None
@@ -387,6 +444,7 @@ class App:
         h = sh - TOP_H - 90
         rail = pygame.Rect(8, TOP_H + 12, panels.RAIL_W, h)
         panels.draw_side(self, rail, pygame.Rect(rail.right + 6, TOP_H + 12, LEFT_W, h))
+        self.draw_compass()
         self.draw_mode_chips()
         self.draw_end_turn()
         self.draw_toasts()
@@ -459,11 +517,41 @@ class App:
             fill = self.mode_color(rid, r, owner, info, visible or owner == pid)
             if self.mode == "political" and visible and owner == pid and r.project:
                 # 생산·행동이 진행 중인 내 지역은 더 진한 색
-                fill = mix(self.faction_rgb(owner), (0, 0, 0), 0.18)
+                fill = mix(self.owner_fill(owner), mix(self.faction_rgb(owner), (0, 0, 0), 0.15), 0.55)
             if not visible:
-                fill = mix(desaturate(fill, 0.7), (0, 0, 0), 0.25)
+                # 시야 밖: 바랜 한지처럼(채도를 빼고 먹빛을 살짝)
+                fill = mix(desaturate(fill, 0.65), (120, 110, 92) if not t.dark else (0, 0, 0), 0.28)
             out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
         return out
+
+    def map_extra(self, pick_mode=False):
+        """지도 렌더용 세력 정보(안개 반영): 지역별 세력 코드, 진한 색, 전쟁 쌍."""
+        g = self.game
+        if not g or pick_mode:
+            return None
+        pid = g.player_id
+        fog_on = g.settings.fog > 0 and not self.fog_reveal
+        owners = {}
+        for rid in self.world.order:
+            r = g.regions[rid]
+            if fog_on and not g.is_explored(pid, rid):
+                owners[rid] = 1
+                continue
+            o = r.owner if (not fog_on or g.is_visible(pid, rid)) else g.player.last_seen.get(rid, r.owner)
+            owners[rid] = 1 if o == NEUTRAL else o + 2
+        deep = {f.id + 2: mix(self.faction_rgb(f.id), (20, 16, 12), 0.25) for f in g.factions}
+        met = getattr(g.player, "met", set()) | {pid}
+        alive = [f.id for f in g.factions if f.alive]
+        wars = {(a + 2, b + 2) for i, a in enumerate(alive) for b in alive[i + 1:]
+                if (a in met and b in met or self.fog_reveal) and D.at_war(g, a, b)}
+        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political"}
+
+    def order_colors(self):
+        """이동 범위·명령 화살표 색: 이동은 내 나라 색(직접 만든 국기의 배경 색 1), 공격·상륙·폭격은 정해진 색."""
+        cols = dict(ORDER_COLORS)
+        if self.game:
+            cols["move"] = mix(self.faction_rgb(self.game.player_id), (0, 0, 0), 0.15)
+        return cols
 
     def faction_rgb(self, fid):
         if fid == NEUTRAL:
@@ -471,9 +559,12 @@ class App:
         return hex2rgb(self.game.factions[fid].color)
 
     def owner_fill(self, owner):
+        """영토 바탕: 세력 색을 조금 누그러뜨려 한지에 번진 수채화처럼."""
         if owner == NEUTRAL:
             return self.theme.neutral
-        return mix(self.faction_rgb(owner), (255, 255, 255), 0.3)
+        if self.theme.dark:
+            return mix(self.faction_rgb(owner), (255, 255, 255), 0.3)
+        return mix(desaturate(self.faction_rgb(owner), 0.2), self.theme.paper, 0.45)
 
     def sub_mode(self, mode=None):
         mode = mode or self.mode
@@ -544,11 +635,6 @@ class App:
                 return hex2rgb("#C92A2A")
             op = D.opinion(g, owner, g.player_id)
             return mix(t.happy_mid, t.happy_pos, op / 100) if op >= 0 else mix(t.happy_mid, t.happy_neg, -op / 100)
-        if m == "do8":
-            c = hex2rgb(DO8_COLORS[info.do8])
-            if owner != NEUTRAL:
-                c = mix(c, self.faction_rgb(owner), 0.35)
-            return c
         return t.neutral
 
     def sea_colors(self):
@@ -578,7 +664,8 @@ class App:
                                                               self.show_terrain, busy)
         # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)
         mv.draw_base(self.screen, key, self.theme, lambda: self.region_colors(pick_mode), self.sea_colors,
-                     self.mode, self.map_labels, show_terrain=self.show_terrain)
+                     self.mode, self.map_labels, show_terrain=self.show_terrain,
+                     extra_fn=lambda: self.map_extra(pick_mode))
         self.screen.set_clip(mv.view)
         u = ui_scale()
         if pick_mode:
@@ -603,19 +690,21 @@ class App:
         g = self.game
         # 이동 범위
         army = g.armies.get(self.sel_army) if self.sel_army else None
-        if army and army.owner == g.player_id:
+        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 전투한 부대는 범위 없음
             reach = g.reachable(army)
-            ov = pygame.Surface(mv.view.size, pygame.SRCALPHA)
-            # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
-            for node, opt in sorted(reach.items(), key=lambda kv: not self.world.is_sea(kv[0])):
-                col = {"move": (47, 111, 222), "attack": (201, 42, 42), "land": (12, 166, 120),
-                       "bombard": (230, 119, 0)}[opt["action"]]
-                a = 115 if opt["strong"] else 60
-                if self.world.is_sea(node):
-                    mv.sea_overlay(ov, node, (*col, 45))
-                else:
-                    mv.fill_overlay(ov, node, (*col, a))
-            self.screen.blit(ov, mv.view.topleft)
+            box = mv.screen_bbox(reach)
+            if box and box.w > 0 and box.h > 0:
+                ov = pygame.Surface(box.size, pygame.SRCALPHA)     # 이동 범위가 걸친 만큼만
+                cols = self.order_colors()
+                # 해역을 먼저 칠해야 섬 구멍을 비워도 육지 오버레이가 지워지지 않는다
+                for node, opt in sorted(reach.items(), key=lambda kv: not self.world.is_sea(kv[0])):
+                    col = cols[opt["action"]]
+                    a = 115 if opt["strong"] else 60
+                    if self.world.is_sea(node):
+                        mv.sea_overlay(ov, node, (*col, 45), origin=box.topleft)
+                    else:
+                        mv.fill_overlay(ov, node, (*col, a), origin=box.topleft)
+                self.screen.blit(ov, box.topleft)
             if not self.world.is_sea(army.loc):
                 for n in self.world.land_adj[army.loc]:
                     if self.world.is_bridge(army.loc, n):
@@ -629,8 +718,15 @@ class App:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
             else:
-                mv.outline(self.screen, self.sel, (255, 255, 255), max(4, int(4 * u)))
-                mv.outline(self.screen, self.sel, self.theme.text, max(2, int(2 * u)))
+                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만)
+                box = mv.screen_bbox([self.sel], pad=int(10 * u))
+                if box and box.w > 0 and box.h > 0:
+                    glow = pygame.Surface(box.size, pygame.SRCALPHA)
+                    for wdt, a in ((12, 30), (8, 50), (4, 90)):
+                        mv.outline_overlay(glow, self.sel, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
+                    self.screen.blit(glow, box.topleft)
+                mv.outline(self.screen, self.sel, (255, 248, 230), max(3, int(3 * u)))
+                mv.outline(self.screen, self.sel, self.theme.gold, max(2, int(2 * u)))
         # 전투 강조 (1초)
         dt = pygame.time.get_ticks() - self.flash_t
         if dt < 1200 and g.battle_regions:
@@ -639,6 +735,7 @@ class App:
             for rid in set(g.battle_regions):
                 if rid in self.world.regions:
                     mv.outline(self.screen, rid, col, 3)
+        self.draw_battle_marks()
         self.draw_science_sites()
         self.draw_focus()
         self.draw_capitals()
@@ -661,14 +758,55 @@ class App:
                              (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), max(2, int(width_k * ui_scale())))
 
     def star(self, center, r, color):
+        """수도 별: 그림자 + 세력 색(진하게) + 한지색 테두리."""
         cx, cy = center
         pts = []
         for i in range(10):
             ang = -math.pi / 2 + i * math.pi / 5
-            rr = r if i % 2 == 0 else r * 0.45
+            rr = r if i % 2 == 0 else r * 0.42
             pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
+        u = ui_scale()
+        key = (int(r * 10), int(u * 10))
+        cache = self.__dict__.setdefault("_star_shadow", {})
+        sh = cache.get(key)
+        if sh is None:
+            sh = pygame.Surface((int(r * 3), int(r * 3)), pygame.SRCALPHA)
+            pygame.draw.polygon(sh, (0, 0, 0, 70), [(x - cx + r * 1.5 + u, y - cy + r * 1.5 + 2 * u) for x, y in pts])
+            cache[key] = sh
+        self.screen.blit(sh, (cx - r * 1.5, cy - r * 1.5))
         pygame.draw.polygon(self.screen, color, pts)
-        pygame.draw.polygon(self.screen, (255, 255, 255), pts, 1)
+        pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(1, int(1.5 * u)))
+
+    def _ellipse_shadow(self, w, h):
+        """부대 깃발 밑 그림자(크기별 캐시)."""
+        cache = self.__dict__.setdefault("_ell_shadow", {})
+        sh = cache.get((w, h))
+        if sh is None:
+            sh = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+            pygame.draw.ellipse(sh, (0, 0, 0, 55), sh.get_rect())
+            if len(cache) > 200:
+                cache.clear()
+            cache[(w, h)] = sh
+        return sh
+
+    def draw_battle_marks(self):
+        """이번 턴 전투가 난 지역: 작은 주홍 원 + 칼 교차."""
+        from .art import ui_icon
+        g = self.game
+        mv = self.map
+        u = ui_scale()
+        for rid in set(getattr(g, "battle_regions", ()) or ()):
+            if rid not in self.world.regions:
+                continue
+            if not (g.is_visible(g.player_id, rid) or self.fog_reveal):
+                continue
+            x, y = mv.label_screen(rid)
+            if not mv.view.collidepoint(x, y):
+                continue
+            c = (int(x - 18 * u), int(y - 4 * u))
+            pygame.draw.circle(self.screen, self.theme.vermilion, c, max(5, int(8 * u)))
+            pygame.draw.circle(self.screen, (247, 241, 227), c, max(5, int(8 * u)), max(1, int(1.5 * u)))
+            ui_icon(self.screen, "swords", c, (247, 241, 227), 0.55 * u)
 
     def draw_capitals(self):
         g = self.game
@@ -680,8 +818,8 @@ class App:
                 continue
             x, y = self.map.label_screen(f.capital)
             u = ui_scale()
-            self.star((x, y - (16 * u if self.map.z >= 2 else 0)), (8 if self.map.z < 2 else 10) * u,
-                      mix(self.faction_rgb(f.id), (0, 0, 0), 0.2))
+            self.star((x, y - (16 * u if self.map.z >= 2 else 0)), (7 if self.map.z < 2 else 9) * u,
+                      mix(self.faction_rgb(f.id), (25, 18, 12), 0.3))
 
     def draw_science_sites(self):
         """과학승리 시설(연구소·관측소·발사대)과 진행 중인 과학 단계 표시."""
@@ -757,7 +895,7 @@ class App:
             p0 = mv.label_screen(a.loc)
             if o["type"] == "move":
                 pts = [p0] + [mv.label_screen(n) for n in o["path"]]
-                self.arrow(pts, ORDER_COLORS["move"])
+                self.arrow(pts, self.order_colors()["move"])
             elif o["type"] in ("attack", "land"):
                 pts = [p0] + [mv.label_screen(n) for n in o.get("path", [])]
                 if pts[-1] != mv.label_screen(o["target"]):
@@ -777,24 +915,24 @@ class App:
                 pts = [mv.label_screen(end)] + [mv.label_screen(n) for n in route]
                 for p, q in zip(pts, pts[1:]):
                     self.dashed(p, q, (255, 255, 255), width_k=4)
-                    self.dashed(p, q, ORDER_COLORS["move"])
-                self.arrowhead(pts[-2], pts[-1], ORDER_COLORS["move"], outline=True)
+                    self.dashed(p, q, self.order_colors()["move"])
+                self.arrowhead(pts[-2], pts[-1], self.order_colors()["move"], outline=True)
 
     def arrow(self, pts, color):
-        """영토 색과 겹치지 않도록 검은 테두리를 두른 굵은 화살표."""
+        """얇은 직선 화살표(한지색 테두리로 영토 색과 구분)."""
         u = ui_scale()
-        pygame.draw.lines(self.screen, (255, 255, 255), False, pts, max(5, int(5 * u)))
-        pygame.draw.lines(self.screen, color, False, pts, max(3, int(3 * u)))
+        pygame.draw.lines(self.screen, (247, 241, 227), False, pts, max(4, int(4 * u)))
+        pygame.draw.lines(self.screen, color, False, pts, max(2, int(2 * u)))
         self.arrowhead(pts[-2], pts[-1], color, outline=True)
 
     def arrowhead(self, p1, p2, color, outline=False):
         ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        L = 13 * ui_scale()
+        L = 9 * ui_scale()
         pts = [p2, (p2[0] - L * math.cos(ang - 0.45), p2[1] - L * math.sin(ang - 0.45)),
                (p2[0] - L * math.cos(ang + 0.45), p2[1] - L * math.sin(ang + 0.45))]
         pygame.draw.polygon(self.screen, color, pts)
         if outline:
-            pygame.draw.polygon(self.screen, (255, 255, 255), pts, max(1, int(1 * ui_scale())))
+            pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(1, int(1 * ui_scale())))
 
     def draw_armies(self):
         g = self.game
@@ -812,33 +950,53 @@ class App:
             if not (a.owner == pid or g.is_visible(pid, a.loc) or self.fog_reveal):
                 continue
             by_loc.setdefault(a.loc, []).append(a)
+        u = ui_scale()
+        ink = (30, 25, 20)
         for loc, arms in by_loc.items():
             x, y = mv.label_screen(loc)
             if not mv.view.collidepoint(x, y):
                 continue
             arms.sort(key=lambda a: (a.owner != pid, a.owner, a.id))
-            u = ui_scale()
-            w = int((34 if mv.z < 2 else 42) * u)
-            ph = int(19 * u)
-            n = len(arms)
-            start = x - (n * (w + 2)) / 2
-            yy = y + (10 if mv.z >= 2 else 5) * u
+            # 군기: 장대 + 깃발(육군 제비꼬리·해군 뾰족한 삼각기·공군 날개깃) + 대표 병종 아이콘 + 총수
+            fh = max(10, int(14 * u))
+            flags = []
+            for a in arms:
+                num = render_text(str(a.count()), 10, (255, 255, 255), "bold")
+                fw = int(14 * u) + num.get_width() + int(6 * u)
+                flags.append((a, num, fw))
+            total = sum(fw + int(4 * u) for _, _, fw in flags)
+            fx = x - total / 2
+            fy = y + (8 if mv.z >= 2 else 3) * u
             if mv.z >= 4 and not self.world.is_sea(loc):
-                yy += 14 * u
-            for i, a in enumerate(arms):
-                r = pygame.Rect(int(start + i * (w + 2)), int(yy), w, ph)
+                fy += 14 * u
+            for a, num, fw in flags:
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
-                pygame.draw.rect(self.screen, col, r, border_radius=4)
-                if a.id == self.sel_army:
-                    pygame.draw.rect(self.screen, (255, 212, 59), r.inflate(4, 4), 2, border_radius=5)
-                else:
-                    pygame.draw.rect(self.screen, mix(col, (0, 0, 0), 0.35), r, 1, border_radius=4)
+                if g.army_acted(a.id):
+                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 전투한 부대: 흐리게
                 icon_key = "lst" if a.units.get("lst", 0) > 0 else max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
-                panels.unit_icon(self.screen, icon_key, (r.x + int(9 * u), r.centery), (255, 255, 255), 1.1 * u)
-                t = render_text(str(a.count()), 11, (255, 255, 255), "bold")
-                self.screen.blit(t, t.get_rect(midright=(r.right - int(3 * u), r.centery)))
+                kind = C.UNITS[icon_key]["kind"]
+                x0, y0 = int(fx), int(fy)
+                notch = 4 * u
+                if kind == "naval":
+                    pts = [(x0, y0), (x0 + fw - notch, y0), (x0 + fw + notch, y0 + fh / 2), (x0 + fw - notch, y0 + fh),
+                           (x0, y0 + fh)]
+                elif kind == "air":
+                    pts = [(x0, y0), (x0 + fw, y0 + 2 * u), (x0 + fw, y0 + fh - 2 * u), (x0, y0 + fh)]
+                else:
+                    pts = [(x0, y0), (x0 + fw, y0), (x0 + fw - notch, y0 + fh / 2), (x0 + fw, y0 + fh), (x0, y0 + fh)]
+                base_y = y0 + fh + 6 * u
+                self.screen.blit(self._ellipse_shadow(int(fw * 0.9), max(3, int(5 * u))), (x0 - int(3 * u), base_y - int(2 * u)))
+                pygame.draw.line(self.screen, ink, (x0, y0 - 3 * u), (x0, base_y), max(1, int(1.5 * u)))
+                if a.id == self.sel_army:
+                    pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(3, int(4 * u)))
+                pygame.draw.polygon(self.screen, col, pts)
+                pygame.draw.polygon(self.screen, ink, pts, max(1, int((2 if a.id == self.sel_army else 1) * u)))
+                panels.unit_icon(self.screen, icon_key, (x0 + int(7 * u), int(y0 + fh / 2 + u)), (255, 255, 255), 0.95 * u)
+                self.screen.blit(num, num.get_rect(midleft=(x0 + int(13 * u), int(y0 + fh / 2 + 1))))
                 if a.order and a.owner == pid:
-                    pygame.draw.circle(self.screen, (255, 212, 59), (r.right - 1, r.y + 1), max(3, int(3.5 * u)))
+                    pygame.draw.circle(self.screen, (247, 241, 227), (int(x0 + fw), y0), max(3, int(3.5 * u)))
+                    pygame.draw.circle(self.screen, ink, (int(x0 + fw), y0), max(3, int(3.5 * u)), 1)
+                fx += fw + int(4 * u)
         # 줌 4배 이상: 인구 배지
         if mv.z >= 4:
             for rid in self.world.order:
@@ -947,6 +1105,9 @@ class App:
         if not node:
             return
         army = g.armies.get(self.sel_army) if self.sel_army else None
+        if army and army.owner == g.player_id and g.army_acted(army.id):
+            self.toast("이번 턴에 이미 전투한 부대입니다(합치기·분리·이동·공격 불가).", self.theme.bad)
+            return
         if army and army.owner == g.player_id:
             # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
             if not self.bombard_mode and node in g.regions:
@@ -954,6 +1115,12 @@ class App:
                 if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
+                # 병력 없는 맞닿은 적 땅: 공격처럼 바로 진입해 점령
+                if opt and opt["action"] == "attack" and army.loc in self.world.land_adj.get(node, ()):
+                    ok, msg = g.capture_now(army.id, node)
+                    if ok:
+                        self.toast(msg)
+                        return
             ok, msg = g.order_army(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             return
@@ -980,6 +1147,9 @@ class App:
         army = g.armies.get(self.sel_army)
         if not army or army.owner != g.player_id or self.gui.over_ui():
             return
+        if g.army_acted(army.id):
+            self.gui.tooltip = "이번 턴 전투 완료: 이동·공격 불가"
+            return
         reach = g.reachable(army)
         opt = reach.get(node)
         if not opt:
@@ -1001,7 +1171,9 @@ class App:
             lines.append(f"{'기습' if mode == 'surprise' else '돌격'}: {name}")
             if pv:
                 if pv["defenders"] == 0:
-                    lines.append("방어 병력 없음 → 진입 후 점령 시작")
+                    lines.append("방어 병력 없음 → 바로 진입해 점령")
+                elif pv.get("rout"):
+                    lines.append("포병·공군만 주둔 → 맞서지 못하고 궤멸, 피해 없이 점령")
                 else:
                     lines.append(f"공격력 A {pv['A']:.1f} / 방어력 D {pv['D']:.1f} (방어선 {pv['line']}단계)")
                     if pv.get("terrain"):
@@ -1065,7 +1237,7 @@ class App:
                 self.map.zoom_at(self.map.view.center, 1.25)
             elif k.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self.map.zoom_at(self.map.view.center, 0.8)
-            elif pygame.K_1 <= k.key <= pygame.K_8:
+            elif pygame.K_1 <= k.key < pygame.K_1 + len(MAP_MODES):
                 self.mode = MAP_MODES[k.key - pygame.K_1][0]
                 self.mode_popup = None
             elif k.key == pygame.K_F1:
@@ -1103,8 +1275,7 @@ class App:
     # ------------------------------------------------------------ 턴 종료
     def snapshot(self):
         f = self.game.player
-        return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "oil": f.res["oil"],
-                "coal": f.res["coal"], "elec": f.res["elec"], "happy": round(self.game.avg_happiness(f.id)),
+        return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
                 "weary": round(f.war_weary), "tax": round(f.tax * 100)}
 
     def end_turn(self):
@@ -1144,73 +1315,92 @@ class App:
 
     # ------------------------------------------------------------ 상단 바
     def draw_topbar(self):
+        """쪽빛 상단 바: 국기·국가명 / 날짜·절기 / 아이콘을 붙인 수치(마우스를 올리면 내역)."""
+        from ..flags import faction_flag
+        from ..leaders import GOV_BY_KEY
+        from ..rules import date_of_turn
+        from .art import draw_flag, indigo_band, ui_icon
+        from .theme import solar_term
         g = self.game
         f = g.player
         gui = self.gui
+        t = self.theme
+        u = ui_scale()
         sw, _ = self.lsize()
-        gui.panel((0, 0, sw, TOP_H), radius=0, shadow=True, border=False)
-        gui.line(self.theme.border, (0, TOP_H - 1), (sw, TOP_H - 1))
+        bar = pygame.Rect(0, 0, sw, TOP_H)
+        pr = gui.R(bar)
+        self.screen.blit(indigo_band(pr.w, pr.h, t.indigo, t.indigo_dk), pr.topleft)
+        gui.line(t.gold, (0, TOP_H - 4), (sw, TOP_H - 4), 2)
+        gui.line(mix(t.gold, t.indigo_dk, 0.4), (0, TOP_H - 1), (sw, TOP_H - 1), 1)
+        gui.block(bar)
+        paper = (247, 241, 227)
+        dim = mix(t.gold_lt, t.indigo, 0.3)
         # 좌상단 일시정지: 저장·불러오기·도움말 등 게임 메뉴
-        pb = pygame.Rect(10, 10, 36, 36)
-        if gui.button(pb, "", tooltip="일시정지 (P, 선택이 없을 때 Esc) — 저장·불러오기·도움말"):
+        pc = (28, TOP_H // 2 - 1)
+        pb = pygame.Rect(pc[0] - 17, pc[1] - 17, 34, 34)
+        hov = gui.hover(pb)
+        gui.circle(mix(t.indigo_dk, (255, 255, 255), 0.1) if hov else t.indigo_dk, pc, 17)
+        gui.circle(t.gold, pc, 17, 1)
+        ui_icon(self.screen, "pause", gui.P(*pc), t.gold_lt, u)
+        if hov and gui.clicked:
+            gui.clicked = False
             self.modal = ("pause", None)
-        for dx in (-5, 5):
-            gui.rect(self.theme.text, (pb.centerx + dx - 2, pb.centery - 8, 5, 16), radius=1)
-        from ..flags import faction_flag
-        from .art import draw_flag
-        draw_flag(gui, (56, 12, 48, 32), faction_flag(f))
-        from ..leaders import GOV_BY_KEY
+        gui.rect(t.gold, (55, 11, 52, 34))
+        draw_flag(gui, (57, 13, 48, 30), faction_flag(f))
         gov = GOV_BY_KEY.get(f.gov, {}).get("name", "체제 미정")
-        gui.text((114, 8), f.name, 18, weight="bold")
-        gui.text((114, 32), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 12,
-                 self.theme.muted)
-        gui.text((sw // 2 - 90, TOP_H // 2), g.date_label(), 16, weight="bold", anchor="center")
-        x = sw - 16
+        gui.text((118, 5), f.name, 21, paper, "title", max_w=220)
+        gui.text((120, 33), f"{f.leader_name} · {gov} · 수도 {self.world.regions[f.capital].short}", 11, dim,
+                 "semibold", max_w=240)
+        # 날짜 + 절기
+        y_, m_, w_ = date_of_turn(g.turn)
+        term, term_h = solar_term(m_, w_)
+        dx = 470
+        dr = gui.text((dx, 5), f"{y_}년 {m_}월 {w_}주", 19, paper, "title", anchor="midtop")
+        chip = pygame.Rect(dr.right + 10, 9, 70, 20)
+        gui.rect(t.indigo_dk, chip, radius=10)
+        pygame.draw.rect(self.screen, t.gold, gui.R(chip), 1, border_radius=int(10 * u))
+        gui.text((chip.x + 21, chip.centery), term, 11, t.gold_lt, "serif", anchor="center")
+        gui.text((chip.x + 50, chip.centery), term_h, 11, t.gold_lt, "serif", anchor="center")
+        gui.text((dx, 33), f"턴 {g.turn}", 11, dim, "semibold", anchor="midtop")
+        x = sw - 14
         snap = self.snapshot()
         highlight = pygame.time.get_ticks() - self.prev_t < 600
         last = f.last
+        good, bad = (143, 212, 174), (242, 163, 143)
+        hv = snap["happy"]
+        face = "face_happy" if hv > 10 else "face_sad" if hv < -10 else "face_neutral"   # ±10 안은 무표정
         items = [
-            ("happy", "행복도", f"{snap['happy']:+d}", None,
-             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f}\n(전쟁 피로·징집 피로·점령 저항 반영 전 "
-             f"{g.avg_happiness(f.id, effective=False):+.1f})\n세율 효과 {0.1*(10-f.tax*100):+.1f}/턴"),
-            ("weary", "전쟁 피로", f"{snap['weary']:d}", self.theme.bad if f.war_weary >= 1 else None,
+            ("happy", face, "행복도", f"{snap['happy']:+d}", bad if snap["happy"] < 0 else None,
+             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f} (피로·저항 반영 전 {g.avg_happiness(f.id, effective=False):+.1f})"),
+            ("weary", "swords", "전쟁 피로", f"{snap['weary']:d}", bad if f.war_weary >= 1 else None,
              f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
-             f"선포당한 전쟁에서 쌓인 {f.war_weary_def:.1f}은 반란 판정에서는 빼지 않습니다.\n"
              + (f"전쟁 중 턴당 +{D.war_weary_rate(g, f.id):.1f}" if D.enemies(g, f.id)
                 else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
-             + f"\n선전포고 +{C.WAR_WEARY_START['aggressor']:.0f}·턴당 +{C.WAR_WEARY_TURN['aggressor']:g}, "
-             f"당하면 +{C.WAR_WEARY_START['defender']:.0f}·턴당 +{C.WAR_WEARY_TURN['defender']:g}"),
-            ("tax", "세율", f"{snap['tax']}%", None,
-             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"
-             "\n바꾸기: 좌측 [내정] 탭"),
-            ("elec", "전기", f"{snap['elec']:.0f}", None, f"전기: 발전소(석탄 1→{g.power_elec(f.id, 'coal')}, 석유 1→{g.power_elec(f.id, 'oil')})·자체 발전으로 생산, 공장 연료\n"
-             "석유·석탄·전기는 쌓이지 않습니다: 이번 턴 확보량(생산·계약)을 쓰고, 남으면 턴 종료 때 저절로 팝니다.\n"
-             "석유·석탄은 살 수 없습니다(전기는 이번 턴 몫으로 구매 가능). 배정: 국가 현황 옆 [자원 배정] 탭"),
-            ("coal", "석탄", f"{snap['coal']:.0f}", None, "석탄(이번 턴 확보량): 탄광 생산, 공장·발전소 연료, "
-             "석유 대신 군 생산(석유 1 = 석탄 2)"),
-            ("oil", "석유", f"{snap['oil']:.0f}", None, f"석유(이번 턴 확보량): 유전 생산, 군 생산·발전소(전기 "
-             f"{g.power_elec(f.id, 'oil')})·공장 연료"),
-            ("food", "식량", f"{snap['food']:,.0f}", None,
+),
+            ("tax", "tax", "세율", f"{snap['tax']}%", None,
+             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"),
+            ("food", "rice", "식량", f"{snap['food']:,.0f}", None,
              f"식량 생산 {last.get('food_prod',0):,.0f} / 소비 {last.get('food_cons',0):,.0f}"
              + (f"\n기근 {last.get('famine',0)*100:.0f}%" if last.get('famine') else "")),
-            ("net", "턴당 순수익", f"{snap['net']:+,.0f}", self.theme.good if snap["net"] >= 0 else self.theme.bad,
+            ("net", "coin", "턴당 순수익", f"{snap['net']:+,.0f}", good if snap["net"] >= 0 else bad,
              f"세수 {last.get('tax',0):,.0f} (세율 {f.tax*100:.0f}%)\n유지비 −{last.get('upkeep',0):,.0f}\n"
-             f"시장 구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
-            ("money", "자금(만원)", f"{snap['money']:,.0f}", self.theme.bad if f.money < 0 else None,
+             f"구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
+            ("money", "coin", "자금(만원)", f"{snap['money']:,.0f}", bad if f.money < 0 else None,
              f"자금 {fmt_money(f.money)}원\n진행 중 슬롯 턴당 지출 "
              f"{sum(r.project.per_turn for r in g.regions_of(f.id) if r.project):,.0f}"),
         ]
-        for key, label, val, col, tip in items:
-            vw = max(measure(val, 15, "semibold")[0], measure(label, 11)[0]) + 22
-            r = pygame.Rect(x - vw, 6, vw, TOP_H - 12)
+        for key, ic, label, val, col, tip in items:
+            vw = max(measure(val, 15, "semibold")[0], measure(label, 10, "semibold")[0]) + 30
+            r = pygame.Rect(x - vw, 6, vw, TOP_H - 14)
             prev = self.prev_values.get(key)
             if highlight and prev is not None and self._differs(prev, snap[key]):
-                gui.rect((255, 243, 191), r, radius=6)
-            gui.text((r.centerx, r.y + 4), label, 11, self.theme.muted, anchor="midtop")
-            gui.text((r.centerx, r.bottom - 4), val, 15, col or self.theme.text, "semibold", anchor="midbottom")
+                gui.rect(mix(t.gold, t.indigo, 0.35), r, radius=4)
+            ui_icon(self.screen, ic, gui.P(r.x + 10, r.y + 15), t.gold_lt, 0.85 * u)
+            gui.text((r.x + 23, r.y + 2), val, 15, col or paper, "semibold")
+            gui.text((r.x + 23, r.bottom - 3), label, 10, dim, "semibold", anchor="bottomleft")
             if gui.hover(r):
                 gui.tooltip = tip
-            x -= vw + 4
+            x -= vw + 8
 
     @staticmethod
     def _differs(a, b):
@@ -1221,42 +1411,68 @@ class App:
 
     # ------------------------------------------------------------ 하단
     def draw_mode_chips(self):
+        """지도 모드: 왼쪽 아래 쪽빛 알약 막대(내용 폭만큼) + 지형 경계 토글·범례·배율."""
+        from .art import indigo_band, ui_icon
         gui = self.gui
+        t = self.theme
+        u = ui_scale()
         sw, sh = self.lsize()
-        w = 74
-        r = pygame.Rect(12, sh - 60, len(MAP_MODES) * (w + 4) + 12, 48)
-        gui.panel(r)
+        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
+        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
+        gui.shadow(r, 22, 6)
+        pr = gui.R(r)
+        cache = self.__dict__.setdefault("_mode_band", {})
+        band = cache.get(pr.size)
+        if band is None:                       # 알약 모양 쪽빛 띠는 크기별로 한 번만 만든다
+            band = indigo_band(pr.w, pr.h, t.indigo, t.indigo_dk, lattice=False).convert_alpha()
+            mask = pygame.Surface(pr.size, pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=pr.h // 2)
+            band.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            cache.clear()
+            cache[pr.size] = band
+        self.screen.blit(band, pr)
+        pygame.draw.rect(self.screen, t.gold, pr, 1, border_radius=pr.h // 2)
+        gui.block(r)
         popup = getattr(self, "mode_popup", None)
-        for i, (key, label) in enumerate(MAP_MODES):
-            tip = f"지도 모드 ({i+1})" + ("\n내 영토 중 진한 색 = 생산·행동 진행 중" if key == "political" else "")
-            if key in SUB_MODES:
-                tip += "\n누르면 위로 세부 메뉴가 펼쳐집니다"
-                if self.mode == key:
-                    tip += f"\n지금: {self.sub_mode(key)[1]}"
-            bx = r.x + 8 + i * (w + 4)
-            if gui.button((bx, r.y + 8, w, 32), label, selected=self.mode == key, tooltip=tip,
-                          size=12 if len(label) > 4 else 13):
+        bx = r.x + 6
+        for (key, label), w in zip(MAP_MODES, widths):
+            cell = pygame.Rect(bx, r.y + 5, w, 34)
+            sel = self.mode == key
+            hov = gui.hover(cell)
+            if sel:
+                gui.rect((247, 241, 227), cell, radius=17)
+                pygame.draw.rect(self.screen, t.gold, gui.R(cell), 1, border_radius=int(17 * u))
+            elif hov:
+                gui.rect(mix(t.indigo, (255, 255, 255), 0.12), cell, radius=17)
+            fg = t.indigo if sel else mix((247, 241, 227), t.indigo, 0.12)
+            ui_icon(self.screen, MODE_ICONS.get(key, "flag"), gui.P(cell.x + 15, cell.centery), t.indigo if sel else t.gold_lt,
+                    0.75 * u)
+            gui.text((cell.x + 27, cell.centery), label, 13, fg, "bold" if sel else "semibold", anchor="midleft")
+            if hov and gui.clicked:
+                gui.clicked = False
                 self.mode = key
                 self.mode_popup = (None if popup == key else key) if key in SUB_MODES else None
                 self.changed()
             if popup == key:
-                self.draw_sub_menu(key, bx, r.y - 6, w)
-        # 지형 경계 토글·범례
-        t = pygame.Rect(r.right + 8, r.y, 176, 48)
-        gui.panel(t)
-        on = gui.checkbox((t.x + 10, t.y + 4, 150, 20), "지형 경계", self.show_terrain, size=12)
+                self.draw_sub_menu(key, bx, r.y - 6, max(w, 74))
+            bx += w + 4
+        # 지형 경계 토글·범례·배율
+        tr = pygame.Rect(r.right + 8, r.y, 186, 44)
+        gui.panel(tr)
+        on = gui.checkbox((tr.x + 10, tr.y + 3, 100, 20), "지형 경계", self.show_terrain, size=12)
         if on != self.show_terrain:
             self.show_terrain = on
             self.changed()
-        from .mapview import TERRAIN_COLORS
-        for i, (kind, label) in enumerate((("도하", "도하"), ("돌파", "산악 돌파"))):
-            lx = t.x + 12 + i * 70
-            gui.line(TERRAIN_COLORS[kind], (lx, t.y + 36), (lx + 16, t.y + 36), 4)
-            gui.text((lx + 20, t.y + 36), label, 11, self.theme.muted, anchor="midleft")
-        if gui.hover(t):
-            gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n점선: 맞닿지 않은 하구·수로 경로"
-        # 줌 표시
-        gui.text((t.right + 10, r.centery), f"×{self.map.z:.1f}", 12, self.theme.muted, anchor="midleft")
+        from .mapview import TERRAIN_COLORS, draw_ridge_marks
+        lx = tr.x + 12
+        gui.line(TERRAIN_COLORS["도하"], (lx, tr.y + 33), (lx + 16, tr.y + 33), 3)
+        gui.text((lx + 20, tr.y + 33), "강(도하)", 11, t.muted, anchor="midleft")
+        mx = tr.x + 90
+        draw_ridge_marks(self.screen, [gui.P(mx, tr.y + 36), gui.P(mx + 18, tr.y + 36)], u)
+        gui.text((mx + 22, tr.y + 33), "산줄기", 11, t.muted, anchor="midleft")
+        gui.text((tr.right - 10, tr.y + 6), f"×{self.map.z:.1f}", 11, t.muted, "semibold", anchor="topright")
+        if gui.hover(tr):
+            gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n강을 건너는 곳(도하)과 산줄기를 넘는 곳(산악 돌파)\n점선: 맞닿지 않은 하구·수로 경로"
 
     def draw_sub_menu(self, mode, x, bottom, w):
         """자원·건물·군사 세부 메뉴(칩 위로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
@@ -1270,7 +1486,7 @@ class App:
         cur = self.sub_mode(mode)[0]
         for i, (key, name, col, top) in enumerate(opts):
             row = pygame.Rect(p.x + 6, p.y + 6 + i * (bh + 4), pw - 12, bh)
-            tip = "단계가 오를수록 진한 색" if top else "있는 곳만 표시"
+            tip = None
             if gui.button(row, "", "ghost", selected=key == cur, tooltip=tip):
                 self.sub_modes[mode] = key
                 self.mode = mode
@@ -1302,49 +1518,110 @@ class App:
         return True
 
     def draw_end_turn(self):
+        """턴 종료: 주홍 버튼(건국하기와 같은 모양). 빈 슬롯이 남았으면 [다음 지역](남은 수) + 위에 [바로 턴 종료]."""
         gui = self.gui
         g = self.game
+        t = self.theme
         sw, sh = self.lsize()
-        r = pygame.Rect(sw - 172, sh - 68, 160, 56)
+        r = pygame.Rect(sw - 206, sh - 66, 194, 54)
         gui.block(r)
         queue = self.review_queue() if not g.game_over else []
         if queue:
-            if gui.button(r, "다음 지역", "primary", size=17, weight="bold", radius=10, color=self.theme.warn,
-                          tooltip="생산·행동이 비어 있는 지역을 수도부터 획득 순서대로 엽니다 (Enter)"):
+            if gui.button(r, "다음 지역", "seal", size=19, weight="title"):
                 self.next_region()
-            skip = pygame.Rect(r.x, r.y - 36, r.w, 30)
+            skip = pygame.Rect(r.x, r.y - 42, r.w, 34)
             gui.block(skip)
-            if gui.button(skip, "바로 턴 종료", "default", size=12, tooltip="남은 지역을 건너뛰고 턴 종료 (Shift+Enter)"):
+            gui.shadow(skip, 4, 4)
+            if gui.button(skip, "", "default"):
                 self.end_turn()
-            c = (r.right - 6, r.y + 6)
-            gui.circle(self.theme.bad, c, 14)
-            gui.text(c, str(len(queue)), 12, (255, 255, 255), "bold", anchor="center")
-            if gui.hover(pygame.Rect(c[0] - 13, c[1] - 13, 26, 26)):
-                gui.tooltip = f"확인하지 않은 빈 슬롯 지역 {len(queue)}곳"
-        elif gui.button(r, "턴 종료", "primary", size=17, weight="bold", tooltip="Enter", radius=10,
-                        enabled=not g.game_over):
+            pygame.draw.rect(self.screen, t.vermilion, gui.R(skip), 1, border_radius=int(4 * gui.u))
+            gui.text(skip.center, "바로 턴 종료", 15, t.vermilion, "title", anchor="center")
+            c = (r.right - 4, r.y + 4)
+            gui.circle(t.gold, c, 13)
+            gui.circle(t.indigo_dk, c, 13, 2)
+            gui.text(c, str(len(queue)), 12, t.indigo_dk, "bold", anchor="center")
+        elif gui.button(r, "턴 종료", "seal", size=19, weight="title", enabled=not g.game_over):
             self.end_turn()
 
+    def draw_compass(self):
+        """지도 오른쪽 아래 나침반(윤도)과 축척."""
+        gui = self.gui
+        t = self.theme
+        u = ui_scale()
+        sw, sh = self.lsize()
+        cx, cy = sw - 64, sh - 196
+        R = 34
+        pc = gui.P(cx, cy)
+        Rp = int(R * u)
+        o = Rp + 4
+        ink = getattr(t, "sea_ink", t.muted)
+        cached = getattr(self, "_compass", None)
+        if cached and cached[0] == (Rp, t.dark):
+            self.screen.blit(cached[1], (pc[0] - o, pc[1] - o - cached[2]))
+            self._draw_scale(cx, cy, R, u, ink)
+            return
+        g = pygame.Surface((Rp * 2 + 8, Rp * 2 + 8), pygame.SRCALPHA)
+        pygame.draw.circle(g, (*t.panel, 150), (o, o), Rp)
+        pygame.draw.circle(g, (*ink, 200), (o, o), Rp, max(1, int(2 * u)))
+        pygame.draw.circle(g, (*ink, 150), (o, o), int(Rp * 0.78), 1)
+        for i in range(24):
+            a = i / 24 * math.tau
+            r1 = Rp * (0.86 if i % 3 else 0.72)
+            pygame.draw.line(g, (*ink, 170), (o + math.cos(a) * r1, o + math.sin(a) * r1),
+                             (o + math.cos(a) * Rp * 0.97, o + math.sin(a) * Rp * 0.97), 1)
+        for i, col in enumerate((t.vermilion, ink, ink, ink)):
+            a = -math.pi / 2 + i * math.pi / 2
+            tip = (o + math.cos(a) * Rp * 0.7, o + math.sin(a) * Rp * 0.7)
+            l_ = (o + math.cos(a + math.pi / 2) * Rp * 0.12, o + math.sin(a + math.pi / 2) * Rp * 0.12)
+            r_ = (o + math.cos(a - math.pi / 2) * Rp * 0.12, o + math.sin(a - math.pi / 2) * Rp * 0.12)
+            pygame.draw.polygon(g, (*col, 230), [tip, l_, (o, o), r_])
+        north = __import__("korciv.ui.theme", fromlist=["render_text"]).render_text("北", 12, t.vermilion, "title")
+        g2 = pygame.Surface((g.get_width(), g.get_height() + north.get_height()), pygame.SRCALPHA)
+        g2.blit(g, (0, north.get_height()))
+        g2.blit(north, north.get_rect(midtop=(o, 0)))
+        self._compass = ((Rp, t.dark), g2, north.get_height())
+        self.screen.blit(g2, (pc[0] - o, pc[1] - o - north.get_height()))
+        self._draw_scale(cx, cy, R, u, ink)
+
+    def _draw_scale(self, cx, cy, R, u, ink):
+        gui = self.gui
+        t = self.theme
+        # 축척: 기준 좌표 1 = 위도 0.01° ≈ 1.11km
+        km_per_px = 1.11 * u / max(1e-6, self.map.scale)
+        target = 90 * km_per_px
+        nice = min((10, 20, 25, 50, 100, 200), key=lambda v: abs(v - target))
+        L = nice / km_per_px
+        x0, y0 = cx - L / 2, cy + R + 14
+        for i in range(4):
+            gui.rect(ink if i % 2 == 0 else t.panel, (x0 + i * L / 4, y0, L / 4 + 1, 5))
+        pygame.draw.rect(self.screen, ink, gui.R((x0, y0, L, 5)), 1)
+        gui.text((x0, y0 + 7), "0", 10, ink, "semibold")
+        gui.text((x0 + L, y0 + 7), f"{nice}km", 10, ink, "semibold", anchor="topright")
+
     def draw_toasts(self):
+        """알림: 한지 쪽지(왼쪽에 색 띠)."""
         now = pygame.time.get_ticks()
         self.toasts = [t for t in self.toasts if now - t[2] < 6000]
         sw, _ = self.lsize()
         u = ui_scale()
+        th_ = self.theme
         x = sw // 2
         y = TOP_H + 12
         for text, col, t0 in self.toasts:
             alpha = 1.0 if now - t0 < 5000 else 1 - (now - t0 - 5000) / 1000
-            surf = render_text(text, 13, (255, 255, 255), "semibold")
+            fg = th_.text if col is None or col == th_.text else col
+            surf = render_text(text, 13, fg, "semibold")
             tw, th = surf.get_width() / u, surf.get_height() / u
-            lr = pygame.Rect(0, 0, int(tw + 30), int(th + 14))
+            lr = pygame.Rect(0, 0, int(tw + 34), int(th + 14))
             lr.midtop = (x, y)
             pr = self.gui.R(lr)
             bg = pygame.Surface(pr.size, pygame.SRCALPHA)
-            base = (33, 37, 41) if col is None or col == self.theme.text else col
-            pygame.draw.rect(bg, (*base, int(230 * alpha)), bg.get_rect(), border_radius=int(8 * u))
+            pygame.draw.rect(bg, (*th_.panel, int(240 * alpha)), bg.get_rect(), border_radius=int(4 * u))
+            pygame.draw.rect(bg, (*mix(th_.gold, th_.text, 0.2), int(255 * alpha)), bg.get_rect(), 1, border_radius=int(4 * u))
+            pygame.draw.rect(bg, (*(fg if fg != th_.text else th_.indigo), int(255 * alpha)), (0, 0, max(2, int(4 * u)), pr.h))
             self.screen.blit(bg, pr)
             surf.set_alpha(int(255 * alpha))
-            self.screen.blit(surf, surf.get_rect(center=pr.center))
+            self.screen.blit(surf, surf.get_rect(center=(pr.centerx + int(2 * u), pr.centery)))
             y += lr.h + 6
 
     # ------------------------------------------------------------ 외교

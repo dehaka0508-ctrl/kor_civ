@@ -84,7 +84,12 @@ def display_short(s: str) -> str:
     return s
 
 
+# 같은 섬 안에서 육로로 이어지는 지역(경계 자료에 인접이 빠진 쌍): 제주시–서귀포시
+SAME_ISLAND_LINKS = (("S228", "S229"),)
+
+
 @dataclass(frozen=True)
+
 class RegionInfo:
     id: str
     name: str            # 표기명
@@ -215,9 +220,16 @@ class World:
         # 무연륙 섬은 육상 인접이 없다
         for rid, info in self.regions.items():
             if info.island == "무연륙 섬":
-                for n in self.land_adj[rid]:
-                    self.land_adj[n].discard(rid)
-                self.land_adj[rid] = set()
+                # 본토와는 끊지만, 같은 섬 안의 지역끼리(제주–서귀포 등)는 육로로 잇는다
+                for n in list(self.land_adj[rid]):
+                    if self.regions[n].island != "무연륙 섬":
+                        self.land_adj[n].discard(rid)
+                        self.land_adj[rid].discard(n)
+        # 경계 자료에 빠진 같은 섬 안의 육로
+        for a, b in SAME_ISLAND_LINKS:
+            if a in self.land_adj and b in self.land_adj:
+                self.land_adj[a].add(b)
+                self.land_adj[b].add(a)
 
         self.seas: dict[str, SeaInfo] = {}
         for sid in SEA_IDS:
