@@ -1630,11 +1630,11 @@ def draw_energy_tab(app, body):
                 app.changed()
 
     yy = section(gui, x, yy, w, f"발전소 {len(plants)}곳 · 연료 최대 {sum(r.b['power'] for r in plants)}/턴 "
-                 f"(석탄→전기 {g.power_elec(pid, 'coal')}, 석유→{g.power_elec(pid, 'oil')})")
+                 f"(석탄 1→전기 {g.power_elec(pid, 'coal', 1):g}~{g.power_elec(pid, 'coal', 5):g}, 석유는 두 배 · 단계별)")
     for r in plants:
         u = plan["plants"].get(r.id, {})
         gui.text((x, yy), f"{app.world.regions[r.id].name} · {r.b['power']}단계", 12, weight="semibold", max_w=w - 90)
-        gui.text((x + w, yy), f"전기 +{u.get('elec_out', 0)}", 12, t.good if u.get("elec_out") else t.muted,
+        gui.text((x + w, yy), f"전기 +{u.get('elec_out', 0):.1f}", 12, t.good if u.get("elec_out") else t.muted,
                  anchor="topright")
         steppers(r, "p", (("coal", "석탄"), ("oil", "석유")), r.b["power"], u)
         yy += row_h
@@ -1665,7 +1665,7 @@ def draw_energy_tab(app, body):
     fy += 22
     p_coal = sum(a["coal"] for a in plan["plants"].values())
     p_oil = sum(a["oil"] for a in plan["plants"].values())
-    p_elec = sum(a["elec_out"] for a in plan["plants"].values())
+    p_elec = plan.get("elec_gen_int", 0)          # 전국 발전량 합계의 정수 부분
     fu = {k: sum(a[k] for a in plan["factories"].values()) for k in ("coal", "oil", "elec")}
     st, mi, af = plan["stock"], plan["mined"], plan["after"]
     rows = [("① 이번 턴 확보", (st["coal"], st["oil"], st["elec"]), False),

@@ -77,3 +77,8 @@ def test_mountain_pass_not_adjacent_unless_touching():
     # 도하 하구 경로는 인접
     assert n["개성 개풍구역"] in w.land_adj[n["인천 강화군"]]
     assert w.terrain_between(n["경북 문경시"], n["충북 괴산군"])["kind"] == "돌파"
+
+
+def test_jeju_sea_only_next_to_south_west_sea():
+    w = load_world()
+    assert w.seas["SEA11"].adj == ["SEA4"] and "SEA11" not in w.seas["SEA5"].adj

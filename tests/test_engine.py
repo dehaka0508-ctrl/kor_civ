@@ -1538,7 +1538,9 @@ def test_energy_plan_auto_and_flow():
     f.auto_energy = True                                       # AI 방식: 매 턴 자동
     f.res.update(coal=3, oil=1)                                # 이번 턴 확보량(쌓이지 않는다)
     plan = g.energy_plan(0)
-    assert plan["plants"]["S002"] == {"coal": 1, "oil": 1, "elec_out": 6}   # 발전소에 석유 먼저, 그다음 석탄
+    # 발전소(2단계)에 석유 먼저, 그다음 석탄: 석탄 2.2 + 석유 4.4 = 6.6 → 전국 합계의 정수 부분 6
+    assert plan["plants"]["S002"] == {"coal": 1, "oil": 1, "elec_out": pytest.approx(6.6)}
+    assert plan["elec_gen_int"] == 6
     fu = plan["factories"]["S002"]
     assert fu["units"] == 3 and fu["elec"] == 3                # 공장은 전기부터
     assert plan["after"] == pytest.approx({"oil": 0, "coal": 2, "elec": 3})
@@ -1580,7 +1582,7 @@ def test_energy_manual_assignment():
     g.set_energy(0, "S002", "f", "coal", 3)                    # 합계는 단계(3)까지
     assert r.energy["f"]["coal"] == 0
     plan = g.energy_plan(0)
-    assert plan["plants"]["S002"] == {"coal": 2, "oil": 0, "elec_out": 4}
+    assert plan["plants"]["S002"] == {"coal": 2, "oil": 0, "elec_out": pytest.approx(4.4)}   # 2단계: 석탄 1 → 2.2
     assert plan["factories"]["S002"]["elec"] == 3 and plan["after"]["elec"] == 1
     assert plan["after"]["coal"] == 3
 
@@ -3521,3 +3523,70 @@ def test_ai_does_not_join_annex_rival_ahead():
     assert g.rival_ahead(1, rid) and not g.rival_ahead(0, rid)
     g.regions[rid].occs[1] = {"by": 1, "progress": 3, "need": 6, "seq": 2}
     assert not g.rival_ahead(1, rid) and g.rival_ahead(0, rid)
+
+
+def test_power_plant_level_rates_and_national_floor():
+    """발전소 석탄 1개당 전기: 단계별 2·2.2·2.4·2.6·3, 석유는 두 배. 발전소별 소수점을 합친 뒤 버린다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    for lv, e in zip(range(1, 6), (2, 2.2, 2.4, 2.6, 3)):
+        assert g.power_elec(0, "coal", lv) == pytest.approx(e)
+        assert g.power_elec(0, "oil", lv) == pytest.approx(2 * e)
+    near = sorted(g.world.land_adj["S002"])[:1]
+    _own(g, 0, near)
+    for rid in ["S002"] + near:
+        g.regions[rid].resist = None
+        g.regions[rid].b["power"] = 2
+    f = g.player
+    f.auto_energy = True
+    f.res.update(coal=2, oil=0, elec=0)              # 두 발전소에 석탄 1개씩: 2.2 + 2.2 = 4.4 → 4
+    plan = g.energy_plan(0)
+    assert plan["elec_gen"] == pytest.approx(4.4) and plan["elec_gen_int"] == 4
+    assert g.elec_from_fuel(0, 0, 2) == (4, 0, 2)
+
+
+def test_friendship_suppresses_ai_war_then_expires():
+    """우호 선언 직후 그 나라에 선전포고할 확률 100% 감소 → 12턴째 약 50%, 12턴이 지나면 감소 없음."""
+    g = new_game(player_start="S002", n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    assert D.friend_war_block(g, 1, 2) == 0.0
+    assert D.declare_friendship(g, 1, 2)[0]
+    assert D.friend_war_block(g, 1, 2) == pytest.approx(1.0)
+    vals = []
+    for _ in range(C.DECL_FRIEND_COOLDOWN):
+        vals.append(D.friend_war_block(g, 1, 2))
+        g.turn += 1
+    assert all(a > b for a, b in zip(vals, vals[1:])) and 0.5 < vals[-1] < 0.55
+    assert D.friend_war_block(g, 1, 2) == 0.0
+    from korciv import ai
+    g.turn -= C.DECL_FRIEND_COOLDOWN
+    assert all(ai._friend_blocks(g, 1, 2) for _ in range(20))     # 직후에는 언제나 막는다
+
+
+def test_ai_front_spreads_along_war_border():
+    """전쟁 중 AI: 전선 칸마다 최소 1, 후방 큰 부대는 모자란 전선 칸으로 나눠 보낸다."""
+    from korciv import ai
+    g = _p2_game()
+    w = g.world
+    cap = g.factions[0].capital
+    near = sorted(w.land_adj[cap])
+    _own(g, 0, near[:2])
+    for n in near[:2]:
+        _own(g, 1, [x for x in sorted(w.land_adj[n]) if g.regions[x].owner == NEUTRAL][:1])
+    D.declare_war(g, 0, 1)
+    front = ai.war_front(g, 0)
+    assert len(front) >= 2
+    need = ai.front_need(g, 0, front, 3 * len(front))
+    assert all(need[c] >= 1 for c in front)
+    small = ai.front_need(g, 0, front, 1)
+    assert sum(small.values()) == 1
+    # 후방의 큰 부대 하나는 모자란 전선 칸마다 나뉘어 간다
+    for a in [a for a in g.armies.values() if a.owner == 0 or a.loc in front]:
+        g.remove_army(a)
+    rear = cap
+    assert rear not in front
+    big = g.new_army(0, rear, {"inf": 2 * len(front) + 2})
+    need = ai.front_need(g, 0, front, ai._front_count(big))
+    cover = {}
+    assert ai._fill_front(g, 0, big, set(front), need, cover)
+    sent = [a for a in g.armies.values() if a.owner == 0 and (a.order or a.goto)]
+    assert len(sent) >= 2                               # 한 덩어리로 가지 않는다
