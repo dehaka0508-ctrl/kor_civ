@@ -24,7 +24,7 @@ BACKGROUNDS = (
 
 # 문양: 키, 이름 (편집 창에 6×4로 놓인다). "none" 포함 24칸.
 EMBLEMS = (
-    ("none", "없음"), ("taegeuk", "태극"), ("disc", "원"), ("star5", "별"), ("diamond", "마름모"), ("shield", "방패"),
+    ("none", "없음"), ("taegeuk", "태극"), ("disc", "원"), ("star5", "별"), ("diamond", "마름모"), ("chiljido", "칠지도"),
     ("crown", "왕관"), ("pine", "소나무"), ("flower", "무궁화"), ("wave", "물결"), ("mountain", "산"), ("cloud", "구름"),
     ("manji", "만자(卍)"), ("hexagram", "육망성"), ("cross", "십자"), ("crescent_star", "별과 초승달"), ("om", "옴(ॐ)"),
     ("yinyang", "도교 태극"),
@@ -32,12 +32,12 @@ EMBLEMS = (
 )
 # 편집 창 줄 배치(줄마다 6칸)
 EMBLEM_ROWS = (
-    ("none", "taegeuk", "disc", "star5", "diamond", "shield"),
+    ("none", "taegeuk", "disc", "star5", "diamond", "chiljido"),
     ("crown", "pine", "flower", "wave", "mountain", "cloud"),
     ("manji", "hexagram", "cross", "crescent_star", "om", "yinyang"),
     ("dragon", "tiger", "hyeonmu", "phoenix", "cheonma", "samjogo"),
 )
-MASK_EMBLEMS = {"pine", "flower", "phoenix", "hyeonmu", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
+MASK_EMBLEMS = {"crown", "chiljido", "pine", "flower", "phoenix", "hyeonmu", "cloud", "om", "tiger", "dragon", "cheonma", "samjogo"}
 TWO_TONE_EMBLEMS = {"taegeuk", "yinyang", "flower"}      # 문양 색 2를 쓰는 문양   # assets/emblems/<키>.png
 
 # 역사 국기: 고르면 배경·문양·색 대신 그대로 쓴다
@@ -49,7 +49,7 @@ PRESET_KEYS = [k for k, _ in PRESETS]
 # 예전 저장 파일의 키
 ALIASES = {"star6": "hexagram", "diag": "diag_up", "nordic": "cross", "canton": "quarters", "chevron": "v2",
            "crescent": "crescent_star", "samtaegeuk": "taegeuk", "triangle": "mountain", "hexagon": "diamond",
-           "arrow": "cloud", "bolt": "cloud"}
+           "arrow": "cloud", "bolt": "cloud", "shield": "chiljido"}
 
 
 def hex2rgb(h: str):

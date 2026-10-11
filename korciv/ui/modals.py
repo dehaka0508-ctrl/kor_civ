@@ -460,16 +460,7 @@ def draw_setup(app):
     # 고른 지도자: 족자 초상 + 이름 + 버프·디버프 패
     lead = LEADER_BY_KEY[s.leader]
     fr2 = pygame.Rect(x + 8, y + 10, 96, 136)    # 안쪽 초상화 84×112(3:4)
-    gui.shadow(fr2, 2, 6, 90)
-    gui.rect((60, 78, 94), fr2)
-    inner = fr2.inflate(-12, -24)
-    inner.y += 1
-    draw_portrait(gui, inner, s.leader, t)
-    pygame.draw.rect(gui.screen, t.gold_lt, gui.R(inner), 1)
-    for yy in (fr2.y - 4, fr2.bottom - 5):
-        gui.rect(t.indigo_dk, (fr2.x - 6, yy, fr2.w + 12, 9), radius=4)
-        gui.rect(t.gold, (fr2.x - 10, yy + 1, 5, 7), radius=2)
-        gui.rect(t.gold, (fr2.right + 5, yy + 1, 5, 7), radius=2)
+    draw_scroll_portrait(gui, fr2, s.leader, t)
     dx = x + 128
     if s.leader == "cus":
         gui.text((dx, y + 4), "지도자 이름", 12, t.muted, "semibold")
@@ -621,10 +612,7 @@ def draw_setup(app):
                 s.ai_pick = i                        # 지도자 고르기 창
     yb = y + (8 if two else max(1, s.n_enemies)) * 22 + 4
     yb = max(yb, y + 150)
-    for j, (lab, tip) in enumerate((("모두 무작위 지도자", "기존 규칙대로 남은 지도자 가운데 무작위로 정합니다"),
-                                    ("모두 무작위 지역", "기존 규칙(수도끼리 6칸 이상 등)대로 시작 지역을 정합니다.\n"
-                                                      "내 시작 지역을 골랐으면 거기에 맞춰서"),
-                                    ("지도에서 고르기", "지도에서 적 국가마다 시작 지역을 고릅니다"))):
+    for j, lab in enumerate(("모두 무작위 지도자", "모두 무작위 지역", "지도에서 고르기")):
         bw_ = (aw - 8) / 3
         br = pygame.Rect(int(ax + j * (bw_ + 4)), yb, int(bw_), 22)
         hov = gui.hover(br)
@@ -632,7 +620,6 @@ def draw_setup(app):
                  max_w=br.w)
         gui.line(t.accent if not hov else t.vermilion, (br.x + 6, br.bottom), (br.right - 6, br.bottom))
         if hov:
-            gui.tooltip = tip
             if gui.clicked:
                 gui.clicked = False
                 if j == 0:
@@ -1755,6 +1742,24 @@ def draw_help(app):
         close(app)
 
 
+def draw_scroll_portrait(gui, fr, leader_key, t):
+    """족자처럼 꾸민 초상화: 쪽빛 바탕 + 금선 + 위아래 족자 막대. fr 은 바탕 크기(초상화는 가로 −12, 세로 −24)."""
+    fr = pygame.Rect(fr)
+    k = fr.w / 96                                    # 시작 설정(96×136) 기준 배율
+    gui.shadow(fr, 2, 6, 90)
+    gui.rect((60, 78, 94), fr)
+    inner = fr.inflate(-int(12 * k), -int(24 * k))
+    inner.y += 1
+    draw_portrait(gui, inner, leader_key, t)
+    pygame.draw.rect(gui.screen, t.gold_lt, gui.R(inner), max(1, int(k)))
+    rod = max(9, int(9 * k * 0.8))
+    for yy in (fr.y - rod // 2, fr.bottom - rod // 2 - 1):
+        gui.rect(t.indigo_dk, (fr.x - int(6 * k), yy, fr.w + int(12 * k), rod), radius=rod // 2)
+        cap_w, cap_h = max(5, int(5 * k)), max(7, rod - 2)        # 족자 막대 끝 금장식
+        gui.rect(t.gold, (fr.x - int(10 * k), yy + 1, cap_w, cap_h), radius=2)
+        gui.rect(t.gold, (fr.right + int(10 * k) - cap_w, yy + 1, cap_w, cap_h), radius=2)
+
+
 def draw_dialogue(app):
     """지도자 대사 팝업: 초상화와 대사. 우상단 X 또는 Enter로 닫고, 쌓인 다음 팝업으로 넘어간다."""
     from .. import dialogue as DLG
@@ -1769,9 +1774,9 @@ def draw_dialogue(app):
         q.pop(0)
         return
     r = modal_frame(app, 780, 380)
-    ph = 260
-    draw_portrait(gui, (r.x + 28, r.y + 56, ph * 3 // 4, ph), f.leader, t)
-    x = r.x + 28 + ph * 3 // 4 + 28
+    fw = 180                                      # 족자 바탕 180×255(초상화 약 158×210, 3:4)
+    draw_scroll_portrait(gui, (r.x + 36, r.y + 74, fw, int(fw * 136 / 96)), f.leader, t)
+    x = r.x + 36 + fw + 36
     w = r.right - 28 - x
     gui.text((x, r.y + 24), DLG.TITLES.get(d["kind"], ""), 14,
              t.bad if d["kind"] in ("war", "denounce", "victory") else t.accent, "bold")

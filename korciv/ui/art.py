@@ -17,7 +17,7 @@ PORTRAIT_DIR = os.path.join(ASSETS, "portraits")
 _masks: dict = {}
 _presets: dict = {}
 # 마스크 문양의 크기(문양 반지름 R 대비 상자 한 변)
-MASK_BOX = {"pine": 2.3, "flower": 2.2, "phoenix": 2.3, "hyeonmu": 2.3, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.4, "cheonma": 2.6, "samjogo": 2.3}
+MASK_BOX = {"crown": 2.4, "chiljido": 2.4, "pine": 2.3, "flower": 2.2, "phoenix": 2.3, "hyeonmu": 2.3, "cloud": 2.4, "om": 2.1, "tiger": 2.2, "dragon": 2.4, "cheonma": 2.6, "samjogo": 2.3}
 PORTRAIT_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -138,19 +138,6 @@ def draw_emblem(s, key, cx, cy, R, fl):
                                         (cx + ux - px, cy + uy - py), (cx - ux - px, cy - uy - py)])
     elif key == "diamond":
         pygame.draw.polygon(s, ec, [(cx, cy - R), (cx + R * 0.65, cy), (cx, cy + R), (cx - R * 0.65, cy)])
-    elif key == "shield":
-        w = R * 0.75
-        pts = [(cx - w, cy - R * 0.85), (cx + w, cy - R * 0.85)]
-        for k in range(13):
-            a = k / 12 * math.pi
-            pts.append((cx + w * math.cos(a), cy - R * 0.1 + R * 0.95 * math.sin(a)))
-        pygame.draw.polygon(s, ec, pts)
-    elif key == "crown":
-        w, h = R * 0.95, R * 0.75
-        pts = [(cx - w, cy + h * 0.6), (cx - w, cy - h), (cx - w / 2, cy - h * 0.1), (cx, cy - h * 1.1),
-               (cx + w / 2, cy - h * 0.1), (cx + w, cy - h), (cx + w, cy + h * 0.6)]
-        pygame.draw.polygon(s, ec, pts)
-        pygame.draw.rect(s, ec, (cx - w, cy + h * 0.7, 2 * w, h * 0.35))
     elif key == "mountain":
         w = R
         pygame.draw.polygon(s, ec, [(cx - w, cy + R * 0.6), (cx - w * 0.35, cy - R * 0.75), (cx + w * 0.05, cy - R * 0.1),
