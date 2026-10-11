@@ -553,6 +553,17 @@ def _player_dialogue(g, kind, a, b):
         g.queue_dialogue(kind, b if a == g.player_id else a)
 
 
+def friend_war_block(g, a, b) -> float:
+    """우호 선언 뒤 쿨타임(12턴) 동안 a(AI)가 b 에 선전포고하지 않을 확률: 직후 1 → 0.5 쪽으로 지수 감소, 그 뒤 0."""
+    t0 = _dip_attr(g, "declared").get(pair(a, b))
+    if t0 is None:
+        return 0.0
+    t = g.turn - t0
+    if t < 0 or t >= C.DECL_FRIEND_COOLDOWN:
+        return 0.0
+    return 0.5 + 0.5 * math.exp(-C.DECL_FRIEND_WAR_K * t)
+
+
 def declared_friends(g, a, b) -> bool:
     """우호 선언이 성립해(어느 쪽이 선언했든) 아직 유지되는 관계인가."""
     return pair(a, b) in _dip_attr(g, "declared")
@@ -841,11 +852,12 @@ def energy_eval(g, fid, supply) -> tuple:
     m = g.mods(fid)
     k_out = m.mult("output_factory") * m.mult("output_prod")
     used = {"oil": 0, "coal": 0, "elec": 0}
-    gen = 0
-    for a in plan["p"].values():
+    gen = 0.0
+    for rid, a in plan["p"].items():
         used["oil"] += a["oil"]
         used["coal"] += a["coal"]
-        gen += g.power_elec(fid, "oil") * a["oil"] + g.power_elec(fid, "coal") * a["coal"]
+        gen += g.plant_elec(fid, g.regions[rid].b["power"], a["coal"], a["oil"])
+    gen = int(gen + 1e-9)
     out = 0.0
     room = 0
     for rid, a in plan["f"].items():

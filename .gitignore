@@ -1,6 +1,0 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-tools/_cache/
-tools/match-report.md
-*.sav

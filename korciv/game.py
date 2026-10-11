@@ -1450,7 +1450,7 @@ class Game:
         if step in ("booster", "module"):
             return rr.b["factory"] >= 5
         if step == "propellant":
-            return info.is_oil
+            return info.is_oil and rr.b["extract"] >= 5      # 정유공장 5단계(정유공장 증설 최대)
         return False
 
     def science_sites(self, fid, step):
@@ -1663,8 +1663,8 @@ class Game:
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
-            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → 전기 {self.power_elec(fid, 'coal')}, "
-                    f"석유 1 → 전기 {self.power_elec(fid, 'oil')})")
+            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → 전기 {self.power_elec(fid, 'coal', lv):g}, "
+                    f"석유 1 → 전기 {self.power_elec(fid, 'oil', lv):g})")
         if key == "specialty":
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
@@ -1711,8 +1711,8 @@ class Game:
             bm = m.mult("output_bank") * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0)
             return f"턴당 산출 {C.BANK_OUTPUT * R.g(lv) * bm * pm:,.0f}"
         if key == "power":
-            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → {self.power_elec(fid, 'coal')}, "
-                    f"석유 1 → {self.power_elec(fid, 'oil')})")
+            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → {self.power_elec(fid, 'coal', lv):g}, "
+                    f"석유 1 → {self.power_elec(fid, 'oil', lv):g})")
         if key == "specialty":
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
@@ -1924,9 +1924,33 @@ class Game:
         f.res["oil"] = f.res.get("oil", 0) - use
         f.res["coal"] = f.res.get("coal", 0) - (n - use) * C.OIL_AS_COAL
 
-    def power_elec(self, fid, fuel) -> int:
-        """발전소 연료 1개당 전기(석탄 2·석유 4, 수로왕 '철의 왕국' +1)."""
-        return C.POWER_ELEC[fuel] + int(self.mods(fid).add("power_elec_add"))
+    def power_elec(self, fid, fuel, level=1) -> float:
+        """발전소 연료 1개당 전기: 석탄은 발전소 단계별 2·2.2·2.4·2.6·3, 석유는 그 두 배
+        (수로왕 '철의 왕국' +1)."""
+        lv = max(1, min(len(C.POWER_ELEC_LEVEL), int(level)))
+        base = C.POWER_ELEC_LEVEL[lv - 1] * (C.POWER_OIL_MULT if fuel == "oil" else 1)
+        return base + self.mods(fid).add("power_elec_add")
+
+    def plant_elec(self, fid, level, coal, oil) -> float:
+        """발전소 한 곳의 전기(소수점 포함)."""
+        return self.power_elec(fid, "coal", level) * coal + self.power_elec(fid, "oil", level) * oil
+
+    def elec_from_fuel(self, fid, oil, coal):
+        """석유·석탄을 발전소에 자동 배정 순서대로(단계 높은 곳부터, 석유 먼저) 넣었을 때
+        (전국 전기 — 소수점 버림, 넣은 석유, 넣은 석탄)."""
+        plants, _ = self.energy_sites(fid)
+        left = {"oil": max(0, int(oil)), "coal": max(0, int(coal))}
+        used = {"oil": 0, "coal": 0}
+        e = 0.0
+        for r in plants:
+            room = r.b["power"]
+            for key in ("oil", "coal"):
+                k = min(room, left[key])
+                room -= k
+                left[key] -= k
+                used[key] += k
+                e += self.power_elec(fid, key, r.b["power"]) * k
+        return int(e + 1e-9), used["oil"], used["coal"]
 
     def energy_mined(self, fid) -> dict:
         """이번 턴 채굴·자체 발전(점령당하는 중·저항 지역 제외)."""
@@ -2009,8 +2033,9 @@ class Game:
                 plan[r.id][key] += k
                 room[r.id] -= k
                 left[key] -= k
-        left["elec"] += sum(self.power_elec(fid, "oil") * a["oil"] + self.power_elec(fid, "coal") * a["coal"]
-                            for a in plan.values())
+        # 전국 발전량을 합친 뒤 소수점은 버린다
+        left["elec"] += int(sum(self.plant_elec(fid, self.regions[rid].b["power"], a["coal"], a["oil"])
+                                for rid, a in plan.items()) + 1e-9)
         fplan = {r.id: {"coal": 0, "oil": 0, "elec": 0} for r in facts}
         froom = {r.id: r.b["factory"] for r in facts}
         for key in ("elec", "coal", "oil"):               # ③④⑤ 공장: 전기 → 석탄 → 석유, 단계 높은 공장부터
@@ -2054,6 +2079,7 @@ class Game:
             want = {"p": {r.id: (r.energy or {}).get("p", {}) for r in plants},
                     "f": {r.id: (r.energy or {}).get("f", {}) for r in facts}}
         out_p, out_f = {}, {}
+        gen = 0.0
         for r in plants:
             a = want["p"].get(r.id, {})
             room = r.b["power"]
@@ -2063,9 +2089,11 @@ class Game:
                 used[key] = k
                 room -= k
                 s[key] -= k
-            e = self.power_elec(fid, "oil") * used["oil"] + self.power_elec(fid, "coal") * used["coal"]
-            s["elec"] += e
+            e = self.plant_elec(fid, r.b["power"], used["coal"], used["oil"])
+            gen += e
             out_p[r.id] = {"coal": used["coal"], "oil": used["oil"], "elec_out": e}
+        gen_int = int(gen + 1e-9)                 # 전국 발전량을 합친 뒤 소수점은 버린다
+        s["elec"] += gen_int
         for r in facts:
             a = want["f"].get(r.id, {})
             room = r.b["factory"]
@@ -2077,7 +2105,8 @@ class Game:
                 s[key] -= k
             used["units"] = used["elec"] + used["coal"] + used["oil"]
             out_f[r.id] = used
-        return {"stock": stock, "mined": mined, "plants": out_p, "factories": out_f, "after": s}
+        return {"stock": stock, "mined": mined, "plants": out_p, "factories": out_f, "after": s,
+                "elec_gen": gen, "elec_gen_int": gen_int}
 
     def set_energy(self, fid, rid, site, key, n):
         """수동 배정(자동 배정을 끈 상태). site "p" 발전소(석탄·석유), "f" 공장(전기·석탄·석유). 합계 ≤ 단계."""
@@ -2597,7 +2626,7 @@ class Game:
         if self.player.alive and self.player.is_ai is False:
             ai.propose_to_player(self)
 
-    STAT_HIST_LEN = 104
+    STAT_HIST_LEN = 1300                 # 시간 종료 최대 턴(1200)보다 길게: 한 판 전체를 남긴다
 
     def _record_stats(self):
         """국가 현황 추이 그래프용 기록 (턴, GDP, 지역 수, 인구) — 최근 STAT_HIST_LEN 턴.

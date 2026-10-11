@@ -1217,6 +1217,35 @@ def draw_victory_progress(app, x, y, w, pid):
     return y
 
 
+# 국가 현황 추이(Game.stat_hist 한 줄 = (턴, GDP, 지역 수, 인구)): 키 → 열 번호·이름·단위
+STAT_COL = {"gdp": 1, "regions": 2, "pop": 3}
+STAT_NAME = {"gdp": "GDP", "regions": "영토", "pop": "인구"}
+STAT_UNIT = {"gdp": "만원 / 턴", "regions": "지역 수", "pop": "만 명"}
+
+
+def stat_color(t, key):
+    """추이 선 색(어두운 모드는 바탕과 구분되게 밝힌다)."""
+    c = {"gdp": t.indigo_lt, "regions": t.jade, "pop": (138, 106, 58)}[key]
+    return mix(c, (255, 255, 255), 0.45) if t.dark else c
+
+
+def stat_text(key, v, detail=False, sign=False):
+    """추이 값 글자. detail=True 면 인구를 소수 한 자리까지, sign=True 면 +/− 부호."""
+    if key == "regions":
+        return f"{v:+,.0f}곳" if sign else f"{v:,.0f}곳"
+    if key == "pop":
+        d = 1 if detail else 0
+        return f"{v:+,.{d}f}만" if sign else f"{v:,.{d}f}만"
+    return f"{v:+,.0f}" if sign else f"{v:,.0f}"
+
+
+def _magnifier(gui, center, col):
+    """작은 돋보기(크게 보기 표시)."""
+    cx, cy = center
+    gui.circle(col, (cx - 1.5, cy - 1.5), 4, 1.5)
+    gui.line(col, (cx + 1.5, cy + 1.5), (cx + 5, cy + 5), 2)
+
+
 def sparkline(gui, rect, vals, col):
     """작은 꺾은선(최근 추이). 값이 둘 미만이면 가로선만."""
     r = pygame.Rect(rect)
@@ -1291,19 +1320,28 @@ def draw_nation_status(app, body):
     y0 = y
     regs = g.regions_of(pid)
     last = f.last
-    # 국력 타일(최근 추이)
+    # 국력 타일(최근 추이) — 누르면 턴별 추이를 크게 본다(modals.draw_stat_chart)
     hist = getattr(g, "stat_hist", {}).get(pid, [])[-52:]
-    tiles = [("GDP / 턴", f"{last.get('gdp', 0):,.0f}", [h[1] for h in hist], t.indigo_lt),
-             ("영토", f"{len(regs)}곳", [h[2] for h in hist], t.jade),
-             ("인구", f"{g.total_pop(pid):,.0f}만", [h[3] for h in hist], (138, 106, 58))]
+    tiles = [("gdp", "GDP / 턴", f"{last.get('gdp', 0):,.0f}"),
+             ("regions", "영토", f"{len(regs)}곳"),
+             ("pop", "인구", f"{g.total_pop(pid):,.0f}만")]
     tw = (w - 12) / 3
-    for i, (lab, val, vals, col) in enumerate(tiles):
+    for i, (key, lab, val) in enumerate(tiles):
         r = pygame.Rect(int(x + i * (tw + 6)), y, int(tw), 72)
+        hov = gui.hover(r)
         gui.rect(mix(t.panel, t.panel_alt, 0.6), r, radius=4)
-        pygame.draw.rect(gui.screen, t.border, gui.R(r), 1, border_radius=int(4 * gui.u))
+        pygame.draw.rect(gui.screen, t.gold if hov else t.border, gui.R(r), gui.W(2) if hov else 1,
+                         border_radius=int(4 * gui.u))
         gui.text((r.x + 7, r.y + 5), lab, 10, t.muted, "semibold")
         gui.text((r.x + 7, r.y + 18), val, 14, t.text, "bold", max_w=r.w - 10)
-        sparkline(gui, (r.x + 7, r.y + 44, r.w - 14, 22), vals, col)
+        _magnifier(gui, (r.right - 11, r.y + 11), t.gold if hov else mix(t.muted, t.panel, 0.3))
+        col = stat_color(t, key)
+        sparkline(gui, (r.x + 7, r.y + 44, r.w - 14, 22), [h[STAT_COL[key]] for h in hist], col)
+        if hov:
+            gui.tooltip = "누르면 턴별 추이를 크게 봅니다"
+            if gui.clicked:
+                gui.clicked = False
+                app.modal = ("stat_chart", key)
     y += 82
     # 핵심 지표: 행복도(명목·실질), 군 전력(사기), 국력(패권), 전쟁 피로(턴당 변화)
     ww = f.war_weary
@@ -1592,11 +1630,11 @@ def draw_energy_tab(app, body):
                 app.changed()
 
     yy = section(gui, x, yy, w, f"발전소 {len(plants)}곳 · 연료 최대 {sum(r.b['power'] for r in plants)}/턴 "
-                 f"(석탄→전기 {g.power_elec(pid, 'coal')}, 석유→{g.power_elec(pid, 'oil')})")
+                 f"(석탄 1→전기 {g.power_elec(pid, 'coal', 1):g}~{g.power_elec(pid, 'coal', 5):g}, 석유는 두 배 · 단계별)")
     for r in plants:
         u = plan["plants"].get(r.id, {})
         gui.text((x, yy), f"{app.world.regions[r.id].name} · {r.b['power']}단계", 12, weight="semibold", max_w=w - 90)
-        gui.text((x + w, yy), f"전기 +{u.get('elec_out', 0)}", 12, t.good if u.get("elec_out") else t.muted,
+        gui.text((x + w, yy), f"전기 +{u.get('elec_out', 0):.1f}", 12, t.good if u.get("elec_out") else t.muted,
                  anchor="topright")
         steppers(r, "p", (("coal", "석탄"), ("oil", "석유")), r.b["power"], u)
         yy += row_h
@@ -1627,7 +1665,7 @@ def draw_energy_tab(app, body):
     fy += 22
     p_coal = sum(a["coal"] for a in plan["plants"].values())
     p_oil = sum(a["oil"] for a in plan["plants"].values())
-    p_elec = sum(a["elec_out"] for a in plan["plants"].values())
+    p_elec = plan.get("elec_gen_int", 0)          # 전국 발전량 합계의 정수 부분
     fu = {k: sum(a[k] for a in plan["factories"].values()) for k in ("coal", "oil", "elec")}
     st, mi, af = plan["stock"], plan["mined"], plan["after"]
     rows = [("① 이번 턴 확보", (st["coal"], st["oil"], st["elec"]), False),

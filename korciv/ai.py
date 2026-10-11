@@ -244,7 +244,8 @@ def visible_hostile_power(g, fid, loc):
 
 def region_defense(g, fid, rid):
     rr = g.regions[rid]
-    d = sum(C.UNITS[k]["df"] * n for a in g.armies_at(rid, fid) for k, n in a.units.items())
+    d = sum(C.UNITS[k]["df"] * n for a in g.armies_at(rid, fid) for k, n in a.units.items()
+            if k not in C.NO_GROUND_COMBAT)                 # 포병·공군은 지상 방어력 0
     best_line = max(rr.lines.values(), default=0)
     return d * (1 + C.LINE_BONUS * best_line)
 
@@ -874,6 +875,12 @@ def _social(g, f):
         D.denounce(g, fid, max(cands)[1])
 
 
+def _friend_blocks(g, fid, target) -> bool:
+    """우호 선언 직후(쿨타임 동안)에는 그 나라에 선전포고하지 않을 확률이 있다(직후 100% → 12턴째 약 50%)."""
+    p = D.friend_war_block(g, fid, target)
+    return p > 0 and g.rng.random() < p
+
+
 def _consider_war(g, f):
     """선전포고: 우호도가 호전성별 문턱 아래인 이웃 중, 보이는 전력·돌파 지점·얻을 가치를 따져 결정."""
     fid = f.id
@@ -991,6 +998,8 @@ def _consider_war(g, f):
             goals = [n for n in site_regions if g.regions[n].owner == o][:2] + goals[:2]
         if s > best_s:
             best, best_s, best_goals = o, s, goals
+    if best is not None and _friend_blocks(g, fid, best):
+        best = None
     if best is not None:
         ok, _ = D.declare_war(g, fid, best)
         if not ok and D.coalition_consent(g, fid, best)[2]:
@@ -1018,6 +1027,8 @@ def _p3_harass_war(g, f):
     if why:
         b = st.setdefault("harass_block", {})
         b[why] = b.get(why, 0) + 1
+        return
+    if _friend_blocks(g, fid, t):
         return
     if D.has_nonaggr(g, fid, t):
         D.break_nonaggr(g, fid, t)           # 승리가 아주 임박하면 불가침을 깨고서라도
@@ -1073,6 +1084,8 @@ def _follower_wars(g, f):
             joins.append((len(set(t)), x, sorted(set(t))))
     if joins:
         _, x, t = max(joins)
+        if _friend_blocks(g, fid, x):
+            return
         ok, _ = D.declare_war(g, fid, x, reason="강대국 편승 참전")
         if ok:
             f.ai.setdefault("war_goals", {})[x] = t[:4]
@@ -1105,6 +1118,8 @@ def _follower_wars(g, f):
         blk["대상 없음"] = blk.get("대상 없음", 0) + 1
         return
     _, _, x, t = max(cands)
+    if _friend_blocks(g, fid, x):
+        return
     ok, msg = D.declare_war(g, fid, x, reason="연합 공동 선전포고")
     if ok:
         f.ai.setdefault("war_goals", {})[x] = t[:4]
@@ -1352,6 +1367,32 @@ def _army_orders(g, f, threat):
                        if any(g.regions[n].owner not in (NEUTRAL, fid) for n in w.land_adj[r.id])}
     # 중립 지역 동시 점령에서 병력 규모(최대 체력 합)가 밀리면, 가치·중요도가 높은 곳에 이웃 병력을 더 보낸다
     contest = occ_contests(g, fid) if f.is_ai and not crisis else {}
+    # 전선(v1.2.0): 전쟁 상대와 맞닿은 내 지역마다 전투 병력을 두어 끊어지지 않게 한다(한 덩어리로 몰지 않는다)
+    front_set, need, cover = set(), {}, {}
+    if at_war and f.is_ai:
+        wf = war_front(g, fid)
+        front_set = set(wf)
+        pool = sum(_front_count(a) for a in armies)
+        need = front_need(g, fid, wf, pool)
+        for a in armies:
+            if a.loc in front_set:
+                cover[a.loc] = cover.get(a.loc, 0) + _front_count(a)
+
+    def leave_ok(a, kill=False):
+        """a 가 전선 칸을 떠나도 되는가: 남는 전투 병력이 없으면 1개를 떼어 남긴다(그럴 수 없으면 점령할 때만)."""
+        if a.loc not in front_set:
+            return True
+        if cover.get(a.loc, 0) - _front_count(a) >= 1:
+            cover[a.loc] -= _front_count(a)
+            return True
+        if _front_count(a) >= 2 and a.count() >= 2:
+            if _split_front(g, a, 1) is not None:
+                cover[a.loc] = 1
+                return True
+        if kill:
+            cover[a.loc] = cover.get(a.loc, 0) - _front_count(a)
+            return True
+        return False
     for a in armies:
         if a.id not in g.armies:
             continue
@@ -1417,7 +1458,7 @@ def _army_orders(g, f, threat):
             elif a.count() == a.units["art"] and _art_tactic(g, fid, a):
                 continue
         reach = g.reachable(a)
-        best, best_u, best_mode = None, 0.0, "assault"
+        best, best_u, best_mode, best_kill = None, 0.0, "assault", False
         for node, opt in reach.items():
             if opt["action"] != "attack" or w.is_sea(node):
                 continue
@@ -1458,8 +1499,8 @@ def _army_orders(g, f, threat):
                 elif u > 0:
                     u *= leader_bias(g, fid, mode)          # 지도자 성향: 돌격/기습
                 if u > best_u:
-                    best, best_u, best_mode = node, u, mode
-        if best:
+                    best, best_u, best_mode, best_kill = node, u, mode, kill
+        if best and leave_ok(a, best_kill):
             g.order_army(a.id, best, best_mode)
             continue
         # 육군 공격이 불리하면 들이받지 않고 포병으로 먼저 깎는다(선제 폭격)
@@ -1472,11 +1513,11 @@ def _army_orders(g, f, threat):
                                            -visible_hostile_power(g, fid, n)))
                 g.order_army(a.id, strong[0], force_bombard=True)
                 continue
-        # 빈 적지·중립지 점령
+        # 빈 적지·중립지 점령(빈 적지는 들어서면 바로 차지한다)
         for node, opt in reach.items():
             if opt["action"] == "move" and not w.is_sea(node) and g.hostile(fid, g.regions[node].owner) \
                     and node not in annexing and (neutral_ok or g.regions[node].owner != NEUTRAL) \
-                    and not g.rival_ahead(fid, node):
+                    and not g.rival_ahead(fid, node) and leave_ok(a, g.regions[node].owner != NEUTRAL):
                 g.order_army(a.id, node)
                 break
         if a.order:
@@ -1522,6 +1563,12 @@ def _army_orders(g, f, threat):
                 if step and step != a.loc:
                     g.order_army(a.id, step)
                     continue
+        # 전쟁 전선 채우기: 모자란 전선 칸부터 필요한 만큼 나눠 보내고, 전선 칸의 부대는 자리를 지킨다
+        if front_set and rr.owner == fid:
+            if _fill_front(g, fid, a, front_set, need, cover):
+                continue
+            if a.loc in front_set:
+                continue
         # 전선으로 이동: 1개짜리 수비대는 전쟁 중 후방일 때만 움직인다
         if a.count() <= 1 and (not at_war or a.loc in front):
             continue
@@ -2166,6 +2213,133 @@ def _nearest_front(g, fid, start, front, threat):
     return None
 
 
+FRONT_UNITS = ("inf", "tank")        # 전선을 지키는 병종(포병·공군은 지상 방어력 0)
+
+
+def _front_count(a) -> int:
+    return sum(a.units.get(k, 0) for k in FRONT_UNITS)
+
+
+def war_front(g, fid) -> list:
+    """전쟁 상대 땅과 육상으로 맞닿은 내 지역(끊어지지 않게 지켜야 할 전선)."""
+    en = set(D.enemies(g, fid))
+    if not en:
+        return []
+    w = g.world
+    return [r.id for r in g.regions_of(fid) if any(g.regions[n].owner in en for n in w.land_adj[r.id])]
+
+
+def front_need(g, fid, front, pool) -> dict:
+    """전선 칸마다 둘 전투 병력(보병·전차) 수. 칸마다 최소 1, 남는 병력(pool 의 AI_FRONT_SHARE)은
+    맞닿은 적 병력이 많은 칸에 더 준다. 병력이 칸 수보다 적으면 적이 많은 칸부터 1씩."""
+    if not front:
+        return {}
+    w = g.world
+    en = set(D.enemies(g, fid))
+    cap = g.factions[fid].capital
+    wt = {}
+    for c in front:
+        e = sum(_front_count(a) + 0.5 * a.units.get("art", 0) for n in w.land_adj[c]
+                if g.regions[n].owner in en or g.regions[n].owner == NEUTRAL
+                for a in (g.hostile_units_at(fid, n) if g.is_visible(fid, n) else ()))
+        wt[c] = 1.0 + e + (2.0 if c == cap else 0.0)
+    order = sorted(front, key=lambda c: (-wt[c], c))
+    if pool < len(front):
+        return {c: (1 if i < pool else 0) for i, c in enumerate(order)}
+    need = {c: 1 for c in front}
+    extra = max(0, int(pool * C.AI_FRONT_SHARE) - len(front))
+    tot = sum(wt[c] - 1.0 for c in front)
+    if extra > 0 and tot > 0:
+        for c in front:
+            need[c] += int(extra * (wt[c] - 1.0) / tot)
+    return need
+
+
+def _split_front(g, a, n):
+    """a 에서 전투 병력 n 개를 떼어 새 부대로(보병 먼저). 떼어 낸 부대(못 떼면 None)."""
+    if n <= 0 or n >= a.count():
+        return None
+    take = {}
+    for k in ("inf", "tank"):
+        t = min(a.units.get(k, 0), n - sum(take.values()))
+        if t > 0:
+            take[k] = t
+    if not take:
+        return None
+    b, _ = g.split_army(a.id, take)
+    return b
+
+
+def _land_dist(g, fid, start, limit=12) -> dict:
+    """내 영토만 거쳐 가는 육상 거리."""
+    from collections import deque
+    dist = {start: 0}
+    q = deque([start])
+    while q:
+        u = q.popleft()
+        if dist[u] >= limit:
+            continue
+        for v in g.world.land_adj[u]:
+            if v not in dist and g.regions[v].owner == fid:
+                dist[v] = dist[u] + 1
+                q.append(v)
+    return dist
+
+
+def _send(g, fid, a, dest, reach) -> bool:
+    if dest == a.loc:
+        return False
+    if reach.get(dest, {}).get("action") == "move":
+        return g.order_army(a.id, dest)[0]
+    step = _step_toward(g, fid, a.loc, dest, reach)
+    return bool(step) and step != a.loc and g.order_army(a.id, step)[0]
+
+
+def _fill_front(g, fid, a, front_set, need, cover):
+    """전선 채우기: a 가 전선 칸에 있으면 넘치는 만큼만 비어 있는 이웃 전선 칸으로 보내고,
+    후방에 있으면 모자란 전선 칸(모자란 수 / (1 + 거리)가 큰 곳)부터 필요한 만큼 떼어 보낸다.
+    a 가 어떤 명령을 받았으면(전부 또는 일부) True."""
+    if _front_count(a) == 0:
+        return False
+    loc = a.loc
+    dist = _land_dist(g, fid, loc)
+    deficit = {c: need[c] - cover.get(c, 0) for c in front_set if need.get(c, 0) > cover.get(c, 0) and c in dist}
+    if loc in front_set:
+        spare = cover.get(loc, 0) - need.get(loc, 0)
+        if spare <= 0 or not deficit:
+            return False
+        # 넘치는 병력은 가까운(3칸 안) 빈 전선 칸으로만 옆으로 퍼진다
+        deficit = {c: d for c, d in deficit.items() if dist[c] <= 3}
+    else:
+        spare = _front_count(a)
+    moved = False
+    reach = None
+    while spare > 0 and deficit and a.id in g.armies and not a.order:
+        dest = max(deficit, key=lambda c: (deficit[c] / (1 + dist[c]), -dist[c], c))
+        n = min(spare, deficit[dest])
+        reach = reach or g.reachable(a)
+        whole = n >= _front_count(a) and loc not in front_set
+        b = a if whole else _split_front(g, a, n)
+        if b is None:
+            b, n = a, a.count()
+        if not _send(g, fid, b, dest, reach):
+            if b is not a:
+                g.merge_armies(a.id, b.id)
+            del deficit[dest]
+            continue
+        moved = True
+        cover[dest] = cover.get(dest, 0) + n
+        if loc in cover:
+            cover[loc] -= n
+        spare -= n
+        deficit[dest] -= n
+        if deficit[dest] <= 0:
+            del deficit[dest]
+        if b is a:
+            break
+    return moved
+
+
 def _step_toward(g, fid, start, dest, reach):
     from collections import deque
     prev = {dest: None}
@@ -2187,10 +2361,8 @@ def fuel_balance(g, fid) -> dict:
     mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
     plants, facts = g.energy_sites(fid)
     cap = sum(r.b["power"] for r in plants)
-    conv_oil = min(cap, mined["oil"])
-    conv_coal = min(cap - conv_oil, mined["coal"])
-    supply = (mined["elec"] + g.power_elec(fid, "oil") * conv_oil + g.power_elec(fid, "coal") * conv_coal
-              + (mined["coal"] - conv_coal) + (mined["oil"] - conv_oil))
+    gen, conv_oil, conv_coal = g.elec_from_fuel(fid, mined["oil"], mined["coal"])
+    supply = (mined["elec"] + gen + (mined["coal"] - conv_coal) + (mined["oil"] - conv_oil))
     demand = sum(r.b["factory"] for r in facts)
     return {"supply": supply, "demand": demand, "spare": supply - demand,
             "plant_room": cap - conv_oil - conv_coal, "raw_left": mined["coal"] - conv_coal + mined["oil"] - conv_oil}
@@ -2349,12 +2521,15 @@ def _slots(g, f, threat, military=True):
             dy = C.BANK_OUTPUT * R.g(pb) * g.mods(fid).mult("output_bank") * g.mods(fid).mult("output_prod")
             gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1) * prod_k * place_k
             cands.append((gain / cost, r.id, "build", "port", None, cost / turns))
-        if r.b["power"] < 5 and fuel["spare"] < 0 and fuel["raw_left"] > 0:
-            # 발전소: 공장 연료가 모자라고 발전소에 못 넣은 석탄·석유가 남을 때(석탄 1 → 공장 연료 2)
+        if r.b["power"] < 5 and fuel["spare"] < 0 and (fuel["raw_left"] > 0 or r.b["power"] > 0):
+            # 발전소: 공장 연료가 모자랄 때. 새 칸은 발전소에 못 넣은 석탄·석유가 남을 때만 쓸모(석탄 1 → 전기 2~3),
+            # 단계를 올리면 이미 넣는 연료의 전기도 늘어난다(2 → 2.2 → 2.4 → 2.6 → 3)
             lv = r.b["power"] + 1
             cost = R.prod_building_cost("power", lv, info.power_site)
             turns = g.build_time(fid, "power", R.prod_building_turns(lv))
-            gain = unit_val * (g.power_elec(fid, "coal") - 1) * max(0, C.AI_UTILITY_HORIZON - turns)
+            up = (g.power_elec(fid, "coal", lv) - g.power_elec(fid, "coal", lv - 1)) * r.b["power"] if r.b["power"] else 0.0
+            new = (g.power_elec(fid, "coal", lv) - 1) if fuel["raw_left"] > 0 else 0.0
+            gain = unit_val * (new + up) * max(0, C.AI_UTILITY_HORIZON - turns)
             cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
                           r.id, "build", "power", None, cost / turns))
         if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
@@ -2554,6 +2729,15 @@ def _slots(g, f, threat, military=True):
                 best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
                 if g.start_project(fid, best.id, "science", step)[0] and spr == "science":
                     best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
+            elif step == "propellant":
+                # 정유공장 5단계 지역이 없으면 석유 지역의 정유공장을 가장 높은 곳부터 올린다
+                pool_o = [r for r in idle if g.info(r.id).is_oil and r.b["extract"] < 5]
+                if pool_o:
+                    r0 = max(pool_o, key=lambda r: (r.b["extract"], r.pop))
+                    lv = r0.b["extract"] + 1
+                    cost = R.prod_building_cost("extract", lv, g.info(r0.id).power_site)
+                    turns = g.build_time(fid, "extract", R.prod_building_turns(lv))
+                    cands.append((3.0, r0.id, "build", "extract", None, cost / turns))
             elif step in ("booster", "module", "budget"):
                 # 공장(예산 편성은 은행) 5단계 지역이 없으면 가장 높은 곳부터 올린다
                 bk = "bank" if step == "budget" else "factory"
@@ -2705,10 +2889,8 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
         if start(r, "power", cost=R.prod_building_cost("power", r.b["power"] + 1, g.info(r.id).power_site)):
             room -= 1
     # ③ 공장: 공장의 전기 소비(단계 합)가 전기 생산(자체 발전 + 발전소 변환)에 닿을 때까지
-    cap = sum(r.b["power"] for r in plants)
-    conv_oil = min(cap, mined["oil"])
-    conv_coal = min(cap - conv_oil, mined["coal"])
-    elec = mined["elec"] + g.power_elec(fid, "oil") * conv_oil + g.power_elec(fid, "coal") * conv_coal
+    gen, conv_oil, conv_coal = g.elec_from_fuel(fid, mined["oil"], mined["coal"])
+    elec = mined["elec"] + gen
     need = elec - sum(r.b["factory"] for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
     for r in sorted((r for r in pool if r.id not in used and r.b["factory"] < 5),
                     key=lambda r: (-r.b["factory"], -r.pop, r.id)):
