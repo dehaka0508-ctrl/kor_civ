@@ -2406,7 +2406,7 @@ def test_starts_spread_and_no_random_islands():
                 need = 7 if {g.world.regions[a].do8, g.world.regions[b].do8} & set(C.START_WIDE_DO8) else 6
                 assert g._land_dist(a, b, need) >= need
         isl |= {r for r in g.world.order if g.world.regions[r].island == "무연륙 섬"}
-    assert len(isl) == 4                                  # 제주·서귀포·울릉·인천 옹진
+    assert len(isl) == 3
     # 직접 고르면 섬에서도 시작할 수 있다
     jeju = next(r for r in isl if "서귀포" in g.world.regions[r].name)
     g = new_game(player_start=jeju, n_enemies=3)
@@ -2463,7 +2463,7 @@ def test_ai_phase1_rally_point():
 
 def test_ai_phase1_deficit_builds_production():
     from korciv import ai
-    g = new_game(player_start="S002", n_enemies=1)
+    g = new_game(player_start="S002", n_enemies=1, ai_starts=["S049"])   # 대구 중구(시작 위치를 고정)
     fid = 1
     f = g.factions[fid]
     _neutral_ai(g, fid)
@@ -3570,8 +3570,9 @@ def test_ai_front_spreads_along_war_border():
     cap = g.factions[0].capital
     near = sorted(w.land_adj[cap])
     _own(g, 0, near[:2])
-    for n in near[:2]:
-        _own(g, 1, [x for x in sorted(w.land_adj[n]) if g.regions[x].owner == NEUTRAL][:1])
+    for n in near[:2]:                                   # 수도와는 맞닿지 않은 칸을 적에게(수도는 후방)
+        _own(g, 1, [x for x in sorted(w.land_adj[n]) if g.regions[x].owner == NEUTRAL
+                    and x != cap and x not in w.land_adj[cap]][:1])
     D.declare_war(g, 0, 1)
     front = ai.war_front(g, 0)
     assert len(front) >= 2
@@ -3592,9 +3593,10 @@ def test_ai_front_spreads_along_war_border():
     assert len(sent) >= 2                               # 한 덩어리로 가지 않는다
 
 
-def test_incheon_ongjin_island_start_gets_landing_ship():
+def test_incheon_ongjin_no_island_bonus():
+    """인천 옹진은 연륙 섬: 시작해도 상륙함·항구 보너스 없음."""
     rid = next(r for r, i in new_game().world.regions.items() if i.name == "인천 옹진")
     g = new_game(player_start=rid, n_enemies=2)
     assert g.player.capital == rid
-    assert any(a.units.get("lst") for a in g.armies_at(rid, 0))
+    assert not any(a.units.get("lst") for a in g.armies_at(rid, 0)) and not g.regions[rid].b["port"]
     assert g.region_value(rid)[0] < 6 and g.region_value(g.world.name_to_id["황남 옹진군"])[0] < 6

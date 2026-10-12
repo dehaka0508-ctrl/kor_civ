@@ -19,7 +19,7 @@ def test_geometry_for_every_region():
 
 def test_bridges_and_islands():
     w = load_world()
-    assert len(w.bridges) == 17
+    assert len(w.bridges) == 18
     for a, b in (("인천 영종구", "인천 서해구"), ("경남 거제시", "부산 강서구"), ("전북 군산시", "전북 부안군")):
         ia, ib = w.name_to_id[a], w.name_to_id[b]
         assert ib in w.land_adj[ia]
@@ -85,11 +85,12 @@ def test_jeju_sea_only_next_to_south_west_sea():
 
 
 def test_ongjin_split():
-    """황남 옹진(반도)과 인천 옹진(섬)은 따로: 인천 옹진은 제주·울릉처럼 무연륙 섬 시작(시작 항구)."""
+    """황남 옹진(반도)과 인천 옹진(섬)은 따로. 인천 옹진은 영흥도–대부도(안산) 연륙교로 이어진 연륙 섬(섬 보너스 없음)."""
     w = load_world()
     n = w.name_to_id
     hw, ic = w.regions[n["황남 옹진군"]], w.regions[n["인천 옹진군"]]
     assert hw.ns == "북" and ic.ns == "남" and ic.province == "인천"
-    assert ic.island == "무연륙 섬" and ic.start_port and w.land_adj[ic.id] == set()
+    assert ic.island == "연륙 섬" and not ic.start_port
+    assert w.land_adj[ic.id] == {n["경기 안산시"]} and w.is_bridge(ic.id, n["경기 안산시"])
     assert w.land_adj[hw.id] and ic.seas == ("SEA2",) and hw.seas == ("SEA1", "SEA2")
     assert ic.power_site and "꽃게" in ic.specialties and ic.scenic == "두무진"
