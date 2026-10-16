@@ -11,6 +11,7 @@ from . import ai_phase as PH
 from . import ai_strategy as ST
 from . import config as C
 from . import diplomacy as D
+from . import negotiation as NG
 from . import rules as R
 from .leaders import GOV_AGGR_ADJ, LEADER_BY_KEY
 from .state import NEUTRAL
@@ -312,52 +313,38 @@ def mil_oil_want(g, f) -> int:
     return max(0, int(C.AI_TRADE_MIL_OIL - have + 0.999))
 
 
-def ai_accepts_trade(g, ai, other, res, n, price, ai_sells) -> bool:
-    """AI 가 다른 나라의 거래 제의(res 턴당 n개 × 12턴, 개당 price)를 받아들일까."""
-    if D.at_war(g, ai, other) or D.opinion(g, ai, other) < C.AI_TRADE_MIN_OP:
-        return False
-    if ai_sells:
-        have = D.spec_supply(g, ai) if res == "specialty" else g.energy_supply(ai)[res]   # 계약으로 내주는 몫은 뺀 양
-        if n > have:
-            return False
-        cost = D.spec_cost(g, ai, n) / n if res == "specialty" else energy_unit_cost(g, ai, res, n)
-        return price >= cost
-    f = g.factions[ai]
-    if f.money < price * n * 3:
-        return False
-    if res == "specialty":
-        val = D.spec_price(g, ai)
-    else:
-        val = energy_unit_value(g, ai, res, n, military=mil_oil_want(g, f) > 0)
-    return price <= val
-
-
-def _propose_trade(g, fid, other, res, n, price, sell):
-    """fid 가 other 에게 res 턴당 n개 × 12턴을 개당 price에 팔겠다(sell)·사겠다고 제의.
-    상대가 AI면 바로 판단하고, 플레이어면 다음 턴 시작에 제안 창으로 묻는다."""
-    if n <= 0 or price <= 0:
-        return False
-    seller, buyer = (fid, other) if sell else (other, fid)
-    o = g.factions[other]
-    if o.is_ai:
-        if ai_accepts_trade(g, other, fid, res, n, price, ai_sells=not sell):
-            D.make_trade(g, seller, buyer, res, n, price, fid)
-            return True
-        return False
+def _offer_to_player(g, fid, pid, res, n, sell) -> bool:
+    """플레이어에게 거래를 제의한다(v1.2.12): 협상을 열어 AI 의 첫 값을 부르고, 다음 턴 시작에 제안 창으로 묻는다.
+    플레이어는 수락·거절하거나 값을 불러 협상할 수 있다."""
     key = f"trade_{res}_{'s' if sell else 'b'}"
     f = g.factions[fid]
     if g.turn - f.ai.get(key, -99) < C.AI_TRADE_EVERY * 2:
         return False
+    st = NG.start(g, fid, pid, res, n, ai_sells=sell, init="ai")
+    if st["status"] != "open":
+        return False
     f.ai[key] = g.turn
-    g.pending_proposals.append({"from": fid, "kind": "trade", "res": res, "n": int(n), "price": round(price, 1),
-                                "sell": bool(sell)})
+    g.pending_proposals.append({"from": fid, "kind": "trade", "res": res, "n": st["n"], "price": st["price"],
+                                "sell": bool(sell), "nego": st})
     return True
 
 
+def _trade_with(g, fid, other, res, n, sell) -> bool:
+    """fid 가 other 에게 res 턴당 n개 거래를 제의(sell: fid 가 판다). AI 끼리는 유보 가격이 겹치면 바로 맺는다."""
+    if n < 1:
+        return False
+    if g.factions[other].is_ai:
+        seller, buyer = (fid, other) if sell else (other, fid)
+        return NG.ai_deal(g, seller, buyer, res, n) is not None
+    return _offer_to_player(g, fid, other, res, n, sell)
+
+
 def _trade_offers(g, f):
-    """4턴마다: 남는 지하자원은 가장 값을 쳐 줄 나라에 팔고, 공장 빈 칸·군 생산 석유가 모자라면 남는 나라에서
-    산다(값은 파는 쪽 손해와 사는 쪽 가치의 가운데: 사는 쪽이 공장에 넣었을 때 금액 이하, 파는 쪽 시장 판매가 이상).
-    평균 행복도가 낮으면 이웃에게 특산물을 산다(이미 그 나라 지역에 공급하던 것도)."""
+    """4턴마다 자원·특산물 거래를 제의한다(v1.2.12 협상).
+    ① 지하자원 판매: 자기 발전소·공장에 다 넣고 남는 몫을, 빈 공장이 있어 가장 값을 쳐 줄 나라에.
+    ② 지하자원 구매: 빈 공장이 있고, 그걸 넣어 늘어나는 턴당 세수가 있으며 재정이 버틸 때(군 생산 석유도).
+    ③ 특산물 판매: 행복도가 높거나 돈이 급하면, 남는 특산물을 행복도가 낮은 나라에.
+    ④ 특산물 구매: 행복도가 낮거나 반란 문턱이 가까우면, 남는 특산물이 있는 이웃에게."""
     fid = f.id
     if (g.turn + fid) % C.AI_TRADE_EVERY:
         return
@@ -365,70 +352,77 @@ def _trade_offers(g, f):
     if not partners:
         return
     busy = {(c["from"], c["to"], c["res"]) for c in D.contracts(g)}
-    sup = g.energy_supply(fid)
-    _, left, room = D.energy_eval(g, fid, sup)
-    # 1) 남는 석유·석탄·전기 팔기
+    urg = NG.money_urgency(g, fid)
+    # ① 남는 석유·석탄·전기 팔기
     for k in ("oil", "elec", "coal"):
-        n = int(left[k])
+        n = NG.surplus(g, fid, k)
         if n < 1:
             continue
-        floor = energy_unit_cost(g, fid, k, n)
         best = None
         for x in partners:
             if (fid, x, k) in busy:
                 continue
-            val = energy_unit_value(g, x, k, n, military=g.factions[x].is_ai and mil_oil_want(g, g.factions[x]) > 0)
-            if val > floor * C.AI_TRADE_GAIN and (best is None or val > best[0]):
-                best = (val, x)
-        if best:
-            _propose_trade(g, fid, best[1], k, n, (floor + best[0]) / 2, sell=True)
-            break
-    # 2) 공장 빈 칸·군 생산 석유가 모자라면 사기
-    want_oil = mil_oil_want(g, f)
-    for k in ("elec", "coal", "oil"):
-        need = room if k != "oil" else max(room, want_oil)
-        if k == "oil" and not room:
-            need = want_oil
-        if need < 1:
-            continue
-        best = None
-        for x in partners:
-            if (x, fid, k) in busy:
-                continue
-            _, lx, _ = D.energy_eval(g, x, g.energy_supply(x))
-            q = int(min(need, lx[k]))
+            q = min(n, NG.factory_room(g, x))
             if q < 1:
                 continue
-            cost = energy_unit_cost(g, x, k, q)
-            val = energy_unit_value(g, fid, k, q, military=want_oil > 0)
-            if val > cost * C.AI_TRADE_GAIN and (best is None or val - cost > best[0]):
-                best = (val - cost, x, q, cost, val)
-        if best:
-            _, x, q, cost, val = best
-            if f.money >= (cost + val) / 2 * q * 3:
-                _propose_trade(g, fid, x, k, q, (cost + val) / 2, sell=False)
+            val = NG.buy_unit_value(g, x, k, q)
+            if val > 0 and (best is None or val > best[0]):
+                best = (val, x, q)
+        if best and _trade_with(g, fid, best[1], k, best[2], sell=True):
             break
-    # 3) 불행하면 이웃에게 특산물 사기
-    if g.avg_happiness(fid) < C.AI_SPEC_BUY_H:
+    # ② 빈 공장·군 생산 석유가 모자라면 사기(늘어나는 세수와 재정으로 판단)
+    room = NG.factory_room(g, fid)
+    want_oil = mil_oil_want(g, f)
+    if urg < 0.7:
+        for k in ("elec", "coal", "oil"):
+            need = room if k != "oil" else max(room, want_oil)
+            if need < 1:
+                continue
+            best = None
+            for x in partners:
+                if (x, fid, k) in busy:
+                    continue
+                q = int(min(need, NG.surplus(g, x, k)))
+                if q < 1:
+                    continue
+                val = NG.buy_unit_value(g, fid, k, q)
+                if k == "oil" and want_oil:
+                    val = max(val, C.MARKET_BUY["oil"] * C.MONEY_SCALE)
+                if val > 0 and (best is None or val > best[0]):
+                    best = (val, x, q)
+            if best and f.money >= best[0] * best[2] * 3:
+                _trade_with(g, fid, best[1], k, best[2], sell=False)
+                break
+    # ③ 행복도가 높거나 돈이 급하면 남는 특산물을 판다
+    spare = NG.surplus(g, fid, "specialty")
+    if spare >= 1 and (NG.happy_level(g, fid) >= 0.4 or urg >= 0.4):
+        cands = []
+        for x in partners:
+            if (fid, x, "specialty") in busy:
+                continue
+            w = NG.spec_want(g, x)
+            if w >= 1:
+                cands.append((g.avg_happiness(x), x, min(spare, w)))
+        if cands:
+            _, x, q = min(cands)
+            _trade_with(g, fid, x, "specialty", q, sell=True)
+    # ④ 불행하거나 반란이 가까우면 이웃에게 특산물을 산다
+    prox = NG.rebel_proximity(g, fid)
+    if g.avg_happiness(fid) < C.AI_SPEC_BUY_H or prox > 0:
         regs = g.regions_of(fid)
-        want = min(C.AI_SPEC_BUY_MAX, sum(1 for r in regs if g.eff_happy(r) < C.AI_SPEC_BUY_H
-                                          and len(r.supplied) < C.SPECIALTY_MAX_TYPES))
+        want = min(C.AI_SPEC_BUY_MAX, max(NG.spec_want(g, fid), 1 if prox > 0 else 0))
         if want >= 1:
-            price = D.spec_price(g, fid)
             nbrs = {g.regions[n].owner for r in regs for n in g.world.land_adj[r.id]} - {NEUTRAL, fid}
             cands = []
             for x in partners:
                 if x not in nbrs or (x, fid, "specialty") in busy:
                     continue
                 q = min(want, D.spec_supply(g, x))
-                if q < 1:
-                    continue
-                cost = D.spec_cost(g, x, q) / q
-                if price >= cost:
-                    cands.append((cost, -q, x, q))
-            if cands and f.money >= price * min(c[3] for c in cands) * 3:
-                _, _, x, q = min(cands)
-                _propose_trade(g, fid, x, "specialty", q, price, sell=False)
+                if q >= 1:
+                    cands.append((-NG.surplus(g, x, "specialty"), x, q))
+            if cands:
+                _, x, q = min(cands)
+                _trade_with(g, fid, x, "specialty", q, sell=False)
 
 
 def _tax(g, f):

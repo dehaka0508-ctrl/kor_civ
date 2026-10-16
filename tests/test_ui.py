@@ -1216,3 +1216,39 @@ def test_artillery_right_click_opens_bombard_confirm(app):
     app.right_click(empty, (300, 300))
     assert app.modal is None and art2.loc == empty
     frame(app)
+
+
+def test_trade_negotiation_windows(app):
+    """v1.2.12: AI 의 거래 제의는 협상 창 — 값을 불러 역제의를 받거나 상대 값을 수락한다. 외교 창에서 먼저 협상도 연다."""
+    from korciv import diplomacy as D
+    from korciv import negotiation as NG
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    other = next(f.id for f in g.factions if f.id != pid)
+    g.dip.op[(other, pid)] = g.dip.op[(pid, other)] = 20.0
+    g.regions[g.factions[other].capital].b.update(factory=0, power=0)
+    g.regions[g.player.capital].b["factory"] = 3
+    g.energy_mined = lambda fid: {"oil": 0, "coal": 6, "elec": 0} if fid == other else {"oil": 0, "coal": 0, "elec": 0}
+    g._refresh_pools()
+    st = NG.start(g, other, pid, "coal", 3, ai_sells=True, init="ai")
+    assert st["status"] == "open"
+    g.pending_proposals.append({"from": other, "kind": "trade", "res": "coal", "n": st["n"], "price": st["price"],
+                                "sell": True, "nego": st})
+    frame(app)
+    assert app.active_modal() == "proposal"
+    g.player.money = 10 ** 6
+    assert _click_button(app, f"상대 값 수락 (개당 {st['price']:,.0f})")
+    assert st["status"] == "done" and D.contracts_between(g, pid, other)
+    assert _click_button(app, "닫기")
+    assert not g.pending_proposals
+    # 플레이어가 먼저: 외교 창 → [자원·특산물 협상] → [제안하기]
+    D.update_turn(g)
+    app.open_diplomacy(other)
+    assert _click_button(app, "자원·특산물 협상")
+    assert app.modal and app.modal[0] == "nego"
+    assert _click_button(app, "제안하기")
+    ui = app.nego
+    assert ui["st"] is not None and ui["st"]["hist"]
+    frame(app)
+    assert _click_button(app, "그만두기") or _click_button(app, "닫기")
+    assert app.modal and app.modal[0] == "diplomacy"

@@ -279,6 +279,17 @@ def draw_region_info(app, rect):
             nm = "해안" if bk == "coast" else app.world.regions[bk].short
             chips.append(f"방어선({nm}) {lv}")
     y = draw_chips(gui, x, y, w, chips or ["없음"])
+    ld = getattr(r, "lost_def", None)
+    if ld:
+        parts = []
+        if ld["lines"]:
+            parts.append(f"방어선 {len(ld['lines'])}곳(최고 {max(ld['lines'].values())}단계)")
+        for k, nm in (("shelter", "방공호"), ("aa", "대공포")):
+            if ld[k]:
+                parts.append(f"{nm} {ld[k]}단계")
+        who = g.seen_name(ld["fid"]) if ld["fid"] != pid else "우리"
+        y = gui.wrap((x, y + 2), f"점령으로 꺼진 방어 건물: {', '.join(parts)} — 저항·회복 동안 {who}이(가) 되찾으면 그대로, "
+                                 f"기간이 지나면 1단계씩 깎여 지금 주인 것이 됩니다.", w, 11, t.warn) + 4
     # 자원
     y = section(gui, x, y + 6, w, "자원·특산물")
     res = []
@@ -420,6 +431,13 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
         on = gui.checkbox((x, y, w, 24), "최대 단계까지 이어서 건설", getattr(p, "chain", False), size=12)
         if on != getattr(p, "chain", False):
             p.chain = on
+        y += 28
+    lp = getattr(p, "line_plan", None)
+    if p.key == "line" and lp:
+        on = gui.checkbox((x, y, w, 24), f"{app.game.seen_name(lp['nation'])} 쪽 국경 방어선 {lp['target']}단계까지 이어서",
+                          True, size=12)
+        if not on:
+            p.line_plan = None
         y += 28
     if p.kind == "unit":
         gui.text((x, y + 4), "이것 다음에 더 만들 수량", 12, t.muted)
@@ -662,6 +680,7 @@ def draw_military_tab(app, body):
     last = g.player.last
     if last.get("tax"):
         y = kv(gui, x, y, w, "세수 대비", f"{total / last['tax'] * 100:.0f}%")
+    y = _border_lines_section(app, x, y, w)
     y = section(gui, x, y + 10, w, "유닛 종류별 (누르면 부대 목록)")
     cols = (x + w - 150, x + w)
     gui.text((cols[0], y), "수", 11, t.muted, anchor="topright")
@@ -721,6 +740,60 @@ def draw_military_tab(app, body):
         gui.text((x, yy), "군사 유닛이 없습니다.", 13, t.muted)
     gui.end_scroll("military_tab", area, content)
     gui.text((x, body.bottom - 24), "부대 조종: 지도에서 지역을 눌러 [부대] 탭", 11, t.muted)
+
+
+def _border_lines_section(app, x, y, w):
+    """[군사] 탭: 맞닿은 나라를 고르면 그 나라 쪽 국경 방어선을 목표 단계까지 한꺼번에 짓는다(v1.2.12)."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    y = section(gui, x, y + 8, w, "국경 방어선 일괄 건설")
+    nbrs = g.border_nations(pid)
+    if not nbrs:
+        gui.text((x, y), "맞닿은 나라가 없습니다.", 12, t.muted)
+        return y + 22
+    sel = getattr(app, "border_nation", None)
+    ids = [o for o, *_ in nbrs]
+    if sel not in ids:
+        sel = app.border_nation = None
+    bw = (w - 6) / 2
+    for i, (o, n, lo, avg) in enumerate(nbrs):
+        cx, cy = x + (i % 2) * (bw + 6), y + (i // 2) * 30
+        war = D.at_war(g, pid, o)
+        if gui.button((cx, cy, bw, 26), ("⚔ " if war else "") + g.seen_name(o), "primary" if o == sel else "default",
+                      size=12, tooltip=f"맞닿은 경계 {n}곳 · 최저 {lo}단계 · 평균 {avg:.1f}단계"):
+            app.border_nation = sel = None if o == sel else o
+            app.border_target = None
+    y += ((len(nbrs) + 1) // 2) * 30 + 2
+    if sel is None:
+        gui.text((x, y), "나라를 고르면 그쪽 국경 방어선을 한꺼번에 짓습니다.", 11, t.muted, max_w=w)
+        return y + 20
+    _, n, lo, avg = next(v for v in nbrs if v[0] == sel)
+    tgt = getattr(app, "border_target", None) or min(C.DEF_BUILDINGS["line"]["max"], lo + 1)
+    gui.text((x, y + 4), f"경계 {n}곳 · 최저 {lo} · 평균 {avg:.1f}단계", 12, t.text, max_w=w - 130)
+    gui.text((x + w - 128, y + 4), "목표", 12, t.muted)
+    app.border_target = tgt = gui.stepper((x + w - 92, y, 92, 24), int(tgt), 1, C.DEF_BUILDINGS["line"]["max"], size=12)
+    y += 30
+    start, busy, done = g.border_line_plan(pid, sel, tgt)
+    per = sum(o["per_turn"] for _, _, o in start)
+    if gui.button((x, y, w, 30), f"착수: 지역 {len(start)}곳 (턴당 {per:,.0f})", "primary", enabled=bool(start),
+                  size=12, tooltip="지역마다 슬롯 1개라 가장 낮은 경계부터 짓고, 완공되면 같은 나라 쪽 다음 경계·단계를 "
+                                   "목표까지 이어서 짓습니다."):
+        k, skip = g.build_border_lines(pid, sel, tgt)
+        app.toast(f"{g.seen_name(sel)} 쪽 국경 방어선 {k}곳 착수(목표 {tgt}단계)"
+                  + (f" · 슬롯이 바쁜 지역 {skip}곳 제외" if skip else ""))
+        app.changed()
+    y += 34
+    note = []
+    if busy:
+        note.append(f"슬롯이 바쁜 지역 {busy}곳 제외")
+    if done:
+        note.append(f"이미 목표에 닿은 지역 {done}곳")
+    if note:
+        gui.text((x, y), " · ".join(note), 11, t.muted, max_w=w)
+        y += 18
+    return y
 
 
 def draw_army_tiles(app, x, y, w, here, merge):
@@ -1954,8 +2027,19 @@ def draw_energy_tab(app, body):
         fy += 20
         if label in ("① 이번 턴 확보", "④ 공장 투입"):
             gui.line(t.border, (x, fy - 2), (x + w, fy - 2))
-    sold = sum(int(af[k]) * g.sell_price(pid, k) for k in C.ENERGY)
-    gui.text((x, fy + 2), f"채굴·자체 발전 {mi['coal']:,.0f} / {mi['oil']:,.0f} / {mi['elec']:,.0f} · 자원은 쌓이지 않고, "
+    sold = sum(max(0, int(af[k])) * g.sell_price(pid, k) for k in C.ENERGY)
+    short = {k: -int(math.floor(af[k] + 1e-9)) for k in C.ENERGY if af[k] < -1e-9}
+    if short:                                       # 판매 계약으로 먼저 보낸 몫이 이번 턴 확보·발전보다 많다
+        cost = sum(n * C.MARKET_BUY[k] * C.MONEY_SCALE for k, n in short.items())
+        gui.text((x, fy + 2), "계약 부족분 " + ", ".join(f"{C.RESOURCE_NAMES[k]} {n}" for k, n in short.items())
+                 + f" → 턴 끝에 시장가로 구매(−{cost:,.0f})", 11, t.bad, "semibold", max_w=w)
+        fy += 18
+    sent = {k: v for k, v in getattr(g.player, "sent", {}).items() if v}
+    if sent:
+        gui.text((x, fy + 2), "판매 계약으로 먼저 보냄(① 확보에서 뺀 양): "
+                 + ", ".join(f"{C.RESOURCE_NAMES[k]} {v:,.0f}" for k, v in sent.items()), 11, t.muted, max_w=w)
+        fy += 18
+    gui.text((x, fy + 2), f"채굴·자체 발전 {mi['coal']:,.0f} / {mi['oil']:,.0f} / {mi['elec']:,.0f} · 판매 계약분을 먼저 보내고 "
              f"남는 양은 턴 종료 때 시장 판매(+{sold:,.0f})", 11, t.muted, max_w=w)
     fy += 20
     units = sum(a["units"] for a in plan["factories"].values())

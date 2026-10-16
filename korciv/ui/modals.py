@@ -1027,6 +1027,8 @@ def draw_active_modal(app):
         draw_proposal(app)
     elif name == "diplomacy":
         draw_diplomacy(app)
+    elif name == "nego":
+        draw_nego(app)
     elif name == "ranking":
         draw_ranking(app)
     elif name == "log":
@@ -1481,8 +1483,11 @@ def draw_proposal(app):
             g.pending_proposals.pop(0)
             D.add_opinion(g, fid, g.player_id, -3)
         return
+    if kind == "trade" and not D.at_war(g, fid, g.player_id):
+        _draw_trade_proposal(app, prop)
+        return
     if kind == "trade":
-        # AI의 자원·특산물 거래 제의: 턴당 n개 × 12턴, 개당 값은 받는 턴마다
+        # (예전 세이브의 수락·거절 제의 화면 — 협상 화면으로 바뀌어 쓰이지 않는다)
         res, n, price, sell = prop["res"], prop["n"], prop["price"], prop["sell"]
         pid = g.player_id
         if D.at_war(g, fid, pid):
@@ -1524,6 +1529,212 @@ def draw_proposal(app):
     if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
         g.pending_proposals.pop(0)
         D.add_opinion(g, fid, g.player_id, -3)
+
+
+# ------------------------------------------------------------------ 자원·특산물 협상(v1.2.12)
+NEGO_RES = ("oil", "coal", "elec", "specialty")
+
+
+def _nego_default_price(g, pid, fid, res, i_buy) -> int:
+    """처음 띄울 값: 지하자원은 시장 판매가 근처, 특산물은 (사면) 상대 특산물 값의 60%, (팔면) 내 특산물 값."""
+    if res == "specialty":
+        v = D.spec_price(g, fid) * 0.6 if i_buy else D.spec_price(g, pid)
+    else:
+        v = g.sell_price(fid if i_buy else pid, res) * (1.1 if i_buy else 1.4)
+    return max(1, int(round(v)))
+
+
+def open_nego(app, fid):
+    """외교 창의 [자원·특산물 협상]: 플레이어가 먼저 값을 부르는 협상."""
+    g = app.game
+    app.nego = {"fid": fid, "st": None, "buy": True, "res": "coal", "n": 1,
+                "price": _nego_default_price(g, g.player_id, fid, "coal", True), "msg": ""}
+    app.modal = ("nego", fid)
+
+
+def _draw_trade_proposal(app, prop):
+    """AI 가 먼저 낸 거래 제의: 수락·거절하거나 값을 불러 협상한다."""
+    g = app.game
+    fid, pid = prop["from"], g.player_id
+    st = prop.get("nego")
+    if st is None:                                   # 예전 세이브의 제의: 협상 상태를 새로 연다
+        from .. import negotiation as NG
+        st = NG.start(g, fid, pid, prop["res"], prop["n"], ai_sells=prop["sell"], init="ai")
+        if st["status"] == "open":
+            st["price"] = float(prop["price"])
+        prop["nego"] = st
+    ui = prop.setdefault("ui", {"fid": fid, "st": st, "buy": st["ai_sells"], "res": st["res"], "n": st["n"],
+                                "price": int(round(st.get("price", prop["price"]))),
+                                "msg": "" if st["status"] == "open" else st.get("why", "")})
+    if _draw_nego_window(app, ui, from_ai=True):
+        g.pending_proposals.pop(0)
+
+
+def draw_nego(app):
+    ui = getattr(app, "nego", None)
+    if not ui or not app.game.factions[ui["fid"]].alive:
+        close(app)
+        return
+    if _draw_nego_window(app, ui, from_ai=False):
+        fid = ui["fid"]
+        app.nego = None
+        app.open_diplomacy(fid)                      # 협상을 마치면 외교 창으로 돌아간다
+
+
+def _draw_nego_window(app, ui, from_ai):
+    """협상 창. 끝났으면(닫기·거절) True."""
+    from .. import negotiation as NG
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    pid, fid = g.player_id, ui["fid"]
+    f = g.factions[fid]
+    st = ui["st"]
+    r = modal_frame(app, 860, 600, f"거래 협상 — {g.seen_name(fid)}")
+    draw_flag(gui, (r.x + 24, r.y + 58, 30, 20), FL.faction_flag(f))
+    tough = NG.toughness(g, fid)
+    urg = NG.money_urgency(g, fid)
+    gui.text((r.x + 62, r.y + 58), f"{g.seen_leader(fid)} · 상대 우호도 {D.opinion(g, fid, pid):+.0f} · "
+             f"성향 {'깐깐함' if tough > 0.3 else ('온건함' if tough < -0.3 else '보통')} · "
+             f"재정 {'돈이 급함' if urg > 0.5 else ('넉넉함' if NG.money_comfort(g, fid) > 0.3 else '보통')}", 13, t.muted,
+             max_w=r.w - 90)
+    lx, lw = r.x + 24, 380
+    y = r.y + 92
+    started = st is not None
+    open_ = started and st["status"] == "open"
+    # ---- 거래 조건
+    if not started:
+        idx = gui.segmented((lx, y, lw, 30), ["내가 산다", "내가 판다"], 0 if ui["buy"] else 1, size=12)
+        nb = idx == 0
+        y += 38
+        ri = gui.segmented((lx, y, lw, 30), [NG.RES_NAMES[k] for k in NEGO_RES], NEGO_RES.index(ui["res"]), size=12)
+        nr = NEGO_RES[ri]
+        if nb != ui["buy"] or nr != ui["res"]:
+            ui["buy"], ui["res"], ui["n"] = nb, nr, 1
+            ui["price"] = _nego_default_price(g, pid, fid, nr, nb)
+        y += 40
+    else:
+        gui.text((lx, y), f"{'내가 산다' if st['ai_sells'] else '내가 판다'}: {NG.RES_NAMES[st['res']]}"
+                 f" (턴당 n개 × {C.CONTRACT_TURNS}턴)", 15, weight="bold")
+        y += 30
+    res, i_buy = ui["res"], ui["buy"]
+    mx_n = 30 if i_buy else max(1, NG.supply_total(g, pid, res))
+    gui.text((lx, y + 5), "턴당 수량", 13)
+    ui["n"] = gui.stepper((lx + 120, y, 150, 28), int(min(ui["n"], mx_n)), 1, mx_n, size=12) if open_ or not started \
+        else ui["n"]
+    if not (open_ or not started):
+        gui.text((lx + 195, y + 5), f"{ui['n']}", 13, weight="semibold", anchor="midtop")
+    y += 36
+    ref = max(1, _nego_default_price(g, pid, fid, res, i_buy))
+    step = max(1, int(round(ref * 0.05)))
+    gui.text((lx, y + 5), "개당 값", 13)
+    if open_ or not started:
+        ui["price"] = gui.stepper((lx + 120, y, 150, 28), int(ui["price"]), 1, max(ref * 20, 9999), step=step,
+                                  big=step * 5, size=12)
+        for i, (lab, k) in enumerate((("−10%", 0.9), ("+10%", 1.1))):
+            if gui.button((lx + 278 + i * 52, y, 48, 28), lab, size=11):
+                ui["price"] = max(1, int(round(ui["price"] * k)))
+    else:
+        gui.text((lx + 195, y + 5), f"{ui['price']:,}", 13, weight="semibold", anchor="midtop")
+    y += 36
+    n, p = int(ui["n"]), int(ui["price"])
+    gui.text((lx, y), f"턴당 {n * p:,} · {C.CONTRACT_TURNS}턴 합계 {n * p * C.CONTRACT_TURNS:,}"
+             + (" 지출" if i_buy else " 수입"), 13, t.accent, "semibold")
+    y += 26
+    # 참고 정보
+    info = []
+    if res == "specialty":
+        info.append(f"특산물 값(행복도 반영): 나 {D.spec_price(g, pid):,.0f} · 상대 {D.spec_price(g, fid):,.0f}")
+        if i_buy:
+            info.append(f"상대가 남기는 특산물 약 {NG.surplus(g, fid, 'specialty')}개/턴")
+        else:
+            info.append(f"내가 남기는 특산물 {NG.surplus(g, pid, 'specialty')}개/턴 · 상대 평균 행복도 "
+                        f"{g.avg_happiness(fid):+.0f}")
+    else:
+        info.append(f"시장: 살 때 {C.MARKET_BUY[res] * C.MONEY_SCALE:,.0f} · 팔 때 {g.sell_price(pid, res):,.0f}")
+        if i_buy:
+            room = NG.factory_room(g, pid)
+            v = NG.buy_unit_value(g, pid, res, max(1, min(n, room))) if room else 0
+            info.append(f"내 빈 공장 칸 {room} · 넣으면 개당 약 {v:,.0f}(산출×세율)")
+            info.append(f"상대가 남기는 양 약 {NG.surplus(g, fid, res)}개/턴 (넘으면 상대 공장 산출×세율 "
+                        f"{NG.avg_factory_unit(g, fid):,.0f}보다 비싸야)")
+        else:
+            info.append(f"내가 남기는 양 {NG.surplus(g, pid, res)}개/턴 · 팔 수 있는 양 {NG.supply_total(g, pid, res)}개/턴")
+            info.append(f"상대 빈 공장 칸 약 {NG.factory_room(g, fid)} (상대 산출×세율보다 비싸면 안 삼)")
+    for line in info:
+        y = gui.wrap((lx, y), line, lw, 12, t.muted) + 2
+    # ---- 협상 기록
+    hx, hw = lx + lw + 24, r.right - 24 - (lx + lw + 24)
+    gui.text((hx, r.y + 92), "협상", 14, weight="bold")
+    if started and st["status"] == "open":
+        gui.text((hx + hw, r.y + 94), f"상대: {NG.mood(st)}", 12, t.warn if st.get("final") else t.muted,
+                 anchor="topright")
+    box = pygame.Rect(hx, r.y + 118, hw, 330)
+    gui.rect(t.panel_alt, box, radius=8)
+    yy = box.y + 8
+    hist = st["hist"] if started else []
+    if not hist:
+        gui.wrap((box.x + 10, yy), "수량과 값을 정해 [제안하기]를 누르세요. 상대는 받아들이거나 값을 고쳐 부르고(역제의), "
+                 "인내가 다하면 마지막 제안을 합니다. 그보다 나쁜 값이면 협상이 깨져 이번 턴에는 다시 못 합니다.",
+                 box.w - 20, 12, t.muted)
+    for who, hn, hp, text in hist[-9:]:
+        me = who == "me"
+        head = ("나" if me else g.seen_leader(fid)) + f": 턴당 {hn}개 · 개당 {hp:,.0f}"
+        gui.text((box.x + 10, yy), head, 12, t.accent if me else t.text, "semibold", max_w=box.w - 20)
+        yy += 17
+        if text:
+            yy = gui.wrap((box.x + 18, yy), text, box.w - 28, 12, t.muted) + 4
+        else:
+            yy += 3
+    if ui.get("msg"):
+        gui.wrap((hx, box.bottom + 8), ui["msg"], hw, 12, t.bad if started and st["status"] in ("broken", "refused")
+                 else t.good)
+    # ---- 버튼
+    by = r.bottom - 62
+    done = False
+    if started and st["status"] in ("done", "broken", "refused", "closed"):
+        if gui.button((r.right - 164, by, 140, 42), "닫기", "primary"):
+            done = True
+        return done or _nego_esc(app)
+    if gui.button((lx, by, 150, 42), "제안하기", "primary", size=14):
+        if not started:
+            st = ui["st"] = NG.start(g, fid, pid, res, n, ai_sells=i_buy, init="player")
+            if st["status"] != "open":
+                ui["msg"] = st.get("why", "거래할 수 없습니다.")
+                return False
+        kind, text = NG.player_offer(g, st, n, p)
+        ui["n"] = st["n"]
+        if kind == "accept":
+            ui["msg"] = (f"거래 성사! {NG.RES_NAMES[res]} 턴당 {st['n']}개 × {C.CONTRACT_TURNS}턴, 개당 "
+                         f"{st['price']:,.0f}")
+            app.toast(ui["msg"])
+            app.changed()
+        elif kind in ("broken", "refused"):
+            ui["msg"] = "협상 결렬: " + text
+        else:
+            ui["msg"] = ""
+            if kind == "qty":
+                ui["n"] = st["n"]
+    ai_spoke = started and any(w == "ai" for w, *_ in st["hist"])
+    if ai_spoke and gui.button((lx + 162, by, 230, 42), f"상대 값 수락 (개당 {st['price']:,.0f})", size=13):
+        ok, msg = NG.accept_ai_price(g, st)
+        ui["msg"] = msg
+        if ok:
+            app.toast(msg)
+            app.changed()
+    if gui.button((r.right - 164, by, 140, 42), "거절" if from_ai else "그만두기"):
+        if started:
+            NG.walk_away(g, st)
+        return True
+    return _nego_esc(app)
+
+
+def _nego_esc(app) -> bool:
+    for k in list(app.gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            app.gui.keys.remove(k)
+            return True
+    return False
 
 
 # ------------------------------------------------------------------ 외교 창
@@ -1670,8 +1881,13 @@ def draw_diplomacy(app):
     if gui.button((mx, r.y + 396, mw, 30), "초기화", size=12):
         ds.offer = D.empty_offer()
         ds.counter = None
+    if gui.button((mx, r.y + 432, mw, 34), "자원·특산물 협상", "primary" if st != -1 else "default",
+                  enabled=st != -1 and g.has_met(pid, fid),
+                  tooltip="석유·석탄·전기·특산물을 턴당 n개 × 12턴으로 사고팔며 값을 주고받습니다(역제의 1~4회)."):
+        open_nego(app, fid)
+        return
     # 진행 중인 자원 계약(이 나라와)
-    cy = r.y + 436
+    cy = r.y + 474
     cs = D.contracts_between(g, pid, fid)
     gui.text((mx, cy), f"진행 중인 자원 계약 {len(cs)}건", 12, weight="semibold")
     cy += 18
@@ -2093,7 +2309,9 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
 · 포병·폭격기는 같은 병종끼리만 한 부대입니다. 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창([폭격]/Enter), 없는 곳은 이동. Shift+우클릭은 병력 없는 곳의 건물 폭격.
 · 수송: 부대 탭의 화물칸에서 상륙함은 [승선]·[하선], 항공모함은 [탑재]·[이함]. 바다에서 하선할 해안을 고르면 상륙(빈 적 땅은 점령).
-· 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. AI도 남는 자원을 팔고 모자라면 사자고 제안합니다.
+· 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. 판매분은 공장 배정보다 먼저 보내고, 모자라면 턴 끝에 시장가로 사서 메웁니다.
+· 자원·특산물 협상: 외교 창 [자원·특산물 협상]이나 AI 제의 창에서 수량·값을 부르면 상대가 수락하거나 역제의합니다(1~4회). 마지막 제안보다 나쁜 값이면 결렬되어 그 턴엔 다시 못 합니다.
+· [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계 방어선을 목표 단계까지 이어서 짓습니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]

@@ -20,6 +20,7 @@ sys.path.insert(0, ROOT)
 
 from korciv import config as C                    # noqa: E402
 from korciv import diplomacy as D                 # noqa: E402
+from korciv import negotiation as NG              # noqa: E402
 from korciv.game import Game                      # noqa: E402
 from korciv.leaders import GOVERNMENTS, LEADERS   # noqa: E402
 from korciv.state import NEUTRAL, Settings        # noqa: E402
@@ -67,8 +68,11 @@ def check(g, where):
         if not finite(f.money):
             report("돈 NaN", f"{where} f{f.id}")
         for k, v in f.res.items():
-            if not finite(v) or v < -1e-6:
-                report("자원 음수/NaN", f"{where} f{f.id} {k}={v}")
+            # v1.2.12: 판매 계약분은 배정보다 먼저 보내므로 석유·석탄·전기는 '보낸 계약량'까지 음수일 수 있다
+            # (전기는 턴 끝 발전으로, 나머지는 시장 구매로 메운다)
+            floor = -getattr(f, "sent", {}).get(k, 0) if k in C.ENERGY else 0
+            if not finite(v) or v < floor - 1e-6:
+                report("자원 음수/NaN", f"{where} f{f.id} {k}={v} (허용 {floor})")
         for k, v in f.specialty.items():
             if not finite(v) or v < -1e-6:
                 report("특산물 음수", f"{where} f{f.id} {k}={v}")
@@ -141,10 +145,16 @@ def player_turn(g, rng):
         g.resolve_rebellion(pid, rid, rng.choice(["pay", "tax", "suppress"]))
     for prop in list(g.pending_proposals):
         if rng.random() < 0.5 and g.factions[prop["from"]].alive:
-            if prop["kind"] == "trade":                    # AI 자원 거래 제의
-                fid = prop["from"]
-                seller, buyer = (fid, pid) if prop["sell"] else (pid, fid)
-                D.make_trade(g, seller, buyer, prop["res"], prop["n"], prop["price"], fid)
+            if prop["kind"] == "trade":                    # AI 자원 거래 제의: 협상(v1.2.12)
+                st = prop.get("nego")
+                if st and st["status"] == "open":
+                    for _ in range(rng.randint(0, 5)):
+                        if st["status"] != "open":
+                            break
+                        NG.player_offer(g, st, max(1, st["n"] + rng.choice([-1, 0, 0, 1, 3])),
+                                        max(1, int(st["price"] * rng.uniform(0.3, 1.6))))
+                    if st["status"] == "open" and rng.random() < 0.5:
+                        NG.accept_ai_price(g, st)
             elif prop["kind"] != "coalition_war":
                 D.sign_treaty(g, prop["from"], pid, prop["kind"])
         g.pending_proposals.remove(prop)
@@ -219,6 +229,10 @@ def player_turn(g, rng):
         kinds = list(g.specialty_kinds(pid)) if hasattr(g, "specialty_kinds") else []
         if kinds:
             g.set_specialty(pid, rid, rng.choice(kinds), rng.choice(["pin", "block", "auto"]))
+    if rng.random() < 0.05:                              # 국경 방어선 일괄 건설(v1.2.12)
+        nbs = g.border_nations(pid)
+        if nbs:
+            g.build_border_lines(pid, rng.choice(nbs)[0], rng.randint(1, 5))
     if rng.random() < 0.05:
         ids = [r.id for r in g.projects_by_priority(pid)] if hasattr(g, "projects_by_priority") else []
         rng.shuffle(ids)
@@ -252,6 +266,14 @@ def player_turn(g, rng):
                 offer["take"]["regions"] = [rng.choice(border)]
             res, counter, info = D.evaluate_offer(g, o, pid, offer)
             D.respond_offer(g, o, pid, offer)
+            # 플레이어가 먼저 여는 자원·특산물 협상(v1.2.12)
+            k = rng.choice(NG.RES)
+            st = NG.start(g, o, pid, k, rng.randint(1, 6), ai_sells=rng.random() < 0.5)
+            for _ in range(rng.randint(1, 6)):
+                if st["status"] != "open":
+                    break
+                NG.player_offer(g, st, max(1, st["n"] + rng.choice([-1, 0, 2])),
+                                max(1, int(st["price"] * rng.uniform(0.4, 1.5))))
     return acts
 
 

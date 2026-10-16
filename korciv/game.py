@@ -168,7 +168,8 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False), ("econ", None), ("lost_project", None), ("lost_bld", None)):
+                            ("pop_focus", False), ("econ", None), ("lost_project", None), ("lost_bld", None),
+                            ("lost_def", None)):
                 if attr == "econ" and not hasattr(r, attr):
                     r.econ = set()
                     continue
@@ -2374,6 +2375,7 @@ class Game:
             mined = self.energy_mined(f.id)
             for k in C.ENERGY:
                 f.res[k] = float(mined[k])
+            f.sent = {}                                   # 이번 턴 판매 계약으로 먼저 보낸 양
             f.specialty = self.specialty_made(f)
         D.run_contracts(self)
 
@@ -2391,7 +2393,8 @@ class Game:
         반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
         plants, facts = self.energy_sites(fid)
         reserve = 0 if oil_reserve is None else oil_reserve
-        left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": int(stock["coal"]), "elec": int(stock["elec"])}
+        left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": max(0, int(stock["coal"])),
+                "elec": max(0, int(stock["elec"]))}
         plan = {r.id: {"coal": 0, "oil": 0} for r in plants}
         room = {r.id: r.b["power"] for r in plants}
         for key in ("oil", "coal"):                       # ①② 발전소: 석유 먼저, 그다음 석탄
@@ -2703,6 +2706,7 @@ class Game:
                 rr.lost_bld = None
             else:
                 self._demolish_lost_bld(rr)
+        self._transfer_defenses(rr, old, new_owner, reason, retaking)
         if old != NEUTRAL and (rr.sci or rr.econ):
             rr.lost_bld = {"fid": old, "sci": set(rr.sci), "econ": set(rr.econ)}
             if new_owner == NEUTRAL or reason != "점령":
@@ -2782,6 +2786,55 @@ class Game:
         if new_owner != NEUTRAL:
             f = self.factions[new_owner]
             f.explored.add(rid)
+
+    # ---- 점령된 방어 건물(v1.2.12): 빼앗은 나라가 바로 쓰지 못한다
+    def _transfer_defenses(self, rr, old, new_owner, reason, retaking):
+        """방어선·방공호·대공포: 적에게 점령되면 저항·회복 기간 동안 꺼진다(lost_def). 그동안 옛 주인이 되찾으면
+        그대로 되살아나고, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다(_settle_defenses)."""
+        ld = getattr(rr, "lost_def", None)
+        if ld is not None:
+            if ld["fid"] == new_owner and retaking:
+                self._restore_defenses(rr, ld, 0)            # 기간 안에 되찾음: 그대로
+                rr.lost_def = None
+                return
+            if new_owner == NEUTRAL or reason != "점령":
+                self._restore_defenses(rr, ld, 1)            # 독립·거래 등: 1단계 깎여 되살아난다
+                rr.lost_def = None
+                ld = None
+        if old == NEUTRAL or new_owner == NEUTRAL or reason != "점령":
+            return
+        cur = {"lines": {b: lv for b, lv in rr.lines.items() if lv > 0}, "shelter": rr.b["shelter"], "aa": rr.b["aa"]}
+        if ld is not None:                                   # 꺼진 채로 또 빼앗김: 방금 잃은 나라가 되찾을 권리를 갖는다
+            for b, lv in ld["lines"].items():
+                cur["lines"][b] = max(cur["lines"].get(b, 0), lv)
+            cur["shelter"] = max(cur["shelter"], ld["shelter"])
+            cur["aa"] = max(cur["aa"], ld["aa"])
+        if not cur["lines"] and not cur["shelter"] and not cur["aa"]:
+            rr.lost_def = None
+            return
+        rr.lost_def = dict(cur, fid=old)
+        rr.lines = {}
+        rr.b["shelter"] = rr.b["aa"] = 0
+
+    def _restore_defenses(self, rr, ld, cut):
+        """꺼진 방어 건물을 cut 단계 깎아 되살린다(그사이 새로 지은 것과 큰 쪽)."""
+        for b, lv in ld["lines"].items():
+            v = max(0, lv - cut)
+            if v > rr.lines.get(b, 0):
+                rr.lines[b] = v
+        for k in ("shelter", "aa"):
+            rr.b[k] = max(rr.b[k], max(0, ld[k] - cut))
+
+    def _settle_defenses(self, rr):
+        """탈환 기간(저항 + 회복)이 지났다: 꺼진 방어 건물이 1단계씩 깎여 지금 주인 것이 된다."""
+        ld = getattr(rr, "lost_def", None)
+        if ld is None:
+            return
+        rr.lost_def = None
+        self._restore_defenses(rr, ld, 1)
+        if rr.owner == self.player_id and not self.player.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 점령으로 꺼졌던 방어 건물이 1단계씩 깎인 채 다시 쓰입니다.",
+                       region=rr.id, fids=(rr.owner,))
 
     def _demolish_lost_bld(self, rr):
         """점령으로 꺼진 과학·경제 시설을 되찾지 못함: 철거. 과학 단계는 완료에서 빠져 다시 지을 수 있게 된다."""
@@ -3959,6 +4012,8 @@ class Game:
                 self._complete_project(f, rr, p)
                 if getattr(p, "chain", False):
                     self._chain_next(f, rr, p)
+                elif getattr(p, "line_plan", None):
+                    self._line_plan_next(f, rr, p)
                 elif p.kind == "unit" and getattr(p, "repeat", 0) > 0:
                     self._repeat_unit(f, rr, p)
         return drafted
@@ -4037,6 +4092,74 @@ class Game:
             rr.project.priority = p.priority          # 자금 우선순위는 그대로
         elif not f.is_ai:
             self.event("info", f"{self.info(rr.id).name}: 최대 건설 중단 — {msg}", region=rr.id, fids=(f.id,))
+
+    # ---- 국경 방어선 일괄 건설(v1.2.12): 맞닿은 나라 쪽 경계를 목표 단계까지
+    def border_nations(self, fid) -> list:
+        """내 땅과 맞닿은 나라: [(나라, 경계 수, 최저 단계, 평균 단계)]."""
+        lv = {}
+        for r in self.regions_of(fid):
+            for n in self.world.land_adj[r.id]:
+                o = self.regions[n].owner
+                if o not in (NEUTRAL, fid):
+                    lv.setdefault(o, []).append(r.lines.get(n, 0))
+        return sorted(((o, len(v), min(v), sum(v) / len(v)) for o, v in lv.items()), key=lambda x: (-x[1], x[0]))
+
+    def _next_border_line(self, rid, nation, target):
+        """rid 의 경계 가운데 nation 땅과 맞닿고 목표 단계 미만인 것 중 가장 낮은 경계(없으면 None)."""
+        rr = self.regions[rid]
+        top = min(C.DEF_BUILDINGS["line"]["max"], int(target))
+        cands = [(rr.lines.get(n, 0), n) for n in sorted(self.world.land_adj[rid])
+                 if self.regions[n].owner == nation and rr.lines.get(n, 0) < top]
+        return min(cands)[1] if cands else None
+
+    def border_line_plan(self, fid, nation, target):
+        """일괄 건설 계획: (지금 착수할 [(지역, 경계, 선택지)], 슬롯이 바빠 건너뛰는 지역 수, 이미 목표에 닿은 지역 수)."""
+        start, busy, done = [], 0, 0
+        for r in self.regions_of(fid):
+            if not any(self.regions[n].owner == nation for n in self.world.land_adj[r.id]):
+                continue
+            b = self._next_border_line(r.id, nation, target)
+            if b is None:
+                done += 1
+                continue
+            if r.project or r.occ or self.resisting(r):
+                busy += 1
+                continue
+            opt = next((o for o in self.options(fid, r.id)
+                        if o["kind"] == "build" and o["key"] == "line" and o["border"] == b), None)
+            if not opt or not opt["ok"]:
+                busy += 1
+                continue
+            start.append((r.id, b, opt))
+        return start, busy, done
+
+    def build_border_lines(self, fid, nation, target):
+        """nation 쪽 국경 방어선을 목표 단계까지: 슬롯이 빈 지역마다 가장 낮은 경계부터 착수하고, 완공되면
+        같은 나라 쪽 다음 경계·단계를 이어서 짓는다. 반환 (착수한 지역 수, 건너뛴 지역 수)."""
+        start, busy, _ = self.border_line_plan(fid, nation, target)
+        n = 0
+        for rid, b, _ in start:
+            ok, _ = self.start_project(fid, rid, "build", "line", border=b)
+            if ok:
+                self.regions[rid].project.line_plan = {"nation": nation, "target": int(target)}
+                n += 1
+        return n, busy
+
+    def _line_plan_next(self, f, rr, p):
+        """국경 방어선 일괄 건설: 같은 나라 쪽 다음 경계(또는 다음 단계)를 이어서 착수."""
+        plan = p.line_plan
+        if rr.owner != f.id or rr.project:
+            return
+        b = self._next_border_line(rr.id, plan["nation"], plan["target"])
+        if b is None:
+            return
+        ok, msg = self.start_project(f.id, rr.id, "build", "line", border=b)
+        if ok:
+            rr.project.line_plan = dict(plan)
+            rr.project.priority = p.priority
+            rr.project.pinned = getattr(p, "pinned", False)
+        elif not f.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 국경 방어선 이어 짓기 중단 — {msg}", region=rr.id, fids=(f.id,))
 
     def project_left(self, rid) -> int:
         """남은 턴. 공동 편입은 함께하는 지역 수에 따른 속도로 계산."""
@@ -4146,6 +4269,20 @@ class Game:
         for r in regs:
             r.fuel_used = plan["factories"].get(r.id, {}).get("units", 0)
         left = {k: int(math.floor(plan["after"][k] + 1e-9)) for k in C.ENERGY}
+        # 판매 계약으로 먼저 보낸 몫이 이번 턴 확보·발전량보다 많았으면(유닛에 석유를 썼거나 배정을 바꿔 발전이 줄면)
+        # 부족분을 시장가로 사서 메운다(v1.2.12)
+        short = {k: -left[k] for k in C.ENERGY if left[k] < 0}
+        if short:
+            cost = sum(n * C.MARKET_BUY[k] * C.MONEY_SCALE for k, n in short.items())
+            f.money -= cost
+            f.trade_buy += cost
+            plan["covered"] = short
+            plan["covered_money"] = cost
+            if not f.is_ai:
+                self.event("info", "자원 계약 부족분을 시장에서 사서 보냈습니다: "
+                           + ", ".join(f"{C.RESOURCE_NAMES[k]} {n}" for k, n in short.items()) + f" (−{cost:,.0f})",
+                           fids=(f.id,))
+            left = {k: max(0, v) for k, v in left.items()}
         gain = sum(left[k] * self.sell_price(f.id, k) for k in C.ENERGY)
         if gain > 0:
             f.money += gain
@@ -4343,10 +4480,12 @@ class Game:
             h = (r.happy + r.h_delta + t + spec) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
-            if (getattr(r, "lost_project", None) is not None or getattr(r, "lost_bld", None) is not None) \
+            if (getattr(r, "lost_project", None) is not None or getattr(r, "lost_bld", None) is not None
+                    or getattr(r, "lost_def", None) is not None) \
                     and self.resist_phase(r)[0] not in ("resist", "recover"):
                 self._refund_lost_project(r)        # 탈환 기간(저항 + 회복)이 지났다: 공사 50% 환급, 시설 철거
                 self._demolish_lost_bld(r)
+                self._settle_defenses(r)            # 방어 건물은 1단계씩 깎여 새 주인 것으로
             if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
                 r.resist = None
         self._morale = {}

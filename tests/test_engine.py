@@ -901,7 +901,9 @@ def test_assault_can_break_line():
     att = g.new_army(0, "S002", {"inf": 20})
     g.rng.random = lambda: 0.1                      # 25% 판정 통과
     g._ground_battle(0, [att], tgt, "assault", [att])
-    assert g.regions[tgt].lines["S002"] == 1
+    rr = g.regions[tgt]
+    lines = rr.lost_def["lines"] if rr.lost_def else rr.lines   # 점령되면 방어선은 꺼진 채로 보관(v1.2.12)
+    assert lines["S002"] == 1
 
 
 def test_unhappy_region_output_penalty():
@@ -3317,7 +3319,10 @@ def test_unhappy_ai_offers_to_buy_specialty_from_neighbor():
         g.turn += 1
     AI._trade_offers(g, g.factions[1])
     prop = [p for p in g.pending_proposals if p["kind"] == "trade" and p["res"] == "specialty"]
-    assert prop and not prop[0]["sell"] and prop[0]["price"] == pytest.approx(D.spec_price(g, 1), rel=0.01)
+    assert prop and not prop[0]["sell"]
+    st = prop[0]["nego"]                                  # v1.2.12: 협상으로 — 처음 부르는 값은 유보 가격(최고가)보다 낮다
+    assert st["status"] == "open" and prop[0]["price"] == st["price"] <= st["R"]
+    assert st["R"] > D.spec_price(g, 1)                   # 반란 문턱이 가까우면 특산물 값보다 비싸게라도 산다
 
 
 def test_surplus_food_modes():
@@ -4190,3 +4195,209 @@ def test_amphibious_survivors_never_stranded_at_sea():
     g.remove_army(fl)
     g._reboard(y)                                            # 실을 함대가 없으면 잃는다
     assert y.id not in g.armies and dd.units == {"dd": 1}
+
+
+def test_captured_defenses_go_dark_and_return():
+    """v1.2.12: 점령된 방어선·방공호·대공포는 저항·회복 동안 꺼지고, 옛 주인이 그 안에 되찾으면 그대로,
+    기간이 지나면 1단계씩 깎여 새 주인 것이 된다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    rid = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [rid])
+    rr = g.regions[rid]
+    rr.lines = {"S002": 3, sorted(g.world.land_adj[rid])[-1]: 2}
+    rr.b["shelter"], rr.b["aa"] = 2, 1
+    lines0 = dict(rr.lines)
+    rr = _captured(g, rid)                                   # 0번이 1번 땅을 점령
+    assert rr.owner == 0 and rr.lines == {} and rr.b["shelter"] == 0 and rr.b["aa"] == 0
+    assert rr.lost_def["fid"] == 1 and rr.lost_def["lines"] == lines0
+    # 저항 중 옛 주인이 되찾으면 그대로 되살아난다
+    for a in list(g.armies_at(rid)):
+        g.remove_army(a)
+    g.new_army(1, rid, {"inf": 3})
+    g.complete_occupation(1, rid)
+    assert rr.owner == 1 and rr.lines == lines0 and rr.b["shelter"] == 2 and rr.lost_def is None
+    # 다시 빼앗기고 기간이 지나면 1단계씩 깎여 새 주인 것
+    for a in list(g.armies_at(rid)):
+        g.remove_army(a)
+    g.new_army(0, rid, {"inf": 3})
+    g.complete_occupation(0, rid)
+    assert rr.owner == 0 and rr.lost_def
+    rr.resist["turn"] -= rr.resist["resist"] + rr.resist["recover"]
+    g._phase_happiness()
+    assert rr.lost_def is None and rr.lines == {b: lv - 1 for b, lv in lines0.items()}
+    assert rr.b["shelter"] == 1 and rr.b["aa"] == 0
+    assert C.DEF_TURNS == [1, 2, 3, 4, 5]
+
+
+def test_build_border_lines_toward_nation():
+    """v1.2.12: [군사] 탭 국경 방어선 일괄 건설 — 맞닿은 나라 쪽 경계를 가장 낮은 것부터, 완공되면 다음 경계를
+    목표 단계까지 이어서."""
+    g = new_game(player_start="S002", n_enemies=1)
+    nb = sorted(g.world.land_adj["S002"])
+    _own(g, 1, nb[:2])
+    g.player.money = 10 ** 7
+    rr = g.regions["S002"]
+    rr.project = None
+    rr.lines = {nb[0]: 1, nb[1]: 0}
+    assert any(o == 1 and n == 2 for o, n, _, _ in g.border_nations(0))
+    k, skip = g.build_border_lines(0, 1, 2)
+    assert k == 1 and rr.project.key == "line" and rr.project.border == nb[1]   # 낮은 경계부터
+    for _ in range(12):
+        if rr.lines.get(nb[0], 0) >= 2 and rr.lines.get(nb[1], 0) >= 2:
+            break
+        g._fund_projects()
+        g._phase_projects(("build",))
+    assert rr.lines[nb[0]] == 2 and rr.lines[nb[1]] == 2 and rr.project is None
+    start, busy, done = g.border_line_plan(0, 1, 2)
+    assert not start and done >= 1
+
+
+def test_sold_electricity_is_delivered_in_full_before_allocation():
+    """v1.2.12: 판매 계약은 배정보다 먼저 — 발전소에서 나올 전기를 판 경우에도 '1/3만 오갔다'처럼 덜 가지 않고,
+    그만큼 공장에 덜 들어간다. 확보량이 모자라면 부족분은 턴 끝에 시장가로 사서 메운다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    r.b["power"], r.b["factory"] = 2, 3
+    g.energy_mined = lambda fid: {"coal": 3, "oil": 0, "elec": 0} if fid == 0 else {"coal": 0, "oil": 0, "elec": 0}
+    g._refresh_pools()
+    g.assign_energy(0)
+    gen = g.energy_plan(0)["elec_gen_int"]
+    assert gen >= 3
+    buyer = g.factions[1]
+    buyer.money = 10 ** 6
+    e0 = buyer.res.get("elec", 0)
+    c = D.make_trade(g, 0, 1, "elec", 3, 5.0, 1)
+    assert c["last_q"] == 3 and buyer.res["elec"] == e0 + 3          # 발전 전이어도 전부 보낸다
+    plan = g.energy_plan(0)
+    assert plan["factories"]["S002"]["elec"] <= max(0, gen - 3)       # 판 전기는 공장에 들어가지 않는다
+    money0 = g.player.money
+    g._phase_resources(g.player)
+    assert "covered" not in g.player.last["energy"]                  # 발전으로 충분하면 사지 않는다
+    # 석유를 유닛에 써 버린 뒤 석유 계약: 부족분은 시장가로 사서 메운다
+    g.energy_mined = lambda fid: {"coal": 0, "oil": 2, "elec": 0} if fid == 0 else {"coal": 0, "oil": 0, "elec": 0}
+    g._refresh_pools()
+    g.player.res["oil"] = 0.0
+    c2 = D.make_trade(g, 0, 1, "oil", 2, 5.0, 1)
+    assert c2["last_q"] == 2
+    m0 = g.player.money
+    g._phase_resources(g.player)
+    assert g.player.last["energy"]["covered"] == {"oil": 2}
+    assert g.player.money <= m0 - 2 * C.MARKET_BUY["oil"] * C.MONEY_SCALE + 1e-6
+
+
+# ---- v1.2.12 거래 협상
+def _nego_game():
+    g = _meet_all(new_game(player_start="S002", n_enemies=1))
+    _neutral_ai(g, 1)
+    g.dip.op[(1, 0)] = g.dip.op[(0, 1)] = 10.0
+    return g
+
+
+def test_nego_player_buys_ai_surplus_with_counters():
+    from korciv import negotiation as NG
+    g = _nego_game()
+    g.regions[g.factions[1].capital].b.update(factory=0, power=0)
+    _mined(g, {1: {"oil": 0, "coal": 6, "elec": 0}, 0: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    assert NG.surplus(g, 1, "coal") == 6
+    st = NG.start(g, 1, 0, "coal", 3, ai_sells=True)
+    assert st["status"] == "open" and 1 <= st["rounds"] <= 4 and st["price"] >= st["R"]
+    # 같은 턴에 다시 열어도 유보 가격이 같다(다시 열어 운을 시험할 수 없다)
+    assert NG.start(g, 1, 0, "coal", 3, ai_sells=True)["R"] == st["R"]
+    kind, _ = NG.player_offer(g, st, 3, 1)                     # 터무니없는 값 → 역제의(또는 결렬)
+    assert kind in ("counter", "final", "broken")
+    if kind != "broken":
+        assert st["price"] >= st["R"] - 1                      # 유보 가격 아래로는 내려가지 않는다
+        g.player.money = 10 ** 6
+        ok, msg = NG.accept_ai_price(g, st)
+        assert ok and st["status"] == "done"
+        c = D.contracts_between(g, 0, 1)[-1]
+        assert c["from"] == 1 and c["to"] == 0 and c["n"] == 3 and c["price"] == st["price"]
+
+
+def test_nego_selling_beyond_surplus_needs_factory_value():
+    """AI 는 남는 양을 넘겨 팔려면 평균 공장 산출 × 세율보다 비싸야 한다."""
+    from korciv import negotiation as NG
+    g = _nego_game()
+    cap = g.regions[g.factions[1].capital]
+    cap.b.update(factory=3, power=0)
+    _mined(g, {1: {"oil": 0, "coal": 4, "elec": 0}, 0: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    sur = NG.surplus(g, 1, "coal")
+    assert sur == 1
+    R_small, n1, _ = NG.reserve(g, 1, 0, "coal", 1, True)
+    R_big, n3, _ = NG.reserve(g, 1, 0, "coal", 3, True)
+    assert n1 == 1 and n3 == 3
+    assert R_big >= NG.avg_factory_unit(g, 1) * 0.9 and R_big > R_small
+
+
+def test_nego_ai_buys_only_with_empty_factory_and_below_value():
+    """플레이어가 AI 에게 팔 때: AI 에 빈 공장이 없으면 안 사고, 산출 × 세율보다 비싸면 절대 사지 않는다."""
+    from korciv import negotiation as NG
+    g = _nego_game()
+    cap = g.regions[g.factions[1].capital]
+    cap.b.update(factory=0, power=0)
+    _mined(g, {1: {"oil": 0, "coal": 0, "elec": 0}, 0: {"oil": 0, "coal": 5, "elec": 0}})
+    g._refresh_pools()
+    st = NG.start(g, 1, 0, "coal", 2, ai_sells=False)
+    assert st["status"] == "refused" and "빈 공장" in st["why"]
+    cap.b["factory"] = 3
+    g.factions[1].money = 10 ** 6
+    st = NG.start(g, 1, 0, "coal", 2, ai_sells=False)
+    assert st["status"] == "open"
+    val = NG.buy_unit_value(g, 1, "coal", 2)
+    assert st["R"] < val and st["price"] <= st["R"]
+    # 값을 계속 높게 부르면 결국 결렬되고, 이번 턴에는 다시 열 수 없다
+    for _ in range(6):
+        kind, _ = NG.player_offer(g, st, 2, int(val * 2) + 5)
+        if kind == "broken":
+            break
+    assert st["status"] == "broken" and NG.start(g, 1, 0, "coal", 2, ai_sells=False)["status"] == "refused"
+    D.update_turn(g)
+    assert NG.start(g, 1, 0, "coal", 2, ai_sells=False)["status"] == "open"   # 다음 턴엔 다시
+
+
+def test_nego_specialty_rules():
+    """특산물: AI 는 반란이 가까울수록 비싸게 사고, 행복도가 높고 돈이 급하면 싸게 판다."""
+    from korciv import negotiation as NG
+    g = _nego_game()
+    for r in g.regions_of(1):
+        r.resist, r.supplied = None, set()
+    g.factions[1].money = 10 ** 6
+    for r in g.regions_of(1):
+        r.happy = 0.0
+    calm, _, _ = NG.reserve(g, 1, 0, "specialty", 1, False)
+    for r in g.regions_of(1):
+        r.happy = -45.0
+    near, _, _ = NG.reserve(g, 1, 0, "specialty", 1, False)
+    assert near > calm
+    # 판매: 남는 특산물, 행복도 높음 + 돈 급함 → 더 싸게
+    spec = next(x for x in g.world.order if g.world.regions[x].specialties and g.regions[x].owner == NEUTRAL)
+    _own(g, 1, [spec])
+    g.regions[spec].resist = None
+    g.regions[spec].b["specialty"] = 3
+    g._refresh_pools()
+    for r in g.regions_of(1):
+        r.happy = 0.0
+    g.factions[1].money = 10 ** 6
+    p1, _, _ = NG.reserve(g, 1, 0, "specialty", 1, True)
+    for r in g.regions_of(1):
+        r.happy = 40.0
+    g.factions[1].money = 0
+    p2, _, _ = NG.reserve(g, 1, 0, "specialty", 1, True)
+    assert p1 is not None and p2 is not None and p2 < p1
+
+
+def test_ai_to_ai_trade_deals_when_reserves_overlap():
+    from korciv import negotiation as NG
+    g = _meet_all(new_game(player_start="S002", n_enemies=2, all_ai=True))
+    a, b = 1, 2
+    g.dip.op[(a, b)] = g.dip.op[(b, a)] = 30.0
+    g.regions[g.factions[a].capital].b.update(factory=0, power=0)
+    g.regions[g.factions[b].capital].b.update(factory=4, power=0)
+    _mined(g, {a: {"oil": 0, "coal": 4, "elec": 0}, b: {"oil": 0, "coal": 0, "elec": 0},
+               0: {"oil": 0, "coal": 0, "elec": 0}})
+    g._refresh_pools()
+    g.factions[b].money = 10 ** 6
+    c = NG.ai_deal(g, a, b, "coal", 3)
+    assert c is not None and c["from"] == a and c["to"] == b and c["price"] > 0

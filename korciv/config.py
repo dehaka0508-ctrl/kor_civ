@@ -130,7 +130,7 @@ DEF_BUILDINGS = {
     "shelter": {"name": "방공호", "base": 300, "max": 5},
     "aa":      {"name": "대공포", "base": 500, "max": 5},
 }
-DEF_TURNS = [1, 2, 4, 8, 15]
+DEF_TURNS = [1, 2, 3, 4, 5]          # v1.2.12: 1·2·4·8·15 → 전쟁 중에도 쌓을 수 있게
 SINGLE_BUILDINGS = {
     "academy": {"name": "사관학교", "cost": 3000, "turns": 6},
     "airport": {"name": "공항", "cost": 4000, "turns": 8},

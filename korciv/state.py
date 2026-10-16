@@ -69,6 +69,8 @@ class Region:
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
+    lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
+                                          # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
 
     @property
     def occ(self) -> Optional[dict]:

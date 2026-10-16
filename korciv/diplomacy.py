@@ -830,9 +830,12 @@ def _deliver(g, c):
             fa.specialty[k] -= 1
             fb.specialty[k] = fb.specialty.get(k, 0) + 1
     else:
-        q = min(q, max(0, int(math.floor(fa.res.get(res, 0) + 1e-9))))
-        fa.res[res] = fa.res.get(res, 0) - q
+        q = min(q, contract_capacity(g, c))
+        fa.res[res] = fa.res.get(res, 0) - q              # 판매분을 먼저 뺀다(모자라면 턴 끝에 시장가로 메운다)
         fb.res[res] = fb.res.get(res, 0) + q
+        if res in C.ENERGY and q:
+            sent = fa.__dict__.setdefault("sent", {})      # 이번 턴 계약으로 먼저 보낸 양(자원 배정 화면 표시용)
+            sent[res] = sent.get(res, 0) + q
     if price > 0 and q > 0:
         pay = q * price
         fb.money -= pay
@@ -846,6 +849,26 @@ def _deliver(g, c):
                         f"{q}/{n}개만 오갔습니다" + (" (대금 부족)" if price > 0 and fb.money < price * n else ""),
                 fids=(c["from"], c["to"]))
     return q
+
+
+def contract_capacity(g, c) -> int:
+    """계약 c 로 이번 턴 보낼 수 있는 양(v1.2.12): 주는 쪽 턴당 확보량(채굴·자체 발전 + 받는 계약 − 다른 주는 계약)과
+    전기는 이번 턴 발전소 발전량까지. 판매는 배정보다 먼저라, 지금 재고가 모자라도(유닛에 석유를 썼거나 전기가
+    아직 발전 전이어도) 이만큼은 보내고 부족분은 턴 끝 자원 단계에서 시장가로 사서 메운다."""
+    fid, res = c["from"], c["res"]
+    if res not in C.ENERGY:                               # 식량: 비축만큼
+        return max(0, int(math.floor(g.factions[fid].res.get(res, 0) + 1e-9)))
+    cap = float(g.energy_mined(fid).get(res, 0))
+    for o in contracts(g):
+        if o is c or o["res"] != res:
+            continue
+        if o["to"] == fid:
+            cap += o["n"]
+        elif o["from"] == fid:
+            cap -= o["n"]
+    if res == "elec":
+        cap += g.energy_plan(fid)["elec_gen_int"]
+    return max(0, int(math.floor(max(cap, g.factions[fid].res.get(res, 0)) + 1e-9)))
 
 
 def run_contracts(g):
@@ -1244,6 +1267,7 @@ def update_turn(g):
                     and not AI.loyal(g, x, y)):       # 강국과 거기 기댄 나라는 서로 등을 돌리지 않는다
                 leave_alliance(g, x, y)
     d.rejected.clear()
+    d.__dict__.pop("nego_block", None)              # 깨진 협상은 다음 턴에 다시 할 수 있다
     temps = d.__dict__.get("op_temp")
     if temps:
         for k in list(temps):
