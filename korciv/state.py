@@ -32,6 +32,9 @@ class Project:
     pinned: bool = False           # 지출 우선순위 맨 위 고정
     chain: bool = False            # 최대 건설: 완공되면 바로 다음 단계를 이어서 건설
     repeat: int = 0                # 군 유닛 연속 생산: 이번 것 뒤에 더 만들 개수
+    # 국경 방어선 묶음 공사(v1.2.15): 대상 지역들이 이 Project 하나를 함께 가리킨다.
+    # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
+    group: Optional[dict] = None
 
     @property
     def remaining(self) -> int:

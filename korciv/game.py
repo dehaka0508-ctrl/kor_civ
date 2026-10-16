@@ -2137,6 +2137,12 @@ class Game:
         refund = p.paid * C.PROJECT_REFUND
         self.factions[fid].money += refund
         msg = f"취소: {refund:,.0f} 환급"
+        if p.group is not None:
+            # 묶음 공사(국경 방어선)는 한 건: 모든 대상 지역에서 함께 취소
+            for r in self.regions.values():
+                if r.project is p:
+                    r.project = None
+            return True, f"{p.name} 취소: {refund:,.0f} 환급"
         if p.kind == "unit" and p.key in C.UNITS:
             # 착수 때 깎인 행복도는 돌려준다(석유는 턴마다 들어오는 흐름이라 돌려주지 않는다)
             back = -C.UNIT_START_HAPPY[C.UNITS[p.key]["weight"]]
@@ -2156,9 +2162,30 @@ class Game:
                    and not self.resisting(r) and not getattr(r, "focus", False))
 
     def projects_by_priority(self, fid):
-        """자금 지출 우선순위 순서의 (지역, 작업) 목록."""
+        """자금 지출 우선순위 순서의 (지역, 작업) 목록. 묶음 공사는 한 번만(대표 지역 하나로)."""
         regs = [r for r in self.regions.values() if r.owner == fid and r.project]
-        return sorted(regs, key=lambda r: (not getattr(r.project, "pinned", False), r.project.priority, r.id))
+        regs.sort(key=lambda r: (not getattr(r.project, "pinned", False), r.project.priority, r.id))
+        seen, out = set(), []
+        for r in regs:
+            if id(r.project) not in seen:
+                seen.add(id(r.project))
+                out.append(r)
+        return out
+
+    @staticmethod
+    def unique_projects(regs) -> list:
+        """지역 목록의 작업들(여러 지역이 함께 가리키는 묶음 공사는 한 번만)."""
+        seen, out = set(), []
+        for r in regs:
+            p = r.project
+            if p is not None and id(p) not in seen:
+                seen.add(id(p))
+                out.append(p)
+        return out
+
+    def group_regions(self, p) -> list:
+        """묶음 공사 p 를 함께 짓는 지역 ID(지역 순서)."""
+        return [rid for rid in p.group["lines"] if self.regions[rid].project is p] if p.group else []
 
     def toggle_pin(self, fid, rid) -> bool:
         """지출 우선순위 맨 위 고정(고정한 작업끼리는 기존 순서). 바뀐 고정 상태를 돌려준다."""
@@ -2735,6 +2762,8 @@ class Game:
                 rr.lost_project = {"fid": old, "project": p}
                 self._refund_lost_project(rr)
                 rr.lost_project = None
+        if p is not None and p.group is not None:
+            self._line_group_drop(p, rid)
         rr.owner = new_owner
         rr.project = resume
         rr.econ = set()
@@ -3961,7 +3990,7 @@ class Game:
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
                 p.funded = False
-                if rr.occ:
+                if rr.occ and p.group is None:
                     p.stalled = True
                     continue
                 if p.kind == "annex":
@@ -4021,10 +4050,13 @@ class Game:
                     or not getattr(p, "funded", False):
                 continue
             f = self.factions[rr.owner]
-            p.funded = False
+            p.funded = False                 # 묶음 공사는 여러 지역이 같은 작업이라 여기서 한 번만 진행된다
             p.progress += 1
             if p.kind == "unit":
                 drafted.add(rr.id)
+            if p.progress >= p.turns and p.group is not None:
+                self._complete_line_group(f, p)
+                continue
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
@@ -4134,37 +4166,132 @@ class Game:
         return min(cands)[1] if cands else None
 
     def border_line_plan(self, fid, nation, target):
-        """일괄 건설 계획: (지금 착수할 [(지역, 경계, 선택지)], 슬롯이 바빠 건너뛰는 지역 수, 이미 목표에 닿은 지역 수)."""
-        start, busy, done = [], 0, 0
+        """국경 방어선 일괄 건설 계획(v1.2.15). nation 땅과 맞닿은 내 지역 가운데 목표 단계 미만 경계가 있는 곳을
+        모두 대상으로 한 '나라 방어선' 묶음 공사 한 건:
+        - 턴 수 = 대상 경계마다 단계별 건설 턴을 모두 더해 대상 지역 수로 나눈 값(올림)
+        - 비용 = 모든 단계 비용의 합, 매 턴 (비용 ÷ 턴 수)를 한꺼번에 낸다
+        - 대상 지역에서 진행 중이던 건설·생산·편입은 중단(낸 비용 50% 환급)
+        점령당하는 중·저항 중인 지역은 지을 수 없어 뺀다."""
+        top = min(C.DEF_BUILDINGS["line"]["max"], max(1, int(target)))
+        m = self.mods(fid)
+        plan = {"nation": nation, "target": top, "lines": {}, "cost": {}, "steps": 0, "turns_sum": 0,
+                "turns": 0, "total": 0.0, "per_turn": 0.0, "interrupt": [], "skipped": 0, "done": 0,
+                "why": self.order_frozen(fid) or ""}
         for r in self.regions_of(fid):
-            if not any(self.regions[n].owner == nation for n in self.world.land_adj[r.id]):
+            borders = [n for n in sorted(self.world.land_adj[r.id]) if self.regions[n].owner == nation]
+            if not borders:
                 continue
-            b = self._next_border_line(r.id, nation, target)
-            if b is None:
-                done += 1
+            need = [n for n in borders if r.lines.get(n, 0) < top]
+            if not need:
+                plan["done"] += 1
                 continue
-            if r.project or r.occ or self.resisting(r):
-                busy += 1
+            if r.occ or self.resisting(r):
+                plan["skipped"] += 1
                 continue
-            opt = next((o for o in self.options(fid, r.id)
-                        if o["kind"] == "build" and o["key"] == "line" and o["border"] == b), None)
-            if not opt or not opt["ok"]:
-                busy += 1
-                continue
-            start.append((r.id, b, opt))
-        return start, busy, done
+            cost = 0.0
+            for n in need:
+                for lv in range(r.lines.get(n, 0) + 1, top + 1):
+                    plan["turns_sum"] += self.build_time(fid, "line", R.def_building_turns(lv))
+                    cost += R.def_building_cost("line", lv) * m.mult("cost_line")
+                    plan["steps"] += 1
+            plan["lines"][r.id] = need
+            plan["cost"][r.id] = cost
+            if r.project:
+                plan["interrupt"].append(r.id)
+        n = len(plan["lines"])
+        if n:
+            plan["turns"] = max(1, math.ceil(plan["turns_sum"] / n - 1e-9))
+            plan["total"] = sum(plan["cost"].values())
+            plan["per_turn"] = plan["total"] / plan["turns"]
+        return plan
 
     def build_border_lines(self, fid, nation, target):
-        """nation 쪽 국경 방어선을 목표 단계까지: 슬롯이 빈 지역마다 가장 낮은 경계부터 착수하고, 완공되면
-        같은 나라 쪽 다음 경계·단계를 이어서 짓는다. 반환 (착수한 지역 수, 건너뛴 지역 수)."""
-        start, busy, _ = self.border_line_plan(fid, nation, target)
+        """국경 방어선 일괄 건설(v1.2.15): '○○국 방어선' 묶음 공사 한 건을 대상 지역 모두에 착수한다.
+        지출 우선순위에서는 건설 한 건, 다 지으면 대상 경계가 모두 목표 단계가 된다. 반환 (성공, 메시지)."""
+        plan = self.border_line_plan(fid, nation, target)
+        if plan["why"]:
+            return False, plan["why"]
+        if not plan["lines"]:
+            return False, "목표 단계보다 낮은 국경 방어선이 없습니다."
+        f = self.factions[fid]
+        stopped = []
+        for rid in plan["interrupt"]:
+            rr = self.regions[rid]
+            p = rr.project
+            if p is None:
+                continue
+            if p.group is not None:       # 다른 묶음 공사의 대상이던 지역: 그 묶음에서만 빠진다
+                share = self._line_group_drop(p, rid) * C.PROJECT_REFUND
+                f.money += share
+                rr.project = None
+                stopped.append(p.name)
+            else:
+                stopped.append(self.project_label(p))
+                self.cancel_project(fid, rid)
+        name = f"{self.fname(nation)} 방어선"
+        p = Project(kind="build", key="line_group", level=plan["target"], turns=plan["turns"],
+                    per_turn=plan["per_turn"], name=name,
+                    group={"nation": nation, "target": plan["target"], "lines": dict(plan["lines"]),
+                           "cost": dict(plan["cost"])})
+        self.proj_counter = getattr(self, "proj_counter", 0) + 1
+        p.priority = self.proj_counter
+        for rid in plan["lines"]:
+            rr = self.regions[rid]
+            rr.project = p
+            if not f.is_ai:
+                rr.focus = rr.pop_focus = False
+        msg = (f"{name} {plan['target']}단계 착수: 지역 {len(plan['lines'])}곳 · 방어선 {plan['steps']}단계분 · "
+               f"{plan['turns']}턴, 턴당 {plan['per_turn']:,.0f}")
+        if stopped:
+            msg += f" · 진행 중이던 작업 {len(stopped)}건 중단(50% 환급)"
+        return True, msg
+
+    def project_label(self, p) -> str:
+        """알림용 작업 이름."""
+        if p.name:
+            return p.name
+        if p.kind == "build":
+            if p.key == "line":
+                return f"방어선 {p.level}단계"
+            return f"{BUILDING_NAMES.get(p.key, p.key)} {p.level}단계"
+        if p.kind == "unit":
+            return f"{C.UNITS[p.key]['name']} 생산" if p.key in C.UNITS else "생산"
+        if p.kind == "annex":
+            return f"{self.info(p.key).name} 편입"
+        return {"science": "과학 공사", "econ": "경제 공사", "capital": "천도"}.get(p.kind, p.kind)
+
+    def _line_group_drop(self, p, rid) -> float:
+        """묶음 공사에서 rid 를 뺀다(점령·다른 묶음 착수). 남은 지역 몫만큼 턴당 비용을 줄이고, 뺀 지역 몫으로
+        이미 낸 돈(환급 계산용)을 돌려준다. 지역 슬롯은 부르는 쪽이 비운다."""
+        g = p.group
+        total = sum(g["cost"].values())
+        c = g["cost"].pop(rid, 0.0)
+        g["lines"].pop(rid, None)
+        if total <= 0:
+            return 0.0
+        share = p.paid * c / total
+        p.paid -= share
+        p.per_turn *= (total - c) / total
+        return share
+
+    def _complete_line_group(self, f, p):
+        """묶음 공사 완공: 대상 지역들의 대상 경계를 모두 목표 단계로."""
+        g = p.group
+        regs = [rid for rid in g["lines"] if self.regions[rid].project is p and self.regions[rid].owner == f.id]
         n = 0
-        for rid, b, _ in start:
-            ok, _ = self.start_project(fid, rid, "build", "line", border=b)
-            if ok:
-                self.regions[rid].project.line_plan = {"nation": nation, "target": int(target)}
-                n += 1
-        return n, busy
+        for rid in regs:
+            rr = self.regions[rid]
+            rr.project = None
+            for b in g["lines"][rid]:
+                if rr.lines.get(b, 0) < g["target"]:
+                    rr.lines[b] = g["target"]
+                    n += 1
+        for r in self.regions.values():          # 혹시 남은 연결도 끊는다
+            if r.project is p:
+                r.project = None
+        if regs:
+            self.event("complete", f"{p.name} {g['target']}단계 완공: 지역 {len(regs)}곳 · 경계 {n}곳",
+                       region=regs[0], fids=(f.id,))
 
     def _line_plan_next(self, f, rr, p):
         """국경 방어선 일괄 건설: 같은 나라 쪽 다음 경계(또는 다음 단계)를 이어서 착수."""
@@ -4736,7 +4863,8 @@ class Game:
         """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
         rr = self.regions[rid]
         n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
-        keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit") else None
+        keep_project = (rr.project if rr.project and rr.project.kind in ("build", "unit")
+                        and rr.project.group is None else None)      # 묶음 공사는 계승하지 않는다
         siblings = self.rebel_children(fid)
         if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
             if siblings:

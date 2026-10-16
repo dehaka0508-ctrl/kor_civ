@@ -61,6 +61,10 @@ def check(g, where):
                 report("프로젝트 진행", f"{where} {rid} {p.kind}:{p.key} {p.progress}/{p.turns}")
             if r.owner == NEUTRAL:
                 report("중립 지역 프로젝트", f"{where} {rid}")
+            grp = getattr(p, "group", None)
+            if grp is not None and (rid not in grp["lines"] or set(grp["lines"]) != set(grp["cost"])
+                                    or p.per_turn < -1e-9 or p.paid < -1e-6):
+                report("묶음 공사 불일치", f"{where} {rid} {p.name} {sorted(grp['lines'])}")
         for fid, o in r.occs.items():
             if o["progress"] > o["need"] + 1:
                 report("점령 진행 초과", f"{where} {rid} {o}")
@@ -229,10 +233,14 @@ def player_turn(g, rng):
         kinds = list(g.specialty_kinds(pid)) if hasattr(g, "specialty_kinds") else []
         if kinds:
             g.set_specialty(pid, rid, rng.choice(kinds), rng.choice(["pin", "block", "auto"]))
-    if rng.random() < 0.05:                              # 국경 방어선 일괄 건설(v1.2.12)
+    if rng.random() < 0.05:                              # 국경 방어선 일괄 건설(v1.2.12, v1.2.15 묶음 공사)
         nbs = g.border_nations(pid)
         if nbs:
             g.build_border_lines(pid, rng.choice(nbs)[0], rng.randint(1, 5))
+    if rng.random() < 0.02:                              # 묶음 공사 취소
+        grp = [r.id for r in g.regions_of(pid) if r.project is not None and getattr(r.project, "group", None)]
+        if grp:
+            g.cancel_project(pid, rng.choice(grp))
     if rng.random() < 0.05:
         ids = [r.id for r in g.projects_by_priority(pid)] if hasattr(g, "projects_by_priority") else []
         rng.shuffle(ids)

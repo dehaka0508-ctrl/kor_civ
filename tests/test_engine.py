@@ -4243,27 +4243,147 @@ def test_captured_defenses_go_dark_and_return():
     assert C.DEF_TURNS == [1, 2, 3, 4, 5]
 
 
-def test_build_border_lines_toward_nation():
-    """v1.2.12: [군사] 탭 국경 방어선 일괄 건설 — 맞닿은 나라 쪽 경계를 가장 낮은 것부터, 완공되면 다음 경계를
-    목표 단계까지 이어서."""
+def _line_group_setup():
+    """플레이어(0)가 S002와 그 이웃 둘을, 세력 1이 그 바깥 이웃들을 가진 판."""
     g = new_game(player_start="S002", n_enemies=1)
     nb = sorted(g.world.land_adj["S002"])
-    _own(g, 1, nb[:2])
-    g.player.money = 10 ** 7
-    rr = g.regions["S002"]
-    rr.project = None
-    rr.lines = {nb[0]: 1, nb[1]: 0}
-    assert any(o == 1 and n == 2 for o, n, _, _ in g.border_nations(0))
-    k, skip = g.build_border_lines(0, 1, 2)
-    assert k == 1 and rr.project.key == "line" and rr.project.border == nb[1]   # 낮은 경계부터
-    for _ in range(12):
-        if rr.lines.get(nb[0], 0) >= 2 and rr.lines.get(nb[1], 0) >= 2:
-            break
+    mine = ["S002"] + nb[:2]
+    _own(g, 0, nb[:2])
+    theirs = sorted({n for r in mine for n in g.world.land_adj[r]} - set(mine))
+    _own(g, 1, theirs)
+    for rid in mine:
+        rr = g.regions[rid]
+        rr.project, rr.resist, rr.occs = None, None, {}
+        rr.lines = {}
+    g.player.money = 10 ** 8
+    return g, mine, theirs
+
+
+def test_build_border_lines_one_group_project():
+    """v1.2.15: 국경 방어선 일괄 건설은 '○○국 방어선' 묶음 공사 한 건 — 턴 = 모든 단계 건설 턴 합 ÷ 지역 수(올림),
+    비용은 묶음 전체로 매 턴 한꺼번에, 진행 중이던 작업은 중단(50% 환급), 지출 우선순위에서 한 줄."""
+    g, mine, theirs = _line_group_setup()
+    assert any(o == 1 for o, *_ in g.border_nations(0))
+    # 진행 중이던 작업: 하나는 생산(행복도 환급), 하나는 건설
+    ok, _ = g.start_project(0, mine[1], "unit", "inf")
+    assert ok
+    g.regions[mine[1]].project.paid = 100.0
+    plan = g.border_line_plan(0, 1, 2)
+    regs = plan["lines"]
+    assert set(regs) <= set(mine) and len(regs) >= 2 and mine[1] in plan["interrupt"]
+    edges = sum(len(v) for v in regs.values())
+    t_sum = edges * sum(g.build_time(0, "line", R.def_building_turns(lv)) for lv in (1, 2))
+    assert plan["turns_sum"] == t_sum and plan["turns"] == math.ceil(t_sum / len(regs))
+    cost = edges * sum(R.def_building_cost("line", lv) * g.mods(0).mult("cost_line") for lv in (1, 2))
+    assert plan["total"] == pytest.approx(cost) and plan["per_turn"] == pytest.approx(cost / plan["turns"])
+    money0 = g.player.money
+    ok, msg = g.build_border_lines(0, 1, 2)
+    assert ok, msg
+    p = g.regions[next(iter(regs))].project
+    assert p.name == f"{g.fname(1)} 방어선" and all(g.regions[r].project is p for r in regs)
+    assert g.player.money == pytest.approx(money0 + 50.0)            # 중단한 생산: 낸 비용 50% 환급
+    rows = [r for r in g.projects_by_priority(0) if r.project is p]
+    assert len(rows) == 1                                           # 우선순위 목록에서 한 건
+    # 한 턴에 묶음 전체 비용 한 번
+    m0 = g.player.money
+    g._fund_projects()
+    assert m0 - g.player.money == pytest.approx(p.per_turn)
+    g._phase_projects(("build",))
+    assert p.progress == 1
+    for _ in range(p.turns - 1):
         g._fund_projects()
         g._phase_projects(("build",))
-    assert rr.lines[nb[0]] == 2 and rr.lines[nb[1]] == 2 and rr.project is None
-    start, busy, done = g.border_line_plan(0, 1, 2)
-    assert not start and done >= 1
+    for rid, bs in regs.items():
+        assert g.regions[rid].project is None
+        assert all(g.regions[rid].lines[b] == 2 for b in bs)
+    assert p.paid == pytest.approx(cost)
+    assert not g.border_line_plan(0, 1, 2)["lines"]
+
+
+def test_border_line_group_stalls_as_one_and_cancels_together():
+    g, mine, theirs = _line_group_setup()
+    ok, _ = g.build_border_lines(0, 1, 3)
+    assert ok
+    p = g.regions[mine[0]].project
+    regs = g.group_regions(p)
+    g.player.money = p.per_turn * 0.5                               # 묶음 전체 비용이 모자라면 전부 정지
+    g._fund_projects()
+    g._phase_projects(("build",))
+    assert p.stalled and p.progress == 0
+    g.player.money = 10 ** 8
+    g._fund_projects()
+    g._phase_projects(("build",))
+    paid = p.paid
+    m0 = g.player.money
+    ok, msg = g.cancel_project(0, regs[-1])
+    assert ok and all(g.regions[r].project is None for r in regs)
+    assert g.player.money == pytest.approx(m0 + paid * C.PROJECT_REFUND)
+
+
+def test_border_line_group_member_lost_or_moved_to_new_group():
+    import pickle
+    g, mine, theirs = _line_group_setup()
+    ok, _ = g.build_border_lines(0, 1, 2)
+    assert ok
+    p = g.regions[mine[0]].project
+    regs = g.group_regions(p)
+    assert len(regs) >= 2
+    g._fund_projects()
+    g._phase_projects(("build",))
+    # 저장·불러오기 뒤에도 같은 작업 하나를 함께 가리킨다
+    g2 = pickle.loads(pickle.dumps(g))
+    p2 = g2.regions[regs[0]].project
+    assert all(g2.regions[r].project is p2 for r in regs) and len(g2.projects_by_priority(0)) == 1
+    # 대상 지역 하나를 빼앗기면 그 지역 몫만큼 턴당 비용이 줄고 나머지는 계속 짓는다
+    lost = regs[-1]
+    share = p.group["cost"][lost] / sum(p.group["cost"].values())
+    per0, paid0 = p.per_turn, p.paid
+    g.transfer_region(lost, 1)
+    assert g.regions[lost].project is None and lost not in p.group["lines"]
+    assert p.per_turn == pytest.approx(per0 * (1 - share)) and p.paid == pytest.approx(paid0 * (1 - share))
+    rest = g.group_regions(p)
+    assert rest and all(g.regions[r].project is p for r in rest)
+
+
+def test_second_border_group_takes_region_from_first():
+    """다른 나라 쪽 묶음 공사가 같은 지역을 쓰면 그 지역만 앞 묶음에서 빠지고(그 몫 50% 환급) 앞 묶음은 계속된다."""
+    g = new_game(player_start="S002", n_enemies=2)
+    nb = sorted(g.world.land_adj["S002"])
+    _own(g, 0, nb[:1])
+    mine = ["S002", nb[0]]
+    outer = sorted({n for r in mine for n in g.world.land_adj[r]} - set(mine))
+    _own(g, 1, outer[::2])
+    _own(g, 2, outer[1::2])
+    for rid in mine:
+        rr = g.regions[rid]
+        rr.project, rr.resist, rr.occs, rr.lines = None, None, {}, {}
+    g.player.money = 10 ** 8
+    assert g.build_border_lines(0, 1, 2)[0]
+    p1 = g.regions["S002"].project
+    both = [r for r in g.group_regions(p1) if any(g.regions[n].owner == 2 for n in g.world.land_adj[r])]
+    assert both
+    g._fund_projects()
+    g._phase_projects(("build",))
+    ok, msg = g.build_border_lines(0, 2, 2)
+    assert ok and "중단" in msg
+    p2 = g.regions[both[0]].project
+    assert p2 is not p1 and p2.name == f"{g.fname(2)} 방어선"
+    assert both[0] not in p1.group["lines"]
+    assert all(g.regions[r].project is p1 for r in g.group_regions(p1))
+
+
+def test_border_line_turns_example_from_request():
+    """요청 예: 4개 지역에서 3단계 방어선 5개(각 3턴) → 총 15턴 ÷ 4 = 3.75 → 4턴."""
+    assert math.ceil(15 / 4 - 1e-9) == 4
+    g, mine, theirs = _line_group_setup()
+    for rid in mine:
+        for n in g.world.land_adj[rid]:
+            g.regions[rid].lines[n] = 2                     # 2 → 3단계만 남게
+    plan = g.border_line_plan(0, 1, 3)
+    edges = sum(len(v) for v in plan["lines"].values())
+    t3 = g.build_time(0, "line", R.def_building_turns(3))
+    assert plan["turns_sum"] == edges * t3
+    assert plan["turns"] == math.ceil(edges * t3 / len(plan["lines"]) - 1e-9)
 
 
 def test_sold_electricity_is_delivered_in_full_before_allocation():

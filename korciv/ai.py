@@ -440,7 +440,7 @@ def _tax(g, f):
     worst = min(hs)
     last = f.last
     net = last.get("net", 0.0)
-    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
+    spend = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
     reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
@@ -2390,7 +2390,7 @@ def _slots(g, f, threat, military=True):
         return
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
-    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
+    committed = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
     reserve = 200 + upkeep * 3
     avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
     eco = f.is_ai and f.ai.get("victory_goal") == "economic" and g.econ_enabled()
@@ -2404,7 +2404,7 @@ def _slots(g, f, threat, military=True):
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     # 1페이즈: 이번 턴 예상 수지(세수 − 유지비 − 진행 중인 모든 공사비)가 적자면 생산 건물로 재정부터 늘린다
     p1 = f.is_ai and PH.phase(f) == 1
-    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    all_committed = sum(p.per_turn for p in g.unique_projects(regs))
     deficit = p1 and income - upkeep - all_committed < 0
     prod_k = C.AI_P1_DEFICIT_PROD if deficit else 1.0
     annex_k = C.AI_P1_DEFICIT_ANNEX if deficit else 1.0
@@ -2814,13 +2814,13 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     if not idle or post == "crisis":
         return
     regs = g.regions_of(fid)
-    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    all_committed = sum(p.per_turn for p in g.unique_projects(regs))
     net = income - upkeep - all_committed
     # 지금 공사 총비용을 다 대도 자금이 비상금 아래로 떨어지지 않을 만큼만(멈춤 방지): 여윳돈 절반 + 남는 순수입 12턴분
     budget = max(0.0, f.money - reserve) * C.AI_FILL_SAVINGS + max(0.0, net) * C.AI_FILL_NET_TURNS
     if spr in ("science", "economic"):
         # 질주: 승리 조건 공사 몇 턴분은 남겨 두고 나머지 여윳돈으로 지킨다
-        big = sum(r.project.per_turn for r in regs if r.project and r.project.kind in ("science", "econ"))
+        big = sum(p.per_turn for p in g.unique_projects(regs) if p.kind in ("science", "econ"))
         budget -= max(big, C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE) * C.AI_P3_SPRINT_KEEP
     if f.ai.get("victory_goal") == "economic":
         budget -= econ_saving_target(g, fid)          # 다음 경제 단계 비용은 남겨 두고 '남는 돈'만

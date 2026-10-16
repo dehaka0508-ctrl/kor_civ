@@ -394,6 +394,8 @@ def draw_chips(gui, x, y, w, chips):
 
 
 def project_name(app, p, rid=None):
+    if getattr(p, "group", None):
+        return f"{p.name} {p.group['target']}단계"
     if p.kind == "build":
         if p.key == "line":
             nm = "해안선" if p.border == "coast" else app.world.regions[p.border].short
@@ -424,6 +426,9 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
         n = app.game.joint_count(app.game.regions[rid].owner, p.key)
         if n > 1:
             name += f" (공동 {n}곳)"
+    grp = app.game.group_regions(p) if getattr(p, "group", None) else []
+    if grp:
+        name += f" (지역 {len(grp)}곳)"
     gui.text((x, y), name, 14, weight="semibold", max_w=w - 70)
     gui.text((x + w, y), f"남은 {app.game.project_left(rid)}턴", 12, t.muted, anchor="topright")
     y += 22
@@ -432,6 +437,12 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
     gui.text((x, y), f"턴당 {p.per_turn:,.0f} · 낸 비용 {p.paid:,.0f}" + (" · 자금 부족으로 정지" if p.stalled else ""),
              12, t.bad if p.stalled else t.muted)
     y += 22
+    if grp:
+        names = [app.world.regions[r].short for r in grp]
+        here = len(p.group["lines"].get(rid, []))
+        txt = (f"이 지역 경계 {here}곳 포함 · 함께 짓는 지역: " + ", ".join(names[:6])
+               + (f" 외 {len(names) - 6}곳" if len(names) > 6 else "") + " — 지출 우선순위에서 한 건, 비용은 묶음 전체로 냅니다.")
+        y = gui.wrap((x, y), txt, w, 11, t.muted) + 6
     if not can_cancel:
         return y
     if app.game.can_chain(p.kind, p.key):
@@ -450,7 +461,8 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
         gui.text((x, y + 4), "이것 다음에 더 만들 수량", 12, t.muted)
         p.repeat = gui.stepper((x + w - 96, y, 96, 24), int(getattr(p, "repeat", 0)), 0, 50, size=12)
         y += 30
-    if gui.button((x, y, 150, 28), "취소 (50% 환급)"):
+    if gui.button((x, y, 190 if grp else 150, 28), "묶음 전체 취소 (50% 환급)" if grp else "취소 (50% 환급)",
+                  tooltip="대상 지역 모두에서 함께 취소됩니다." if grp else None):
         ok, msg = app.game.cancel_project(app.game.player_id, rid)
         app.toast(msg)
     return y + 36
@@ -785,21 +797,38 @@ def _border_lines_section(app, x, y, w):
     gui.text((x + w - 128, y + 4), "목표", 12, t.muted)
     app.border_target = tgt = gui.stepper((x + w - 92, y, 92, 24), int(tgt), 1, C.DEF_BUILDINGS["line"]["max"], size=12)
     y += 30
-    start, busy, done = g.border_line_plan(pid, sel, tgt)
-    per = sum(o["per_turn"] for _, _, o in start)
-    if gui.button((x, y, w, 30), f"착수: 지역 {len(start)}곳 (턴당 {per:,.0f})", "primary", enabled=bool(start),
-                  size=12, tooltip="지역마다 슬롯 1개라 가장 낮은 경계부터 짓고, 완공되면 같은 나라 쪽 다음 경계·단계를 "
-                                   "목표까지 이어서 짓습니다."):
-        k, skip = g.build_border_lines(pid, sel, tgt)
-        app.toast(f"{g.seen_name(sel)} 쪽 국경 방어선 {k}곳 착수(목표 {tgt}단계)"
-                  + (f" · 슬롯이 바쁜 지역 {skip}곳 제외" if skip else ""))
-        app.changed()
+    plan = g.border_line_plan(pid, sel, tgt)
+    regs = plan["lines"]
+    if regs:
+        txt = (f"{g.seen_name(sel)} 방어선: 지역 {len(regs)}곳 · 방어선 {plan['steps']}단계분 · "
+               f"건설 턴 합 {plan['turns_sum']} ÷ {len(regs)}곳 = {plan['turns']}턴 · "
+               f"총 {plan['total']:,.0f} (턴당 {plan['per_turn']:,.0f})")
+        y = gui.wrap((x, y), txt, w, 11, t.text) + 4
+    stop = plan["interrupt"]
+    if stop:
+        what = ", ".join(f"{app.world.regions[r].short}({project_name(app, g.regions[r].project, r)})" for r in stop[:4])
+        y = gui.wrap((x, y), f"착수하면 진행 중인 작업 {len(stop)}건을 중단합니다(낸 비용 50% 환급): {what}"
+                     + (f" 외 {len(stop) - 4}건" if len(stop) > 4 else ""), w, 11, t.warn) + 4
+    key = (sel, tgt, tuple(stop))
+    armed = stop and getattr(app, "border_confirm", None) == key
+    label = (f"한 번 더 누르면 {len(stop)}건 중단하고 착수" if armed
+             else f"착수: 지역 {len(regs)}곳 · {plan['turns']}턴 (턴당 {plan['per_turn']:,.0f})")
+    if gui.button((x, y, w, 30), label, "danger" if armed else "primary", enabled=bool(regs) and not plan["why"],
+                  size=12, tooltip=plan["why"] or "대상 지역 모두에 '나라 방어선' 묶음 공사 한 건을 착수합니다. 지출 우선순위에서 "
+                                   "한 건으로 다루고, 비용은 묶음 전체로 매 턴 한꺼번에 냅니다. 다 지으면 대상 경계가 모두 목표 단계가 됩니다."):
+        if stop and not armed:
+            app.border_confirm = key
+        else:
+            app.border_confirm = None
+            ok, msg = g.build_border_lines(pid, sel, tgt)
+            app.toast(msg)
+            app.changed()
     y += 34
     note = []
-    if busy:
-        note.append(f"슬롯이 바쁜 지역 {busy}곳 제외")
-    if done:
-        note.append(f"이미 목표에 닿은 지역 {done}곳")
+    if plan["skipped"]:
+        note.append(f"점령당하는 중·저항 중인 지역 {plan['skipped']}곳 제외")
+    if plan["done"]:
+        note.append(f"이미 목표에 닿은 지역 {plan['done']}곳")
     if note:
         gui.text((x, y), " · ".join(note), 11, t.muted, max_w=w)
         y += 18
@@ -1862,8 +1891,9 @@ def draw_priority_list(app, x, y, w, items):
         gui.rect(t.accent if dragged else t.panel_alt, row, radius=8)
         fg = (255, 255, 255) if dragged else t.text
         sub = (235, 240, 255) if dragged else t.muted
-        gui.text((row.x + 8, row.y + 3), f"{i + 1}. {app.world.regions[rid].short} · {project_name(app, p, rid)}", 12, fg,
-                 "semibold", max_w=w - 80)
+        label = (f"{project_name(app, p, rid)} · 지역 {len(app.game.group_regions(p))}곳" if getattr(p, "group", None)
+                 else f"{app.world.regions[rid].short} · {project_name(app, p, rid)}")
+        gui.text((row.x + 8, row.y + 3), f"{i + 1}. {label}", 12, fg, "semibold", max_w=w - 80)
         state = "정지" if p.stalled else f"남은 {app.game.project_left(rid)}턴"
         if p.kind == "annex":
             jn = app.game.joint_count(rr.owner, p.key)

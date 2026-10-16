@@ -28,7 +28,7 @@ INSULT = 0.6            # 유보 가격의 60%(살 때는 1/0.6배)보다 나쁜
 # ------------------------------------------------------------------ 상황 지표
 def _reserve_money(g, fid) -> float:
     f = g.factions[fid]
-    spend = sum(r.project.per_turn for r in g.regions_of(fid) if r.project)
+    spend = sum(p.per_turn for p in g.unique_projects(g.regions_of(fid)))
     return 300 + g.upkeep(fid) * 5 + spend * 3 + abs(min(0.0, f.last.get("net", 0.0))) * 5
 
 

@@ -1457,7 +1457,7 @@ class App:
              f"구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
             ("money", "coin", "자금(만원)", f"{snap['money']:,.0f}", bad if f.money < 0 else None,
              f"자금 {fmt_money(f.money)}원\n진행 중 슬롯 턴당 지출 "
-             f"{sum(r.project.per_turn for r in g.regions_of(f.id) if r.project):,.0f}"),
+             f"{sum(p.per_turn for p in g.unique_projects(g.regions_of(f.id))):,.0f}"),
         ]
         for key, ic, label, val, col, tip in items:
             vw = max(measure(val, 15, "semibold")[0], measure(label, 10, "semibold")[0]) + 30
