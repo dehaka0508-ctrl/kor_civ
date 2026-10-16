@@ -259,7 +259,8 @@ def draw_region_info(app, rect):
         claims = [f"{g.seen_name(fid)} {min(v)[1]}" for fid, v in best.items()]
         if claims:
             y = gui.wrap((x, y), ("점령·편입 경쟁: " if len(claims) > 1 else "점령·편입: ") + " / ".join(claims)
-                         + (" — 먼저 채운 쪽이 차지(같은 턴이면 맞닿은 지역 인구 합이 많은 쪽)" if len(claims) > 1 else ""),
+                         + (" — 먼저 채운 쪽이 차지(같은 턴이면 점령은 주둔 병력 체력 합, 편입은 맞닿은 지역 인구 합이 큰 쪽)"
+                            if len(claims) > 1 else ""),
                          w, 12, t.warn) + 4
     # 건물
     y = section(gui, x, y + 6, w, "건물 단계")
@@ -936,7 +937,7 @@ def _army_tab_body(app, x, y, w, pid):
         # 포병·폭격기 부대(v1.2.11): 우클릭한 곳에 적 병력이 있으면 폭격 확인 창, 없으면 이동
         what = "포병" if army.units.get("art") else "폭격기"
         rng = (f"육상 {C.ART_RANGE}칸" if army.units.get("art")
-               else f"공항이 있는 지역에서 {C.BOMB_RANGE}칸")
+               else f"공항이 있는 지역에서 {C.BOMB_RANGE}칸, 육지↔바다는 2칸으로 셈")
         y = gui.wrap((x, y + 2), f"{what} 부대 — 우클릭: 적 병력이 있으면 폭격 확인 창({rng}), 없으면 이동. "
                                  f"Shift+우클릭: 병력 없는 곳의 건물 폭격", w, 12, t.muted) + 8
     else:

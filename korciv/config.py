@@ -30,7 +30,7 @@ COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
 RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
 RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
-NEUTRAL_POP_PER_INF = 20   # 중립 지역 수비대: 인구 20만 명당 보병 1(반올림, 최소 1). 편입하면 보병 1만 넘겨받는다
+NEUTRAL_POP_PER_INF = 20   # 중립 지역 수비대: 인구 20만 명까지 보병 1, 40만 2, 60만 3 …(올림, v1.2.14). 편입하면 보병 1만 넘겨받는다
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
 FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
@@ -209,7 +209,7 @@ UNITS = {
     "tank": dict(name="전차", cost=750, turns=3, oil=1, upkeep=45, atk=20, df=20, bomb=0, hp=50, kind="land", cargo=4, weight="heavy"),
     "lst":  dict(name="상륙함", cost=500, turns=2, oil=1, upkeep=20, atk=0, df=0, bomb=0, hp=20, kind="naval", capacity=8, weight="heavy"),
     "dd":   dict(name="구축함", cost=1000, turns=3, oil=1, upkeep=60, atk=20, df=20, bomb=20, hp=50, kind="naval", weight="heavy"),
-    "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=4, weight="heavy"),
+    "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=6, weight="heavy"),
     # 전투기: 공격 불가. 돌격 방어와 폭격기 요격에만 쓰인다(방어 30)
     "ftr":  dict(name="전투기", cost=750, turns=3, oil=1, upkeep=45, atk=0, df=30, bomb=0, hp=30, kind="air", weight="heavy", intercept=30),
     "bmb":  dict(name="폭격기", cost=1000, turns=3, oil=1, upkeep=60, atk=0, df=0, bomb=40, hp=20, kind="air", weight="heavy"),
@@ -241,7 +241,8 @@ SURPRISE_UNITS = ("inf", "tank")
 SOLO_UNITS = ("art", "bmb")
 ART_RANGE = 2              # 포병 폭격: 육상 2칸(2차 인접)까지
 NAVAL_BOMB_RANGE = 2       # 구축함 함포: 해역에서 2칸(해안 지역과 그 인접 지역)까지
-BOMB_RANGE = 2             # 폭격기: 공항·항공모함에서 2칸까지
+BOMB_RANGE = 4             # 폭격기: 공항·항공모함에서 4칸까지(v1.2.14, 육지↔바다는 2칸으로 센다)
+FTR_DEFENSE_RANGE = 3      # 요격 전투기: 공항이 있는 지역에서 3칸까지 지킨다(같은 거리 계산)
 AIR_RANGE = 3              # 공군 재배치(공항 간 이동) 거리
 AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 1            # 해군: 턴당 한 칸(항구→해역, 해역→해역, 해역→상륙·입항)
@@ -656,5 +657,6 @@ REBEL_COLORS = ["#7C5E10", "#5F3DC4", "#1864AB", "#087F5B", "#9C36B5", "#E8590C"
 AMBUSH_TURNS = 4            # 선덕여왕 '대야성 함락': 선전포고를 당한 뒤 방어력 감소 턴
 CAPITAL_FALL_TURNS = 8     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
 MINORITY_REGIONS = 40       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
-HEAL_RATE = 0.10           # 한 턴 동안 아무것도 하지 않은 부대의 체력 회복(최대 체력 대비)
+HEAL_AFTER_TURNS = 2       # 마지막 전투 뒤 이만큼 턴이 지나면(v1.2.14)
+HEAL_PER_UNIT = 1.0        # 매 턴 유닛 1개당 체력 1씩 회복
 INDUSTRY_BUILDINGS = ("factory", "extract", "power")   # 공장·정유·탄광·발전소

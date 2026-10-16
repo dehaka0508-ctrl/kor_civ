@@ -1149,7 +1149,7 @@ def _harass_block(g, f, t, urg):
     regs = g.regions_of(fid)
     t_regs = {r.id for r in g.regions_of(t)}
     by_land = any(n in t_regs for r in regs for n in w.land_adj[r.id])
-    by_air = any(r.b["airport"] and any(v in t_regs for v in w.distances_from(r.id, C.BOMB_RANGE)) for r in regs)
+    by_air = any(r.b["airport"] and any(v in t_regs for v in w.air_distances(r.id, C.BOMB_RANGE)) for r in regs)
     seas = {s_ for r in regs if w.regions[r.id].coastal for s_ in w.regions[r.id].seas}
     seas |= {s2_ for s_ in list(seas) for s2_ in w.seas[s_].adj}
     by_sea = any(v in t_regs for s_ in seas for v in w.seas[s_].coast)
@@ -2125,9 +2125,9 @@ def _carrier_orders(g, f, fl, h_tgt, at_port):
     # 대상 해안에 폭격 거리로 닿는 해역으로
     t_regs = {r.id for r in g.regions_of(h_tgt)}
     seas = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)
-            and any(u in t_regs for u in w.distances_from(v, C.BOMB_RANGE))]
+            and any(u in t_regs for u in w.air_distances(v, C.BOMB_RANGE))]
     if seas:
-        g.order_army(fl.id, max(seas, key=lambda v: (sum(1 for u in w.distances_from(v, C.BOMB_RANGE)
+        g.order_army(fl.id, max(seas, key=lambda v: (sum(1 for u in w.air_distances(v, C.BOMB_RANGE)
                                                          if u in t_regs and EG.key_region(g, u)), v)))
         return
     far = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)]

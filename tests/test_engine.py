@@ -1423,10 +1423,10 @@ def test_hp_pool_split_merge_heal():
     assert b.hp_left("inf") == 5 and a.hp_left("inf") == 11      # 5/10, 11/20
     ok, _ = g.merge_armies(a.id, b.id)
     assert ok and a.units["inf"] == 3 and a.hp_left("inf") == 16
-    # 한 턴 아무것도 하지 않으면 10% 회복
+    # 싸운 적 없는 부대는 매 턴 유닛 1개당 체력 1 회복(v1.2.14)
     g.end_turn()
-    assert a.hp_left("inf") == pytest.approx(16 + 0.1 * 3 * hp)
-    # 명령을 받은 턴은 회복하지 않는다
+    assert a.hp_left("inf") == pytest.approx(16 + C.HEAL_PER_UNIT * 3)
+    # 이동한 턴에도 회복한다
     tgt = sorted(g.world.land_adj["S002"])[0]
     _own(g, 0, [tgt])
     for x in g.armies_at(tgt):
@@ -1434,7 +1434,18 @@ def test_hp_pool_split_merge_heal():
     left = a.hp_left("inf")
     g.order_army(a.id, tgt)
     g.end_turn()
+    assert a.hp_left("inf") == pytest.approx(left + C.HEAL_PER_UNIT * 3)
+    # 전투에 휘말리면 그 턴과 다음 턴은 회복하지 않고, 2턴이 지나면 다시 회복
+    g.apply_damage([a], 5.0)
+    left = a.hp_left("inf")
+    assert a.last_combat == g.turn
+    g.end_turn()
     assert a.hp_left("inf") == pytest.approx(left)
+    g.end_turn()
+    assert a.hp_left("inf") == pytest.approx(left)
+    g.end_turn()
+    assert a.hp_left("inf") == pytest.approx(min(a.hp_max("inf"), left + C.HEAL_PER_UNIT * a.units["inf"]))
+    assert a.hp_left("inf") > left
 
 
 def test_ai_leader_bias():
@@ -1708,7 +1719,7 @@ def test_unit_table_v14():
     lst = Army(1, 0, "x", {"lst": 1, "inf": 2, "art": 1, "tank": 1}, {})
     assert lst.cargo_used() == 8 and lst.cargo_cap() == 8
     cv = Army(2, 0, "x", {"cv": 1, "ftr": 2, "bmb": 2}, {})
-    assert cv.air_used() == 4 and cv.air_cap() == 4
+    assert cv.air_used() == 4 and cv.air_cap() == 6        # 항모 1척에 함재기 6대(v1.2.14)
 
 
 def test_assault_damage_order_and_random_bombard():
@@ -3638,7 +3649,9 @@ def test_sea_fishery_food_bonus_and_river_nerf():
 
 def test_neutral_garrison_by_population_and_annex_gives_one():
     from korciv.game import neutral_garrison
-    assert [neutral_garrison(p) for p in (3, 15, 29, 31, 60, 120)] == [1, 1, 1, 2, 3, 6]
+    # 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(v1.2.14, 올림)
+    assert [neutral_garrison(p) for p in (0, 3, 15, 20, 20.1, 29, 31, 40, 40.5, 60, 120)] == \
+        [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 6]
     g = new_game(player_start="S002", n_enemies=1)
     big = max((r for r in g.world.order if g.regions[r].owner == NEUTRAL), key=lambda r: g.world.regions[r].pop0)
     gar = [a for a in g.armies_at(big) if a.owner == NEUTRAL]
@@ -4471,3 +4484,103 @@ def test_foreign_land_is_loaded_for_the_map():
     names = {land["name"] for land in w.foreign["lands"]}
     assert {"중국", "러시아", "일본"} <= names
     assert all(len(r) >= 3 for land in w.foreign["lands"] for r in land["polys"])
+
+
+def test_v1214_air_distance_bomber_and_fighter_ranges():
+    """v1.2.14: 폭격기 4칸·전투기 요격 3칸. 육지↔바다는 2칸으로 센다(태안-경기만-옹진 = 4칸)."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    assert w.air_distances("S146", 6)["N111"] == 4 and w.distances_from("S146", 6)["N111"] == 2
+    d = w.air_distances("S002", 5)
+    four = next(v for v, x in sorted(d.items()) if x == 4 and not w.is_sea(v))
+    five = next(v for v, x in sorted(d.items()) if x == 5 and not w.is_sea(v))
+    _own(g, 1, [four, five])
+    _clear(g, "S002", four, five)
+    D.declare_war(g, 0, 1)
+    g.regions["S002"].b["airport"] = 1
+    b = g.new_army(0, "S002", {"bmb": 2})
+    assert g._can_bombard(b, four) and not g._can_bombard(b, five)
+    # 요격: 대상에서 항공 거리 3칸 안 공항의 전투기만
+    for r in g.regions.values():
+        r.b["airport"] = 0
+    g.regions[four].b["aa"] = 0
+    dt = w.air_distances(four, 4)
+    three = next(v for v, x in sorted(dt.items()) if x == 3 and not w.is_sea(v))
+    far = next(v for v, x in sorted(dt.items()) if x == 4 and not w.is_sea(v))
+    f3 = g.new_army(1, three, {"ftr": 1})
+    g.regions[three].b["airport"] = 1
+    assert g.air_defense(0, four)[2] == 1
+    g.remove_army(f3)
+    g.new_army(1, far, {"ftr": 1})
+    g.regions[far].b["airport"] = 1
+    assert g.air_defense(0, four)[2] == 0
+    # 폭격한 부대·폭격당한 부대는 전투한 것으로 친다(회복 지연)
+    g.regions["S002"].b["airport"] = 1
+    tgt_army = g.new_army(1, four, {"inf": 3})
+    g._bombard(b, four, g._bombard_units(b, four))
+    assert b.last_combat == g.turn and tgt_army.last_combat == g.turn
+
+
+def test_v1214_simultaneous_occupation_uses_remaining_hp():
+    """같은 턴에 무력 점령이 끝나면 주둔 병력의 남은 체력 합이 큰 쪽이 차지한다."""
+    g, tgt, other = _contest_setup()
+    _neutral_ai(g, 1)
+    a = g.new_army(0, tgt, {"inf": 4})                  # 최대 40이지만
+    a.dmg["inf"] = 25                                   # 남은 체력 15
+    g.begin_occupation(0, tgt)
+    g.new_army(1, tgt, {"inf": 2})                      # 남은 체력 20
+    g.begin_occupation(1, tgt)
+    rr = g.regions[tgt]
+    assert g.occ_force(0, tgt) == 15 and g.occ_force(1, tgt) == 20
+    for fid in (0, 1):
+        rr.occs[fid]["need"] = rr.occs[fid]["progress"] + 1
+    g._phase_claims()
+    assert rr.owner == 1
+
+
+def test_v1214_start_airports_and_ports():
+    g = new_game(player_start="S002", n_enemies=1)
+    airports = ("S058 S089 S037 S228 S045 S126 S171 N031 N001 N195 N161 N134 N054 N151 N069").split()
+    ports = ("S041 S059 S169 S075 S084 S154 S168 N036 N112 N151 N042 N001 N131 S209 S228 S229").split()
+    for rid in airports:
+        assert g.regions[rid].b["airport"] == 1, rid
+    for rid in ports:
+        assert g.regions[rid].b["port"] == 1, rid
+    assert sum(r.b["airport"] for r in g.regions.values()) == len(airports)
+    assert sum(r.b["port"] for r in g.regions.values()) == len(ports)
+
+
+def test_v1214_paid_capital_move_gives_border_lines_but_forced_move_does_not():
+    g = new_game(player_start="S002", n_enemies=1)
+    a, b = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, [a, b])
+    for rid in (a, b):
+        g.regions[rid].resist = None
+        g.regions[rid].project = None
+        g.regions[rid].lines.clear()
+    g.player.money = 10 ** 8
+    ok, msg = g.start_project(0, a, "capital", "capital")
+    assert ok, msg
+    rr = g.regions[a]
+    p = rr.project
+    rr.project = None
+    g._complete_project(g.player, rr, p)
+    assert g.player.capital == a
+    assert all(rr.lines.get(n) == C.START_LINE_LEVEL for n in g.world.land_adj[a])
+    assert rr.lines.get("coast") == (C.START_LINE_LEVEL if g.world.regions[a].coastal else None)
+    # 수도를 빼앗겨 강제로 옮긴 곳은 방어선을 받지 않는다
+    for rid in [r.id for r in g.regions_of(0) if r.id not in (a, b)]:
+        g.transfer_region(rid, 1)
+    g.transfer_region(a, 1)
+    assert g.player.capital == b
+    assert not any(g.regions[b].lines.values())
+
+
+def test_v1214_naval_battle_marks_combat():
+    g = new_game(player_start="S002", n_enemies=1)
+    sid = next(iter(g.world.seas))
+    D.declare_war(g, 0, 1)
+    x = g.new_army(0, sid, {"dd": 2})
+    y = g.new_army(1, sid, {"dd": 2})
+    g._naval_battle(sid, 0, [x], 1, [y])
+    assert x.last_combat == g.turn and y.last_combat == g.turn

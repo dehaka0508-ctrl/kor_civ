@@ -126,6 +126,7 @@ class RegionInfo:
     scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
     full: str = ""       # 원래 표기명(시·군·구 포함). 자료 파일의 지명 대조용
     coal_field: str = ""  # 탄전 구분 ①/② (탄광 열은 시작 탄광 단계)
+    start_airport: bool = False   # 시작 때 공항(v1.2.14, 자료의 '시작공항' 열)
 
     @property
     def is_oil(self):
@@ -270,6 +271,7 @@ class World:
             id=r["ID"], name=name, short=short, province=r["광역"], ns=r["남북"], orig=r["원명칭"],
             rtype=r["유형"], do8=r["조선8도"], pop0=float(r["인구"]), coastal=r["해안"] == "Y",
             seas=seas, island=r["섬"] or "", start_port=r["시작항구"] == "Y",
+            start_airport=(r.get("시작공항") or "") == "Y",
             farm=int(r["농장"]), fishery=int(r["어장"]), factory=int(r["공장"]), bank=int(r["은행"]),
             oil=int(r["정유"]), coal=int(r["탄광"]), power_self=int(r["자체발전"]),
             power_source=src, power_site="화력" in src, specialty=", ".join(specs), specialties=specs,
@@ -302,6 +304,29 @@ class World:
 
     def distances_from(self, start: str, max_d: int) -> dict:
         return _bfs(self, start, max_d)
+
+    def air_distances(self, start: str, max_d: int) -> dict:
+        """항공 거리(폭격·요격 범위, v1.2.14): 육지↔육지·바다↔바다는 1칸, 육지↔바다는 2칸.
+        예) 태안 → 경기만 → 옹진 = 2 + 2 = 4칸. 결과는 (출발, 최대 거리)마다 기억해 둔다."""
+        cache = self.__dict__.setdefault("_air_cache", {})
+        key = (start, max_d)
+        if key in cache:
+            return cache[key]
+        import heapq
+        dist = {start: 0}
+        heap = [(0, start)]
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > dist.get(u, 1e9):
+                continue
+            su = u in self.seas
+            for v in self.node_neighbors(u):
+                nd = d + (2 if (v in self.seas) != su else 1)
+                if nd <= max_d and nd < dist.get(v, 1e9):
+                    dist[v] = nd
+                    heapq.heappush(heap, (nd, v))
+        cache[key] = dist
+        return dist
 
     def is_bridge(self, a: str, b: str) -> bool:
         return frozenset((a, b)) in self.bridges

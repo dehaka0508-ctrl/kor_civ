@@ -35,12 +35,14 @@ def initial_buildings(info) -> dict:
         b["specialty"] = 1
     if info.start_port:
         b["port"] = 1
+    if getattr(info, "start_airport", False):
+        b["airport"] = 1                  # 현실 공항 소재지는 공항 1단계로 시작(v1.2.14)
     return b
 
 
 def neutral_garrison(pop) -> int:
-    """중립 지역 수비대 보병 수: 인구 20만 명당 1(반올림, 최소 1). pop 은 만 명 단위."""
-    return max(1, int(pop / C.NEUTRAL_POP_PER_INF + 0.5))
+    """중립 지역 수비대 보병 수(v1.2.14): 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(올림, 최소 1). pop 은 만 명 단위."""
+    return max(1, int(math.ceil(pop / C.NEUTRAL_POP_PER_INF - 1e-9)))
 
 
 def unit_power(key: str) -> float:
@@ -954,7 +956,7 @@ class Game:
                             and out.get(v, {}).get("action") != "attack":
                         out.setdefault(v, {"action": "bombard", "path": [], "strong": False})
             if army.units.get("bmb") and army.units.get("cv"):
-                for v, d in w.distances_from(start, C.BOMB_RANGE).items():
+                for v, d in w.air_distances(start, C.BOMB_RANGE).items():
                     if not w.is_sea(v) and self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
         elif dom == "air":
@@ -972,7 +974,7 @@ class Game:
                             and not self.hostile_units_at(fid, v)):
                         out[v] = {"action": "move", "path": [v], "strong": True}
                 if army.units.get("bmb"):
-                    for v, d in w.distances_from(start, C.BOMB_RANGE).items():
+                    for v, d in w.air_distances(start, C.BOMB_RANGE).items():
                         if not w.is_sea(v) and v not in out and self.hostile(fid, self.regions[v].owner):
                             out[v] = {"action": "bombard", "path": [], "strong": False}
         if any(army.units.get(k) for k in C.SCIENCE_UNITS):
@@ -1185,7 +1187,7 @@ class Game:
         if a.units.get("bmb"):
             # 폭격기는 공항이 있는 지역(내 땅이나 통행권으로 들어간 나라의 공항)이나 항공모함에서만 출격
             base_ok = (not w.is_sea(a.loc) and self.regions[a.loc].b["airport"]) or a.units.get("cv")
-            if base_ok and w.distances_from(a.loc, C.BOMB_RANGE).get(target) is not None:
+            if base_ok and w.air_distances(a.loc, C.BOMB_RANGE).get(target) is not None:
                 out["bmb"] = a.units["bmb"]
         return out
 
@@ -1525,7 +1527,8 @@ class Game:
         pool = []
         acted = self.__dict__.setdefault("_acted", set())
         for a in armies:
-            acted.add(a.id)                  # 전투·폭격에 휘말린 부대는 이번 턴 회복하지 않는다
+            acted.add(a.id)
+            a.last_combat = self.turn        # 전투·폭격에 휘말린 부대는 2턴 동안 회복하지 않는다(v1.2.14)
             for k, n in a.units.items():
                 if n > 0 and (unit_filter is None or k in unit_filter):
                     pool.append((a, k, n))
@@ -3255,6 +3258,8 @@ class Game:
                 self.factions[loser].naval_off_until = self.turn + off
                 self.event("info", f"{self.fname(loser)}: 해전 패배로 {off}턴 동안 "
                            f"{self.fx_source(loser, 'naval_loss_off')} — 해군 버프 비활성", fids=(loser,))
+        for a in list(fx) + list(fy):
+            a.last_combat = self.turn
         lx = self._ship_damage(fx, dx, y, sid)
         ly = self._ship_damage(fy, dy, x, sid)
         self._score_units(x, y, ly)
@@ -3312,11 +3317,12 @@ class Game:
                 self._bombard(a, tgt, units)
 
     def air_defense(self, fid_att, tgt):
-        """폭격기를 요격하는 힘: 대상 지역 대공포(단계당 10, 최대 5단계) + 대상·인접 지역 가운데 공항이 있는 곳의
-        적 전투기(대당 30, 남은 체력 비례). 공군은 공항이 있는 지역에서만 싸운다(v1.2.10)."""
+        """폭격기를 요격하는 힘: 대상 지역 대공포(단계당 10, 최대 5단계) + 대상에서 항공 거리 3칸 안(육지↔바다는
+        2칸, v1.2.14) 공항이 있는 지역의 적 전투기(대당 30, 남은 체력 비례). 공군은 공항이 있는 지역에서만 싸운다."""
         rr = self.regions[tgt]
         aa = min(C.AA_MAX_LEVEL, rr.b["aa"]) if rr.owner != NEUTRAL else 0
-        arms = [x for loc in [tgt] + list(self.world.land_adj[tgt]) if self.regions[loc].b["airport"]
+        near = self.world.air_distances(tgt, C.FTR_DEFENSE_RANGE)
+        arms = [x for loc in near if loc in self.regions and self.regions[loc].b["airport"]
                 for x in self.hostile_units_at(fid_att, loc)]
         ftr = sum(x.units.get("ftr", 0) for x in arms)
         power = sum(self.eff(x, "ftr") for x in arms) * C.UNITS["ftr"]["intercept"]
@@ -3325,6 +3331,7 @@ class Game:
     def _bombard(self, a, tgt, units):
         rr = self.regions[tgt]
         m = self.mods(a.owner)
+        a.last_combat = self.turn            # 폭격도 전투: 2턴 동안 회복하지 않는다
         notes = []
         n_bmb = units.get("bmb", 0)
         if n_bmb:
@@ -3776,16 +3783,14 @@ class Game:
         return f", 의열단 파괴: {BUILDING_NAMES.get(k, k)} {rr.b[k] + 1} → {rr.b[k]}단계"
 
     def _phase_heal(self):
-        """이번 턴에 이동·공격·폭격·점령을 하지 않고 전투에도 휘말리지 않은 부대는 체력 10% 회복."""
-        acted = self.__dict__.get("_acted", set())
+        """회복(v1.2.14): 마지막 전투 뒤 2턴 이상 지난 부대는 매 턴 유닛 1개당 체력 1씩 회복(이동·점령은 상관없음)."""
         for a in self.armies.values():
-            if not a.dmg or a.id in acted or a.order or a.owner == NEUTRAL:
+            if not a.dmg or a.owner == NEUTRAL:
                 continue
-            rr = self.regions.get(a.loc)
-            if rr is not None and a.owner in rr.occs:
-                continue                     # 점령 중
+            if self.turn - getattr(a, "last_combat", -999) < C.HEAL_AFTER_TURNS:
+                continue
             for k in list(a.dmg):
-                d = a.dmg[k] - C.HEAL_RATE * a.hp_max(k)
+                d = a.dmg[k] - C.HEAL_PER_UNIT * a.units.get(k, 0)
                 if d > 1e-9:
                     a.dmg[k] = d
                 else:
@@ -3885,12 +3890,12 @@ class Game:
         return theirs > mine
 
     def occ_force(self, fid, rid) -> float:
-        """무력 점령 병력 규모: rid 에 있는 fid 육군 유닛의 최대 체력 합."""
-        return float(sum(C.UNITS[k]["hp"] * n for a in self.armies_at(rid, fid) if a.domain() == "land"
-                         for k, n in a.units.items() if C.UNITS[k]["kind"] == "land"))
+        """무력 점령 병력 규모(v1.2.14): rid 에 주둔한 fid 육군 유닛의 남은 체력 합."""
+        return float(sum(a.hp_left(k) for a in self.armies_at(rid, fid) if a.domain() == "land"
+                         for k in a.units if C.UNITS[k]["kind"] == "land"))
 
     def _claim_key(self, claim, rid):
-        """같은 턴에 둘 이상이 다 채웠을 때 순서: 무력 점령(병력 규모 = 최대 체력 합이 큰 순)이 편입보다 먼저,
+        """같은 턴에 둘 이상이 다 채웠을 때 순서: 무력 점령(주둔 병력의 남은 체력 합이 큰 순)이 편입보다 먼저,
         편입끼리는 대상과 맞닿은 지역 인구 합이 많은 순."""
         kind, fid, _ = claim
         if kind == "occ":
@@ -3906,7 +3911,7 @@ class Game:
 
     def _phase_claims(self):
         """6. 점령·편입: 무력 점령과 편입 게이지가 함께 차고, 먼저 다 채운 쪽이 그 지역을 차지한다.
-        같은 턴에 둘 이상이 다 채우면: 무력 점령끼리는 그 자리 병력 규모(최대 체력 합)가 큰 쪽, 편입끼리는 대상과
+        같은 턴에 둘 이상이 다 채우면: 무력 점령끼리는 그 자리 주둔 병력의 남은 체력 합이 큰 쪽, 편입끼리는 대상과
         맞닿은 지역 인구 합이 많은 쪽, 점령과 편입이 겹치면 병력이 있는 무력 점령이 먼저."""
         claims = {}
         for rid, fid in self._advance_occupations():
@@ -3919,7 +3924,7 @@ class Game:
             rivals = list(dict.fromkeys(c[1] for c in cl))   # 같은 나라의 점령·편입은 서로 경쟁하지 않는다
             if len(rivals) > 1:
                 names = ", ".join(self.fname(f) for f in rivals)
-                why = ("병력 규모(최대 체력 합)가 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
+                why = ("주둔 병력의 체력 합이 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
                        else "무력 점령 중인" if cl[0][0] == "occ" else "맞닿은 지역 인구 합이 가장 많은")
                 self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
                            f"{why} {self.fname(cl[0][1])}이(가) 차지합니다.",
@@ -4270,7 +4275,10 @@ class Game:
             f.capital = rr.id
             for r in self.regions_of(f.id):
                 r.h_delta += C.CAPITAL_MOVE_HAPPY
-            text = f"{name}(으)로 천도 완료"
+            # 직접 천도한 새 수도는 시작 수도처럼 모든 경계(육지 경계·해안선)에 방어선 1단계(v1.2.14)
+            for n in list(self.world.land_adj[rr.id]) + (["coast"] if self.world.regions[rr.id].coastal else []):
+                rr.lines[n] = max(rr.lines.get(n, 0), C.START_LINE_LEVEL)
+            text = f"{name}(으)로 천도 완료(새 수도 모든 경계에 방어선 {C.START_LINE_LEVEL}단계)"
         else:
             text = "완료"
         self.event("complete", text, region=rr.id, fids=(f.id,))
