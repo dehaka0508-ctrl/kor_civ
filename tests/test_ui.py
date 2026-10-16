@@ -727,3 +727,19 @@ def test_pinned_priority_and_done_buildings_render(app):
     app.select(cap)
     app.left_open, app.left_tab, app.tab = True, "region", "action"
     frame(app)
+
+
+def test_sell_stored_food_slider(app):
+    app.start_game(Settings(seed=4, n_enemies=2))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    app.modal = None
+    f = g.player
+    f.res["food"] = 500
+    app.left_open, app.left_tab = True, "nation"
+    app.food_sell_amt = 200
+    frame(app)
+    q, gain = g.market_sell(g.player_id, "food", app.food_sell_amt)
+    assert q == 200 and f.res["food"] == 300 and gain == pytest.approx(200 * g.sell_price(g.player_id, "food"))

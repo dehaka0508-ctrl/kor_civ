@@ -2490,7 +2490,7 @@ def _slots(g, f, threat, military=True):
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             gain = dy * tax * horizon * wts.get("economy", 1)
             if key in ("farm", "fishery"):
-                dfood = C.FOOD_PER_G                       # 농장·어장은 단계마다 같은 양
+                dfood = C.FOOD_PER_G * (g.fish_food_mult(fid, r.id) if key == "fishery" else 1.0)
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory" and fuel["spare"] < 1:
                 # 남는 연료가 없으면 새 칸은 놀고, 이미 들어가는 연료의 1개당 산출 상승분만 이득

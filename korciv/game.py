@@ -38,6 +38,11 @@ def initial_buildings(info) -> dict:
     return b
 
 
+def neutral_garrison(pop) -> int:
+    """중립 지역 수비대 보병 수: 인구 20만 명당 1(반올림, 최소 1). pop 은 만 명 단위."""
+    return max(1, int(pop / C.NEUTRAL_POP_PER_INF + 0.5))
+
+
 def unit_power(key: str) -> float:
     u = C.UNITS[key]
     return max(u.get("atk", 0), u.get("df", 0), u.get("bomb", 0) / 2)
@@ -198,7 +203,7 @@ class Game:
             info = w.regions[rid]
             b = initial_buildings(info)
             self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=info.pop0, b=b)
-            self.new_army(NEUTRAL, rid, {"inf": 1})
+            self.new_army(NEUTRAL, rid, {"inf": neutral_garrison(info.pop0)})
 
         st = self.settings
         n_ai = max(1, min(C.MAX_ENEMIES, st.n_enemies))
@@ -242,15 +247,25 @@ class Game:
     def _pick_starts(self, n, requested):
         return pick_starts(self.world, self.rng, n, requested)
 
+    def _take_garrison(self, rid, fid, garrison=None):
+        """중립 수비대를 넘겨받는다: 수비대 규모와 상관없이 보병 1만(나머지는 흩어진다)."""
+        garrison = [a for a in self.armies_at(rid) if a.owner == NEUTRAL] if garrison is None else garrison
+        for i, a in enumerate(garrison):
+            if a.id not in self.armies:
+                continue
+            if i == 0:
+                a.owner = fid
+                a.units, a.dmg = {"inf": 1}, {}
+            else:
+                self.remove_army(a)
+
     def _land_dist(self, a, b, cap):
         return land_dist(self.world, a, b, cap)
 
     def _give_start_region(self, f: Faction, rid: str):
         r = self.regions[rid]
         r.owner = f.id
-        for army in self.armies_at(rid):
-            if army.owner == NEUTRAL:
-                army.owner = f.id
+        self._take_garrison(rid, f.id)
         if self.world.regions[rid].island == "무연륙 섬":
             self.new_army(f.id, rid, {"lst": 1})
         f.res = {"food": r.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
@@ -273,7 +288,8 @@ class Game:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
             r.output = self.calc_output(r.id, full=True)
-            r.food = R.food_output(r.b["farm"], r.b["fishery"])
+            r.food = R.food_output(r.b["farm"], r.b["fishery"],
+                                   C.SEA_FISH_FOOD if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
         for f in self.factions:
             regs = self.regions_of(f.id)
             gdp = sum(r.output for r in regs)
@@ -760,8 +776,15 @@ class Game:
             if w.is_sea(v) or self.hostile_units_at(fid, v):
                 return False
             o = self.regions[v].owner
-            return self.friendly_territory(fid, v) or (not sci and o != NEUTRAL and not self.hostile(fid, o)
-                                                        and D.has_passage(self, fid, o))
+            if self.friendly_territory(fid, v):
+                return True
+            if sci:
+                return False                    # 과학 유닛은 자국(연합) 영토 안에서만
+            if o == NEUTRAL:
+                return True                     # 빈 중립 땅: 턴당 1칸씩 지나간다(들어서면 점령을 시작)
+            if self.hostile(fid, o):
+                return self.can_attack_now(fid, o)   # 병력 없는 적 땅: 들어서면 차지한다
+            return D.has_passage(self, fid, o)
 
         if dom == "land":
             if w.is_sea(start) or w.is_sea(target):
@@ -1655,7 +1678,7 @@ class Game:
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{round(C.FOOD_PER_G * fm, 1):g}, "
+            return (f"{kind} 어장: 턴당 식량 +{round(C.FOOD_PER_G * self.fish_food_mult(fid, rid), 1):g}, "
                     f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
@@ -1701,7 +1724,7 @@ class Game:
                     f"산출 {C.FARM_OUTPUT * lv * fm * pm:,.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
-            return (f"턴당 식량 {round(C.FOOD_PER_G * lv * fm * m.mult('food_prod'), 1):g}, "
+            return (f"턴당 식량 {round(C.FOOD_PER_G * lv * self.fish_food_mult(fid, rid) * m.mult('food_prod'), 1):g}, "
                     f"산출 {C.FISH_OUTPUT * lv * fm * pm:,.0f}")
         if key == "factory":
             u = max(0, min(lv, getattr(rr, "fuel_used", 0)))
@@ -2150,6 +2173,15 @@ class Game:
         """바다(해안) 또는 하천(도하 경계) 인접 지역."""
         info = self.info(rid)
         return info.coastal or info.fishery > 0 or rid in self.world.river_regions
+
+    def fish_food_mult(self, fid, rid):
+        """어장 식량 배수: fish_mult × 바다 어장이면 SEA_FISH_FOOD(산출에는 붙지 않는다)."""
+        fm = self.fish_mult(fid, rid)
+        return fm * (C.SEA_FISH_FOOD if self.sea_fishery(rid) else 1.0)
+
+    def sea_fishery(self, rid) -> bool:
+        info = self.info(rid)
+        return not (not info.coastal and rid in self.world.river_regions)
 
     def fish_mult(self, fid, rid):
         info = self.info(rid)
@@ -3390,7 +3422,7 @@ class Game:
         """한 지역의 식량 생산(스탈린 '집단농장' 농장 +15%, 마오쩌둥 '해로운 새' −15%)."""
         m = self.mods(fid)
         return R.food_output(r.b["farm"] * m.mult("output_farm"), r.b["fishery"],
-                             self.fish_mult(fid, r.id)) * m.mult("food_prod")
+                             self.fish_food_mult(fid, r.id)) * m.mult("food_prod")
 
     def expected_food_balance(self, f) -> float:
         """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
@@ -3525,8 +3557,7 @@ class Game:
             garrison = [a for a in self.armies_at(tgt.id) if a.owner == NEUTRAL]
             self.transfer_region(tgt.id, f.id, reason="편입")
             tgt.happy = 0.0
-            for a in garrison:
-                a.owner = f.id
+            self._take_garrison(tgt.id, f.id, garrison)
             text = f"{self.info(tgt.id).name} 편입 완료"
             self.event("captured", f"{f.name}이(가) {self.info(tgt.id).name}을(를) 편입했습니다.",
                        region=tgt.id, fids=(f.id,))

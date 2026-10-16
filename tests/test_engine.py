@@ -3600,3 +3600,48 @@ def test_incheon_ongjin_no_island_bonus():
     assert g.player.capital == rid
     assert not any(a.units.get("lst") for a in g.armies_at(rid, 0)) and not g.regions[rid].b["port"]
     assert g.region_value(rid)[0] < 6 and g.region_value(g.world.name_to_id["황남 옹진군"])[0] < 6
+
+
+def test_sea_fishery_food_bonus_and_river_nerf():
+    """바다 어장은 식량 ×1.2(산출은 그대로), 하천 어장은 식량·산출 ×0.8."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    sea = next(r for r in w.order if w.regions[r].coastal)
+    river = next(r for r in w.order if not w.regions[r].coastal and r in w.river_regions)
+    _own(g, 0, [sea, river])
+    assert g.fish_food_mult(0, sea) == pytest.approx(g.fish_mult(0, sea) * C.SEA_FISH_FOOD)
+    assert g.fish_food_mult(0, river) == pytest.approx(C.RIVER_FISH_MULT)
+    for rid in (sea, river):
+        g.regions[rid].b["farm"], g.regions[rid].b["fishery"] = 0, 2
+    assert g.food_prod(0, g.regions[sea]) == pytest.approx(C.FOOD_PER_G * 2 * g.fish_mult(0, sea) * 1.2)
+    assert g.food_prod(0, g.regions[river]) == pytest.approx(C.FOOD_PER_G * 2 * 0.8)
+
+
+def test_neutral_garrison_by_population_and_annex_gives_one():
+    from korciv.game import neutral_garrison
+    assert [neutral_garrison(p) for p in (3, 15, 29, 31, 60, 120)] == [1, 1, 1, 2, 3, 6]
+    g = new_game(player_start="S002", n_enemies=1)
+    big = max((r for r in g.world.order if g.regions[r].owner == NEUTRAL), key=lambda r: g.world.regions[r].pop0)
+    gar = [a for a in g.armies_at(big) if a.owner == NEUTRAL]
+    assert gar[0].units["inf"] == neutral_garrison(g.world.regions[big].pop0) > 1
+    g._take_garrison(big, 0)                              # 편입: 보병 1만 넘겨받는다
+    assert [a.units for a in g.armies_at(big)] == [{"inf": 1}] and g.armies_at(big)[0].owner == 0
+    assert [a.units for a in g.armies_at("S002", 0)] == [{"inf": 1}]   # 시작 지역도 보병 1
+
+
+def test_route_through_unowned_land_one_step_per_turn():
+    """영토 밖(빈 중립 땅)도 여러 턴 자동 이동: 영토 밖에서는 턴당 1칸."""
+    g = new_game(player_start="S002", n_enemies=1)
+    for a in [a for a in g.armies.values() if a.owner == NEUTRAL]:
+        g.remove_army(a)
+    w = g.world
+    n1 = next(n for n in sorted(w.land_adj["S002"]) if g.regions[n].owner == NEUTRAL)
+    n2 = next(n for n in sorted(w.land_adj[n1]) if g.regions[n].owner == NEUTRAL and n not in w.land_adj["S002"]
+              and n != "S002")
+    n3 = next(n for n in sorted(w.land_adj[n2]) if g.regions[n].owner == NEUTRAL
+              and n not in w.land_adj[n1] and n not in (n1, "S002"))
+    a = g.new_army(0, n1, {"inf": 2})
+    assert g.plan_route(a, n3) is not None
+    ok, _ = g.order_army(a.id, n3)
+    assert ok and a.goto == n3 and len(a.order["path"]) == 1          # 영토 밖에서는 이번 턴 한 칸
+    assert a.order["path"][0] in w.land_adj[n1] and a.order["path"][0] != n3

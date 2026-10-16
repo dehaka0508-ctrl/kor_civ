@@ -961,6 +961,24 @@ def draw_nation_tab(app, body):
                       f"(잉여 ÷ 소비 × 0.25%p)."}[mode]
     gui.text((x, y), desc, 11, t.muted, max_w=w)
     y += 20
+    # 비축 식량 판매: 슬라이더로 양을 정해 시장 판매가로 판다
+    stock_f = int(f.res.get("food", 0))
+    amt = max(0, min(int(getattr(app, "food_sell_amt", 0)), stock_f))
+    price = g.sell_price(pid, "food")
+    gui.text((x, y + 2), "비축 식량 판매", 12, t.text, "semibold")
+    amt, _ = gui.slider((x + 96, y + 2, w - 96 - 80, 20), amt, 0, max(1, stock_f), 1, "food_sell",
+                        enabled=stock_f > 0)
+    amt = int(min(amt, stock_f))
+    app.food_sell_amt = amt
+    if gui.button((x + w - 72, y - 2, 72, 26), "판매", "primary" if amt else "default", size=12, enabled=amt > 0,
+                  tooltip=f"비축 식량 {amt:,}을 개당 {price:,.0f}에 팝니다"):
+        q, gain = g.market_sell(pid, "food", amt)
+        app.food_sell_amt = 0
+        app.toast(f"비축 식량 {q:,} 판매: +{gain:,.0f}")
+        app.changed()
+    y += 24
+    gui.text((x, y), f"{amt:,} / {stock_f:,} · 판매액 {amt * price:,.0f}", 11, t.muted)
+    y += 20
     f.auto_food = gui.checkbox((x, y, w, 24), "식량 부족 시 자동 구매", f.auto_food)
     y += 26
     y += 4
