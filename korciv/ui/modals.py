@@ -220,7 +220,7 @@ def draw_title(app):
             _logo["src"] = None
     src = _logo["src"]
     bw = 300
-    lw = min(sw * 0.62, (sh - 330) * (src.get_width() / src.get_height()) if src else 600, 900)
+    lw = min(sw * 0.72, (sh - 330) * (src.get_width() / src.get_height()) if src else 600, 1000)
     lh = lw * src.get_height() / src.get_width() if src else 120
     top = max(20, (sh - (lh + 28 + 50 + 50 + 40 + 40 + 30)) / 2 - 10)
     lr = pygame.Rect(int((sw - lw) / 2), int(top), int(lw), int(lh))
