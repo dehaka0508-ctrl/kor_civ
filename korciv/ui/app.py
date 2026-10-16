@@ -461,14 +461,19 @@ class App:
         modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
         # 우클릭 메뉴 위에 마우스가 있으면 그 아래 버튼(턴 종료 등)은 반응하지 않는다(메뉴가 나중에 그려져도 먼저 눌리지 않게)
         under_ctx = bool(self.ctx_menu) and pygame.Rect(self.ctx_menu[0], (170, 84)).collidepoint(self.gui.mouse)
-        self.gui.input_enabled = not modal_open and not under_ctx
+        # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.2.16)
+        pop = self.mode_popup_rect()
+        under_pop = pop is not None and pop.collidepoint(self.gui.mouse)
+        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
         self.draw_map()
         self.draw_topbar()
         h = sh - TOP_H - 90
         rail = pygame.Rect(8, TOP_H + 12, panels.RAIL_W, h)
         panels.draw_side(self, rail, pygame.Rect(rail.right + 6, TOP_H + 12, LEFT_W, h))
         self.draw_compass()
+        self.gui.input_enabled = not modal_open and not under_ctx
         self.draw_mode_chips()
+        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
         self.draw_end_turn()
         self.draw_toasts()
         self.gui.input_enabled = not modal_open
@@ -1487,8 +1492,7 @@ class App:
         t = self.theme
         u = ui_scale()
         sw, sh = self.lsize()
-        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
-        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
+        r, widths = self._mode_bar_layout()
         gui.shadow(r, 22, 6)
         pr = gui.R(r)
         cache = self.__dict__.setdefault("_mode_band", {})
@@ -1544,15 +1548,43 @@ class App:
         if gui.hover(tr):
             gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n강을 건너는 곳(도하)과 산줄기를 넘는 곳(산악 돌파)\n점선: 맞닿지 않은 하구·수로 경로"
 
+    def _mode_bar_layout(self):
+        """지도 모드 막대의 자리와 칩 폭."""
+        sw, sh = self.lsize()
+        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
+        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
+        return r, widths
+
+    SUB_ROW_H = 30
+    SUB_W = 128
+
+    def _sub_menu_rect(self, mode, x, bottom):
+        n = len(SUB_MODES[mode])
+        return pygame.Rect(x, bottom - n * (self.SUB_ROW_H + 4) - 12, self.SUB_W, n * (self.SUB_ROW_H + 4) + 8)
+
+    def mode_popup_rect(self):
+        """열려 있는 지도 모드 세부 메뉴의 자리(없으면 None)."""
+        popup = getattr(self, "mode_popup", None)
+        if popup not in SUB_MODES:
+            return None
+        r, widths = self._mode_bar_layout()
+        bx = r.x + 6
+        for (key, _), w in zip(MAP_MODES, widths):
+            if key == popup:
+                return self._sub_menu_rect(key, bx, r.y - 6)
+            bx += w + 4
+        return None
+
     def draw_sub_menu(self, mode, x, bottom, w):
         """자원·건물·군사 세부 메뉴(칩 위로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
         gui = self.gui
         t = self.theme
         opts = SUB_MODES[mode]
-        bh = 30
-        pw = 128
-        p = pygame.Rect(x, bottom - len(opts) * (bh + 4) - 12, pw, len(opts) * (bh + 4) + 8)
+        bh = self.SUB_ROW_H
+        pw = self.SUB_W
+        p = self._sub_menu_rect(mode, x, bottom)
         gui.panel(p)
+        gui.block(p)
         cur = self.sub_mode(mode)[0]
         for i, (key, name, col, top) in enumerate(opts):
             row = pygame.Rect(p.x + 6, p.y + 6 + i * (bh + 4), pw - 12, bh)

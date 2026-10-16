@@ -138,7 +138,7 @@ LEADERS = [
          debuff=("문신의 신중함", "기습을 쓸 수 없다"),
          fx={"river_def_dmg": 0.5, "no_surprise": True}),
     dict(key="kwb", name="김원봉", aggr=7,
-         buff=("의열단", "보병을 포함한 기습이 성공하면 대상 지역의 생산·군사 건물 하나가 1단계 내려간다"),
+         buff=("의열단", "보병을 포함한 기습이 성공하면 대상 지역의 생산·군사 건물 하나가 1단계 내려간다(항구·공항·사관학교 제외)"),
          debuff=("현상금", "적 군사에게 유닛을 잃으면 그 유닛 생산비의 50%를 상대가 얻는다"),
          fx={"sabotage": True, "bounty": 0.5}),
     dict(key="yyl", name="야율융서", aggr=8,

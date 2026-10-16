@@ -1252,3 +1252,49 @@ def test_trade_negotiation_windows(app):
     frame(app)
     assert _click_button(app, "그만두기") or _click_button(app, "닫기")
     assert app.modal and app.modal[0] == "diplomacy"
+
+
+def test_map_mode_popup_click_not_stolen_by_panel_below(app):
+    """v1.2.16: 하단 지도 메뉴 [자원] 세부 메뉴가 내정 탭 지출 우선순위의 [고정] 단추 위에 겹쳐 있어도
+    세부 메뉴를 누르면 [고정]이 아니라 그 메뉴가 눌린다(먼저 그려지는 아래 패널이 클릭을 가로채지 않게)."""
+    from korciv.ui.app import SUB_MODES
+    app.start_game(Settings(seed=12, n_enemies=3, fog=1, player_start="S002"))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    g.pending_rebellions.clear()
+    app.modal = None
+    pid = g.player_id
+    near = sorted({n for r in g.world.land_adj["S002"] for n in g.world.land_adj[r]} - {"S002"})[:14]
+    for r in near:
+        g.transfer_region(r, pid)
+        g.regions[r].resist = None
+    g.player.money = 10 ** 7
+    for r in g.regions_of(pid):
+        r.project = None
+        g.start_project(pid, r.id, "unit", "inf")
+    assert len(g.projects_by_priority(pid)) >= 10
+    pins = []
+    orig_pin = g.toggle_pin
+    g.toggle_pin = lambda f, rid: pins.append(rid) or orig_pin(f, rid)
+    app.left_open, app.left_tab = True, "nation"
+    u = app.gui.u
+    orig = pygame.mouse.get_pos
+    try:
+        for i, (key, *_r) in enumerate(SUB_MODES["resource"]):
+            for fx in (0.3, 0.6, 0.92):
+                app.mode, app.mode_popup = "resource", "resource"
+                g.dialogues.clear()
+                pop = app.mode_popup_rect()
+                row = pygame.Rect(pop.x + 6, pop.y + 6 + i * (app.SUB_ROW_H + 4), app.SUB_W - 12, app.SUB_ROW_H)
+                p = (int((row.x + row.w * fx) * u), int(row.centery * u))
+                pygame.mouse.get_pos = lambda p=p: p
+                frame(app)
+                app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=p)]); app.frame()
+                app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=p)]); app.frame()
+                assert app.sub_modes.get("resource") == key, (key, fx)
+        assert not pins
+    finally:
+        pygame.mouse.get_pos = orig
+        g.toggle_pin = orig_pin

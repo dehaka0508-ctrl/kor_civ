@@ -3388,9 +3388,7 @@ class Game:
         guns = units.get("art", 0) + units.get("dd", 0) > 0
         p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
-            hit = self.bomb_targets(tgt)
-            if units.get("dd", 0) and rr.b.get("port"):
-                hit = ["port"]                    # 함포 사격은 항구를 먼저 노린다(상륙·해군 기지 무력화)
+            hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 대상이 아니다(v1.2.16: 함포의 항구 우선 파괴 삭제)
             if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
                 hit = []                          # 천체관측소: 맞으면 파괴(과학승리는 다시 지을 때까지 불가)
                 self._destroy_observatory(rr, a.owner)
@@ -3802,8 +3800,9 @@ class Game:
         return dd, ad
 
     def _sabotage(self, rr) -> str:
-        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다."""
-        keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS) + list(C.SINGLE_BUILDINGS)
+        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다. 한 단계뿐인 항구·공항·사관학교는
+        폭격과 같이 대상이 아니다(v1.2.16 — 한 번에 통째로 사라지지 않게)."""
+        keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS)
                 if k in rr.b and k != "line" and rr.b[k] > 0]
         if not keys:
             return ""

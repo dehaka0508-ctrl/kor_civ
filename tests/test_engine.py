@@ -1206,18 +1206,28 @@ def test_retake_during_resistance_restores_without_new_resistance():
     assert rr.owner == 1 and rr.resist is None and rr.happy == pytest.approx(35.0)
 
 
-def test_destroyer_bombard_hits_port_first():
-    g, tgt = _war_pair()
+def test_bombard_and_sabotage_never_destroy_port():
+    """v1.2.16: 항구·공항·사관학교는 폭격(함포 포함)·의열단 대상이 아니다 — 예전엔 구축함 함포가 항구를 먼저
+    노려 한 번에 통째로 없앴다(AI 9판: 지은 항구 36곳 < 함포로 사라진 항구 47곳)."""
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = next(r for r in g.world.order if g.world.regions[r].coastal and g.world.regions[r].seas
+               and g.regions[r].owner == NEUTRAL)
+    _own(g, 1, [tgt])
+    _clear(g, tgt)
+    D.declare_war(g, 0, 1)
     rr = g.regions[tgt]
-    rr.b["port"] = 1
-    rr.b["factory"] = 3
-    sea = g.world.regions[tgt].seas[0] if g.world.regions[tgt].seas else None
-    if sea is None:
-        return
-    fl = g.new_army(0, sea, {"dd": 1})
-    g.rng.random = lambda: 0.1
-    g._bombard(fl, tgt, {"dd": 1})
-    assert rr.b["port"] == 0 and rr.b["factory"] == 3
+    for k in rr.b:
+        rr.b[k] = 0
+    rr.b.update(port=1, airport=1, academy=1, factory=3)
+    rr.lines.clear()
+    fl = g.new_army(0, g.world.regions[tgt].seas[0], {"dd": 3})
+    g.rng.random = lambda: 0.0                    # 건물 피해가 반드시 나게
+    for _ in range(3):
+        g._bombard(fl, tgt, {"dd": 3})
+    assert rr.b["port"] == 1 and rr.b["airport"] == 1 and rr.b["academy"] == 1
+    assert rr.b["factory"] == 0                   # 대신 생산 건물이 깎인다
+    note = g._sabotage(rr)
+    assert note == "" and rr.b["port"] == 1 and rr.b["airport"] == 1 and rr.b["academy"] == 1
 
 
 def test_ai_keeps_capital_garrison():
@@ -1939,6 +1949,8 @@ def test_half_year_ranking_schedule():
     g = new_game(player_start="S002", n_enemies=2)
     for x in (1, 2):                                   # 가만히 있는 플레이어가 멸망하지 않게(게임 종료 방지)
         g.dip.nonaggr[D.pair(0, x)] = 10 ** 6
+    # AI 하나가 97턴 전에 정복승리로 판을 끝내는 경우가 있다(해시 순서에 따라 가끔): 발표 일정만 보므로 끈다
+    g.settings.victories = [v for v in g.settings.victories if v != "conquest"]
     seen = []
     while g.turn <= 2 * C.TURNS_PER_YEAR + 1:
         assert not g.game_over
