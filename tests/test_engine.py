@@ -1206,9 +1206,7 @@ def test_retake_during_resistance_restores_without_new_resistance():
     assert rr.owner == 1 and rr.resist is None and rr.happy == pytest.approx(35.0)
 
 
-def test_bombard_and_sabotage_never_destroy_port():
-    """v1.2.16: 항구·공항·사관학교는 폭격(함포 포함)·의열단 대상이 아니다 — 예전엔 구축함 함포가 항구를 먼저
-    노려 한 번에 통째로 없앴다(AI 9판: 지은 항구 36곳 < 함포로 사라진 항구 47곳)."""
+def _single_bld_target():
     g = new_game(player_start="S002", n_enemies=1)
     tgt = next(r for r in g.world.order if g.world.regions[r].coastal and g.world.regions[r].seas
                and g.regions[r].owner == NEUTRAL)
@@ -1218,16 +1216,33 @@ def test_bombard_and_sabotage_never_destroy_port():
     rr = g.regions[tgt]
     for k in rr.b:
         rr.b[k] = 0
-    rr.b.update(port=1, airport=1, academy=1, factory=3)
     rr.lines.clear()
     fl = g.new_army(0, g.world.regions[tgt].seas[0], {"dd": 3})
-    g.rng.random = lambda: 0.0                    # 건물 피해가 반드시 나게
-    for _ in range(3):
-        g._bombard(fl, tgt, {"dd": 3})
-    assert rr.b["port"] == 1 and rr.b["airport"] == 1 and rr.b["academy"] == 1
-    assert rr.b["factory"] == 0                   # 대신 생산 건물이 깎인다
-    note = g._sabotage(rr)
-    assert note == "" and rr.b["port"] == 1 and rr.b["airport"] == 1 and rr.b["academy"] == 1
+    return g, tgt, rr, fl
+
+
+def test_single_level_buildings_destroyed_10pct_by_bombard():
+    """v1.2.17: 항구·공항·사관학교(1단계가 최대)는 일반 건물 피해(−1단계) 대상이 아니고, 폭격당할 때마다 각각
+    10% 확률로 파괴된다(v1.2.16 전에는 함포가 항구를 먼저 골라 30% 확률로 없앴다). 의열단은 여전히 대상 아님."""
+    g, tgt, rr, fl = _single_bld_target()
+    singles = ("port", "airport", "academy")
+    rr.b.update(port=1, airport=1, academy=1, factory=3)
+    g.rng.random = lambda: 0.15                   # 일반 건물 피해(함포 30%)는 나고, 10% 파괴는 안 남
+    g._bombard(fl, tgt, {"dd": 3})
+    assert all(rr.b[k] == 1 for k in singles) and rr.b["factory"] == 2
+    g.rng.random = lambda: 0.05                   # 10% 안: 셋 다 각각 파괴
+    g._bombard(fl, tgt, {"dd": 3})
+    assert all(rr.b[k] == 0 for k in singles) and rr.b["factory"] == 1
+    rr.b.update(port=1, airport=1, academy=1, factory=2)
+    assert g._sabotage(rr) and all(rr.b[k] == 1 for k in singles)      # 의열단은 공장만
+    # 실제 무작위로: 폭격 한 번에 항구가 파괴될 확률 ≈ 10%
+    g2, tgt2, rr2, fl2 = _single_bld_target()
+    n, lost = 1500, 0
+    for _ in range(n):
+        rr2.b["port"] = 1
+        g2._bombard(fl2, tgt2, {"dd": 3})
+        lost += rr2.b["port"] == 0
+    assert 0.07 < lost / n < 0.13
 
 
 def test_ai_keeps_capital_garrison():
@@ -4716,3 +4731,105 @@ def test_v1214_naval_battle_marks_combat():
     y = g.new_army(1, sid, {"dd": 2})
     g._naval_battle(sid, 0, [x], 1, [y])
     assert x.last_combat == g.turn and y.last_combat == g.turn
+
+
+def _liberation_setup():
+    """0(원 주인)·2(0의 동맹)·1(적)·3(제3국). 0의 지역 x 를 1이 전쟁으로 빼앗은 상태."""
+    g = new_game(player_start="S002", n_enemies=3)
+    _neutral_ai(g, 1, 2, 3)
+    x = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 0, [x])
+    g.dip.alliance[D.pair(0, 2)] = g.turn
+    for a, b in ((0, 1), (2, 1), (3, 1), (2, 3), (0, 3)):
+        g.dip.wars.pop(D.pair(a, b), None)
+        D.declare_war(g, a, b) if not D.at_war(g, a, b) else None
+    rr = g.regions[x]
+    rr.happy = 40.0
+    _clear(g, x)
+    g.new_army(1, x, {"inf": 1})
+    g.complete_occupation(1, x)
+    assert rr.owner == 1 and rr.war_from == 0
+    return g, x, rr
+
+
+def test_ally_retaking_lost_region_returns_it_to_original_owner():
+    """v1.2.17: 동맹·연합국이 전쟁으로 빼앗긴 땅을 되찾으면 원 주인에게 돌아간다(원 주인이 직접 되찾은 것과 같이
+    저항·회복 기간 안이면 저항 없이 빼앗기기 전 행복도로)."""
+    g, x, rr = _liberation_setup()
+    assert g.liberation_owner(2, x) == 0 and g.liberation_owner(3, x) is None
+    _clear(g, x)
+    a2 = g.new_army(2, x, {"inf": 1})
+    g.complete_occupation(2, x)
+    assert rr.owner == 0 and rr.war_from is None and not g.resisting(rr)
+    assert rr.happy == pytest.approx(40.0)
+    assert any("원 주인" in e["text"] for e in g.events)
+    assert a2.id in g.armies and a2.loc == x                     # 되찾은 부대는 동맹 땅에 그대로
+
+
+def test_liberation_chain_and_non_ally_and_dead_owner():
+    g, x, rr = _liberation_setup()
+    # 동맹이 아닌 제3국이 빼앗으면 자기 땅(원 주인 기록은 처음 주인 0 그대로)
+    _clear(g, x)
+    g.new_army(3, x, {"inf": 1})
+    g.complete_occupation(3, x)
+    assert rr.owner == 3 and rr.war_from == 0
+    # 그 뒤 0의 동맹이 되찾아도 0에게(원 주인이 직접 빼앗긴 게 아니라 저항은 새로 시작)
+    _clear(g, x)
+    g.new_army(2, x, {"inf": 1})
+    g.complete_occupation(2, x)
+    assert rr.owner == 0 and rr.war_from is None
+    # 원 주인이 직접 되찾아도 기록이 지워진다
+    g2, x2, rr2 = _liberation_setup()
+    _clear(g2, x2)
+    g2.new_army(0, x2, {"inf": 1})
+    g2.complete_occupation(0, x2)
+    assert rr2.owner == 0 and rr2.war_from is None
+    # 원 주인이 멸망했으면 동맹이 차지한다
+    g3, x3, rr3 = _liberation_setup()
+    g3.factions[0].alive = False
+    assert g3.liberation_owner(2, x3) is None
+    # 거래·할양 등 전쟁이 아닌 이전은 기록을 지운다
+    g4, x4, rr4 = _liberation_setup()
+    g4.transfer_region(x4, 3, reason="거래")
+    assert rr4.war_from is None
+
+
+def test_coalition_member_also_liberates():
+    g, x, rr = _liberation_setup()
+    g.dip.alliance.pop(D.pair(0, 2), None)
+    assert g.liberation_owner(2, x) is None
+    g.dip.coalitions[99] = {"members": {0, 2}, "name": "시험 연합"}
+    assert D.same_coalition(g, 0, 2) and g.liberation_owner(2, x) == 0
+
+
+def test_priority_mode_stays_until_turned_off():
+    """v1.2.17: 지출 우선순위 정렬 버튼은 해제할 때까지 그 규칙을 유지한다(새 작업도 규칙대로)."""
+    g = new_game(player_start="S002", n_enemies=1)
+    near = sorted(g.world.land_adj["S002"])[:4]
+    _own(g, 0, near)
+    for r in near:
+        g.regions[r].resist = None
+    f = g.factions[0]
+    f.money = 1e7
+    f.res["oil"] = 5
+    assert g.start_project(0, near[0], "build", "bank")[0]
+    assert g.start_project(0, near[1], "unit", "inf")[0]
+    assert g.set_priority_mode(0, "build") == "build"
+    assert g.projects_by_priority(0)[0].project.kind == "build"
+    assert g.set_priority_mode(0, "unit") == "unit"
+    assert g.projects_by_priority(0)[0].project.kind == "unit"
+    # 나중에 착수한 건설·생산도 규칙대로 들어간다: 유닛은 모두 건설보다 앞
+    assert g.start_project(0, near[2], "build", "farm")[0]
+    assert g.start_project(0, near[3], "unit", "inf")[0]
+    kinds = [r.project.kind for r in g.projects_by_priority(0)]
+    assert kinds == sorted(kinds, key=lambda k: k != "unit")
+    # 자금도 그 순서로 낸다: 돈이 모자라면 유닛부터 진행
+    f.money = sum(r.project.per_turn for r in g.regions_of(0) if r.project and r.project.kind == "unit") + 1
+    g._fund_projects()
+    assert all(r.project.funded == (r.project.kind == "unit") for r in g.regions_of(0) if r.project)
+    # 같은 버튼을 다시 누르면 해제, 직접 옮겨도 해제
+    assert g.set_priority_mode(0, "unit") is None and f.prio_mode is None
+    g.set_priority_mode(0, "short")
+    ids = [r.id for r in g.projects_by_priority(0)]
+    g.set_priority_order(0, ids[::-1], manual=True)
+    assert f.prio_mode is None and [r.id for r in g.projects_by_priority(0)] == ids[::-1]

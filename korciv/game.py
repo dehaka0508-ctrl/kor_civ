@@ -2162,7 +2162,8 @@ class Game:
                    and not self.resisting(r) and not getattr(r, "focus", False))
 
     def projects_by_priority(self, fid):
-        """자금 지출 우선순위 순서의 (지역, 작업) 목록. 묶음 공사는 한 번만(대표 지역 하나로)."""
+        """자금 지출 우선순위 순서의 (지역, 작업) 목록. 묶음 공사는 한 번만(대표 지역 하나로).
+        자동 정렬 규칙(f.prio_mode)이 켜져 있으면 부를 때마다 그 규칙대로 다시 정렬한다(v1.2.17)."""
         regs = [r for r in self.regions.values() if r.owner == fid and r.project]
         regs.sort(key=lambda r: (not getattr(r.project, "pinned", False), r.project.priority, r.id))
         seen, out = set(), []
@@ -2170,6 +2171,12 @@ class Game:
             if id(r.project) not in seen:
                 seen.add(id(r.project))
                 out.append(r)
+        mode = getattr(self.factions[fid], "prio_mode", None) if 0 <= fid < len(self.factions) else None
+        if mode in self.PRIORITY_SORTS:
+            self._apply_sort(out, mode)
+            for i, r in enumerate(out):
+                r.project.priority = i + 1
+            self.proj_counter = max(getattr(self, "proj_counter", 0), len(out) + 1)
         return out
 
     @staticmethod
@@ -2199,18 +2206,33 @@ class Game:
     PRIORITY_SORTS = {"annex": "중립 지역 편입 우선", "build": "건설 우선", "unit": "유닛 생산 우선",
                       "short": "적은 턴 수 우선"}
 
-    def sort_priority(self, fid, mode):
-        """지출 우선순위 자동 정렬. 고른 종류를 앞으로(그 안에서는 기존 순서), short 는 남은 턴이 적은 순."""
-        regs = self.projects_by_priority(fid)
+    def _apply_sort(self, regs, mode):
+        """고른 종류를 앞으로(그 안에서는 기존 순서), short 는 남은 턴이 적은 순. 고정한 작업은 맨 위 그대로."""
         if mode == "short":
             regs.sort(key=lambda r: self.project_left(r.id))
         else:
             kinds = {"annex": ("annex",), "build": ("build", "science", "econ", "capital"), "unit": ("unit",)}[mode]
             regs.sort(key=lambda r: r.project.kind not in kinds)
-        regs.sort(key=lambda r: not getattr(r.project, "pinned", False))     # 고정한 작업은 맨 위 그대로
+        regs.sort(key=lambda r: not getattr(r.project, "pinned", False))
+
+    def sort_priority(self, fid, mode):
+        """지출 우선순위를 지금 한 번 정렬한다(자동 정렬 규칙은 set_priority_mode)."""
+        regs = self.projects_by_priority(fid)
+        self._apply_sort(regs, mode)
         self.set_priority_order(fid, [r.id for r in regs])
 
-    def set_priority_order(self, fid, rids):
+    def set_priority_mode(self, fid, mode):
+        """지출 우선순위 자동 정렬 규칙 켜기/끄기(v1.2.17): 같은 규칙을 다시 고르거나 None 이면 해제.
+        켜 두면 새 작업이 생기거나 남은 턴이 바뀌어도 계속 그 규칙대로 정렬된다. 바뀐 규칙을 돌려준다."""
+        f = self.factions[fid]
+        f.prio_mode = None if mode is None or getattr(f, "prio_mode", None) == mode else mode
+        self.projects_by_priority(fid)
+        return f.prio_mode
+
+    def set_priority_order(self, fid, rids, manual=False):
+        """우선순위를 rids 순서로. manual(끌기·↑↓)이면 자동 정렬 규칙을 해제한다(직접 정한 순서를 지키도록)."""
+        if manual and 0 <= fid < len(self.factions):
+            self.factions[fid].prio_mode = None
         for i, rid in enumerate(rids):
             r = self.regions.get(rid)
             if r and r.owner == fid and r.project:
@@ -2725,6 +2747,16 @@ class Game:
         old = rr.owner
         if old == new_owner:
             return
+        # 원 주인(v1.2.17): 전쟁으로 처음 빼앗길 때의 주인을 기억하고, 그 나라가 되찾으면(동맹·연합이 되찾아
+        # 돌려준 경우 포함) 지운다. 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
+        if reason == "점령" and old != NEUTRAL and new_owner != NEUTRAL:
+            wf = getattr(rr, "war_from", None)
+            if wf is None:
+                rr.war_from = old
+            elif wf == new_owner:
+                rr.war_from = None
+        else:
+            rr.war_from = None
         # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
         # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
         lp = getattr(rr, "lost_project", None)
@@ -3017,11 +3049,27 @@ class Game:
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
+    def liberation_owner(self, fid, rid):
+        """fid 가 rid 를 점령하면 돌려줄 원 주인(없으면 None, v1.2.17): 지금 주인이 전쟁으로 빼앗은 땅이고
+        원 주인이 살아 있으며 fid 와 동맹·연합 관계일 때."""
+        rr = self.regions[rid]
+        o = getattr(rr, "war_from", None)
+        if o is None or rr.owner == NEUTRAL or o in (fid, rr.owner, NEUTRAL):
+            return None
+        if not (0 <= o < len(self.factions)) or not self.factions[o].alive:
+            return None
+        return o if D.allied(self, fid, o) else None
+
     def complete_occupation(self, fid, rid):
         """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(4턴 산출·생산 없음·행복도 −100,
-        이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음)."""
+        이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음).
+        동맹·연합국이 전쟁으로 빼앗긴 땅을 되찾으면 원 주인에게 돌아간다(v1.2.17: 원 주인이 직접 되찾은 것과 같다)."""
         rr = self.regions[rid]
         old = rr.owner
+        liberator = None
+        back = self.liberation_owner(fid, rid)
+        if back is not None:
+            liberator, fid = fid, back
         m = self.mods(fid)
         # 원래 주인이 저항·회복 중인 옛 땅을 되찾으면: 새 저항 없이 빼앗기기 전 행복도로 복구
         phase = self.resist_phase(rr)[0]
@@ -3029,12 +3077,16 @@ class Game:
         h_before = rr.resist.get("h0", rr.happy) if retake else rr.happy
         new_h = 0.0 if old == NEUTRAL else rr.happy + m.add("occupied_happy_extra")
         if old != NEUTRAL:
-            D.add_war_score(self, fid, old, rr.pop)
+            D.add_war_score(self, liberator if liberator is not None else fid, old, rr.pop)
         self.transfer_region(rid, fid)
+        lib = (f"{self.fname(liberator)}이(가) {self.fname(old)}에게서 {self.info(rid).name}을(를) 되찾아 "
+               f"원 주인 {self.fname(fid)}에게 돌려주었습니다") if liberator is not None else None
+        fids = (fid, old) if liberator is None else (liberator, fid, old)
         if retake:
             rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, h_before))
-            self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
-                       f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=(fid, old))
+            self.event("captured", (lib + " (저항 없이 복구).") if lib else
+                       f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
+                       f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=fids)
             return
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
         if old != NEUTRAL:
@@ -3044,6 +3096,9 @@ class Game:
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": n_res,
                          "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
+        if lib:
+            self.event("captured", lib + f" (저항 {rr.resist['resist']}턴).", region=rid, fids=fids)
+            return
         self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
                    + (f" ({self.fname(old)}에게서, 저항 {rr.resist['resist']}턴)." if old != NEUTRAL else "."),
                    region=rid, fids=(fid, old))
@@ -3388,7 +3443,7 @@ class Game:
         guns = units.get("art", 0) + units.get("dd", 0) > 0
         p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
-            hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 대상이 아니다(v1.2.16: 함포의 항구 우선 파괴 삭제)
+            hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 따로(아래 10% 파괴) — v1.2.16: 함포의 항구 우선 파괴 삭제
             if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
                 hit = []                          # 천체관측소: 맞으면 파괴(과학승리는 다시 지을 때까지 불가)
                 self._destroy_observatory(rr, a.owner)
@@ -3403,6 +3458,11 @@ class Game:
                 else:
                     rr.b[k] -= 1
                     notes.append(f"{BUILDING_NAMES.get(k, k)} 1단계 파괴")
+        # 1단계가 최대인 건물(항구·공항·사관학교, v1.2.17): 폭격당할 때마다 각각 10% 확률로 파괴
+        for k in C.SINGLE_BUILDINGS:
+            if rr.b.get(k, 0) > 0 and self.rng.random() < C.SINGLE_BOMB_DESTROY:
+                rr.b[k] = 0
+                notes.append(f"{BUILDING_NAMES.get(k, k)} 파괴")
         if not rr.bombed:
             rr.h_delta += C.BOMBED_HAPPY
             rr.bombed = True

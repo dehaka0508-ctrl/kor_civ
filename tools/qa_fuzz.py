@@ -245,7 +245,9 @@ def player_turn(g, rng):
         ids = [r.id for r in g.projects_by_priority(pid)] if hasattr(g, "projects_by_priority") else []
         rng.shuffle(ids)
         if ids:
-            g.set_priority_order(pid, ids)
+            g.set_priority_order(pid, ids, manual=rng.random() < 0.5)
+    if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.2.17)
+        g.set_priority_mode(pid, rng.choice(list(g.PRIORITY_SORTS) + [None]))
     # 외교
     others = [o.id for o in g.factions if o.alive and o.id != pid]
     if others and rng.random() < 0.3:

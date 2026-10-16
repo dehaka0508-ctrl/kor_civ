@@ -1130,7 +1130,9 @@ def draw_battle(app):
         row = pygame.Rect(r.x + 24, y, r.w - 48, 110)
         gui.rect(t.panel_alt, row, radius=8)
         gui.text((row.x + 12, row.y + 8), oc["label"], 13, weight="semibold")
-        res = "적 전멸 → 진입·점령" if oc["capture"] else "적이 남음 → 진입 못 함"
+        back = g.liberation_owner(army.owner, node) if oc["capture"] else None
+        res = ("적 전멸 → 진입·점령" + (f"(원 주인 {g.fname(back)}에게 반환)" if back is not None else "")
+               if oc["capture"] else "적이 남음 → 진입 못 함")
         gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "bold", anchor="topright")
         for j, (who, hp, mx, dmg, lost, col) in enumerate((
                 ("아군", att_hp, att_max, oc["att_dmg"], oc["att_lost"], t.accent),
@@ -2312,6 +2314,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. 판매분은 공장 배정보다 먼저 보내고, 모자라면 턴 끝에 시장가로 사서 메웁니다.
 · 자원·특산물 협상: 외교 창 [자원·특산물 협상]이나 AI 제의 창에서 수량·값을 부르면 상대가 수락하거나 역제의합니다(1~4회). 마지막 제안보다 나쁜 값이면 결렬되어 그 턴엔 다시 못 합니다.
 · [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계를 목표 단계까지 '○○국 방어선' 묶음 공사 한 건으로 짓습니다. 대상 지역의 진행 중 작업은 중단(50% 환급), 턴 수 = 모든 방어선 건설 턴의 합 ÷ 지역 수(올림), 비용은 묶음 전체로 매 턴 냅니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
+· 지출 우선순위 정렬 버튼은 해제할 때까지 유지됩니다(다시 누르거나 직접 옮기면 해제).
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
@@ -2327,6 +2330,8 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 반란 대응: 요구 수용(돈 = 턴당 GDP × (−행복도) × {C.REBEL_PAY_GDP:g}, 행복도 +{C.REBEL_ACCEPT_HAPPY}) 또는 진압.
 · 전쟁 피로도: 선전포고 +{C.WAR_WEARY_START["aggressor"]:g}, 당하면 +{C.WAR_WEARY_START["defender"]:g}, 전쟁 중 턴당 +{C.WAR_WEARY_TURN["aggressor"]:g}(당한 쪽 +{C.WAR_WEARY_TURN["defender"]:g}), 평시 턴당 {C.WAR_WEARY_RECOVERY:g} 회복.
 · 점령한 적 지역은 4턴 저항 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
+· 해방: 전쟁으로 빼앗긴 땅을 원 주인의 동맹·연합국이 되찾으면 원 주인에게 돌아갑니다.
+· 폭격: 생산·방어 건물 하나 −1단계(포병·함포 30%, 폭격기 60%), 항구·공항·사관학교는 폭격마다 각각 {C.SINGLE_BOMB_DESTROY:.0%} 확률로 파괴.
 · 같은 턴에 점령·편입이 끝나면: 무력 점령끼리는 주둔 병력의 남은 체력 합이 큰 쪽, 편입끼리는 맞닿은 지역 인구 합이 많은 쪽, 둘이 겹치면 무력 점령.
 · 돈과 턴을 들여 천도하면 새 수도의 모든 경계에 방어선 {C.START_LINE_LEVEL}단계가 생깁니다(시작 수도와 같음).
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 전투력은 남은 체력에 비례합니다(체력 절반이면 절반). 방어선은 돌격 방어를 높입니다.

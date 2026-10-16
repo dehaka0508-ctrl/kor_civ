@@ -243,6 +243,14 @@ def draw_region_info(app, rect):
             y = gui.wrap((x, y), "점령 저항: " + txt, w, 12, t.warn if phase == "resist" else t.muted) + 4
         if g.rebel_happy(r) <= C.REBEL_THRESHOLD and full and not phase:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(owner, node)*100:.1f}%/턴", t.bad)
+        wf = getattr(r, "war_from", None)
+        if wf is not None and 0 <= wf < len(g.factions) and g.factions[wf].alive and wf != owner:
+            # 원 주인(v1.2.17): 원 주인의 동맹·연합국이 되찾으면 원 주인에게 돌아간다
+            back = g.liberation_owner(pid, node) if owner != pid else None
+            txt = f"원 주인: {g.seen_name(wf)} (전쟁으로 빼앗긴 땅 — 원 주인이나 그 동맹·연합국이 되찾으면 원 주인에게)"
+            if back is not None:
+                txt = f"원 주인: {g.seen_name(wf)} — 우리가 되찾으면 동맹·연합국인 {g.seen_name(wf)}에게 돌려줍니다"
+            y = gui.wrap((x, y), txt, w, 11, t.accent if back is not None else t.muted) + 4
     if full and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
@@ -1346,14 +1354,18 @@ def draw_nation_tab(app, body):
     items = g.projects_by_priority(pid)
     y = section(gui, x, y + 6, w, "지출 우선순위 (드래그, 또는 클릭 후 ↑↓)")
     bw2 = (w - 4) / 2
+    cur = getattr(f, "prio_mode", None)
     for i, (mode, lab) in enumerate(g.PRIORITY_SORTS.items()):
-        if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, enabled=bool(items),
-                      ):
-            g.sort_priority(pid, mode)
+        if gui.button((x + (i % 2) * (bw2 + 4), y + (i // 2) * 32, bw2, 28), lab, size=11, selected=mode == cur,
+                      tooltip="누르면 해제할 때까지 계속 이 규칙대로 정렬합니다(새 작업·남은 턴이 바뀌어도). "
+                              "다시 누르거나 직접 끌어서 옮기면 해제됩니다." if mode != cur else "다시 누르면 자동 정렬 해제"):
+            now = g.set_priority_mode(pid, mode)
             items = g.projects_by_priority(pid)
-            app.toast(f"지출 우선순위: {lab}")
+            app.toast(f"지출 우선순위 자동 정렬: {lab} (해제할 때까지 유지)" if now else "지출 우선순위 자동 정렬 해제")
     y += 68
-    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted, max_w=w)
+    cur = getattr(f, "prio_mode", None)
+    gui.text((x, y - 2), f"자동 정렬 유지 중: {g.PRIORITY_SORTS[cur]} (다시 누르면 해제)" if cur
+             else "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.accent if cur else t.muted, max_w=w)
     y += 20
     y = draw_priority_list(app, x, y, w, items)
     gui.text((x, y + 6), "국가 통계·재정·특산물 재고는 [국가 현황] 탭에 있습니다.", 11, t.muted)
@@ -1914,9 +1926,11 @@ def draw_priority_list(app, x, y, w, items):
     if drag is not None and not gui.down:
         app.prio_drag = None
         if order != ids:
-            g.set_priority_order(g.player_id, order)
+            was = getattr(g.player, "prio_mode", None)
+            g.set_priority_order(g.player_id, order, manual=True)
             gui.clicked = False
-            app.toast(f"우선순위 변경: {app.world.regions[drag].short} → {order.index(drag) + 1}번")
+            app.toast(f"우선순위 변경: {app.world.regions[drag].short} → {order.index(drag) + 1}번"
+                      + (" · 자동 정렬 해제" if was else ""))
         else:
             app.prio_sel = None if app.prio_sel == drag else drag
     sel = getattr(app, "prio_sel", None)
@@ -1931,7 +1945,9 @@ def draw_priority_list(app, x, y, w, items):
             if 0 <= j < n:
                 new = ids[:]
                 new[i], new[j] = new[j], new[i]
-                g.set_priority_order(g.player_id, new)
+                if getattr(g.player, "prio_mode", None):
+                    app.toast("직접 옮겨서 자동 정렬을 해제했습니다.")
+                g.set_priority_order(g.player_id, new, manual=True)
                 ids, i = new, j
         now = pygame.time.get_ticks()
         for k in list(gui.keys):

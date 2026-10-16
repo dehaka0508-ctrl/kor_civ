@@ -72,6 +72,7 @@ class Region:
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
+    war_from: Optional[int] = None        # 전쟁으로 빼앗긴 원 주인(v1.2.17): 동맹·연합국이 되찾으면 이 나라에 돌려준다
     lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
 
@@ -194,6 +195,7 @@ class Faction:
     naval_off_until: int = 0        # 이순신 '백의종군': 이 턴까지 해군 버프 비활성
     met: set = field(default_factory=set)   # 조우한 세력(시야 안에 그 세력의 영토·군대가 들어온 적이 있음)
     flag: Optional[dict] = None     # 직접 만든 국기(없으면 세력 색으로 만든 기본 국기, flags.faction_flag)
+    prio_mode: Optional[str] = None  # 지출 우선순위 자동 정렬 규칙(v1.2.17): 해제할 때까지 계속 그 규칙대로
 
 
 @dataclass

@@ -131,6 +131,7 @@ DEF_BUILDINGS = {
     "aa":      {"name": "대공포", "base": 500, "max": 5},
 }
 DEF_TURNS = [1, 2, 3, 4, 5]          # v1.2.12: 1·2·4·8·15 → 전쟁 중에도 쌓을 수 있게
+SINGLE_BOMB_DESTROY = 0.10   # v1.2.17: 1단계가 최대인 건물(항구·공항·사관학교)은 폭격당할 때마다 각각 10% 확률로 파괴
 SINGLE_BUILDINGS = {
     "academy": {"name": "사관학교", "cost": 3000, "turns": 6},
     "airport": {"name": "공항", "cost": 4000, "turns": 8},
