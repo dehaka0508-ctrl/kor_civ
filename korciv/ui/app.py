@@ -711,7 +711,7 @@ class App:
         g = self.game
         # 이동 범위
         army = g.armies.get(self.sel_army) if self.sel_army else None
-        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 전투한 부대는 범위 없음
+        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 행동한 부대는 범위 없음
             reach = g.reachable(army)
             box = mv.screen_bbox(reach)
             if box and box.w > 0 and box.h > 0:
@@ -910,7 +910,17 @@ class App:
         g = self.game
         mv = self.map
         for a in g.armies.values():
-            if a.owner != g.player_id or not a.order:
+            if a.owner != g.player_id:
+                continue
+            if not a.order:
+                # 자동 이동 중(v1.2.10: 이번 구간은 이미 갔다): 지금 위치에서 최종 목적지까지 남은 경로를 점선으로
+                if getattr(a, "goto", None) and a.goto != a.loc:
+                    route = g.plan_route(a, a.goto) or [a.goto]
+                    pts = [mv.label_screen(a.loc)] + [mv.label_screen(n) for n in route]
+                    for p, q in zip(pts, pts[1:]):
+                        self.dashed(p, q, (255, 255, 255), width_k=4)
+                        self.dashed(p, q, self.order_colors()["move"])
+                    self.arrowhead(pts[-2], pts[-1], self.order_colors()["move"], outline=True)
                 continue
             o = a.order
             p0 = mv.label_screen(a.loc)
@@ -993,7 +1003,7 @@ class App:
             for a, num, fw in flags:
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
                 if g.army_acted(a.id):
-                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 전투한 부대: 흐리게
+                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 행동한 부대: 흐리게
                 icon_key = "lst" if a.units.get("lst", 0) > 0 else max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
                 kind = C.UNITS[icon_key]["kind"]
                 x0, y0 = int(fx), int(fy)
@@ -1127,7 +1137,7 @@ class App:
             return
         army = g.armies.get(self.sel_army) if self.sel_army else None
         if army and army.owner == g.player_id and g.army_acted(army.id):
-            self.toast("이번 턴에 이미 전투한 부대입니다(합치기·분리·이동·공격 불가).", self.theme.bad)
+            self.toast("이번 턴에 이미 행동한 부대입니다(이동·공격은 다음 턴에).", self.theme.bad)
             return
         if army and army.owner == g.player_id:
             # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
@@ -1136,14 +1146,16 @@ class App:
                 if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
-                # 병력 없는 맞닿은 적 땅: 공격처럼 바로 진입해 점령
-                if opt and opt["action"] == "attack" and army.loc in self.world.land_adj.get(node, ()):
-                    ok, msg = g.capture_now(army.id, node)
-                    if ok:
-                        self.toast(msg)
-                        return
-            ok, msg = g.order_army(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
+            # 이동·상륙·폭격·빈 땅 점령은 바로 실행한다(v1.2.10)
+            ok, msg = g.act_now(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
+            if ok:
+                self.flash_t = pygame.time.get_ticks()
+                self.changed()
+                if army.id in g.armies:
+                    self.sel, self.sel_army = army.loc, army.id      # 움직인 부대를 계속 선택해 둔다
+                else:
+                    self.sel_army = None
             return
         if node in g.regions:
             o = g.regions[node].owner
@@ -1171,7 +1183,7 @@ class App:
         if not army or army.owner != g.player_id or self.gui.over_ui():
             return
         if g.army_acted(army.id):
-            self.gui.tooltip = "이번 턴 전투 완료: 이동·공격 불가"
+            self.gui.tooltip = "이번 턴 행동 완료: 이동·공격은 다음 턴"
             return
         reach = g.reachable(army)
         opt = reach.get(node)

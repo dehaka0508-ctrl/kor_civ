@@ -1139,3 +1139,46 @@ def test_help_scroll_reaches_last_line(app):
     r, clip = hits[-1]
     assert clip is not None and clip.top <= r.top and r.bottom <= clip.bottom + 1
     app.modal = None
+
+
+def test_cargo_panel_board_and_unload_buttons(app):
+    """v1.2.10 화물칸: 함대 [부대] 탭에서 같은 항구 부대를 [승선]하고, 고른 수량만 [하선]한다(합치기와 따로)."""
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    port = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
+    g.transfer_region(port, pid)
+    g.regions[port].b["port"] = 1
+    for a in list(g.armies_at(port)):
+        g.remove_army(a)
+    fl = g.new_army(pid, port, {"lst": 1})
+    land = g.new_army(pid, port, {"inf": 3, "tank": 1})
+    app.select(port)
+    app.left_open, app.left_tab, app.tab = True, "region", "army"
+    app.sel_army = fl.id
+    assert _click_button(app, f"승선: 부대 #{land.id} {land.label()}")
+    assert g.cargo_of(fl) == {"tank": 1, "inf": 3} and land.id not in g.armies
+    app.sel_army = fl.id
+    app.cargo_pick = {"fid": fl.id, "units": {"inf": 2, "tank": 0}}
+    assert _click_button(app, "하선 (2)")
+    assert g.cargo_of(fl) == {"tank": 1, "inf": 1}
+    assert [a.units for a in g.armies_at(port, pid) if a.domain() == "land"] == [{"inf": 2}]
+
+
+def test_right_click_moves_immediately(app):
+    """v1.2.10: 우클릭 이동은 턴 종료를 기다리지 않고 바로 실행되고, 한 부대는 한 턴에 한 번만 움직인다."""
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    cap = g.player.capital
+    dst = sorted(g.world.land_adj[cap])[0]
+    g.transfer_region(dst, pid)
+    for a in list(g.armies_at(dst)):
+        g.remove_army(a)
+    a = g.new_army(pid, cap, {"inf": 2})
+    app.select(cap)
+    app.sel_army = a.id
+    t0 = g.turn
+    app.right_click(dst, (300, 300))
+    assert a.loc == dst and g.turn == t0 and g.army_acted(a.id) and app.sel == dst
+    app.right_click(cap, (300, 300))
+    assert a.loc == dst and "이미 행동" in app.toasts[-1][0]
+    frame(app)

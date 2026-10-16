@@ -173,7 +173,8 @@ def player_turn(g, rng):
             reach = list(g.reachable(a)) if a.id in g.armies else []
             near = list(g.world.node_neighbors(a.loc)) + reach
             if near:
-                g.order_army(a.id, rng.choice(near), rng.choice(["assault", "surprise"]), force_bombard=rng.random() < 0.2)
+                cmd = g.act_now if rng.random() < 0.6 else g.order_army     # 플레이어 명령은 바로 실행(v1.2.10)
+                cmd(a.id, rng.choice(near), rng.choice(["assault", "surprise"]), force_bombard=rng.random() < 0.2)
         elif r < 0.6 and a.count() > 1:
             k = rng.choice(list(a.units))
             g.split_army(a.id, {k: max(1, a.units[k] // 2)})
@@ -185,7 +186,15 @@ def player_turn(g, rng):
             k = rng.choice(list(a.units))
             g.disband(a.id, {k: 1})
         elif r < 0.77 and g.boarding_target(a.id) is not None:
-            g.board(a.id)                                          # 상륙함·항모에 태워 짐 실은 함대를 만든다
+            if rng.random() < 0.5:
+                g.board(a.id)                                      # 상륙함·항모에 태워 짐 실은 함대를 만든다
+            else:
+                k = rng.choice(list(a.units))
+                g.load_cargo(g.boarding_target(a.id).id, a.id, {k: rng.randint(1, a.units[k])})
+        elif r < 0.8 and a.domain() == "naval" and g.cargo_of(a):
+            tg = list(g.landing_targets(a)) or [None]
+            k = rng.choice(list(g.cargo_of(a)))
+            g.unload_cargo(a.id, {k: rng.randint(1, a.units[k])} if rng.random() < 0.5 else None, rng.choice(tg))
         elif r < 0.8:
             g.order_army(a.id, rng.choice(list(g.regions)))      # 먼 곳 경로 계획
     # 국정

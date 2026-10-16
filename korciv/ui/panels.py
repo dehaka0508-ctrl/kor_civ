@@ -743,7 +743,7 @@ def draw_army_tiles(app, x, y, w, here, merge):
         if gui.button(rect, "", "ghost", selected=selected or picked,
                       tooltip=a.label() + (" (이동 명령 있음)" if a.order or a.goto else "")):
             if merge is not None:
-                if not g.army_acted(a.id):          # 이번 턴 전투한 부대는 합칠 수 없다
+                if not g.army_fought(a.id):         # 이번 턴 전투한 부대는 합칠 수 없다
                     merge.symmetric_difference_update({a.id})
             else:
                 app.sel_army = a.id
@@ -753,7 +753,8 @@ def draw_army_tiles(app, x, y, w, here, merge):
         fg = (255, 255, 255) if lit else (t.muted if acted else t.text)
         gui.icon(main, (cx + size / 2, cy + size * 0.30), fg, 1.8)
         if acted:
-            gui.text((cx + 6, cy + 4), "전투 완료", 9, (235, 240, 255) if lit else t.bad, "semibold")
+            gui.text((cx + 6, cy + 4), "전투 완료" if g.army_fought(a.id) else "행동 완료", 9,
+                     (235, 240, 255) if lit else t.bad, "semibold")
         kinds = len([k for k in a.units if a.units[k] > 0])
         name = C.UNITS[main]["name"] + (f" 외 {kinds - 1}" if kinds > 1 else "")
         if a.units.get("lst", 0) > 0:
@@ -774,13 +775,25 @@ def draw_army_tiles(app, x, y, w, here, merge):
 
 
 def draw_army_tab(app, body):
-    """지역 패널 [부대]: 선택한 지역에 있는 내 부대만 고르고 조종한다."""
+    """지역 패널 [부대]: 선택한 지역에 있는 내 부대만 고르고 조종한다(내용이 길면 휠로 넘긴다)."""
     gui = app.gui
     g = app.game
     t = app.theme
     pid = g.player_id
     x, w = body.x + 14, body.w - 28
-    y = body.y
+    area = pygame.Rect(body.x, body.y, body.w, body.h)
+    off = gui.begin_scroll("army_tab", area, getattr(app, "_army_tab_h", 900))
+    y = body.y - off
+    y0 = y
+    y = _army_tab_body(app, x, y, w, pid)
+    app._army_tab_h = y - y0 + 10
+    gui.end_scroll("army_tab", area, app._army_tab_h)
+
+
+def _army_tab_body(app, x, y, w, pid):
+    gui = app.gui
+    g = app.game
+    t = app.theme
     node = app.sel
     here = sorted([a for a in g.armies_at(node, pid)], key=lambda a: (-g.army_power(a), a.id)) if node else []
     if here and (app.sel_army not in {a.id for a in here}):
@@ -795,138 +808,306 @@ def draw_army_tab(app, body):
     army = g.armies.get(app.sel_army) if app.sel_army else None
     if army and (army.owner != pid or army.loc != node):
         army = None
-    if army:
-        loc = app.world.node_name(army.loc)
-        gui.text((x, y), f"부대 #{army.id} · {loc}", 15, weight="bold")
-        y += 24
-        dom = {"land": "육군", "naval": "해군", "air": "공군"}[army.domain()]
-        gui.text((x, y), f"{dom} · 전력 {g.army_power(army):,.0f}", 12, t.muted)
-        y += 22
-        acted = g.army_acted(army.id)
-        if acted:
-            gui.rect(t.panel_alt, (x, y, w, 26), radius=6)
-            gui.text((x + 8, y + 13), "이번 턴 전투 완료 — 합치기·분리·이동·공격 불가", 12, t.bad, "semibold",
-                     anchor="midleft", max_w=w - 16)
-            y += 32
-        # 유닛 목록 + 분리 수량
-        for k in C.UNIT_ORDER:
-            n = army.units.get(k, 0)
-            if not n:
-                continue
-            gui.icon(k, (x + 8, y + 11), t.text)
-            u = C.UNITS[k]
-            gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
-            left, full = army.hp_left(k), army.hp_max(k)
-            stat = f"공{u['atk']:g} 방{u['df']:g}" + (f" 폭{u['bomb']:g}" if u.get("bomb") else "")
-            gui.text((x + 22, y + 20), f"{stat} 체 {left:.0f}/{full:g}", 11,
-                     t.bad if left < full * 0.5 else t.muted)
-            app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)   # 해산 수량에도 쓴다
-            y += 40
-        if army.domain() == "naval":
-            gui.text((x, y), f"수송 {army.cargo_used()}/{army.cargo_cap()}칸 · 탑재 {army.air_used()}/{army.air_cap()}대",
-                     12, t.muted)
-            y += 20
-        nb = 4 if merge is not None else 3
-        bw = (w - 4 * (nb - 1)) / nb
-        sel_n = sum(app.split.values())
-        if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0 and not acted):
-            b, msg = g.split_army(army.id, app.split)
-            if b:
-                app.sel_army = b.id
-                app.split = {}
-            else:
-                app.toast(msg, t.bad)
-        others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id and not g.army_acted(a.id)]
-        go = False
-        if merge is not None:
-            for k in list(gui.keys):
-                if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not gui.focus:
-                    gui.keys.remove(k)            # Enter: 고른 부대 합치기(턴 종료로 넘어가지 않게)
-                    go = True
-                elif k.key == pygame.K_ESCAPE and not gui.focus:
-                    gui.keys.remove(k)
-                    app.merge_pick = merge = None
-        label = "합치기" if merge is None else f"합치기 ({len(merge)})"
-        if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
-                      enabled=bool(others) and not acted):
-            if merge is None and len(others) == 1:
-                app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
-                go = True
-            elif merge is None:
-                app.merge_pick, app.merge_node = {army.id}, node
-                merge = app.merge_pick
-            else:
-                go = True
-        if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12):
-            app.merge_pick = merge = {a.id for a in here if not g.army_acted(a.id)}
-            go = True
-        if go and merge is not None:
-            ids = [a.id for a in here if a.id in merge]
-            if len(ids) < 2:
-                app.toast("합칠 부대를 두 개 이상 고르세요.", t.bad)
-            else:
-                base = army.id if army.id in ids else ids[0]
-                for o in ids:
-                    if o != base:
-                        ok, msg = g.merge_player(base, o)
-                        if not ok:
-                            app.toast(msg, t.bad)
-                app.sel_army = base
-                app.toast(f"부대 {len(ids)}개를 합쳤습니다.")
-            app.merge_pick = None
-        if gui.button((x + (nb - 1) * (bw + 4), y, bw, 28), "해산", "danger", enabled=sel_n > 0,
-                      tooltip="선택한 수량 해산 (자국 영토면 행복도 +)"):
-            g.disband(army.id, app.split)
-            app.split = {}
-            if army.id not in g.armies:
-                app.sel_army = None
-                return
-        y += 38
-        ship = g.boarding_target(army.id)
-        if ship is not None:
-            what = "상륙함" if army.domain() == "land" else "항공모함"
-            if gui.button((x, y - 4, w, 30), f"탑승 ({what} 부대 #{ship.id})", "primary",
-                          enabled=not acted and not g.army_acted(ship.id)):
-                ok, msg, fleet = g.board(army.id)
-                app.toast(msg, None if ok else t.bad)
-                if ok:
-                    app.sel_army = fleet.id
-                    app.split = {}
-                    return
-            y += 34
-        gui.text((x, y + 6), "공격 방식", 12, t.muted)
-        if g.mods(pid).value("no_surprise"):
-            app.attack_mode = "assault"
-            gui.text((x + 70, y + 6), f"돌격만 가능 — {g.fx_source(pid, 'no_surprise')}", 12, t.muted)
-        else:
-            modes = ["assault", "surprise"]
-            idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
-            app.attack_mode = modes[idx]
-        y += 34
-        app.bombard_mode = gui.checkbox((x, y, w, 24), "폭격 모드 (우클릭 대상 폭격)", app.bombard_mode)
-        y += 30
-        o = army.order
-        if o:
-            desc = {"move": "이동", "attack": "공격", "land": "상륙", "bombard": "폭격"}[o["type"]]
-            tgt = o.get("target") or (o.get("path") or [army.loc])[-1]
-            gui.text((x, y), f"명령: {desc} → {app.world.node_name(tgt)}", 13, t.accent, "semibold")
-            if gui.button((x + w - 70, y - 4, 70, 26), "취소", size=12):
-                g.order_army(army.id, None)
-            y += 26
-            if army.goto:
-                gui.text((x, y), f"최종 목적지: {app.world.node_name(army.goto)}", 12, t.muted)
-                y += 22
-        elif acted:
-            gui.wrap((x, y), "다음 턴에 다시 명령할 수 있습니다. 해산은 가능합니다.", w, 12, t.muted)
-            y += 24
-        else:
-            y = gui.wrap((x, y), "지도에서 우클릭으로 이동·공격 대상을 지정하세요. 적 병력이 있는 곳을 공격하면 확인 창에서 바로 싸웁니다. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
-                             "범위 밖을 우클릭하면 최단 경로로 여러 턴에 걸쳐 자동 이동합니다.",
-                         w, 12, t.muted)
-    else:
+    if not army:
         gui.text((x, y), "이 지역에 내 부대가 없습니다.", 13, t.muted)
+        return draw_rally(app, x, y + 32, w, node)
+    loc = app.world.node_name(army.loc)
+    gui.text((x, y), f"부대 #{army.id} · {loc}", 15, weight="bold")
+    y += 24
+    dom = {"land": "육군", "naval": "해군", "air": "공군"}[army.domain()]
+    gui.text((x, y), f"{dom} · 전력 {g.army_power(army):,.0f}", 12, t.muted)
+    y += 22
+    fought = g.army_fought(army.id)
+    acted = g.army_acted(army.id)
+    if acted:
+        gui.rect(t.panel_alt, (x, y, w, 26), radius=6)
+        msg = ("이번 턴 전투 완료 — 합치기·분리·이동·공격 불가" if fought
+               else "이번 턴 행동 완료 — 이동·공격은 다음 턴")
+        gui.text((x + 8, y + 13), msg, 12, t.bad, "semibold", anchor="midleft", max_w=w - 16)
+        if not fought and gui.hover((x, y, w, 26)):
+            gui.tooltip = "이미 움직인 부대도 합치기·분리·해산·승선 해제(하선)는 할 수 있습니다."
+        y += 32
+    naval = army.domain() == "naval"
+    # 유닛 목록 + 분리 수량(함대에 실린 육군·공군은 아래 화물칸에서 다룬다)
+    for k in C.UNIT_ORDER:
+        n = army.units.get(k, 0)
+        if not n or (naval and C.UNITS[k]["kind"] in ("land", "air")):
+            continue
+        gui.icon(k, (x + 8, y + 11), t.text)
+        u = C.UNITS[k]
+        gui.text((x + 22, y + 2), f"{u['name']} {n}", 13, weight="semibold")
+        left, full = army.hp_left(k), army.hp_max(k)
+        stat = f"공{u['atk']:g} 방{u['df']:g}" + (f" 폭{u['bomb']:g}" if u.get("bomb") else "")
+        gui.text((x + 22, y + 20), f"{stat} 체 {left:.0f}/{full:g}", 11,
+                 t.bad if left < full * 0.5 else t.muted)
+        app.split[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(app.split.get(k, 0), n), 0, n)   # 해산 수량에도 쓴다
+        y += 40
+    app.split = {k: v for k, v in app.split.items() if not (naval and C.UNITS[k]["kind"] in ("land", "air"))}
+    merge, y, gone = _army_buttons(app, x, y, w, army, here, merge, fought, node)
+    if gone:
+        return y
+    if naval and (army.units.get("lst") or army.units.get("cv") or g.cargo_of(army)):
+        y = draw_cargo_panel(app, x, y, w, army)
+    elif army.domain() in ("land", "air"):
+        y = _boarding_buttons(app, x, y, w, army, acted)
+    gui.text((x, y + 6), "공격 방식", 12, t.muted)
+    if g.mods(pid).value("no_surprise"):
+        app.attack_mode = "assault"
+        gui.text((x + 70, y + 6), f"돌격만 가능 — {g.fx_source(pid, 'no_surprise')}", 12, t.muted)
+    else:
+        modes = ["assault", "surprise"]
+        idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
+        app.attack_mode = modes[idx]
+    y += 34
+    app.bombard_mode = gui.checkbox((x, y, w, 24), "폭격 모드 (우클릭 대상 폭격)", app.bombard_mode)
+    y += 30
+    if army.goto:
+        gui.text((x, y), f"자동 이동 → {app.world.node_name(army.goto)}", 13, t.accent, "semibold",
+                 max_w=w - 80)
+        if gui.button((x + w - 70, y - 4, 70, 26), "취소", size=12):
+            army.goto, army.order = None, None
+            app.changed()
         y += 26
-    draw_rally(app, x, y + 6, w, node)
+        y = gui.wrap((x, y), "다음 턴부터 턴이 시작될 때 한 구간씩 바로 갑니다.", w, 11, t.muted)
+    elif acted:
+        y = gui.wrap((x, y), "다음 턴에 다시 명령할 수 있습니다. 해산은 가능합니다.", w, 12, t.muted)
+    else:
+        y = gui.wrap((x, y), "지도에서 우클릭하면 바로 이동·폭격·점령합니다(한 부대는 한 턴에 한 번). 적 병력이 있는 곳은 "
+                             "확인 창에서 싸웁니다. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
+                             "범위 밖을 우클릭하면 첫 구간을 바로 가고, 다음 턴부터 턴 시작마다 이어서 자동 이동합니다.",
+                     w, 12, t.muted)
+    return draw_rally(app, x, y + 6, w, node)
+
+
+def _army_buttons(app, x, y, w, army, here, merge, fought, node):
+    """[분리]·[합치기]·[해산]. 반환 (merge, y, 부대가 사라졌는가)."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    pid = g.player_id
+    nb = 4 if merge is not None else 3
+    bw = (w - 4 * (nb - 1)) / nb
+    sel_n = sum(app.split.values())
+    if gui.button((x, y, bw, 28), "분리", enabled=sel_n > 0 and not fought):
+        b, msg = g.split_army(army.id, app.split)
+        if b:
+            app.sel_army = b.id
+            app.split = {}
+        else:
+            app.toast(msg, t.bad)
+    others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id and not g.army_fought(a.id)]
+    go = False
+    if merge is not None:
+        for k in list(gui.keys):
+            if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not gui.focus:
+                gui.keys.remove(k)            # Enter: 고른 부대 합치기(턴 종료로 넘어가지 않게)
+                go = True
+            elif k.key == pygame.K_ESCAPE and not gui.focus:
+                gui.keys.remove(k)
+                app.merge_pick = merge = None
+    label = "합치기" if merge is None else f"합치기 ({len(merge)})"
+    if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
+                  enabled=bool(others) and not fought,
+                  tooltip="같은 병종 계열끼리 합칩니다(함대에 싣는 것은 [승선]·[탑재])"):
+        if merge is None and len(others) == 1:
+            app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
+            go = True
+        elif merge is None:
+            app.merge_pick, app.merge_node = {army.id}, node
+            merge = app.merge_pick
+        else:
+            go = True
+    if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12):
+        app.merge_pick = merge = {a.id for a in here if not g.army_fought(a.id)}
+        go = True
+    if go and merge is not None:
+        ids = [a.id for a in here if a.id in merge]
+        if len(ids) < 2:
+            app.toast("합칠 부대를 두 개 이상 고르세요.", t.bad)
+        else:
+            base = army.id if army.id in ids else ids[0]
+            n_ok = 1
+            for o in ids:
+                if o != base:
+                    ok, msg = g.merge_player(base, o)
+                    if ok:
+                        n_ok += 1
+                    else:
+                        app.toast(msg, t.bad)
+            app.sel_army = base
+            if n_ok > 1:
+                app.toast(f"부대 {n_ok}개를 합쳤습니다.")
+        app.merge_pick = merge = None
+    if gui.button((x + (nb - 1) * (bw + 4), y, bw, 28), "해산", "danger", enabled=sel_n > 0,
+                  tooltip="선택한 수량 해산 (자국 영토면 행복도 +)"):
+        g.disband(army.id, app.split)
+        app.split = {}
+        if army.id not in g.armies:
+            app.sel_army = None
+            return merge, y + 38, True
+    return merge, y + 38, False
+
+
+def _boarding_buttons(app, x, y, w, army, acted):
+    """육군·공군 쪽 [승선]·[탑재]: 같은 항구의 상륙함·항공모함 함대에 싣는다(분리 수량을 고르면 그만큼)."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    fleets = g.cargo_fleets(army.id)
+    if not fleets:
+        return y
+    verb = "승선" if army.domain() == "land" else "탑재"
+    for fl in fleets[:3]:
+        room = (f"빈 칸 {fl.cargo_cap() - fl.cargo_used()}" if verb == "승선"
+                else f"빈 자리 {fl.air_cap() - fl.air_used()}")
+        pick = {k: v for k, v in app.split.items() if v > 0}
+        what = "고른 유닛" if pick else "전부"
+        if gui.button((x, y - 4, w, 30), f"{verb} → {'상륙함' if verb == '승선' else '항공모함'} 부대 #{fl.id} "
+                                         f"({room}) · {what}", "primary", size=12, enabled=not acted,
+                      tooltip=None if not acted else "이번 턴에 이미 행동한 부대는 다음 턴에 실을 수 있습니다"):
+            took, msg = g.load_cargo(fl.id, army.id, pick or None)
+            app.toast(msg, None if took else t.bad)
+            if took:
+                app.split = {}
+                app.sel_army = fl.id
+                app.changed()
+                return y + 34
+        y += 34
+    return y
+
+
+def _cargo_slots(gui, t, x, y, w, cap, items, per_key, label):
+    """드랍쉽 화물칸: cap 칸을 그리고, 실린 유닛 하나가 차지하는 칸들을 한 덩어리 상자(아이콘)로 채운다. 다음 y."""
+    if cap <= 0:
+        return y
+    gui.text((x, y), label, 12, t.muted, "semibold")
+    y += 18
+    per_row = min(cap, 16)
+    gap = 2
+    cell = min(22, (w - (per_row - 1) * gap) / per_row)
+    rows = (cap + per_row - 1) // per_row
+    for i in range(cap):                         # 빈 칸
+        cx = x + (i % per_row) * (cell + gap)
+        cy = y + (i // per_row) * (cell + gap)
+        gui.rect(t.panel_alt, (cx, cy, cell, cell), radius=3)
+        gui.rect(mix(t.border, t.panel, 0.3), (cx, cy, cell, cell), 1, radius=3)
+    shade = {"tank": 0.0, "art": 0.18, "inf": 0.32, "bmb": 0.0, "ftr": 0.25}
+    i = 0
+    for k, n in items:
+        size = per_key(k)
+        col = mix(t.accent, (255, 255, 255), shade.get(k, 0.1))
+        for _ in range(n):
+            if i + size > cap:
+                break
+            j = 0
+            while j < size:                          # 줄이 바뀌면 줄마다 한 덩어리
+                c0, row = (i + j) % per_row, (i + j) // per_row
+                span = min(size - j, per_row - c0)
+                bx, by = x + c0 * (cell + gap), y + row * (cell + gap)
+                bw = span * cell + (span - 1) * gap
+                gui.rect(col, (bx, by, bw, cell), radius=4)
+                pygame.draw.rect(gui.screen, mix(col, (0, 0, 0), 0.35), gui.R((bx, by, bw, cell)), 1,
+                                 border_radius=int(4 * gui.u))
+                if j == 0:
+                    gui.icon(k, (bx + bw / 2, by + cell / 2), (255, 255, 255), 1.0 if cell >= 18 else 0.8)
+                j += span
+            i += size
+    return y + rows * (cell + gap) + 6
+
+
+def draw_cargo_panel(app, x, y, w, fl):
+    """상륙함·항공모함 화물칸(스타크래프트 수송선처럼): 빈 칸과 실린 유닛을 칸으로 보여 주고,
+    항구에서는 같은 지역 부대를 [승선]·[탑재], 실린 유닛을 [하선]·[이함]. 바다에서는 맞닿은 해안을 골라 [하선](상륙)."""
+    gui = app.gui
+    g = app.game
+    t = app.theme
+    w_ = app.world
+    pid = g.player_id
+    cargo = g.cargo_of(fl)
+    y = section(gui, x, y + 2, w, "화물칸")
+    land = [(k, cargo[k]) for k in ("tank", "art", "inf", "booster", "module", "propellant") if cargo.get(k)]
+    air = [(k, cargo[k]) for k in ("bmb", "ftr") if cargo.get(k)]
+    if fl.units.get("lst"):
+        y = _cargo_slots(gui, t, x, y, w, fl.cargo_cap(), land, lambda k: C.UNITS[k].get("cargo", 1),
+                         f"상륙함 수송 칸 {fl.cargo_used()}/{fl.cargo_cap()} (보병 1·포병 2·전차 4칸)")
+    if fl.units.get("cv"):
+        y = _cargo_slots(gui, t, x, y, w, fl.air_cap(), air, lambda k: 1,
+                         f"항공모함 탑재 {fl.air_used()}/{fl.air_cap()}대")
+    # 내릴 수량(기본 전부)
+    pick = getattr(app, "cargo_pick", None)
+    if not pick or pick.get("fid") != fl.id:
+        pick = app.cargo_pick = {"fid": fl.id, "units": dict(cargo)}
+    sel = pick["units"]
+    for k in list(sel):
+        if k not in cargo:
+            sel.pop(k)
+    for k, n in land + air:
+        sel.setdefault(k, n)
+        gui.icon(k, (x + 8, y + 11), t.text)
+        left, full = fl.hp_left(k), fl.hp_max(k)
+        gui.text((x + 22, y + 2), f"{C.UNITS[k]['name']} {n}", 13, weight="semibold")
+        gui.text((x + 22, y + 20), f"체 {left:.0f}/{full:g}", 11, t.bad if left < full * 0.5 else t.muted)
+        sel[k] = gui.stepper((x + w - 96, y + 6, 96, 26), min(sel.get(k, n), n), 0, n)
+        y += 40
+    at_sea = w_.is_sea(fl.loc)
+    fought = g.army_fought(fl.id)
+    want_land = {k: v for k, v in sel.items() if v > 0 and C.UNITS[k]["kind"] == "land"}
+    want_air = {k: v for k, v in sel.items() if v > 0 and C.UNITS[k]["kind"] == "air"}
+    if cargo and not at_sea:
+        bw = (w - 4) / 2
+        if gui.button((x, y, bw, 30), f"하선 ({sum(want_land.values())})", "primary", size=12,
+                      enabled=bool(want_land) and not fought, tooltip="고른 육군을 이 항구에 내립니다"):
+            made, msg = g.unload_cargo(fl.id, want_land)
+            app.toast(msg, None if made else t.bad)
+            app.cargo_pick = None
+            app.changed()
+        if gui.button((x + bw + 4, y, bw, 30), f"이함 ({sum(want_air.values())})", "primary", size=12,
+                      enabled=bool(want_air) and not fought, tooltip="고른 함재기를 이 항구 지역(육상)에 내립니다"):
+            made, msg = g.unload_cargo(fl.id, want_air)
+            app.toast(msg, None if made else t.bad)
+            app.cargo_pick = None
+            app.changed()
+        y += 36
+    elif cargo and at_sea:
+        targets = g.landing_targets(fl) if want_land else {}
+        if want_land:
+            gui.text((x, y), "하선(상륙)할 해안", 12, t.muted, "semibold")
+            y += 20
+        for v, kind in sorted(targets.items(), key=lambda p: (p[1] != "land", w_.node_name(p[0]))):
+            label = f"하선 → {w_.node_name(v)}" + (" (빈 적 땅 점령)" if kind == "capture" else "")
+            blocked = fought or (kind == "capture" and g.army_acted(fl.id))
+            if gui.button((x, y, w, 28), label, "primary" if kind == "land" else "danger", size=12,
+                          enabled=not blocked,
+                          tooltip="이번 턴에 움직인 함대는 빈 적 땅에 상륙할 수 없습니다" if blocked else None):
+                made, msg = g.unload_cargo(fl.id, want_land, v)
+                app.toast(msg, None if made else t.bad)
+                app.cargo_pick = None
+                app.changed()
+            y += 32
+        if want_land and not targets:
+            y = gui.wrap((x, y), "맞닿은 해안 가운데 내릴 수 있는 곳이 없습니다. 적 병력이 있는 해안은 우클릭으로 상륙 공격합니다.",
+                         w, 11, t.muted)
+        if air:
+            y = gui.wrap((x, y), "함재기는 항구에 정박했을 때만 내릴 수 있습니다.", w, 11, t.muted)
+    # 같은 항구의 부대 싣기
+    if not at_sea:
+        cands = [a for a in g.armies_at(fl.loc, pid) if a.id != fl.id and (
+            (fl.units.get("lst") and a.domain() == "land") or (fl.units.get("cv") and a.domain() == "air"))]
+        for a in cands[:6]:
+            verb = "승선" if a.domain() == "land" else "탑재"
+            acted = g.army_acted(a.id)
+            if gui.button((x, y, w, 28), f"{verb}: 부대 #{a.id} {a.label()}", size=12, enabled=not acted,
+                          tooltip="이번 턴에 이미 행동한 부대는 다음 턴에 실을 수 있습니다" if acted
+                          else "칸이 모자라면 들어가는 만큼(무거운 유닛부터) 싣습니다"):
+                took, msg = g.load_cargo(fl.id, a.id)
+                app.toast(msg, None if took else t.bad)
+                app.cargo_pick = None
+                app.changed()
+            y += 32
+        if not cargo and not cands:
+            y = gui.wrap((x, y), "이 항구에 실을 부대가 없습니다. 육군·공군을 이 항구로 옮긴 뒤 [승선]·[탑재]하세요.",
+                         w, 11, t.muted)
+    return y + 4
 
 
 def draw_rally(app, x, y, w, node):
@@ -949,7 +1130,7 @@ def draw_rally(app, x, y, w, node):
     if gui.button((x, y, w, 30), f"{n}칸 이내 병력 집결 (부대 {len(cands)}개 · 유닛 {units})", "primary",
                   size=12, enabled=bool(cands),
                   tooltip="육상 n칸 안의 내 육군을 이 지역으로 부릅니다. 한 턴에 못 오는 부대는 여러 턴에 걸쳐 자동 이동합니다.\n"
-                          "이번 턴 전투한 부대, 공격·폭격·상륙 명령을 받은 부대, 과학 유닛은 빠집니다."):
+                          "이번 턴 이미 행동한 부대(이동·전투·폭격·상륙)와 과학 유닛은 빠집니다. 부른 부대는 바로 움직입니다."):
         k, u = g.rally(pid, node, n)
         app.toast(f"{app.world.node_name(node)}(으)로 부대 {k}개(유닛 {u}) 집결")
         app.changed()

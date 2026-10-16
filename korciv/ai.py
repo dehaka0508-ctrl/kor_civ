@@ -2175,7 +2175,8 @@ def _air_orders(g, f, threat):
     for a in [a for a in g.armies.values() if a.owner == fid and a.domain() == "air" and not a.order
               and a.units.get("ftr") and not a.units.get("bmb")]:
         reach = g.reachable(a)
-        bases = [v for v, o in reach.items() if o["action"] == "move"]
+        # 전투기는 공항이 있는 지역에서만 싸운다(v1.2.10): 공항으로만 옮긴다
+        bases = [v for v, o in reach.items() if o["action"] == "move" and g.regions[v].b["airport"]]
         if not bases:
             continue
         d_now = g.world.distances_from(hot, 6).get(a.loc, 99)

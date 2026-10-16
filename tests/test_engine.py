@@ -1729,6 +1729,9 @@ def test_bombard_ranges_and_interception():
     g.regions[two].b["aa"] = 3
     g.new_army(1, two, {"ftr": 1})
     ad, aa, ftr = g.air_defense(0, two)
+    assert (ad, aa, ftr) == (30, 3, 0)                    # v1.2.10: 공항이 없는 곳의 전투기는 요격하지 않는다
+    g.regions[two].b["airport"] = 1
+    ad, aa, ftr = g.air_defense(0, two)
     assert (ad, aa, ftr) == (60, 3, 1)
     g.regions["S002"].b["airport"] = 1
     b = g.new_army(0, "S002", {"bmb": 5})
@@ -1870,7 +1873,7 @@ def test_board_land_on_lst_and_air_on_cv():
     assert ok and f.units == {"lst": 1, "inf": 2, "tank": 1} and inf.id not in g.armies
     big = g.new_army(0, port, {"tank": 2})                        # 수송 칸(8) 초과
     ok, msg, _ = g.board(big.id)
-    assert not ok and "수송 칸" in msg
+    assert not ok and "칸" in msg
     cv = g.new_army(0, port, {"cv": 1})
     air = g.new_army(0, port, {"ftr": 2, "bmb": 1})
     assert g.boarding_target(air.id) is cv
@@ -3683,7 +3686,8 @@ def test_rally_within_n_cells():
     assert {a.id for a in g.rally_candidates(0, "S002", 1)} == {a1.id, a2.id}
     k, u = g.rally(0, "S002", 2)
     assert k == 3 and u == 4
-    assert all((a.order and a.order["path"][-1] == "S002") or a.goto == "S002" for a in (a1, a2, a3))
+    # v1.2.10: 플레이어 집결은 바로 움직인다(자국 영토 2칸 안이라 모두 이번 턴에 도착)
+    assert all(a.loc == "S002" and not a.order and g.army_acted(a.id) for a in (a1, a2, a3))
 
 
 def test_coalition_peace_does_not_drag_player_in():
@@ -3837,3 +3841,197 @@ def test_time_victory_turn_unchanged():
     g.pending_rebellions.clear()
     g.end_turn()
     assert g.game_over and g.winner[1] == "time" and g.turn == 6
+
+
+# ---------------------------------------------------------------- v1.2.10: 수송·공군·체력 비례·즉시 실행
+def _clear(g, *rids):
+    for r in rids:
+        for a in list(g.armies_at(r)):
+            g.remove_army(a)
+
+
+def test_cargo_load_unload_at_port():
+    """상륙함 [승선]·[하선]: 부대 합치기와 따로, 칸만큼만 싣고(무거운 것부터) 피해 기록도 함께 옮긴다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    port = g.world.name_to_id["부산 중구"]
+    _own(g, 0, [port])
+    g.regions[port].b["port"] = 1
+    _clear(g, port)
+    fl = g.new_army(0, port, {"lst": 1, "dd": 1})
+    land = g.new_army(0, port, {"inf": 4, "tank": 2})
+    land.dmg = {"tank": 25.0}                                   # 전차 2대 중 반 대 몫 피해
+    assert not g.merge_player(fl.id, land.id)[0]                # 합치기로는 싣지 않는다
+    took, msg = g.load_cargo(fl.id, land.id)
+    assert took == {"tank": 2} and fl.cargo_used() == 8 and "승선" in msg   # 칸 8: 전차 2(4칸씩)만
+    assert land.units == {"inf": 4} and fl.dmg.get("tank") == pytest.approx(25.0)
+    made, msg = g.unload_cargo(fl.id, {"tank": 1})
+    assert made and made[0].loc == port and made[0].units == {"tank": 1} and "하선" in msg
+    assert fl.units == {"lst": 1, "dd": 1, "tank": 1}
+    assert not g.army_acted(made[0].id)                         # 움직이지 않은 함대에서 항구에 내리면 바로 움직일 수 있다
+
+
+def test_cargo_landing_from_sea():
+    """바다에서 [하선]: 맞닿은 내 해안에 상륙, 빈 적 땅은 점령 시작. 상륙한 병력은 이번 턴 더 움직이지 못한다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    sea = next(s for s in w.seas if len(w.seas[s].coast) >= 3)
+    coast = sorted(w.seas[sea].coast)
+    mine, empty_enemy = coast[0], coast[1]
+    _own(g, 0, [mine])
+    g.transfer_region(empty_enemy, 1)
+    _clear(g, mine, empty_enemy)
+    D.declare_war(g, 0, 1)
+    fl = g.new_army(0, sea, {"lst": 1, "inf": 3})
+    t = g.landing_targets(fl)
+    assert t.get(mine) == "land" and t.get(empty_enemy) == "capture"
+    made, _ = g.unload_cargo(fl.id, {"inf": 1}, mine)
+    assert made[0].loc == mine and g.army_acted(made[0].id) and g.army_acted(fl.id)
+    made, msg = g.unload_cargo(fl.id, None, empty_enemy)   # 이번 턴 이미 상륙한 함대 → 빈 적 땅 상륙은 다음 턴
+    assert not made
+    g.moved = set()
+    made, msg = g.unload_cargo(fl.id, None, empty_enemy)
+    assert made and made[0].loc == empty_enemy
+    assert g.regions[empty_enemy].owner == 0 or 0 in g.regions[empty_enemy].occs
+
+
+def test_carrier_aircraft_only_unload_at_port():
+    """함재기: 항구에 정박했을 때만 [이함]해 육상으로 내린다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    port = g.world.name_to_id["부산 중구"]
+    _own(g, 0, [port])
+    g.regions[port].b["port"] = 1
+    _clear(g, port)
+    cv = g.new_army(0, port, {"cv": 1})
+    air = g.new_army(0, port, {"ftr": 2, "bmb": 1})
+    took, msg = g.load_cargo(cv.id, air.id)
+    assert took == {"ftr": 2, "bmb": 1} and "탑재" in msg and air.id not in g.armies
+    sea = g.world.regions[port].seas[0]
+    cv.loc = sea
+    made, msg = g.unload_cargo(cv.id, {"ftr": 1})
+    assert not made and "항구" in msg
+    cv.loc = port
+    made, msg = g.unload_cargo(cv.id, {"ftr": 1})
+    assert made and made[0].domain() == "air" and made[0].loc == port and "이함" in msg
+
+
+def test_air_units_rules():
+    """공군: 어디서든 생산, 한 칸씩 이동(공항에서는 다른 공항으로 한 번에, 통행권 나라 공항 포함), 폭격·요격은 공항에서만."""
+    g = new_game(player_start="S002", n_enemies=2)
+    w = g.world
+    g.player.res["oil"] = 10
+    assert any(o["kind"] == "unit" and o["key"] == "ftr" and o["ok"] for o in g.options(0, "S002"))   # 공항 없이 생산
+    near = sorted(w.land_adj["S002"])
+    _own(g, 0, near)
+    _clear(g, "S002", *near)
+    a = g.new_army(0, "S002", {"bmb": 2})
+    reach = g.reachable(a)
+    assert all(v in w.land_adj["S002"] for v, o in reach.items() if o["action"] == "move")   # 공항이 없으면 한 칸씩
+    assert not any(o["action"] == "bombard" for o in reach.values())
+    far = next(r for r in w.order if g.regions[r].owner == 1)
+    g.regions["S002"].b["airport"] = 1
+    g.regions[far].b["airport"] = 1
+    assert far not in g.reachable(a)                           # 통행권이 없는 나라 공항은 안 된다
+    g.dip.passage[D.pair(0, 1)] = g.turn + 10
+    assert g.reachable(a).get(far, {}).get("action") == "move"   # 통행권이 있으면 그 나라 공항으로 한 번에
+    D.declare_war(g, 0, 2)
+    tgt = next(v for v in g.land_within("S002", 2) if g.regions[v].owner not in (0, 1))
+    g.transfer_region(tgt, 2)
+    assert g.reachable(a).get(tgt, {}).get("action") == "bombard"   # 공항에서는 폭격 가능
+    ok, msg = g.act_now(a.id, near[0])
+    assert ok and a.loc == near[0] and g.army_acted(a.id)
+    g.moved = set()
+    assert not any(o["action"] == "bombard" for o in g.reachable(a).values())   # 공항 없는 곳에서는 폭격 불가
+
+
+def test_combat_strength_scales_with_remaining_hp():
+    """전투력은 남은 체력에 비례: 체력이 절반 남은 보병은 같은 조건에서 피해도 절반."""
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    g.transfer_region(tgt, 1)
+    _clear(g, tgt)
+    D.declare_war(g, 0, 1)
+    full = g.new_army(0, "S002", {"inf": 1})
+    half = g.new_army(0, "S002", {"inf": 1})
+    half.dmg = {"inf": 5.0}
+    a_full = g.combat_strength(0, [full], tgt)[0]
+    a_half = g.combat_strength(0, [half], tgt)[0]
+    assert a_half == pytest.approx(a_full / 2)
+    d1 = g.new_army(1, tgt, {"inf": 2})
+    d_full = g.defense_strength(0, tgt, None, "surprise")[0]
+    d1.dmg = {"inf": 10.0}                                      # 2대 중 1대 몫 피해 → 방어력 절반
+    assert g.defense_strength(0, tgt, None, "surprise")[0] == pytest.approx(d_full / 2)
+    s1 = g.new_army(0, "S002", {"dd": 1})
+    p_full = g._naval_power(0, [s1], next(iter(g.world.seas)))
+    s1.dmg = {"dd": 25.0}
+    assert g._naval_power(0, [s1], next(iter(g.world.seas))) == pytest.approx(p_full / 2)
+
+
+def test_act_now_moves_immediately_and_once_per_turn():
+    """플레이어 명령은 바로 실행: 이동·빈 적 땅 점령·폭격. 한 턴에 한 번, 움직인 부대도 합치기·분리는 된다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    near = sorted(w.land_adj["S002"])
+    _own(g, 0, near[:1])
+    _clear(g, "S002", *near)
+    a = g.new_army(0, "S002", {"inf": 4})
+    ok, msg = g.act_now(a.id, near[0])
+    assert ok and a.loc == near[0] and not a.order and g.army_acted(a.id)
+    assert not g.act_now(a.id, "S002")[0]                      # 이번 턴 두 번째 이동은 불가
+    b, _ = g.split_army(a.id, {"inf": 2})                       # 움직인 부대도 나눌 수 있고, 나눈 쪽도 더 못 움직인다
+    assert b and g.army_acted(b.id)
+    c = g.new_army(0, near[0], {"inf": 1})
+    assert g.merge_player(c.id, a.id)[0] and g.army_acted(c.id)   # 움직인 부대와 합치면 합친 부대도 이번 턴 끝
+    # 병력 없는 적 땅: 바로 들어가 점령
+    enemy = near[1]
+    g.transfer_region(enemy, 1)
+    _clear(g, enemy)
+    D.declare_war(g, 0, 1)
+    d = g.new_army(0, "S002", {"inf": 2})
+    ok, msg = g.act_now(d.id, enemy)
+    assert ok and d.loc == enemy and (g.regions[enemy].owner == 0 or 0 in g.regions[enemy].occs)
+    # 적 병력이 있으면 바로 싸우지 않는다(전투 확인 창으로)
+    e = g.new_army(1, near[2], {"inf": 1})
+    g.transfer_region(near[2], 1)
+    f = g.new_army(0, "S002", {"inf": 2})
+    ok, msg = g.act_now(f.id, near[2])
+    assert not ok and f.loc == "S002" and not g.army_acted(f.id) and e.id in g.armies
+    # 포병 폭격도 바로
+    art = g.new_army(0, "S002", {"art": 2})
+    hp0 = e.hp_left("inf")
+    ok, msg = g.act_now(art.id, near[2], force_bombard=True)
+    assert ok and g.army_acted(art.id) and (e.id not in g.armies or e.hp_left("inf") < hp0)
+    g.end_turn()
+    assert not g.army_acted(a.id)                              # 다음 턴에는 다시 움직인다
+
+
+def _path_to(prev, r):
+    out = []
+    while prev[r] is not None:
+        out.append(r)
+        r = prev[r]
+    return out[::-1]
+
+
+def test_player_goto_continues_at_turn_start():
+    """한 턴에 못 가는 곳: 첫 구간은 바로, 다음 구간은 다음 턴이 시작될 때 바로 간다(턴 종료 때가 아니라)."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    from collections import deque
+    prev, q = {"S002": None}, deque(["S002"])                  # 육상 최단 경로 6칸
+    while q:
+        u = q.popleft()
+        for v in sorted(w.land_adj[u]):
+            if v not in prev:
+                prev[v] = u
+                q.append(v)
+    far = next(r for r in w.order if r in prev and len(_path_to(prev, r)) == 6)
+    route = _path_to(prev, far)
+    _own(g, 0, route)                                           # 길 전체를 내 땅으로(중립 수비대를 피해)
+    _clear(g, "S002", *route)
+    a = g.new_army(0, "S002", {"inf": 1})
+    ok, msg = g.act_now(a.id, far)
+    assert ok and a.goto == far and a.loc != "S002" and g.army_acted(a.id)
+    loc1 = a.loc
+    g.pending_proposals.clear()
+    g.end_turn()
+    assert a.loc != loc1 and g.army_acted(a.id)                # 턴 시작에 바로 다음 구간
