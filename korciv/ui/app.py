@@ -22,6 +22,9 @@ from .theme import Theme, desaturate, fmt_money, hex2rgb, measure, mix, render_t
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".korciv", "saves")
 PREFS_PATH = os.path.join(os.path.expanduser("~"), ".korciv", "prefs.json")
+# 개발자 키(F2 안개 공개)는 개발 체크아웃에서만: 배포판(deploy 브랜치)에는 tests/ 폴더가 없다
+DEV_KEYS = os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                      "tests"))
 
 
 def load_prefs() -> dict:
@@ -161,6 +164,7 @@ class App:
         self.map.set_view((0, top, W, H - top))
 
     def reset_ui(self):
+        self.enter_guard = 0         # 턴 종료 직후 보호 시간은 다른 판(새 판·불러오기)으로 넘어가지 않는다
         self.sel = None              # 선택한 구역/해역 ID
         self.sel_army = None
         self.dip_view = None         # 외교 탭에서 상세 보기 중인 세력
@@ -172,7 +176,6 @@ class App:
         self.mode = "political"
         self.left_open = True
         self.attack_mode = "assault"
-        self.bombard_mode = False
         self.toasts = []             # [text, color, t0]
         self.modal = None            # (name, data)
         self.flash_t = 0
@@ -1140,14 +1143,23 @@ class App:
             self.toast("이번 턴에 이미 행동한 부대입니다(이동·공격은 다음 턴에).", self.theme.bad)
             return
         if army and army.owner == g.player_id:
-            # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
-            if not self.bombard_mode and node in g.regions:
+            solo = g.solo_army(army)
+            if node in g.regions:
                 opt = g.reachable(army).get(node)
-                if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
+                hostile = g.hostile_units_at(army.owner, node)
+                shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                # 폭격 확인 창(v1.2.11): 포병·폭격기 부대는 적 병력이 있는 곳, 구축함·항모 함대는 폭격 대상,
+                # Shift+우클릭은 병력이 없어도(건물 폭격)
+                if g._can_bombard(army, node) and ((solo and hostile) or shift
+                                                   or (not solo and opt and opt["action"] == "bombard")):
+                    self.modal = ("bombard", {"army": army.id, "node": node})
+                    return
+                # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
+                if not solo and opt and opt["action"] == "attack" and hostile:
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
-            # 이동·상륙·폭격·빈 땅 점령은 바로 실행한다(v1.2.10)
-            ok, msg = g.act_now(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
+            # 이동·상륙·빈 땅 점령은 바로 실행한다(v1.2.10). 포병·폭격기 부대는 병력이 없는 곳이면 이동
+            ok, msg = g.act_now(army.id, node, self.attack_mode, move_only=solo)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             if ok:
                 self.flash_t = pygame.time.get_ticks()
@@ -1187,9 +1199,18 @@ class App:
             return
         reach = g.reachable(army)
         opt = reach.get(node)
+        solo = g.solo_army(army)
+        shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+        hostile = node in g.regions and g.hostile_units_at(army.owner, node)
+        if node in g.regions and g._can_bombard(army, node) and ((solo and hostile) or shift):
+            opt = {"action": "bombard", "path": []}
+        elif solo and opt and opt["action"] == "bombard":
+            opt = None                           # 병력이 없는 곳은 이동(한 턴에 못 가면 자동 이동)
         if not opt:
+            if solo and node in g.regions and g.plan_route(army, node):
+                self.gui.tooltip = f"이동: {self.world.node_name(node)} (여러 턴 자동 이동)"
             return
-        act = "bombard" if self.bombard_mode else opt["action"]
+        act = opt["action"]
         lines = []
         name = self.world.node_name(node)
         if act == "move":
@@ -1199,7 +1220,15 @@ class App:
         elif act == "land":
             lines.append(f"상륙(하역): {name}")
         elif act == "bombard":
-            lines.append(f"폭격: {name}")
+            lines.append(f"폭격: {name} (우클릭 → 폭격 확인 창)")
+            pv = g.preview_bombard(army, node)
+            if pv:
+                lines.append(f"예상 피해 {pv['dmg']:.1f} ({pv['lo']:.1f}~{pv['hi']:.1f})"
+                             + (f" / 적 총 체력 {pv['def_hp']:.1f}" if pv["def_max"] else " · 방어 병력 없음(건물만)"))
+                if pv["bmb_max"]:
+                    lines.append(f"요격 피해 {pv['intercept']:.1f} (대공포 {pv['aa']}단계·공항 전투기 {pv['ftr']}대)")
+                if pv["building_p"]:
+                    lines.append(f"건물 피해 확률 {pv['building_p'] * 100:.0f}%")
         elif act == "attack":
             mode = self.attack_mode
             pv = g.preview_attack(army, node, mode)
@@ -1277,7 +1306,7 @@ class App:
                 self.mode_popup = None
             elif k.key == pygame.K_F1:
                 self.modal = ("help", None)
-            elif k.key == pygame.K_F2:
+            elif k.key == pygame.K_F2 and DEV_KEYS:
                 self.fog_reveal = not self.fog_reveal
                 self.toast("개발자 안개 토글: " + ("전체 공개" if self.fog_reveal else "기본"))
                 self.changed()
@@ -1689,10 +1718,10 @@ def main(argv=None):
         app.game.set_player_government("presidential")
         app.scene = "main"
         for _ in range(args.turns):
-            app.game.pending_rebellions and [app.game.resolve_rebellion(app.game.player_id, r, "tax")
-                                             for r in list(app.game.pending_rebellions)]
-            app.game.pending_proposals = []
             from .. import ai
+            for r in list(app.game.pending_rebellions):
+                ai.handle_rebellion(app.game, app.game.player_id, r)
+            app.game.pending_proposals = []
             ai.plan_turn(app.game, app.game.player_id)
             app.game.end_turn()
         app.game.pending_proposals = []

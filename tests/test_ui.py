@@ -1000,11 +1000,11 @@ def test_counter_offer_blocked_when_money_short(app):
 
 
 def test_rebellion_accept_refreshes_map(app):
-    """리뷰 M-01: 반란 '요구 수용'(지불·세율 인하) 뒤 행복도 지도를 다시 그린다(진압과 같게)."""
+    """리뷰 M-01: 반란 '요구 수용'(v1.2.11부터 돈 지급만) 뒤 행복도 지도를 다시 그린다(진압과 같게)."""
     g = _main_game(app, n_enemies=1)
     cap = g.player.capital
     g.player.money = 10 ** 6
-    for label in ("산출 4턴분", "세율 5%p 인하"):
+    for label in ("요구 수용", "요구 수용"):
         g.regions[cap].happy = -80
         g.pending_rebellions.append(cap)
         v0 = app.map.version
@@ -1181,4 +1181,38 @@ def test_right_click_moves_immediately(app):
     assert a.loc == dst and g.turn == t0 and g.army_acted(a.id) and app.sel == dst
     app.right_click(cap, (300, 300))
     assert a.loc == dst and "이미 행동" in app.toasts[-1][0]
+    frame(app)
+
+
+def test_artillery_right_click_opens_bombard_confirm(app):
+    """v1.2.11: 포병 부대 우클릭 — 적 병력이 있으면 폭격 확인 창([폭격]으로 바로 폭격), 없으면 이동."""
+    from korciv import diplomacy as D
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    other = next(f.id for f in g.factions if f.id != pid)
+    cap = g.player.capital
+    tgt, empty = sorted(g.world.land_adj[cap])[:2]
+    for r in (tgt, empty):
+        g.transfer_region(r, other)
+        for a in list(g.armies_at(r)):
+            g.remove_army(a)
+    D.declare_war(g, pid, other)
+    app.modal = None
+    g.dialogues = []
+    e = g.new_army(other, tgt, {"inf": 3})
+    art = g.new_army(pid, cap, {"art": 2})
+    app.select(cap)
+    app.sel_army = art.id
+    frame(app)
+    app.right_click(tgt, (300, 300))
+    assert app.modal and app.modal[0] == "bombard" and not g.army_acted(art.id)
+    hp0 = e.hp_left("inf")
+    assert _click_button(app, "폭격")
+    assert app.modal is None and g.army_acted(art.id) and art.loc == cap
+    assert e.id not in g.armies or e.hp_left("inf") < hp0
+    # 다음 턴: 병력이 없는 적 땅은 이동(차지)
+    art2 = g.new_army(pid, cap, {"art": 1})
+    app.sel_army = art2.id
+    app.right_click(empty, (300, 300))
+    assert app.modal is None and art2.loc == empty
     frame(app)

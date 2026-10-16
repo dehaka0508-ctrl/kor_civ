@@ -850,17 +850,26 @@ def _army_tab_body(app, x, y, w, pid):
         y = draw_cargo_panel(app, x, y, w, army)
     elif army.domain() in ("land", "air"):
         y = _boarding_buttons(app, x, y, w, army, acted)
-    gui.text((x, y + 6), "공격 방식", 12, t.muted)
-    if g.mods(pid).value("no_surprise"):
-        app.attack_mode = "assault"
-        gui.text((x + 70, y + 6), f"돌격만 가능 — {g.fx_source(pid, 'no_surprise')}", 12, t.muted)
+    if g.solo_army(army):
+        # 포병·폭격기 부대(v1.2.11): 우클릭한 곳에 적 병력이 있으면 폭격 확인 창, 없으면 이동
+        what = "포병" if army.units.get("art") else "폭격기"
+        rng = (f"육상 {C.ART_RANGE}칸" if army.units.get("art")
+               else f"공항이 있는 지역에서 {C.BOMB_RANGE}칸")
+        y = gui.wrap((x, y + 2), f"{what} 부대 — 우클릭: 적 병력이 있으면 폭격 확인 창({rng}), 없으면 이동. "
+                                 f"Shift+우클릭: 병력 없는 곳의 건물 폭격", w, 12, t.muted) + 8
     else:
-        modes = ["assault", "surprise"]
-        idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
-        app.attack_mode = modes[idx]
-    y += 34
-    app.bombard_mode = gui.checkbox((x, y, w, 24), "폭격 모드 (우클릭 대상 폭격)", app.bombard_mode)
-    y += 30
+        gui.text((x, y + 6), "공격 방식", 12, t.muted)
+        if g.mods(pid).value("no_surprise"):
+            app.attack_mode = "assault"
+            gui.text((x + 70, y + 6), f"돌격만 가능 — {g.fx_source(pid, 'no_surprise')}", 12, t.muted)
+        else:
+            modes = ["assault", "surprise"]
+            idx = gui.segmented((x + 70, y, w - 70, 28), ["돌격", "기습"], modes.index(app.attack_mode))
+            app.attack_mode = modes[idx]
+        y += 34
+        if army.units.get("dd") or (army.units.get("bmb") and army.units.get("cv")):
+            y = gui.wrap((x, y), "함포·함재기 폭격: 폭격 대상 우클릭 → 폭격 확인 창 (상륙 대상이면 Shift+우클릭)",
+                         w, 12, t.muted) + 6
     if army.goto:
         gui.text((x, y), f"자동 이동 → {app.world.node_name(army.goto)}", 13, t.accent, "semibold",
                  max_w=w - 80)
@@ -895,7 +904,7 @@ def _army_buttons(app, x, y, w, army, here, merge, fought, node):
             app.split = {}
         else:
             app.toast(msg, t.bad)
-    others = [a for a in g.armies_at(army.loc, pid) if a.id != army.id and not g.army_fought(a.id)]
+    others = [a for a in g.armies_at(army.loc, pid) if g.mergeable(army, a)]   # 이 부대와 합칠 수 있는 부대만
     go = False
     if merge is not None:
         for k in list(gui.keys):
@@ -908,7 +917,7 @@ def _army_buttons(app, x, y, w, army, here, merge, fought, node):
     label = "합치기" if merge is None else f"합치기 ({len(merge)})"
     if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
                   enabled=bool(others) and not fought,
-                  tooltip="같은 병종 계열끼리 합칩니다(함대에 싣는 것은 [승선]·[탑재])"):
+                  tooltip="같은 병종 계열끼리 합칩니다. 포병·폭격기는 같은 병종끼리만(함대에 싣는 것은 [승선]·[탑재])"):
         if merge is None and len(others) == 1:
             app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
             go = True
@@ -918,7 +927,7 @@ def _army_buttons(app, x, y, w, army, here, merge, fought, node):
         else:
             go = True
     if merge is not None and gui.button((x + 2 * bw + 8, y, bw, 28), "모두 합치기", size=12):
-        app.merge_pick = merge = {a.id for a in here if not g.army_fought(a.id)}
+        app.merge_pick = merge = {army.id} | {a.id for a in here if g.mergeable(army, a)}
         go = True
     if go and merge is not None:
         ids = [a.id for a in here if a.id in merge]
@@ -1849,6 +1858,17 @@ def draw_energy_tab(app, body):
     if gui.button((x, y - 2, 120, 28), "자동 배정", "primary", size=12):
         units, cap = g.assign_energy(pid)
         app.toast(f"자원 자동 배정: 공장 연료 {units}/{cap}")
+        app.changed()
+    each = getattr(f, "energy_each_turn", True)
+    cb = (x + 132, y - 2, min(220, w - 132), 28)
+    nv = gui.checkbox(cb, "매 턴 자동 배정", each, size=12)
+    if gui.hover(cb):
+        gui.tooltip = ("켜 두면 턴이 시작될 때마다 [자동 배정]을 다시 실행합니다(새 공장·발전소에도 바로 연료). "
+                       "끄면 직접 정한 배정을 그대로 쓰고, 새 공장·발전소가 생기면 알려 줍니다.")
+    if nv != each:
+        f.energy_each_turn = nv
+        if nv:
+            g.assign_energy(pid)
         app.changed()
     y += 30
     plan = g.energy_plan(pid)

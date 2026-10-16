@@ -186,8 +186,9 @@ BOMBED_HAPPY = -2
 REBEL_ACCEPT_HAPPY = 20
 REBEL_SUPPRESS_HAPPY = 5
 REBEL_SUPPRESS_LOSS = 0.10
-REBEL_ACCEPT_TURNS = 4     # 요구 수용: 산출 4턴분
-REBEL_ACCEPT_TAX_CUT = 0.05
+# 요구 수용(v1.2.11부터 돈 지급만, 세율 인하 없음): 턴당 GDP × (−반란 판정 행복도) × 이 값.
+# 행복도 −50이면 GDP의 5%, −100이면 10%
+REBEL_PAY_GDP = 0.001
 REBEL_THRESHOLD = -50
 REBEL_WEARY_MULT = 1.2      # 반란 판정: (선포한 전쟁의) 전쟁 피로를 ×1.2로 반영
 # 진압 실패 시 반란 지역이 그 지역을 수도로 하는 새 국가로 독립한다(건물·인구·산출·진행 중 공사 계승).
@@ -235,6 +236,9 @@ ASSAULT_UNITS = ("inf", "tank", "lst")
 NO_GROUND_COMBAT = ("art", "ftr", "bmb")   # 돌격·기습 전투력 0(방어에서도). 포병은 포격, 공군은 폭격·제공으로
 AIR_GROUND_SUPPORT = False                 # 공항 전투기의 지상전 지원 없음
 SURPRISE_UNITS = ("inf", "tank")
+# 포병·폭격기는 같은 병종끼리만 한 부대(v1.2.11): 다른 유닛과 합칠 수 없다(함대 화물칸은 예외).
+# 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창, 없는 곳은 이동
+SOLO_UNITS = ("art", "bmb")
 ART_RANGE = 2              # 포병 폭격: 육상 2칸(2차 인접)까지
 NAVAL_BOMB_RANGE = 2       # 구축함 함포: 해역에서 2칸(해안 지역과 그 인접 지역)까지
 BOMB_RANGE = 2             # 폭격기: 공항·항공모함에서 2칸까지

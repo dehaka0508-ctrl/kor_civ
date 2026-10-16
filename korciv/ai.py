@@ -1252,8 +1252,6 @@ def handle_rebellion(g, fid, rid):
         return g.resolve_rebellion(fid, rid, "pay")
     if g.suppress_chance(fid, rid) >= 0.7:
         return g.resolve_rebellion(fid, rid, "suppress")
-    if f.tax >= C.REBEL_ACCEPT_TAX_CUT:
-        return g.resolve_rebellion(fid, rid, "tax")
     if f.money >= cost:
         return g.resolve_rebellion(fid, rid, "pay")
     return g.resolve_rebellion(fid, rid, "suppress")

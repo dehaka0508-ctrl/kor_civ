@@ -159,6 +159,7 @@ class Faction:
     auto_food: bool = True
     auto_specialty: bool = True     # 행복도 낮은 지역부터 자동 배분
     auto_energy: bool = True        # 공장·발전소 연료 자동 배정
+    energy_each_turn: bool = True   # 플레이어: 매 턴 시작에 [자동 배정]을 다시 실행
     buy_count: dict = field(default_factory=dict)   # 이번 턴 구매 개수(가격 상승용)
     trade_buy: float = 0.0
     trade_sell: float = 0.0

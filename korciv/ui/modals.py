@@ -140,7 +140,7 @@ def _num_input(gui, owner, rect, tid, value):
 
 VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
-                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시켜도 승리",
+                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
     "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 은행 5단계(금융 단지) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 정유공장 5단계 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
@@ -1045,6 +1045,8 @@ def draw_active_modal(app):
         draw_prefs(app)
     elif name == "battle":
         draw_battle(app)
+    elif name == "bombard":
+        draw_bombard(app)
     elif name == "stat_chart":
         draw_stat_chart(app)
 
@@ -1161,6 +1163,106 @@ def draw_battle(app):
             if app.sel_army not in g.armies:
                 app.sel_army = None
             app.changed()
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            gui.keys.remove(k)
+            close(app)
+
+
+def draw_bombard(app):
+    """폭격 확인(v1.2.11): 쏘는 유닛·보정, 대상 병력, 예상 피해(요격 포함), 건물 피해 확률 → [폭격] / [취소]."""
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    st = app.modal[1]
+    army = g.armies.get(st["army"])
+    node = st["node"]
+    pv = g.preview_bombard(army, node) if army and not g.army_acted(army.id) else None
+    if pv is None:
+        close(app)
+        return
+    bmb = pv["bmb_max"] > 0
+    has_def = pv["def_max"] > 0
+    n_fac = max(1, min(5, len(pv["factors"])))
+    box_h = 104 + 20 * n_fac
+    res_h = 40 + (36 if has_def else 0) + (36 if bmb else 0) + 26
+    r = modal_frame(app, 760, 64 + box_h + 14 + res_h + 84,
+                    f"폭격 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
+    colw = (r.w - 72) / 2
+    y0 = r.y + 64
+    # 왼쪽: 쏘는 쪽
+    x = r.x + 24
+    gui.rect(t.panel_alt, (x, y0, colw, box_h), radius=10)
+    gui.text((x + 14, y0 + 10), f"폭격 · {g.fname(army.owner)}", 14, t.accent, "bold", max_w=colw - 28)
+    y = gui.wrap((x + 14, y0 + 34), _units_text(pv["units"]), colw - 28, 13)
+    gui.text((x + 14, y + 2), f"폭격 피해 {pv['dmg']:,.1f}", 16, weight="bold")
+    gui.text((x + colw - 14, y + 4), f"({pv['lo']:,.1f} ~ {pv['hi']:,.1f})", 12, t.muted, anchor="topright")
+    y += 30
+    gui.text((x + 14, y), "적용 보정", 12, t.muted, "semibold")
+    y += 20
+    if not pv["factors"]:
+        gui.text((x + 14, y), "없음", 12, t.muted)
+    for label, mult in pv["factors"][:5]:
+        gui.text((x + 14, y), label, 12, max_w=colw - 100)
+        gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if mult > 1 else t.bad, "semibold", anchor="topright")
+        y += 20
+    # 오른쪽: 대상
+    x = r.x + 48 + colw
+    gui.rect(t.panel_alt, (x, y0, colw, box_h), radius=10)
+    who = ", ".join(g.fname(o) for o in pv["def_units"]) or g.fname(g.regions[node].owner)
+    gui.text((x + 14, y0 + 10), f"대상 · {who}", 14, t.bad, "bold", max_w=colw - 28)
+    if has_def:
+        y = gui.wrap((x + 14, y0 + 34), " / ".join(_units_text(u) for u in pv["def_units"].values()), colw - 28, 13)
+        gui.text((x + 14, y + 2), f"체력 {pv['def_hp']:,.0f} / {pv['def_max']:,.0f}", 15, weight="bold")
+        y += 28
+        gui.wrap((x + 14, y), "피해는 대상 지역의 모든 부대에 무작위로 나뉩니다.", colw - 28, 12, t.muted)
+    else:
+        gui.wrap((x + 14, y0 + 34), "방어 병력 없음 — 건물만 노립니다.", colw - 28, 13, t.muted)
+    if bmb:
+        yy = y0 + box_h - 26
+        txt = (f"요격: 대공포 {pv['aa']}단계 · 공항의 전투기 {pv['ftr']}대" if pv["intercept"] > 0
+               else "요격 없음(대공포·공항 전투기 없음)")
+        gui.text((x + 14, yy), txt, 12, t.warn if pv["intercept"] > 0 else t.muted, max_w=colw - 28)
+    # 예상 결과
+    y = y0 + box_h + 14
+    gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
+    y += 30
+    rows = []
+    if bmb:
+        rows.append(("폭격기", pv["bmb_hp"], pv["bmb_max"], pv["intercept"], t.accent))
+    if has_def:
+        rows.append(("적군", pv["def_hp"], pv["def_max"], min(pv["def_hp"], pv["dmg"]), t.bad))
+    for lab, hp, mx, dmg, col in rows:
+        _hp_bar(gui, t, (r.x + 96, y, r.w - 360, 14), hp, max(hp, mx), dmg, col)
+        gui.text((r.x + 24, y + 7), lab, 13, col, "bold", anchor="midleft")
+        left = max(0.0, hp - dmg)
+        gui.text((r.right - 250, y + 7), f"{hp:,.0f} − {dmg:,.0f} → {left:,.0f}", 12, t.text, "semibold",
+                 anchor="midleft")
+        gui.text((r.right - 24, y + 7), "전멸 예상" if left <= 0.05 * max(1.0, hp) else "생존", 12,
+                 (t.good if lab == "적군" else t.bad) if left <= 0.05 * max(1.0, hp) else t.muted, "semibold",
+                 anchor="midright")
+        y += 36
+    bp = pv["building_p"]
+    gui.text((r.x + 24, y), (f"건물 피해: {bp * 100:.0f}% 확률로 생산·방어 건물(방어선 포함) 하나 −1단계"
+                             if bp else "부술 건물 없음"), 12, t.muted, max_w=r.w - 48)
+    if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
+        close(app)
+        return
+    fire = gui.button((r.right - 144, r.bottom - 60, 120, 42), "폭격", "danger", size=15, weight="bold")
+    for k in list(gui.keys):
+        if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not gui.focus:
+            gui.keys.remove(k)                   # Enter = [폭격]
+            fire = True
+    if fire:
+        ok, msg = g.act_now(army.id, node, force_bombard=True)
+        close(app)
+        app.toast(msg, None if ok else t.bad)
+        if ok:
+            app.flash_t = pygame.time.get_ticks()
+            if app.sel_army not in g.armies:
+                app.sel_army = None
+            app.changed()
+        return
     for k in list(gui.keys):
         if k.key == pygame.K_ESCAPE:
             gui.keys.remove(k)
@@ -1317,7 +1419,7 @@ def draw_rebellion(app):
     rid = g.pending_rebellions[0]
     pid = g.player_id
     rr = g.regions[rid]
-    r = modal_frame(app, 560, 380, "반란 발생!")
+    r = modal_frame(app, 560, 300, "반란 발생!")
     info = app.world.regions[rid]
     gui.text((r.x + 24, r.y + 56), f"{info.name} · 실질 행복도 {g.eff_happy(rr):+.1f} · 인구 {rr.pop:.1f}만", 15,
              weight="semibold")
@@ -1327,15 +1429,18 @@ def draw_rebellion(app):
     p = g.suppress_chance(pid, rid)
     y = r.y + 140
     f = g.player
-    if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 산출 4턴분 {cost:,.0f} 지불 (행복도 +20)", "primary",
-                  enabled=f.money >= cost):
+    pct = cost / g.gdp(pid) * 100 if g.gdp(pid) > 0 else 0.0
+    ok = f.money >= cost
+    if gui.button((r.x + 24, y, r.w - 48, 44),
+                  f"요구 수용: {cost:,.0f} 지불 (행복도 +{C.REBEL_ACCEPT_HAPPY})" + ("" if ok else " — 자금 부족"),
+                  "primary", enabled=ok,
+                  tooltip=f"비용 = 턴당 GDP × (−행복도 {g.rebel_happy(rr):.0f}) × {C.REBEL_PAY_GDP:g} "
+                          f"= GDP의 {pct:.1f}%"):
         app.toast(g.resolve_rebellion(pid, rid, "pay"))
         app.changed()                                # 행복도가 바뀌었으니 행복도 지도 캐시를 다시 그린다
-    y += 52
-    if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 세율 5%p 인하 ({f.tax*100:.0f}% → {max(0, f.tax*100-5):.0f}%, 행복도 +20)"):
-        app.toast(g.resolve_rebellion(pid, rid, "tax"))
-        app.changed()
-    y += 52
+    gui.text((r.x + 24, y + 50), f"턴당 GDP의 {pct:.1f}% (GDP × 반란 판정 행복도 {g.rebel_happy(rr):.0f}에 비례)"
+             f" · 보유 자금 {f.money:,.0f}", 12, t.muted, max_w=r.w - 48)
+    y += 76
     if gui.button((r.x + 24, y, r.w - 48, 44), f"진압 (성공률 {p*100:.0f}%, 성공 시 행복도 +5·병력 10% 손실)", "danger"):
         msg = g.resolve_rebellion(pid, rid, "suppress")
         app.toast(msg, t.bad if "실패" in msg else None)
@@ -1704,7 +1809,12 @@ def draw_ranking(app):
             gui.rect(t.panel_alt, pygame.Rect(x0 - 8, y - 2, r.w - 32, rh - 4), radius=6)
         gui.text((x0 + 4, ty), f"{pos}", fs, weight="bold", anchor="midleft")
         fh = min(20, rh - 10)
-        draw_flag(gui, (x0 + 50, ty - fh // 2, fh * 3 // 2, fh), FL.faction_flag(g.factions[fid]))
+        if g.knows_name(pid, fid):
+            draw_flag(gui, (x0 + 50, ty - fh // 2, fh * 3 // 2, fh), FL.faction_flag(g.factions[fid]))
+        else:                                    # 모르는 나라: 국기(색)로도 누구인지 드러나지 않게
+            box = pygame.Rect(x0 + 50, ty - fh // 2, fh * 3 // 2, fh)
+            gui.rect(t.panel_alt, box, radius=2)
+            gui.text(box.center, "?", fs - 2, t.muted, "bold", anchor="center")
         gui.text((x0 + 90, ty), g.seen_name(fid) + (" (나)" if me else ""), fs,
                  None if known else t.muted, "bold" if me else "regular", max_w=name_w - 46, anchor="midleft")
         for i, (k, _) in enumerate(cols):
@@ -1977,26 +2087,28 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
 · 좌측 [내정]: 세율·잉여 식량·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
-· [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
+· [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정. [매 턴 자동 배정](기본 켜짐)이면 턴마다 다시 배정.
 · 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
 · 부대 명령은 바로 실행됩니다(이동·상륙·폭격·빈 땅 점령). 한 부대는 한 턴에 한 번 행동하고, 움직인 부대도 합치기·나누기는 됩니다.
 · 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
+· 포병·폭격기는 같은 병종끼리만 한 부대입니다. 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창([폭격]/Enter), 없는 곳은 이동. Shift+우클릭은 병력 없는 곳의 건물 폭격.
 · 수송: 부대 탭의 화물칸에서 상륙함은 [승선]·[하선], 항공모함은 [탑재]·[이함]. 바다에서 하선할 해안을 고르면 상륙(빈 적 땅은 점령).
 · 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. AI도 남는 자원을 팔고 모자라면 사자고 제안합니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
 · 각 내 지역은 턴마다 슬롯 1개: 건물 착공, 유닛 생산, 인접 중립 지역 편입 중 하나.
-· 비용은 매 턴 나눠서 내고, 자금이 모자라면 멈춥니다. 취소하면 낸 비용의 50% 환급.
+· 비용은 매 턴 나눠서 내고, 자금이 모자라면 멈춥니다. 취소하면 낸 비용의 50% 환급(유닛 생산은 착수 때 깎인 행복도도 돌려받음, 석유는 제외).
 · 자국 영토 안에서는 2칸, 그 밖은 1칸 이동. 해군은 턴당 한 칸: 항구→해역, 해역→해역, 해역→상륙·입항.
 · 공군: 어디서든 생산, 한 칸씩 이동(공항에서는 다른 공항으로 한 번에, 통행권 나라 공항 포함). 폭격·요격은 공항이 있는 지역에서만. 함재기는 항구에 정박했을 때만 육상으로 내립니다.
 · 산출 Y = 30P + {C.FARM_OUTPUT}×농장 단계 + {C.FISH_OUTPUT}×어장 단계 + 공장(넣은 연료 1개당) + {C.BANK_OUTPUT}g(은행). 하천 농장 ×{C.RIVER_FARM_MULT:g}, 하천 어장 ×{C.RIVER_FISH_MULT:g}.
 · 세수 = Y × 세율. 세율 10%(전제군주제 12%)보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
 · 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. {C.POP_GROWTH_MIN_H} 이상·식량 충분일 때 인구 증가, {C.REBEL_THRESHOLD} 이하부터 반란.
+· 반란 대응: 요구 수용(돈 = 턴당 GDP × (−행복도) × {C.REBEL_PAY_GDP:g}, 행복도 +{C.REBEL_ACCEPT_HAPPY}) 또는 진압.
 · 전쟁 피로도: 선전포고 +{C.WAR_WEARY_START["aggressor"]:g}, 당하면 +{C.WAR_WEARY_START["defender"]:g}, 전쟁 중 턴당 +{C.WAR_WEARY_TURN["aggressor"]:g}(당한 쪽 +{C.WAR_WEARY_TURN["defender"]:g}), 평시 턴당 {C.WAR_WEARY_RECOVERY:g} 회복.
 · 점령한 적 지역은 4턴 저항 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 전투력은 남은 체력에 비례합니다(체력 절반이면 절반). 방어선은 돌격 방어를 높입니다.
-· 승리: 정복 / 과학 / 경제 / 외교 / 시간 종료. 진행 상황은 [국가 현황]에 나옵니다."""
+· 승리: 정복 / 과학 / 경제 / 외교 / 시간 종료. 다른 나라를 모두 멸망시키면 설정과 관계없이 승리. 진행 상황은 [국가 현황]에 나옵니다."""
 
 
 def draw_help(app):

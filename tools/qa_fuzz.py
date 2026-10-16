@@ -96,6 +96,8 @@ def check(g, where):
         if a.domain() == "naval" and (a.cargo_used() > a.cargo_cap() or a.air_used() > a.air_cap()):
             report("함대 수송·탑재 초과", f"{where} {aid} loc={a.loc} {a.units} 수송 {a.cargo_used()}/{a.cargo_cap()} "
                                       f"탑재 {a.air_used()}/{a.air_cap()}")
+        if not g.solo_ok(a.units):
+            report("포병·폭격기 혼성 부대", f"{where} {aid} loc={a.loc} {a.units}")
         stale = [k for k, d in a.dmg.items() if k not in a.units and d > 1e-9]
         if stale:
             report("없는 유닛의 피해 기록", f"{where} {aid} units={a.units} dmg={a.dmg}")
@@ -174,7 +176,8 @@ def player_turn(g, rng):
             near = list(g.world.node_neighbors(a.loc)) + reach
             if near:
                 cmd = g.act_now if rng.random() < 0.6 else g.order_army     # 플레이어 명령은 바로 실행(v1.2.10)
-                cmd(a.id, rng.choice(near), rng.choice(["assault", "surprise"]), force_bombard=rng.random() < 0.2)
+                cmd(a.id, rng.choice(near), rng.choice(["assault", "surprise"]), force_bombard=rng.random() < 0.2,
+                    move_only=g.solo_army(a) and rng.random() < 0.5)         # 포병·폭격기 부대 우클릭(v1.2.11)
         elif r < 0.6 and a.count() > 1:
             k = rng.choice(list(a.units))
             g.split_army(a.id, {k: max(1, a.units[k] // 2)})

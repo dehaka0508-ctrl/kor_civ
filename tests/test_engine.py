@@ -161,8 +161,17 @@ def test_rebellion_resolution_paths():
     g = new_game(player_start="S002", n_enemies=1)
     r = g.regions["S002"]
     r.happy = -80
-    msg = g.resolve_rebellion(0, "S002", "tax")
-    assert "세율" in msg and r.happy == pytest.approx(-60)
+    cost = g.rebellion_accept_cost(0, "S002")
+    assert cost == pytest.approx(g.gdp(0) * 80 * C.REBEL_PAY_GDP)     # GDP × (−행복도) 비례
+    g.player.money = cost - 1
+    g.pending_rebellions = ["S002"]
+    msg = g.resolve_rebellion(0, "S002", "pay")
+    assert "부족" in msg and r.happy == -80 and g.pending_rebellions == ["S002"]   # 돈이 모자라면 그대로 남는다
+    g.player.money = cost + 5
+    tax0 = g.player.tax
+    msg = g.resolve_rebellion(0, "S002", "tax")              # 예전 '세율 인하'도 이제 돈 지급
+    assert "지불" in msg and r.happy == pytest.approx(-60) and g.player.tax == tax0
+    assert g.player.money == pytest.approx(5) and not g.pending_rebellions
     g.rng.seed(0)
     for a in g.armies_at("S002", 0):
         a.units["inf"] = 0
@@ -4035,3 +4044,149 @@ def test_player_goto_continues_at_turn_start():
     g.pending_proposals.clear()
     g.end_turn()
     assert a.loc != loc1 and g.army_acted(a.id)                # 턴 시작에 바로 다음 구간
+
+
+# ---- v1.2.11: QA 후속 수정
+def test_energy_reassigned_every_turn_start():
+    """[매 턴 자동 배정](기본 켜짐): 턴이 시작될 때 [자동 배정]을 다시 해 새 공장에도 연료가 들어간다."""
+    g, r, f = _energy_setup()
+    assert f.energy_each_turn
+    r.b["factory"], r.b["power"] = 0, 0
+    g.assign_energy(0)
+    g.energy_supply = lambda fid: {"coal": 4, "oil": 0, "elec": 0}
+    r.b["factory"] = 2                                         # 새로 지은 공장
+    assert not (r.energy or {}).get("f")
+    g._auto_assign_energy()
+    assert r.energy["f"]["coal"] == 2
+    # 끄면 배정은 그대로 두고, 새 공장·발전소가 생기면 알려 준다
+    f.energy_each_turn = False
+    r.energy = {}
+    g._auto_assign_energy()
+    assert r.energy == {}
+    n0 = len(g.events)
+    r.b["power"] = 1
+    g._auto_assign_energy()
+    assert r.energy == {} and any("연료를 배정" in e["text"] for e in g.events[n0:])
+
+
+def test_cancel_unit_refunds_happiness_not_oil():
+    g = new_game(player_start="S002", n_enemies=1)
+    r = g.regions["S002"]
+    g.player.money = 10 ** 6
+    g.player.res["oil"] = 10
+    r.project = None
+    h0 = r.h_delta
+    ok, msg = g.start_project(0, "S002", "unit", "tank")
+    assert ok, msg
+    oil_after = g.player.res["oil"]
+    assert r.h_delta == pytest.approx(h0 + C.UNIT_START_HAPPY["heavy"])
+    ok, msg = g.cancel_project(0, "S002")
+    assert ok and "행복도" in msg
+    assert r.h_delta == pytest.approx(h0) and g.player.res["oil"] == oil_after   # 석유는 돌려주지 않는다
+
+
+def test_only_one_capital_move_at_a_time():
+    g = new_game(player_start="S002", n_enemies=1)
+    a, b = sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, [a, b])
+    for rid in (a, b):
+        g.regions[rid].resist = None
+        g.regions[rid].project = None
+    g.player.money = 10 ** 8
+    ok, msg = g.start_project(0, a, "capital", "capital")
+    assert ok, msg
+    opt = next(o for o in g.options(0, b) if o["kind"] == "capital")
+    assert not opt["ok"] and "천도 진행 중" in opt["why"]
+    ok, msg = g.start_project(0, b, "capital", "capital")
+    assert not ok
+
+
+def test_last_survivor_wins_even_without_conquest_victory():
+    g = new_game(n_enemies=1)
+    g.settings.victories = ["science", "time"]
+    for f in g.factions[1:]:
+        f.alive = False
+    g._check_victory()
+    assert g.game_over and g.winner == ((0,), "conquest")
+
+
+def test_artillery_and_bombers_form_their_own_armies():
+    """v1.2.11: 포병·폭격기는 같은 병종끼리만 한 부대 — 합치기·생산·하선·예전 세이브 모두."""
+    g = new_game(player_start="S002", n_enemies=1)
+    _clear(g, "S002")
+    inf = g.new_army(0, "S002", {"inf": 2})
+    art = g.new_army(0, "S002", {"art": 1})
+    ok, msg = g.merge_player(inf.id, art.id)
+    assert not ok and "포병" in msg and not g.mergeable(inf, art)
+    art2 = g.new_army(0, "S002", {"art": 2})
+    assert g.mergeable(art, art2) and g.merge_player(art.id, art2.id)[0] and art.units == {"art": 3}
+    # 생산: 포병은 보병 부대에 섞이지 않고 포병 부대에 더해진다
+    made = g.add_units(0, "S002", "art", 1)
+    assert made.id == art.id and art.units == {"art": 4} and inf.units == {"inf": 2}
+    made = g.add_units(0, "S002", "tank", 1)
+    assert made.id == inf.id and inf.units == {"inf": 2, "tank": 1}
+    # 공군: 폭격기와 전투기는 따로
+    ftr = g.new_army(0, "S002", {"ftr": 1})
+    bmb = g.new_army(0, "S002", {"bmb": 1})
+    assert not g.merge_player(ftr.id, bmb.id)[0]
+    # 예전 세이브의 섞인 부대는 병종별로 나뉜다(피해 기록·자동 이동 목적지도 함께)
+    mixed = g.new_army(0, "S002", {"inf": 3, "art": 2})
+    mixed.dmg = {"art": 4.0, "inf": 2.0}
+    mixed.goto = sorted(g.world.land_adj["S002"])[0]
+    g2 = pickle.loads(pickle.dumps(g))
+    parts = [a for a in g2.armies_at("S002", 0) if a.goto]
+    assert sorted(tuple(sorted(a.units.items())) for a in parts) == [(("art", 2),), (("inf", 3),)]
+    assert next(a for a in parts if "art" in a.units).dmg == {"art": 4.0}
+
+
+def test_cargo_unloads_artillery_as_separate_army():
+    g = new_game(player_start="S002", n_enemies=1)
+    fl = _port_fleet(g, {"lst": 1})
+    fl.units.update(inf=2, art=1)
+    fl.dmg = {"art": 3.0}
+    made, msg = g.unload_cargo(fl.id)
+    assert sorted(tuple(sorted(a.units)) for a in made) == [("art",), ("inf",)]
+    assert next(a for a in made if "art" in a.units).dmg == {"art": 3.0}
+
+
+def test_artillery_army_bombards_enemy_units_and_moves_elsewhere():
+    """포병만인 부대: 맞닿은 적 병력도 공격 대신 포격 대상, 병력이 없는 곳은 이동으로(move_only)."""
+    g, tgt = _war_pair()
+    _clear(g, "S002")
+    e = g.new_army(1, tgt, {"inf": 2})
+    art = g.new_army(0, "S002", {"art": 3})
+    reach = g.reachable(art)
+    assert reach[tgt]["action"] == "bombard"
+    pv = g.preview_bombard(art, tgt)
+    assert pv and pv["dmg"] == pytest.approx(3 * C.UNITS["art"]["bomb"] * g.mods(0).mult("bomb_art")
+                                             / (1 + C.SHELTER_K * g.regions[tgt].b["shelter"]) * g.morale(0))
+    assert pv["def_hp"] == pytest.approx(e.hp_left("inf")) and pv["intercept"] == 0
+    hp0 = e.hp_left("inf")
+    ok, msg = g.act_now(art.id, tgt, force_bombard=True)
+    assert ok and g.army_acted(art.id) and art.loc == "S002" and (e.id not in g.armies or e.hp_left("inf") < hp0)
+    # 병력이 없는 적 땅: move_only 면 포격이 아니라 들어가 차지한다
+    g.end_turn()
+    _clear(g, tgt)
+    if g.regions[tgt].owner != 1:
+        g.transfer_region(tgt, 1)
+    art = next(a for a in g.armies_at("S002", 0) if a.units.get("art"))
+    ok, msg = g.act_now(art.id, tgt, move_only=True)
+    assert ok and art.loc == tgt
+
+
+def test_amphibious_survivors_never_stranded_at_sea():
+    """퍼저(sim seed 43005): 상륙 돌격에서 상륙함을 잃었거나 구축함 함대가 먼저 잡히면 살아남은 병력이
+    바다 위에 육군만 남던 문제 — 칸이 있는 함대로, 모자라면 실을 수 있는 만큼만 돌아간다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    sea = next(iter(g.world.seas))
+    dd = g.new_army(0, sea, {"dd": 1})                       # 먼저 만든(작은 id) 구축함 함대
+    fl = g.new_army(0, sea, {"lst": 1})
+    x = g.new_army(0, sea, {"tank": 2, "inf": 2})             # 칸 10 > 상륙함 1척 8
+    g._reboard(x)
+    assert x.id not in g.armies and dd.units == {"dd": 1}
+    assert fl.cargo_used() <= fl.cargo_cap() and fl.units.get("inf") == 2 and fl.units.get("tank") == 1
+    assert not [a for a in g.armies.values() if a.loc == sea and a.domain() == "land"]
+    y = g.new_army(0, sea, {"inf": 1})
+    g.remove_army(fl)
+    g._reboard(y)                                            # 실을 함대가 없으면 잃는다
+    assert y.id not in g.armies and dd.units == {"dd": 1}
