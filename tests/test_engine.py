@@ -2173,7 +2173,8 @@ def test_new_leaders_v117():
     _lead(g, 0, "cus")
     f0 = g.food_prod(0, r)
     _lead(g, 0, "sta")
-    assert g.food_prod(0, r) == pytest.approx(R.food_output(3 * 1.15, r.b["fishery"], g.fish_mult(0, cap)))
+    river = C.RIVER_FARM_MULT if g.river_farm(cap) else 1.0
+    assert g.food_prod(0, r) == pytest.approx(R.food_output(3 * 1.15 * river, r.b["fishery"], g.fish_food_mult(0, cap)))
     _lead(g, 0, "mao")
     assert g.food_prod(0, r) == pytest.approx(f0 * 0.85)
 
@@ -3719,3 +3720,17 @@ def test_peace_cancels_orders_into_former_enemy_and_evicts():
     a.loc = tgt                                          # 이미 들어가 있던 부대(옛 세이브)
     g.evict_trespassers()
     assert g.regions[a.loc].owner == 0
+
+
+def test_river_farm_bonus():
+    """하천에 맞닿은 지역의 농장: 식량·산출 ×1.2."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    riv = next(r for r in w.order if r in w.river_regions and g.regions[r].owner == NEUTRAL)
+    dry = next(r for r in w.order if r not in w.river_regions and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [riv, dry])
+    for rid in (riv, dry):
+        g.regions[rid].b.update(farm=3, fishery=0)
+    assert g.food_prod(0, g.regions[riv]) == pytest.approx(C.FOOD_PER_G * 3 * 1.2)
+    assert g.food_prod(0, g.regions[dry]) == pytest.approx(C.FOOD_PER_G * 3)
+    assert g.farm_mult(0, riv) == pytest.approx(1.2) and g.farm_mult(0, dry) == pytest.approx(1.0)

@@ -288,7 +288,7 @@ class Game:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
             r.output = self.calc_output(r.id, full=True)
-            r.food = R.food_output(r.b["farm"], r.b["fishery"],
+            r.food = R.food_output(r.b["farm"] * (C.RIVER_FARM_MULT if self.river_farm(r.id) else 1.0), r.b["fishery"],
                                    C.SEA_FISH_FOOD if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
         for f in self.factions:
             regs = self.regions_of(f.id)
@@ -1694,7 +1694,10 @@ class Game:
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
         if key == "farm":
-            return f"턴당 식량 +{C.FOOD_PER_G:.0f}, 산출 +{C.FARM_OUTPUT * m.mult('output_prod'):.0f}"
+            fm = self.farm_mult(fid, rid)
+            return (("하천 농장: " if self.river_farm(rid) else "")
+                    + f"턴당 식량 +{round(C.FOOD_PER_G * fm * m.mult('food_prod'), 1):g}, "
+                    f"산출 +{C.FARM_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
@@ -1739,7 +1742,7 @@ class Game:
         m = self.mods(fid)
         pm = m.mult("output_prod")
         if key == "farm":
-            fm = m.mult("output_farm")
+            fm = self.farm_mult(fid, rid)
             return (f"턴당 식량 {C.FOOD_PER_G * lv * fm * m.mult('food_prod'):.0f}, "
                     f"산출 {C.FARM_OUTPUT * lv * fm * pm:,.0f}")
         if key == "fishery":
@@ -2194,6 +2197,14 @@ class Game:
         info = self.info(rid)
         return info.coastal or info.fishery > 0 or rid in self.world.river_regions
 
+    def river_farm(self, rid) -> bool:
+        """하천(도하 경계·국경 하천)에 맞닿은 지역: 농장 식량·산출 ×1.2."""
+        return rid in self.world.river_regions
+
+    def farm_mult(self, fid, rid) -> float:
+        """농장 식량·산출 배수(지도자 효과 × 하천 농장)."""
+        return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if self.river_farm(rid) else 1.0)
+
     def fish_food_mult(self, fid, rid):
         """어장 식량 배수: fish_mult × 바다 어장이면 SEA_FISH_FOOD(산출에는 붙지 않는다)."""
         fm = self.fish_mult(fid, rid)
@@ -2223,7 +2234,7 @@ class Game:
                             m.mult("output_bank") * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0),
                             m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
-                            m.mult("output_prod"), m.mult("output_farm"))
+                            m.mult("output_prod"), self.farm_mult(owner, rid))
         pb = m.value("port_bank", 0)
         if pb and rr.b["port"] and owner != NEUTRAL:
             # 근초고왕 '해상 왕국': 항구가 있는 지역은 은행 3단계만큼 산출이 더 난다
@@ -3445,7 +3456,7 @@ class Game:
     def food_prod(self, fid, r) -> float:
         """한 지역의 식량 생산(스탈린 '집단농장' 농장 +15%, 마오쩌둥 '해로운 새' −15%)."""
         m = self.mods(fid)
-        return R.food_output(r.b["farm"] * m.mult("output_farm"), r.b["fishery"],
+        return R.food_output(r.b["farm"] * self.farm_mult(fid, r.id), r.b["fishery"],
                              self.fish_food_mult(fid, r.id)) * m.mult("food_prod")
 
     def expected_food_balance(self, f) -> float:

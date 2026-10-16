@@ -885,8 +885,11 @@ def draw_start_popup(app, rid):
         sub += f" · {info.island}"
     gui.text((x, r.y + 54), sub, 13, t.muted)
     y = r.y + 86
-    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False)
-    food = R.food_output(info.farm, info.fishery,
+    rfarm = C.RIVER_FARM_MULT if rid in w.river_regions else 1.0
+    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False,
+                          fish_mult=C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0,
+                          farm_mult=rfarm)
+    food = R.food_output(info.farm * rfarm, info.fishery,
                          C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else C.SEA_FISH_FOOD)
     half = (cw - 20) // 2
 
