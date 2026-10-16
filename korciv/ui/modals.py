@@ -890,7 +890,7 @@ def draw_start_popup(app, rid):
                           fish_mult=C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0,
                           farm_mult=rfarm)
     food = R.food_output(info.farm * rfarm, info.fishery,
-                         C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else C.SEA_FISH_FOOD)
+                         C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0)
     half = (cw - 20) // 2
 
     def stat(col, row, k, v, vc=None):

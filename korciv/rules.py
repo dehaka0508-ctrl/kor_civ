@@ -23,7 +23,7 @@ def factory_output(level: int, fuel=None) -> float:
 
 def region_output(pop, farm, fishery, factory, bank, fuel=None,
                   fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0, prod_mult=1.0, farm_mult=1.0) -> float:
-    """Y = 30P + 150g(F) + 150g(S) + 1000g(M)φ + 600g(B) (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
+    """Y = 30P + 120F + 150S + 1000g(M)φ + 600g(B) (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
     return (C.POP_OUTPUT * pop * pop_mult
             + (C.FARM_OUTPUT * farm * farm_mult           # 농장·어장은 단계에 비례
                + C.FISH_OUTPUT * fishery * fish_mult
@@ -32,7 +32,7 @@ def region_output(pop, farm, fishery, factory, bank, fuel=None,
 
 
 def food_output(farm, fishery, fish_mult=1.0) -> float:
-    return C.FOOD_PER_G * (farm + fishery * fish_mult)
+    return C.FARM_FOOD * farm + C.FISH_FOOD * fishery * fish_mult
 
 
 def prod_building_cost(key: str, level: int, power_site=False) -> float:

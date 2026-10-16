@@ -2468,7 +2468,8 @@ def test_ai_phase1_deficit_builds_production():
     fid = 1
     f = g.factions[fid]
     _neutral_ai(g, fid)
-    f.ai.update(phase=1, free=1.0, weights={"military": 0.5, "economy": 1, "expansion": 1, "defense": 1})
+    # 편입 가중치를 낮춰 생산 건물이 1순위가 되게 하고, 적자일 때 비축으로 짓는지 본다
+    f.ai.update(phase=1, free=1.0, weights={"military": 0.5, "economy": 1, "expansion": 0.5, "defense": 1})
     f.money = 50_000
     f.last.update(tax=100.0, upkeep=400.0)               # 세수 < 유지비: 적자
     for r in g.regions_of(fid):
@@ -3604,18 +3605,18 @@ def test_incheon_ongjin_no_island_bonus():
 
 
 def test_sea_fishery_food_bonus_and_river_nerf():
-    """바다 어장은 식량 ×1.2(산출은 그대로), 하천 어장은 식량·산출 ×0.8."""
+    """바다 어장은 단계당 식량 15·산출 150, 하천 어장은 ×0.8(12·120)."""
     g = new_game(player_start="S002", n_enemies=1)
     w = g.world
     sea = next(r for r in w.order if w.regions[r].coastal)
     river = next(r for r in w.order if not w.regions[r].coastal and r in w.river_regions)
     _own(g, 0, [sea, river])
-    assert g.fish_food_mult(0, sea) == pytest.approx(g.fish_mult(0, sea) * C.SEA_FISH_FOOD)
+    assert g.fish_food_mult(0, sea) == pytest.approx(g.fish_mult(0, sea))
     assert g.fish_food_mult(0, river) == pytest.approx(C.RIVER_FISH_MULT)
     for rid in (sea, river):
         g.regions[rid].b["farm"], g.regions[rid].b["fishery"] = 0, 2
-    assert g.food_prod(0, g.regions[sea]) == pytest.approx(C.FOOD_PER_G * 2 * g.fish_mult(0, sea) * 1.2)
-    assert g.food_prod(0, g.regions[river]) == pytest.approx(C.FOOD_PER_G * 2 * 0.8)
+    assert g.food_prod(0, g.regions[sea]) == pytest.approx(15 * 2 * g.fish_mult(0, sea))
+    assert g.food_prod(0, g.regions[river]) == pytest.approx(12 * 2)
 
 
 def test_neutral_garrison_by_population_and_annex_gives_one():
@@ -3723,7 +3724,7 @@ def test_peace_cancels_orders_into_former_enemy_and_evicts():
 
 
 def test_river_farm_bonus():
-    """하천에 맞닿은 지역의 농장: 식량·산출 ×1.2."""
+    """농장은 단계당 식량 12·산출 120, 하천에 맞닿은 지역의 농장은 15·150."""
     g = new_game(player_start="S002", n_enemies=1)
     w = g.world
     riv = next(r for r in w.order if r in w.river_regions and g.regions[r].owner == NEUTRAL)
@@ -3731,6 +3732,10 @@ def test_river_farm_bonus():
     _own(g, 0, [riv, dry])
     for rid in (riv, dry):
         g.regions[rid].b.update(farm=3, fishery=0)
-    assert g.food_prod(0, g.regions[riv]) == pytest.approx(C.FOOD_PER_G * 3 * 1.2)
-    assert g.food_prod(0, g.regions[dry]) == pytest.approx(C.FOOD_PER_G * 3)
-    assert g.farm_mult(0, riv) == pytest.approx(1.2) and g.farm_mult(0, dry) == pytest.approx(1.0)
+    assert g.food_prod(0, g.regions[riv]) == pytest.approx(15 * 3)
+    assert g.food_prod(0, g.regions[dry]) == pytest.approx(12 * 3)
+    assert g.farm_mult(0, riv) == pytest.approx(1.25) and g.farm_mult(0, dry) == pytest.approx(1.0)
+    assert R.region_output(0, 1, 0, 0, 0, farm_mult=g.farm_mult(0, riv)) == pytest.approx(150)
+    assert R.region_output(0, 1, 0, 0, 0) == pytest.approx(120)
+    assert R.region_output(0, 0, 1, 0, 0) == pytest.approx(150)
+    assert R.region_output(0, 0, 1, 0, 0, fish_mult=C.RIVER_FISH_MULT) == pytest.approx(120)

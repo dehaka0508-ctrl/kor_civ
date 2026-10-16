@@ -289,7 +289,7 @@ class Game:
         for r in self.regions.values():
             r.output = self.calc_output(r.id, full=True)
             r.food = R.food_output(r.b["farm"] * (C.RIVER_FARM_MULT if self.river_farm(r.id) else 1.0), r.b["fishery"],
-                                   C.SEA_FISH_FOOD if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
+                                   1.0 if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
         for f in self.factions:
             regs = self.regions_of(f.id)
             gdp = sum(r.output for r in regs)
@@ -1696,12 +1696,12 @@ class Game:
         if key == "farm":
             fm = self.farm_mult(fid, rid)
             return (("하천 농장: " if self.river_farm(rid) else "")
-                    + f"턴당 식량 +{round(C.FOOD_PER_G * fm * m.mult('food_prod'), 1):g}, "
+                    + f"턴당 식량 +{round(C.FARM_FOOD * fm * m.mult('food_prod'), 1):g}, "
                     f"산출 +{C.FARM_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{round(C.FOOD_PER_G * self.fish_food_mult(fid, rid), 1):g}, "
+            return (f"{kind} 어장: 턴당 식량 +{round(C.FISH_FOOD * self.fish_food_mult(fid, rid), 1):g}, "
                     f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
@@ -1743,11 +1743,11 @@ class Game:
         pm = m.mult("output_prod")
         if key == "farm":
             fm = self.farm_mult(fid, rid)
-            return (f"턴당 식량 {C.FOOD_PER_G * lv * fm * m.mult('food_prod'):.0f}, "
+            return (f"턴당 식량 {C.FARM_FOOD * lv * fm * m.mult('food_prod'):.0f}, "
                     f"산출 {C.FARM_OUTPUT * lv * fm * pm:,.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
-            return (f"턴당 식량 {round(C.FOOD_PER_G * lv * self.fish_food_mult(fid, rid) * m.mult('food_prod'), 1):g}, "
+            return (f"턴당 식량 {round(C.FISH_FOOD * lv * self.fish_food_mult(fid, rid) * m.mult('food_prod'), 1):g}, "
                     f"산출 {C.FISH_OUTPUT * lv * fm * pm:,.0f}")
         if key == "factory":
             u = max(0, min(lv, getattr(rr, "fuel_used", 0)))
@@ -2198,7 +2198,7 @@ class Game:
         return info.coastal or info.fishery > 0 or rid in self.world.river_regions
 
     def river_farm(self, rid) -> bool:
-        """하천(도하 경계·국경 하천)에 맞닿은 지역: 농장 식량·산출 ×1.2."""
+        """하천(도하 경계·국경 하천)에 맞닿은 지역: 농장 식량·산출 ×1.25."""
         return rid in self.world.river_regions
 
     def farm_mult(self, fid, rid) -> float:
@@ -2206,9 +2206,8 @@ class Game:
         return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if self.river_farm(rid) else 1.0)
 
     def fish_food_mult(self, fid, rid):
-        """어장 식량 배수: fish_mult × 바다 어장이면 SEA_FISH_FOOD(산출에는 붙지 않는다)."""
-        fm = self.fish_mult(fid, rid)
-        return fm * (C.SEA_FISH_FOOD if self.sea_fishery(rid) else 1.0)
+        """어장 식량 배수(식량·산출 같은 배수: 하천 어장 ×0.8, 해안선 점유 ×1.2)."""
+        return self.fish_mult(fid, rid)
 
     def sea_fishery(self, rid) -> bool:
         info = self.info(rid)

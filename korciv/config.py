@@ -16,20 +16,20 @@ TAX_DEFAULT = 0.10
 TAX_MAX = 0.50
 
 POP_OUTPUT = 30            # 인구 1만 명당 산출
-FARM_OUTPUT = 150
-FISH_OUTPUT = 150
+FARM_OUTPUT = 120          # 농장 산출 120 × 단계(식량의 10배)
+FISH_OUTPUT = 150          # 바다 어장 산출 150 × 단계(식량의 10배)
 FACTORY_OUTPUT = 1000
 BANK_OUTPUT = 600
 LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
-FOOD_PER_G = 15            # 농장·바다 어장 식량 15 × 단계(단계에 비례), 산출은 그 10배
+FARM_FOOD = 12             # 농장 식량 12 × 단계
+FISH_FOOD = 15             # 바다 어장 식량 15 × 단계
 FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000)   # 농장·어장 단계별 턴당 건설비
 FOOD_PER_POP = 1           # 인구 1만 명당 식량 소비/턴
 START_FOOD_TURNS = 5       # 시작 식량 = 인구 * 5
 COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전부 보유) 시 바다 어장 식량·산출 +20%
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
-RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8
-RIVER_FARM_MULT = 1.20     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.2
-SEA_FISH_FOOD = 1.20       # 바다 어장: 식량만 ×1.2(단계당 18) — 하천 어장 너프의 반대
+RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
+RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
 NEUTRAL_POP_PER_INF = 20   # 중립 지역 수비대: 인구 20만 명당 보병 1(반올림, 최소 1). 편입하면 보병 1만 넘겨받는다
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출

@@ -18,10 +18,10 @@ def test_start_outputs_match_design_doc():
         return R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank)
 
     assert y("서울 강남구") == pytest.approx(3096)
-    assert y("경북 김천시") == pytest.approx(2296)        # 농장·어장 산출은 단계에 비례(150×L)
-    assert y("강원 인제군") == pytest.approx(243)
+    assert y("경북 김천시") == pytest.approx(2236)        # 농장 120×L, 어장 150×L
+    assert y("강원 인제군") == pytest.approx(213)
     total = sum(R.region_output(r.pop0, r.farm, r.fishery, r.factory, r.bank) for r in w.regions.values())
-    assert total == pytest.approx(735006, rel=1e-3)
+    assert total == pytest.approx(722793, rel=1e-3)
 
 
 def test_building_costs():

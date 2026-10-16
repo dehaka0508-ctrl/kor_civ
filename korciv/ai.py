@@ -2490,7 +2490,8 @@ def _slots(g, f, threat, military=True):
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             gain = dy * tax * horizon * wts.get("economy", 1)
             if key in ("farm", "fishery"):
-                dfood = C.FOOD_PER_G * (g.fish_food_mult(fid, r.id) if key == "fishery" else g.farm_mult(fid, r.id))
+                dfood = (C.FISH_FOOD * g.fish_food_mult(fid, r.id) if key == "fishery"
+                         else C.FARM_FOOD * g.farm_mult(fid, r.id))
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory" and fuel["spare"] < 1:
                 # 남는 연료가 없으면 새 칸은 놀고, 이미 들어가는 연료의 1개당 산출 상승분만 이득
@@ -2911,7 +2912,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
                 continue
             cost = R.prod_building_cost(key, lv)
-            val = _delta_output(g, r.id, key) * tax + (C.FOOD_PER_G * C.MARKET_SELL["food"] if key != "bank" else 0)
+            val = _delta_output(g, r.id, key) * tax + ((C.FARM_FOOD if key == "farm" else C.FISH_FOOD) * C.MARKET_SELL["food"] if key != "bank" else 0)
             opts.append((val / cost, key, cost))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             cost = R.prod_building_cost("extract", r.b["extract"] + 1)
