@@ -1330,9 +1330,11 @@ def draw_rebellion(app):
     if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 산출 4턴분 {cost:,.0f} 지불 (행복도 +20)", "primary",
                   enabled=f.money >= cost):
         app.toast(g.resolve_rebellion(pid, rid, "pay"))
+        app.changed()                                # 행복도가 바뀌었으니 행복도 지도 캐시를 다시 그린다
     y += 52
     if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 세율 5%p 인하 ({f.tax*100:.0f}% → {max(0, f.tax*100-5):.0f}%, 행복도 +20)"):
         app.toast(g.resolve_rebellion(pid, rid, "tax"))
+        app.changed()
     y += 52
     if gui.button((r.x + 24, y, r.w - 48, 44), f"진압 (성공률 {p*100:.0f}%, 성공 시 행복도 +5·병력 10% 손실)", "danger"):
         msg = g.resolve_rebellion(pid, rid, "suppress")

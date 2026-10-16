@@ -230,8 +230,11 @@ class App:
         g, ver = App.read_save(path)
         if g is None:
             return None                  # 버전 표기가 없거나 이어서 할 수 없는 버전: 보이지 않음
-        return {"path": path, "mtime": os.path.getmtime(path), "version": ver,
-                "label": f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"}
+        try:
+            label = f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"
+        except Exception:
+            return None                  # 내용이 망가진 저장: 이 슬롯만 비어 있는 것으로(시작 화면·슬롯 창이 멈추지 않게)
+        return {"path": path, "mtime": os.path.getmtime(path), "version": ver, "label": label}
 
     @staticmethod
     def read_save(path):
@@ -244,7 +247,8 @@ class App:
         if not isinstance(data, dict) or "game" not in data:
             return None, None
         ver = data.get("version")
-        return (data["game"] if compatible(ver) else None), ver
+        g = data["game"]
+        return (g if compatible(ver) and isinstance(g, Game) else None), ver
 
     def open_slots(self, mode):
         """mode: save / save_exit / load — 슬롯 선택 창."""

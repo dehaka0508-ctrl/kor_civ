@@ -2688,6 +2688,7 @@ class Game:
             self._half_ranking()
         # 12. 다음 턴 시작: 반란 판정
         self._phase_rebellion()
+        self._check_victory(time=False)      # 반란으로 마지막 상대가 사라졌으면 그 자리에서 판정(시간 종료는 턴 끝에만)
         self._refresh_pools()                # 석유·석탄·전기·특산물: 이번 턴 생산량 + 자원 계약
         self._update_fog()
         self._advance_gotos()
@@ -4230,7 +4231,7 @@ class Game:
         return out
 
     # ------------------------------------------------------------------ 승리
-    def _check_victory(self):
+    def _check_victory(self, time=True):
         if self.game_over:
             return                          # 이번 턴 기축통화 완공 등으로 이미 끝났다
         st = self.settings
@@ -4258,7 +4259,7 @@ class Game:
             if cid is not None and set(alive) <= self.dip.coalitions[cid]["members"]:
                 self._win(tuple(alive), "diplomatic")
                 return
-        if "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
+        if time and "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
             sc = self.time_scores()
             best = max(alive, key=lambda f: (sc[f], self.gdp(f)))
             self._win((best,), "time")

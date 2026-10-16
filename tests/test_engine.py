@@ -3803,3 +3803,37 @@ def test_science_steps_hidden_when_science_victory_off():
     g = Game(Settings(seed=5, n_enemies=1, player_start="S002"))
     g.set_player_government("presidential")
     assert [o for o in g.options(0, "S002") if o["kind"] == "science"]
+
+
+def test_victory_checked_after_turn_start_rebellion(monkeypatch):
+    """리뷰 M-02: 턴 시작 반란으로 마지막 상대가 사라지면(세력 수 한도 → 중립) 그 턴에 바로 정복승리."""
+    from korciv import ai as AI
+    g = new_game(player_start="S002", n_enemies=1)
+    monkeypatch.setattr(C, "MAX_FACTIONS", len(g.factions))
+    for rid in [r.id for r in g.regions_of(1)][1:]:
+        g.transfer_region(rid, NEUTRAL)
+    last = g.regions_of(1)[0]
+    last.happy = -200
+    for a in list(g.armies_at(last.id, 1)):
+        g.remove_army(a)
+    g.rebellion_chance = lambda fid, rid: 1.0 if fid == 1 else 0.0
+    g.suppress_chance = lambda fid, rid: 0.0
+    monkeypatch.setattr(AI, "handle_rebellion", lambda g_, fid, rid: g_.resolve_rebellion(fid, rid, "suppress"))
+    g.pending_proposals.clear()
+    g.end_turn()
+    assert g.alive_ids() == [0]
+    assert g.game_over and g.winner == ((0,), "conquest")
+
+
+def test_time_victory_turn_unchanged():
+    """리뷰 M-02 회귀: 반란 뒤 다시 하는 승리 판정은 시간 종료를 앞당기지 않는다(max_turns 턴을 마칠 때 승리)."""
+    g = new_game(n_enemies=2, max_turns=5, victories=("time",))
+    for _ in range(4):
+        g.pending_proposals.clear()
+        g.pending_rebellions.clear()
+        g.end_turn()
+    assert not g.game_over and g.turn == 5
+    g.pending_proposals.clear()
+    g.pending_rebellions.clear()
+    g.end_turn()
+    assert g.game_over and g.winner[1] == "time" and g.turn == 6

@@ -946,3 +946,196 @@ def test_diplomacy_modal_war_needs_confirm(app):
     finally:
         app.gui.button = real_button
         app.modal = None
+
+
+def _click_button(app, label, frames_before=1):
+    """이번 프레임에 그려진 버튼 중 label 인 것을 실제 마우스 이벤트로 누른다. 눌렀으면 True."""
+    btn = {}
+    real_button = app.gui.button
+
+    def spy(rect, lab, *a, **k):
+        ok = real_button(rect, lab, *a, **k)
+        btn.setdefault(lab, (rect, k.get("enabled", a[1] if len(a) > 1 else True)))
+        return ok
+    app.gui.button = spy
+    try:
+        for _ in range(frames_before):
+            frame(app)
+        if label not in btn:
+            return False
+        r = pygame.Rect(btn[label][0])
+        u = app.gui.u
+        pos = (int(r.centerx * u), int(r.centery * u))
+        old = pygame.mouse.get_pos
+        pygame.mouse.get_pos = lambda: pos
+        try:
+            app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+            app.frame()
+        finally:
+            pygame.mouse.get_pos = old
+        return True
+    finally:
+        app.gui.button = real_button
+
+
+def test_counter_offer_blocked_when_money_short(app):
+    """리뷰 C-02 보강: 수정안을 받은 뒤 자금이 모자라게 되면 [수정안 수락]이 막혀 거래가 실행되지 않는다."""
+    from korciv import diplomacy as D
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    other = next(f.id for f in g.factions if f.id != pid)
+    g.player.money = 5000
+    g.factions[other].money = 5000
+    app.open_diplomacy(other)
+    ds = app.dip_state
+    ds.counter = {"give": D.empty_offer()["give"] | {"money": 1100},
+                  "take": D.empty_offer()["take"] | {"money": 1000}}
+    g.player.money = 500                                      # 수정안 요구액(1100)보다 적다
+    _click_button(app, "수정안 수락")
+    assert g.player.money == 500 and g.factions[other].money == 5000 and ds.counter is not None
+    g.player.money = 5000                                     # 자금이 충분하면 그대로 수락된다
+    assert _click_button(app, "수정안 수락")
+    assert g.player.money == 5000 - 1100 + 1000 and ds.counter is None
+    app.modal = None
+
+
+def test_rebellion_accept_refreshes_map(app):
+    """리뷰 M-01: 반란 '요구 수용'(지불·세율 인하) 뒤 행복도 지도를 다시 그린다(진압과 같게)."""
+    g = _main_game(app, n_enemies=1)
+    cap = g.player.capital
+    g.player.money = 10 ** 6
+    for label in ("산출 4턴분", "세율 5%p 인하"):
+        g.regions[cap].happy = -80
+        g.pending_rebellions.append(cap)
+        v0 = app.map.version
+        btn = {}
+        real_button = app.gui.button
+
+        def spy(rect, lab, *a, **k):
+            if label in lab:
+                btn["r"] = rect
+            return real_button(rect, lab, *a, **k)
+        app.gui.button = spy
+        try:
+            frame(app)
+            r = pygame.Rect(btn["r"])
+            u = app.gui.u
+            pos = (int(r.centerx * u), int(r.centery * u))
+            old = pygame.mouse.get_pos
+            pygame.mouse.get_pos = lambda: pos
+            try:
+                app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+                app.frame()
+            finally:
+                pygame.mouse.get_pos = old
+        finally:
+            app.gui.button = real_button
+        assert not g.pending_rebellions and g.regions[cap].happy > -80
+        assert app.map.version > v0
+
+
+def test_malformed_save_does_not_break_title_or_slots(app, monkeypatch, tmp_path):
+    """리뷰 M-03: 버전은 맞지만 내용이 게임이 아닌 저장 파일은 그 슬롯만 비어 있는 것으로 보고, 시작 화면·슬롯 창은 그대로."""
+    import pickle
+    from korciv.ui import app as A
+    from korciv.version import VERSION
+    monkeypatch.setattr(A, "SAVE_DIR", str(tmp_path))
+    for i, payload in enumerate(("망가진 데이터", {"player": 1}), start=1):
+        with open(tmp_path / f"slot{i}.sav", "wb") as f:
+            pickle.dump({"version": VERSION, "game": payload}, f)
+    app.game = None
+    app.modal = None
+    app.scene = "title"
+    frame(app)                                                # 시작 화면([이어하기] 줄)이 예외 없이 그려진다
+    app.open_slots("load")
+    frame(app)
+    assert app.slot_cache[1] is None and app.slot_cache[2] is None
+    app.modal = None
+
+
+def test_save_failure_keeps_previous_save(app, monkeypatch, tmp_path):
+    """리뷰 C-10 보강: 저장 중 오류가 나면 알림만 띄우고, 같은 슬롯의 예전 저장은 그대로 남는다."""
+    import pickle
+    from korciv.ui import app as A
+    monkeypatch.setattr(A, "SAVE_DIR", str(tmp_path))
+    g = _main_game(app, n_enemies=1)
+    assert app.save("slot1")
+    before = (tmp_path / "slot1.sav").read_bytes()
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(pickle, "dump", boom)
+    assert app.save("slot1") is False
+    assert (tmp_path / "slot1.sav").read_bytes() == before
+    assert not list(tmp_path.glob("*.tmp"))
+    loaded, _ = A.App.read_save(str(tmp_path / "slot1.sav"))
+    assert loaded is not None and loaded.turn == g.turn
+
+
+def test_game_over_load_with_pending_popups(app, monkeypatch, tmp_path):
+    """리뷰 C-10 보강: 대사·제안이 남은 채로 끝난 판을 불러오면 그 창들을 먼저 보이고, 다 닫으면 결과 창이 뜬다."""
+    from korciv.ui import app as A
+    monkeypatch.setattr(A, "SAVE_DIR", str(tmp_path))
+    g = _main_game(app, n_enemies=1)
+    other = next(f.id for f in g.factions if f.id != g.player_id)
+    g.game_over = True
+    g.winner = ((g.player_id,), "conquest")
+    g.dialogues = [{"kind": "victory", "fid": other, "turn": g.turn}]
+    g.pending_proposals = [{"from": other, "kind": "nonaggr"}]
+    assert app.save("slot1")
+    app.load("slot1")
+    g = app.game
+    assert app.active_modal() == "dialogue"
+    g.dialogues.clear()
+    assert app.active_modal() == "proposal"
+    g.pending_proposals.clear()
+    assert app.active_modal() == "gameover"
+    app.modal = None
+
+
+def test_escape_with_quantity_window_closes_only_it(app):
+    """리뷰 C-09 보강: 외교 창 위에 수량 창이 열려 있으면 Esc는 수량 창만 닫는다."""
+    from korciv.ui import modals
+    g = _main_game(app, n_enemies=1)
+    other = next(f.id for f in g.factions if f.id != g.player_id)
+    app.open_diplomacy(other)
+    modals.open_qty(app, "돈", 1000, 0, lambda v: None)
+    frame(app)
+    _key(app, pygame.K_ESCAPE)
+    assert app.qty is None and app.modal and app.modal[0] == "diplomacy"
+    _key(app, pygame.K_ESCAPE)
+    assert app.modal is None
+
+
+def test_help_scroll_reaches_last_line(app):
+    """리뷰 C-09 보강: 도움말은 끝까지 스크롤되고, 맨 아래에서 마지막 줄이 창 안에 보인다."""
+    from korciv.ui import modals
+    _main_game(app, n_enemies=1)
+    app.modal = ("help", None)
+    texts = []
+    real_text = app.gui.text
+
+    def spy(pos, s, *a, **k):
+        r = real_text(pos, s, *a, **k)
+        texts.append((str(s), r, app.gui._clip_stack[-1] if app.gui._clip_stack else None))
+        return r
+    app.gui.text = spy
+    sw, sh = app.window.get_size()
+    old = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: (sw // 2, sh // 2)      # 도움말 글 위에서 휠
+    try:
+        frame(app)
+        for _ in range(40):                                 # 휠을 끝까지 내린다
+            app.gui.begin([pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-3, flipped=False)])
+            app.frame()
+        texts.clear()
+        frame(app)
+    finally:
+        app.gui.text = real_text
+        pygame.mouse.get_pos = old
+    last = modals.HELP.strip().splitlines()[-1].strip()
+    hits = [(r, c) for s, r, c in texts if s and last.startswith(s.strip()[:10])]
+    assert hits
+    r, clip = hits[-1]
+    assert clip is not None and clip.top <= r.top and r.bottom <= clip.bottom + 1
+    app.modal = None

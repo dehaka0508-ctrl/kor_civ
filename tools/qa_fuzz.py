@@ -93,6 +93,9 @@ def check(g, where):
             report("멸망 세력 부대", f"{where} {aid} owner={a.owner}")
         if a.loc in g.world.seas and a.domain() == "land" and a.owner != NEUTRAL:
             report("육군만 바다에", f"{where} {aid} {a.units}")
+        if a.domain() == "naval" and (a.cargo_used() > a.cargo_cap() or a.air_used() > a.air_cap()):
+            report("함대 수송·탑재 초과", f"{where} {aid} loc={a.loc} {a.units} 수송 {a.cargo_used()}/{a.cargo_cap()} "
+                                      f"탑재 {a.air_used()}/{a.air_cap()}")
         stale = [k for k, d in a.dmg.items() if k not in a.units and d > 1e-9]
         if stale:
             report("없는 유닛의 피해 기록", f"{where} {aid} units={a.units} dmg={a.dmg}")
@@ -181,6 +184,8 @@ def player_turn(g, rng):
         elif r < 0.74:
             k = rng.choice(list(a.units))
             g.disband(a.id, {k: 1})
+        elif r < 0.77 and g.boarding_target(a.id) is not None:
+            g.board(a.id)                                          # 상륙함·항모에 태워 짐 실은 함대를 만든다
         elif r < 0.8:
             g.order_army(a.id, rng.choice(list(g.regions)))      # 먼 곳 경로 계획
     # 국정
