@@ -3994,7 +3994,8 @@ def test_act_now_moves_immediately_and_once_per_turn():
     b, _ = g.split_army(a.id, {"inf": 2})                       # 움직인 부대도 나눌 수 있고, 나눈 쪽도 더 못 움직인다
     assert b and g.army_acted(b.id)
     c = g.new_army(0, near[0], {"inf": 1})
-    assert g.merge_player(c.id, a.id)[0] and g.army_acted(c.id)   # 움직인 부대와 합치면 합친 부대도 이번 턴 끝
+    ok, msg = g.merge_player(c.id, a.id)                        # v1.2.13: 움직인 부대는 이번 턴 합칠 수 없다
+    assert not ok and "행동" in msg and not g.mergeable(c, a)
     # 병력 없는 적 땅: 바로 들어가 점령
     enemy = near[1]
     g.transfer_region(enemy, 1)
@@ -4401,3 +4402,72 @@ def test_ai_to_ai_trade_deals_when_reserves_overlap():
     g.factions[b].money = 10 ** 6
     c = NG.ai_deal(g, a, b, "coal", 3)
     assert c is not None and c["from"] == a and c["to"] == b and c["price"] > 0
+
+
+# ---- v1.2.13 편의·시인성
+def test_same_faction_annex_and_occupation_do_not_compete():
+    """편입 중인 중립 지역에 병력을 넣어도 자기 자신과 경쟁하지 않는다(같은 턴에 끝나도 '경쟁' 알림 없음)."""
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = next(n for n in sorted(g.world.land_adj["S002"]) if g.regions[n].owner == NEUTRAL)
+    g.player.money = 10 ** 7
+    g.regions["S002"].project = None
+    ok, msg = g.start_project(0, "S002", "annex", tgt)
+    assert ok, msg
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    g.new_army(0, tgt, {"inf": 3})
+    g.begin_occupation(0, tgt)
+    rr = g.regions[tgt]
+    rr.occs[0]["progress"] = rr.occs[0]["need"] - 1               # 둘 다 이번 턴에 끝나게
+    p = g.regions["S002"].project
+    p.progress = p.turns - 1
+    n0 = len(g.events)
+    g._fund_projects()
+    g._phase_claims()
+    assert rr.owner == 0
+    assert not any("같은 턴에 점령·편입" in e["text"] for e in g.events[n0:])
+    assert g.regions["S002"].project is None                      # 남은 편입은 전액 환급으로 정리
+
+
+def test_pick_order_moved_merge_and_rally_exclusions():
+    g = new_game(player_start="S002", n_enemies=1)
+    _clear(g, "S002")
+    big = g.new_army(0, "S002", {"tank": 2})                      # 최대 체력 합 100
+    small = g.new_army(0, "S002", {"inf": 2})                     # 20
+    other = g.new_army(0, "S002", {"inf": 5})                     # 50
+    order = sorted(g.armies_at("S002", 0), key=g.army_pick_key)
+    assert [a.id for a in order] == [big.id, other.id, small.id]
+    g.moved_armies().add(big.id)                                  # 행동한 부대는 뒤로
+    order = sorted(g.armies_at("S002", 0), key=g.army_pick_key)
+    assert order[0].id == other.id and order[-1].id == big.id
+    ok, msg = g.merge_player(other.id, big.id)                    # 행동한 부대는 합칠 수 없다
+    assert not ok and not g.mergeable(other, big) and g.mergeable(other, small)
+    # 집결: 중립 지역을 점령 중인 병력은 부르지 않는다
+    tgt = next(n for n in sorted(g.world.land_adj["S002"]) if g.regions[n].owner == NEUTRAL)
+    _clear(g, tgt)
+    occ = g.new_army(0, tgt, {"inf": 2})
+    g.begin_occupation(0, tgt)
+    assert 0 in g.regions[tgt].occs
+    assert occ.id not in {a.id for a in g.rally_candidates(0, "S002", 2)}
+
+
+def test_energy_flow_tracks_contracts_and_unit_fuel():
+    g = new_game(player_start="S002", n_enemies=1)
+    g.energy_mined = lambda fid: {"oil": 3, "coal": 4, "elec": 0} if fid == 0 else {"oil": 0, "coal": 0, "elec": 0}
+    g._refresh_pools()
+    f = g.player
+    assert f.sent == {} and f.recv == {} and f.unit_fuel == {}
+    g.factions[1].money = 10 ** 6
+    D.make_trade(g, 0, 1, "coal", 2, 5.0, 1)
+    assert f.sent == {"coal": 2} and g.factions[1].recv == {"coal": 2}
+    f.res["oil"] = -1.0                                           # 판매로 석유가 음수여도 석탄을 이상하게 쓰지 않는다
+    g.pay_oil(0, 1)
+    assert f.res["oil"] == -1.0 and f.unit_fuel == {"coal": C.OIL_AS_COAL}
+
+
+def test_foreign_land_is_loaded_for_the_map():
+    from korciv.data import load_world
+    w = load_world()
+    names = {land["name"] for land in w.foreign["lands"]}
+    assert {"중국", "러시아", "일본"} <= names
+    assert all(len(r) >= 3 for land in w.foreign["lands"] for r in land["polys"])

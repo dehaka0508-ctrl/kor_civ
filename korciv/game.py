@@ -589,18 +589,22 @@ class Game:
         return v * hp - part
 
     def merge_player(self, a_id, b_id):
-        """플레이어 합치기: 이번 턴 이미 전투한 부대는 합칠 수 없다(전투 뒤 상륙 병력 복귀 등 내부 합치기는 그대로).
+        """플레이어 합치기: 이번 턴 이미 행동(이동·전투)한 부대는 합칠 수 없다(v1.2.13, 내부 합치기는 그대로).
         함대에 육군·공군을 싣는 것은 합치기가 아니라 [승선]·[탑재]로 한다."""
-        if self.army_fought(a_id) or self.army_fought(b_id):
-            return False, "이번 턴에 이미 전투한 부대는 합칠 수 없습니다."
+        if self.army_acted(a_id) or self.army_acted(b_id):
+            return False, "이번 턴에 이미 행동한 부대는 합칠 수 없습니다(다음 턴에)."
         a, b = self.armies.get(a_id), self.armies.get(b_id)
         if a and b and ("naval" in a.kinds() or "naval" in b.kinds()) and a.domain() != b.domain():
             return False, "함대에 육군은 [승선], 공군은 [탑재]로 싣습니다."
         return self.merge_armies(a_id, b_id)
 
+    def army_pick_key(self, a):
+        """지역을 눌렀을 때 먼저 고를 부대(v1.2.13): 이번 턴 아직 행동하지 않은 부대 → 최대 체력 합이 큰 부대."""
+        return (self.army_acted(a.id), -sum(a.hp_max(k) for k in a.units), a.id)
+
     def mergeable(self, a, b) -> bool:
-        """플레이어 [합치기]로 두 부대를 합칠 수 있어 보이는가(같은 곳·전투 안 함·병종 규칙. 칸 수는 합칠 때)."""
-        if a.id == b.id or a.loc != b.loc or a.owner != b.owner or self.army_fought(a.id) or self.army_fought(b.id):
+        """플레이어 [합치기]로 두 부대를 합칠 수 있어 보이는가(같은 곳·이번 턴 행동 안 함·병종 규칙. 칸 수는 합칠 때)."""
+        if a.id == b.id or a.loc != b.loc or a.owner != b.owner or self.army_acted(a.id) or self.army_acted(b.id):
             return False
         if ("naval" in a.kinds() or "naval" in b.kinds()) and a.domain() != b.domain():
             return False
@@ -2288,9 +2292,14 @@ class Game:
     def pay_oil(self, fid, n):
         """석유 n 을 낸다. 모자라면 부족분 × 2 만큼 석탄으로."""
         f = self.factions[fid]
-        use = min(n, f.res.get("oil", 0))
+        use = max(0.0, min(n, f.res.get("oil", 0)))     # 판매 계약으로 석유가 음수여도 석탄을 엉뚱하게 쓰지 않게
         f.res["oil"] = f.res.get("oil", 0) - use
         f.res["coal"] = f.res.get("coal", 0) - (n - use) * C.OIL_AS_COAL
+        uf = f.__dict__.setdefault("unit_fuel", {})        # 이번 턴 병력 생산에 쓴 석유·석탄(자원 배정 화면 표시용)
+        if use > 0:
+            uf["oil"] = uf.get("oil", 0) + use
+        if n - use > 0:
+            uf["coal"] = uf.get("coal", 0) + (n - use) * C.OIL_AS_COAL
 
     def power_elec(self, fid, fuel, level=1) -> float:
         """발전소 연료 1개당 전기: 석탄은 발전소 단계별 2·2.2·2.4·2.6·3, 석유는 그 두 배
@@ -2376,6 +2385,8 @@ class Game:
             for k in C.ENERGY:
                 f.res[k] = float(mined[k])
             f.sent = {}                                   # 이번 턴 판매 계약으로 먼저 보낸 양
+            f.recv = {}                                   # 이번 턴 계약으로 받은 양
+            f.unit_fuel = {}                              # 이번 턴 병력 생산에 쓴 석유·석탄
             f.specialty = self.specialty_made(f)
         D.run_contracts(self)
 
@@ -3905,7 +3916,9 @@ class Game:
         for rid, cl in claims.items():
             if len(cl) > 1:
                 cl.sort(key=lambda c: self._claim_key(c, rid))
-                names = ", ".join(self.fname(c[1]) for c in cl)
+            rivals = list(dict.fromkeys(c[1] for c in cl))   # 같은 나라의 점령·편입은 서로 경쟁하지 않는다
+            if len(rivals) > 1:
+                names = ", ".join(self.fname(f) for f in rivals)
                 why = ("병력 규모(최대 체력 합)가 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
                        else "무력 점령 중인" if cl[0][0] == "occ" else "맞닿은 지역 인구 합이 가장 많은")
                 self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
@@ -4064,6 +4077,9 @@ class Game:
                 continue
             if a.order and a.order.get("type") != "move":
                 continue
+            rr = self.regions.get(a.loc)
+            if rr is not None and rr.owner == NEUTRAL and fid in rr.occs:
+                continue                          # 중립 지역을 점령 중인 병력은 남겨 둔다(v1.2.13)
             out.append(a)
         return out
 

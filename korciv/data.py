@@ -170,6 +170,12 @@ class World:
         self.province_outlines = geo.get("provinces", {})
         self.do8_outlines = geo.get("do8", {})
         self.outlines_open = bool(geo.get("outline_open", False))   # 열린 선(새 형식)인가
+        # 지도 배경의 주변국 땅(플레이할 수 없음, v1.2.13): tools/build_foreign.py 가 만든다
+        fpath = os.path.join(data_dir, "foreign_land.json")
+        self.foreign = {"lands": [], "labels": {}}
+        if os.path.exists(fpath):
+            with open(fpath, encoding="utf-8") as f:
+                self.foreign = json.load(f)
 
         self.land_adj: dict[str, set] = {rid: set() for rid in self.order}
         for a, b in geo["adjacency"]:

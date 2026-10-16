@@ -217,6 +217,16 @@ class MapView:
                           for sid, parts in world.sea_shapes.items()}
         self.label.update({sid: proj(*p) for sid, p in world.sea_labels.items()})
         self.world_outlines_open = getattr(world, "outlines_open", False)
+        # 주변국 땅(중국·러시아·일본, 플레이 불가, v1.2.13): 지도 배경으로만 그린다
+        fl = getattr(world, "foreign", None) or {}
+        self.foreign_polys = []
+        for land in fl.get("lands", []):
+            for ring in land["polys"]:
+                arr = proj_arr(ring)
+                x0, y0 = arr.min(axis=0)
+                x1, y1 = arr.max(axis=0)
+                self.foreign_polys.append((land["name"], arr, (x0, y0, x1, y1)))
+        self.foreign_labels = [(nm, proj(*p)) for nm, p in fl.get("labels", {}).items()]
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
@@ -258,6 +268,7 @@ class MapView:
             return (n - len(arr), n)
         self.poly_span = [put(arr) for _, arr, _ in self.polys]
         self.sea_span = {sid: [put(ext) for ext, _ in parts] for sid, parts in self.sea_polys.items()}
+        self.foreign_span = [put(arr) for _, arr, _ in self.foreign_polys]
         self.terrain_span = [(kind, [put(a) for a in lines], conn) for kind, lines, conn in self.terrain_lines]
         self.pair_span = [(a_, b_, put(c)) for a_, b_, c in self.pair_lines]
         # 광역(시·도)이 다른 두 지역 사이의 경계 = 광역 경계(같은 사슬로 한 번만 긋는다)
@@ -268,6 +279,9 @@ class MapView:
         self.pair_box = np.array([[*c.min(axis=0), *c.max(axis=0)] for _, _, c in self.pair_lines] or np.zeros((0, 4)))
         self.coast_box = np.array([[*c.min(axis=0), *c.max(axis=0)] for _, c in self.coast_lines] or np.zeros((0, 4)))
         self.verts = np.concatenate(bufs) if bufs else np.zeros((0, 2))
+        # 한반도 땅의 범위(번짐 층 크기용 — 주변국 땅은 넣지 않는다)
+        land = np.concatenate([arr for _, arr, _ in self.polys]) if self.polys else np.zeros((1, 2))
+        self.land_min, self.land_max = land.min(axis=0), land.max(axis=0)
         self.rid_list = list(world.order)
         self.ridx = {rid: i for i, rid in enumerate(self.rid_list, 1)}     # 번호 지도용(1부터)
         self._fx = None             # (키, 번짐 층 Surface, 기준 좌표 원점)
@@ -366,6 +380,9 @@ class MapView:
                 best, best_area = rid, self.area[rid]
         if best:
             return best
+        for _, arr, (x0, y0, x1, y1) in self.foreign_polys:
+            if x0 <= bx <= x1 and y0 <= by <= y1 and pip(bx, by, arr):
+                return None                  # 주변국 땅(플레이 불가)
         for sid, parts in self.sea_polys.items():
             for ext, holes in parts:
                 if pip(bx, by, ext) and not any(pip(bx, by, h) for h in holes):
@@ -489,6 +506,15 @@ class MapView:
             pts = sp(span)
             if len(pts) >= 2:
                 pygame.draw.lines(surf, light, False, pts, cw)
+        # 주변국 땅(플레이 불가): 바다 위, 우리 땅 아래에 옅은 회색으로
+        if self.foreign_polys:
+            fland = mix(theme.neutral, (128, 128, 124), 0.45 if not theme.dark else 0.25)
+            for (_, arr, (x0, y0, x1, y1)), span in zip(self.foreign_polys, self.foreign_span):
+                if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
+                    continue
+                pts = sp(span)
+                if len(pts) >= 3:                   # 테두리 없이(가까운·먼 조각의 이음매가 보이지 않게)
+                    pygame.draw.polygon(surf, fland, pts)
         # 땅 칠하기
         for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
             x0, y0, x1, y1 = bbox
@@ -585,6 +611,13 @@ class MapView:
         bx, by = proj(*DOKDO_LABEL)
         t = halo_text("독도", 11 if self.z < 3 else 13, sea_ink, sea_halo, "bold")
         surf.blit(t, t.get_rect(midleft=(bx * s + ox + 8, by * s + oy)))
+        # 주변국 이름(플레이 불가 — 흐리게)
+        if self.foreign_labels:
+            fcol = mix(theme.muted, (128, 128, 124), 0.3)
+            fhalo = mix(theme.neutral, (128, 128, 124), 0.45 if not theme.dark else 0.25)
+            for nm, (x, y) in self.foreign_labels:
+                t = halo_text(" ".join(nm), 15 if self.z < 2 else 18, fcol, fhalo, "title", 2)
+                surf.blit(t, t.get_rect(center=(x * s + ox, y * s + oy)))
         # 해역 이름(명조, 글자 간격)
         for sid in self.sea_polys:
             x, y = self.label[sid]
@@ -652,8 +685,8 @@ class MapView:
         if self._fx is not None and self._fx[0] == key:
             return self._fx[1]
         res = self.FX_RES
-        vx0, vy0 = self.verts.min(axis=0) - 4
-        vx1, vy1 = self.verts.max(axis=0) + 4
+        vx0, vy0 = self.land_min - 4
+        vx1, vy1 = self.land_max + 4
         w, h = int((vx1 - vx0) * res) + 1, int((vy1 - vy0) * res) + 1
         idm = pygame.Surface((w, h))
         idm.fill((0, 0, 0))

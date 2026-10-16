@@ -836,6 +836,8 @@ def _deliver(g, c):
         if res in C.ENERGY and q:
             sent = fa.__dict__.setdefault("sent", {})      # 이번 턴 계약으로 먼저 보낸 양(자원 배정 화면 표시용)
             sent[res] = sent.get(res, 0) + q
+            recv = fb.__dict__.setdefault("recv", {})
+            recv[res] = recv.get(res, 0) + q
     if price > 0 and q > 0:
         pay = q * price
         fb.money -= pay

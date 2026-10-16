@@ -226,9 +226,9 @@ def draw_region_info(app, rect):
             wd = getattr(g.factions[owner], "war_weary_def", 0.0)
             parts.append(f"전쟁 피로 −{ww:.1f}" + (f"(당한 전쟁 {wd:.1f}은 반란 판정 제외)" if wd >= 0.05 else ""))
         if r.conscript > 0:
-            parts.append(f"징집 피로 −{r.conscript:.0f} (최근 10턴 중 {g.drafted_turns(node)}턴 징집)")
+            parts.append(f"징집 피로 −{r.conscript:.0f} (최근 {g.drafted_turns(node)}/{C.CONSCRIPT_WINDOW}턴 징집)")
         elif full and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
-            parts.append(f"최근 10턴 중 {g.drafted_turns(node)}턴 징집({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)")
+            parts.append(f"최근 {g.drafted_turns(node)}/{C.CONSCRIPT_WINDOW}턴 징집")
         y = gui.wrap((x, y - 2), " · ".join(parts), w, 11, t.muted) + 2
         phase, k = g.resist_phase(r)
         if phase:
@@ -247,10 +247,16 @@ def draw_region_info(app, rect):
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
     if visible:
-        claims = [f"{g.seen_name(o['by'])} 점령 {o['progress']}/{o['need']}턴" for o in r.occs.values()]
-        claims += [f"{g.seen_name(rr2.owner)} 편입 {g.project_left(rr2.id)}턴 남음" for rr2 in g.regions.values()
-                   if rr2.project and rr2.project.kind == "annex" and rr2.project.key == node]
-        claims = list(dict.fromkeys(claims))
+        # 나라마다 점령·편입 가운데 빨리 끝나는 쪽 하나만(같은 나라의 점령과 편입은 서로 경쟁하지 않는다)
+        best = {}
+        for o in r.occs.values():
+            left = max(0, o["need"] - o["progress"])
+            best.setdefault(o["by"], []).append((left, f"점령 {o['progress']}/{o['need']}턴"))
+        for rr2 in g.regions.values():
+            if rr2.project and rr2.project.kind == "annex" and rr2.project.key == node:
+                left = g.project_left(rr2.id)
+                best.setdefault(rr2.owner, []).append((left, f"편입 {left}턴 남음"))
+        claims = [f"{g.seen_name(fid)} {min(v)[1]}" for fid, v in best.items()]
         if claims:
             y = gui.wrap((x, y), ("점령·편입 경쟁: " if len(claims) > 1 else "점령·편입: ") + " / ".join(claims)
                          + (" — 먼저 채운 쪽이 차지(같은 턴이면 맞닿은 지역 인구 합이 많은 쪽)" if len(claims) > 1 else ""),
@@ -558,7 +564,7 @@ def draw_action_tab(app, body):
             prod.append({"kind": "done", "key": key, "level": r.b[key], "ok": True})
     groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
               ("생산 건물", prod),
-              (f"유닛 생산 · 최근 10턴 중 {g.drafted_turns(rid)}턴 징집 ({min(C.CONSCRIPT_PENALTY)}턴부터 징집 피로)",
+              (f"유닛 생산 · 최근 {g.drafted_turns(rid)}/{C.CONSCRIPT_WINDOW}턴 징집",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
               ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
@@ -571,7 +577,10 @@ def draw_action_tab(app, body):
     for title, lst in groups:
         if not lst:
             continue
+        top = yy
         yy = section(gui, x, yy, w, title)
+        if title.startswith("유닛 생산") and gui.hover((x, top - 4, w, yy - top + 4)):
+            gui.tooltip = f"{min(C.CONSCRIPT_PENALTY)}/{C.CONSCRIPT_WINDOW}턴부터 지역 행복도 감소"
         for o in lst:
             if o["kind"] == "done":
                 lv = o["level"]
@@ -816,7 +825,7 @@ def draw_army_tiles(app, x, y, w, here, merge):
         if gui.button(rect, "", "ghost", selected=selected or picked,
                       tooltip=a.label() + (" (이동 명령 있음)" if a.order or a.goto else "")):
             if merge is not None:
-                if not g.army_fought(a.id):         # 이번 턴 전투한 부대는 합칠 수 없다
+                if not g.army_acted(a.id):          # 이번 턴 행동(이동·전투)한 부대는 합칠 수 없다
                     merge.symmetric_difference_update({a.id})
             else:
                 app.sel_army = a.id
@@ -868,7 +877,7 @@ def _army_tab_body(app, x, y, w, pid):
     g = app.game
     t = app.theme
     node = app.sel
-    here = sorted([a for a in g.armies_at(node, pid)], key=lambda a: (-g.army_power(a), a.id)) if node else []
+    here = sorted([a for a in g.armies_at(node, pid)], key=g.army_pick_key) if node else []
     if here and (app.sel_army not in {a.id for a in here}):
         app.sel_army = here[0].id
     # 합치기 고르기 모드: 같은 지역에서만 유지
@@ -895,10 +904,10 @@ def _army_tab_body(app, x, y, w, pid):
     if acted:
         gui.rect(t.panel_alt, (x, y, w, 26), radius=6)
         msg = ("이번 턴 전투 완료 — 합치기·분리·이동·공격 불가" if fought
-               else "이번 턴 행동 완료 — 이동·공격은 다음 턴")
+               else "이번 턴 행동 완료 — 이동·공격·합치기는 다음 턴")
         gui.text((x + 8, y + 13), msg, 12, t.bad, "semibold", anchor="midleft", max_w=w - 16)
         if not fought and gui.hover((x, y, w, 26)):
-            gui.tooltip = "이미 움직인 부대도 합치기·분리·해산·승선 해제(하선)는 할 수 있습니다."
+            gui.tooltip = "이미 움직인 부대도 분리·해산·하선은 할 수 있습니다(합치기는 다음 턴)."
         y += 32
     naval = army.domain() == "naval"
     # 유닛 목록 + 분리 수량(함대에 실린 육군·공군은 아래 화물칸에서 다룬다)
@@ -989,7 +998,7 @@ def _army_buttons(app, x, y, w, army, here, merge, fought, node):
                 app.merge_pick = merge = None
     label = "합치기" if merge is None else f"합치기 ({len(merge)})"
     if gui.button((x + bw + 4, y, bw, 28), label, "primary" if merge is not None else "default",
-                  enabled=bool(others) and not fought,
+                  enabled=bool(others) and not g.army_acted(army.id),
                   tooltip="같은 병종 계열끼리 합칩니다. 포병·폭격기는 같은 병종끼리만(함대에 싣는 것은 [승선]·[탑재])"):
         if merge is None and len(others) == 1:
             app.merge_pick = merge = {army.id, others[0].id}   # 부대가 둘뿐이면 고를 것 없이 바로 합친다
@@ -1946,7 +1955,24 @@ def draw_energy_tab(app, body):
     y += 30
     plan = g.energy_plan(pid)
     plants, facts = g.energy_sites(pid)
-    flow_h = 236
+    # 에너지 흐름 표의 앞부분(어디서 들어오고 나갔는가): 채굴 · 타국 계약 구매·판매 · 병력 생산 · 시장 등(v1.2.13)
+    pl0 = g.energy_plan(pid)
+    st0, mi0 = pl0["stock"], pl0["mined"]
+    recv = getattr(f, "recv", {}) or {}
+    sent = getattr(f, "sent", {}) or {}
+    ufuel = getattr(f, "unit_fuel", {}) or {}
+    keys3 = ("coal", "oil", "elec")
+    src_rows = [("채굴·자체 발전", tuple(mi0[k] for k in keys3), False)]
+    if any(recv.get(k) for k in keys3):
+        src_rows.append(("타국에서 구매(계약)", tuple(recv.get(k, 0) for k in keys3), True))
+    if any(sent.get(k) for k in keys3):
+        src_rows.append(("타국에 판매(계약)", tuple(-sent.get(k, 0) for k in keys3), True))
+    if any(ufuel.get(k) for k in keys3):
+        src_rows.append(("병력 생산", tuple(-ufuel.get(k, 0) for k in keys3), True))
+    other = tuple(st0[k] - mi0[k] - recv.get(k, 0) + sent.get(k, 0) + ufuel.get(k, 0) for k in keys3)
+    if any(abs(v) >= 0.5 for v in other):
+        src_rows.append(("시장 거래 등", other, True))
+    flow_h = 236 + 20 * len(src_rows)
     area = pygame.Rect(body.x, y, body.w, body.bottom - y - flow_h)
     row_h = 54
     content = 30 + len(plants) * row_h + 30 + len(facts) * row_h + 10
@@ -2009,13 +2035,13 @@ def draw_energy_tab(app, body):
     p_elec = plan.get("elec_gen_int", 0)          # 전국 발전량 합계의 정수 부분
     fu = {k: sum(a[k] for a in plan["factories"].values()) for k in ("coal", "oil", "elec")}
     st, mi, af = plan["stock"], plan["mined"], plan["after"]
-    rows = [("① 이번 턴 확보", (st["coal"], st["oil"], st["elec"]), False),
+    rows = src_rows + [("① 이번 턴 확보", (st["coal"], st["oil"], st["elec"]), False),
             ("② 발전소 투입", (-p_coal, -p_oil, 0), True),
             ("③ 발전", (0, 0, p_elec), True),
             ("④ 공장 투입", (-fu["coal"], -fu["oil"], -fu["elec"]), True),
             ("남는 양 → 판매", (af["coal"], af["oil"], af["elec"]), False)]
     for label, vals, signed in rows:
-        bold = not signed
+        bold = not signed and label != "채굴·자체 발전"
         gui.text((x, fy), label, 12, t.text if bold else t.muted, "semibold" if bold else "regular")
         for cx, v in zip(cols, vals):
             if signed and not v:
@@ -2034,13 +2060,8 @@ def draw_energy_tab(app, body):
         gui.text((x, fy + 2), "계약 부족분 " + ", ".join(f"{C.RESOURCE_NAMES[k]} {n}" for k, n in short.items())
                  + f" → 턴 끝에 시장가로 구매(−{cost:,.0f})", 11, t.bad, "semibold", max_w=w)
         fy += 18
-    sent = {k: v for k, v in getattr(g.player, "sent", {}).items() if v}
-    if sent:
-        gui.text((x, fy + 2), "판매 계약으로 먼저 보냄(① 확보에서 뺀 양): "
-                 + ", ".join(f"{C.RESOURCE_NAMES[k]} {v:,.0f}" for k, v in sent.items()), 11, t.muted, max_w=w)
-        fy += 18
-    gui.text((x, fy + 2), f"채굴·자체 발전 {mi['coal']:,.0f} / {mi['oil']:,.0f} / {mi['elec']:,.0f} · 판매 계약분을 먼저 보내고 "
-             f"남는 양은 턴 종료 때 시장 판매(+{sold:,.0f})", 11, t.muted, max_w=w)
+    gui.text((x, fy + 2), f"판매 계약분은 공장보다 먼저 보내고, 남는 양은 턴 종료 때 시장 판매(+{sold:,.0f})", 11, t.muted,
+             max_w=w)
     fy += 20
     units = sum(a["units"] for a in plan["factories"].values())
     cap = sum(r.b["factory"] for r in facts)

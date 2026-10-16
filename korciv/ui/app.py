@@ -1100,7 +1100,7 @@ class App:
         if node is None:
             self.sel_army = None
             return
-        mine = sorted(g.armies_at(node, g.player_id), key=lambda a: (-g.army_power(a), a.id))
+        mine = sorted(g.armies_at(node, g.player_id), key=g.army_pick_key)   # 아직 행동 안 한 부대 → 최대 체력 합 큰 부대
         cur = g.armies.get(self.sel_army) if self.sel_army else None
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
