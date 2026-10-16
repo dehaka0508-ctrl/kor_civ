@@ -428,6 +428,26 @@ class Game:
         o = self.regions[rid].owner
         return o == fid or (o != NEUTRAL and D.same_coalition(self, fid, o))
 
+    def may_enter(self, fid, rid) -> bool:
+        """fid 의 육군이 이 지역에 들어가거나 머물 수 있는가: 중립·자국(연합)·전쟁 상대·통행권(동맹 포함)."""
+        o = self.regions[rid].owner
+        return (o == NEUTRAL or self.friendly_territory(fid, rid) or self.hostile(fid, o)
+                or D.has_passage(self, fid, o))
+
+    def evict_trespassers(self):
+        """들어갈 수 없는 나라 땅(강화해 전쟁이 끝난 나라 등)에 남은 육군은 가장 가까운 자국 영토로 돌아간다."""
+        for a in list(self.armies.values()):
+            if a.owner == NEUTRAL or self.world.is_sea(a.loc) or a.loc not in self.regions:
+                continue
+            if self.may_enter(a.owner, a.loc):
+                continue
+            where = self.info(a.loc).name
+            a.goto = None
+            self.teleport_home(a)
+            if a.owner == self.player_id and a.id in self.armies:
+                self.event("info", f"{where}의 부대가 전쟁 중이 아닌 나라 땅이라 {self.info(a.loc).name}(으)로 돌아왔습니다.",
+                           region=a.loc, fids=(a.owner,))
+
     @staticmethod
     def is_science_army(a) -> bool:
         return any(a.units.get(k) for k in C.SCIENCE_UNITS)
@@ -2613,6 +2633,7 @@ class Game:
         self._phase_bombard()
         self._phase_attack()
         self._phase_guerrilla()
+        self.evict_trespassers()             # 전쟁이 끝난 나라 땅에 남은 부대는 자국으로
         # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
@@ -2744,6 +2765,9 @@ class Game:
     def _exec_move(self, a, path):
         w = self.world
         for i, node in enumerate(path):
+            if not w.is_sea(node) and a.domain() == "land" and not self.may_enter(a.owner, node):
+                a.order, a.goto = None, None        # 그사이 강화 등으로 들어갈 수 없게 된 땅: 그 앞에서 멈춘다
+                return
             if not w.is_sea(node) and self.hostile_units_at(a.owner, node):
                 if node in w.land_adj.get(a.loc, ()) and a.domain() == "land":
                     a.order = {"type": "attack", "target": node, "mode": "assault", "path": [node]}
@@ -3470,6 +3494,8 @@ class Game:
                 self._complete_project(f, rr, p)
                 if getattr(p, "chain", False):
                     self._chain_next(f, rr, p)
+                elif p.kind == "unit" and getattr(p, "repeat", 0) > 0:
+                    self._repeat_unit(f, rr, p)
         return drafted
 
     def can_chain(self, kind, key) -> bool:
@@ -3483,6 +3509,57 @@ class Game:
             self.regions[rid].project.chain = True
             msg += " · 최대 단계까지 이어서 건설"
         return ok, msg
+
+    def start_units(self, fid, rid, key, count):
+        """군 유닛 count 개 연속 생산: 하나씩 차례로 만든다(완성되면 다음 것을 바로 착수)."""
+        count = max(1, int(count))
+        ok, msg = self.start_project(fid, rid, "unit", key)
+        if ok and count > 1:
+            self.regions[rid].project.repeat = count - 1
+            msg += f" · {count}개 연속 생산"
+        return ok, msg
+
+    def _repeat_unit(self, f, rr, p):
+        """연속 생산: 방금 만든 유닛을 하나 더 착수(못 하면 알리고 멈춘다)."""
+        if rr.owner != f.id or rr.project:
+            return
+        ok, msg = self.start_project(f.id, rr.id, "unit", p.key)
+        if ok:
+            rr.project.repeat = p.repeat - 1
+            rr.project.priority = p.priority          # 자금 우선순위는 그대로
+            rr.project.pinned = getattr(p, "pinned", False)
+        elif not f.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 연속 생산 중단(남은 {p.repeat}개) — {msg}",
+                       region=rr.id, fids=(f.id,))
+
+    def rally_candidates(self, fid, node, n) -> list:
+        """node 로부터 육상 n칸 안에 있는 내 육군 가운데 불러올 수 있는 부대(이번 턴 전투했거나 공격·폭격·상륙
+        명령을 받은 부대, 과학 유닛, 바다 위 부대는 뺀다)."""
+        near = self.land_within(node, n)
+        out = []
+        for a in self.armies.values():
+            if a.owner != fid or a.loc not in near or a.domain() != "land" or self.world.is_sea(a.loc):
+                continue
+            if self.is_science_army(a) or self.army_acted(a.id):
+                continue
+            if a.order and a.order.get("type") != "move":
+                continue
+            out.append(a)
+        return out
+
+    def rally(self, fid, node, n):
+        """node 로부터 육상 n칸 안의 내 육군을 node 로 모은다(한 턴에 못 오면 여러 턴 자동 이동).
+        (명령을 받은 부대 수, 유닛 수)를 돌려준다."""
+        rr = self.regions.get(node)
+        if rr is None or not self.friendly_territory(fid, node):
+            return 0, 0
+        k = units = 0
+        for a in self.rally_candidates(fid, node, n):
+            ok, _ = self.order_army(a.id, node)
+            if ok:
+                k += 1
+                units += a.count()
+        return k, units
 
     def _chain_next(self, f, rr, p):
         """최대 건설: 방금 완공한 건물의 다음 단계를 바로 착수(못 하면 알리고 멈춘다)."""

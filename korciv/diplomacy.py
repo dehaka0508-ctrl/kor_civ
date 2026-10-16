@@ -364,6 +364,14 @@ def _peace_weary_relief(g, w, a, b):
                     fids=(side,))
 
 
+def _offer_peace_to_player(g, ai):
+    """AI 가 플레이어에게 강화를 제안(이미 같은 제안이 쌓여 있으면 그대로)."""
+    if ai == g.player_id or not g.factions[ai].alive or not at_war(g, ai, g.player_id):
+        return
+    if not any(p.get("from") == ai and p.get("kind") == "peace" for p in g.pending_proposals):
+        g.pending_proposals.append({"from": ai, "kind": "peace"})
+
+
 def make_peace(g, a, b, _done=None):
     done = _done if _done is not None else set()
     p = pair(a, b)
@@ -388,10 +396,17 @@ def make_peace(g, a, b, _done=None):
         elif r.owner == a:
             r.occs.pop(b, None)
     for army in list(g.armies.values()):
-        if army.owner in (a, b) and not g.world.is_sea(army.loc):
-            other = b if army.owner == a else a
-            if g.regions[army.loc].owner == other:
-                g.teleport_home(army)
+        if army.owner not in (a, b):
+            continue
+        other = b if army.owner == a else a
+        # 상대 땅을 향한 명령(이동·공격·여러 턴 이동)은 취소한다(강화한 턴에 남은 명령으로 다시 들어가지 않게)
+        o = army.order or {}
+        nodes = list(o.get("path") or []) + ([o["target"]] if o.get("target") else []) + \
+            ([army.goto] if getattr(army, "goto", None) else [])
+        if any(n in g.regions and g.regions[n].owner == other for n in nodes):
+            army.order, army.goto = None, None
+        if not g.world.is_sea(army.loc) and g.regions[army.loc].owner == other:
+            g.teleport_home(army)
     g.event("peace", f"{g.fname(a)}와(과) {g.fname(b)}이(가) 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
     _player_dialogue(g, "peace", a, b)
     for side, other in ((a, b), (b, a)):
@@ -401,6 +416,10 @@ def make_peace(g, a, b, _done=None):
         if cid is not None:
             for c in list(g.dip.coalitions[cid]["members"]):
                 if c != side and at_war(g, c, other):
+                    if g.player_id in (c, other) and not g.settings.all_ai:
+                        # 플레이어는 연합 회원이 강화했다고 끌려 들어가지 않는다: 상대가 강화를 제안하고 플레이어가 고른다
+                        _offer_peace_to_player(g, other if c == g.player_id else c)
+                        continue
                     make_peace(g, c, other, done)
 
 

@@ -31,6 +31,7 @@ class Project:
     funded: bool = False
     pinned: bool = False           # 지출 우선순위 맨 위 고정
     chain: bool = False            # 최대 건설: 완공되면 바로 다음 단계를 이어서 건설
+    repeat: int = 0                # 군 유닛 연속 생산: 이번 것 뒤에 더 만들 개수
 
     @property
     def remaining(self) -> int:

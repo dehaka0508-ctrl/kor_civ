@@ -1382,6 +1382,9 @@ def draw_proposal(app):
         if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
             g.pending_proposals.pop(0)
         return
+    if kind == "peace" and not D.at_war(g, fid, g.player_id):
+        g.pending_proposals.pop(0)                 # 이미 전쟁이 끝났으면 강화 제안은 의미가 없다
+        return
     gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "

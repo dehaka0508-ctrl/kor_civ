@@ -3645,3 +3645,77 @@ def test_route_through_unowned_land_one_step_per_turn():
     ok, _ = g.order_army(a.id, n3)
     assert ok and a.goto == n3 and len(a.order["path"]) == 1          # 영토 밖에서는 이번 턴 한 칸
     assert a.order["path"][0] in w.land_adj[n1] and a.order["path"][0] != n3
+
+
+def test_unit_batch_production_repeats():
+    """군 유닛 n개 연속 생산: 하나가 완성되면 다음 것을 바로 착수, 다 만들면 멈춘다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    f = g.player
+    f.money = 10_000_000
+    ok, msg = g.start_units(0, "S002", "inf", 3)
+    assert ok and g.regions["S002"].project.repeat == 2
+    before = sum(a.units.get("inf", 0) for a in g.armies_at("S002", 0))
+    for _ in range(40):
+        g.pending_proposals.clear()
+        g.pending_rebellions.clear()
+        g.end_turn()
+        if not g.regions["S002"].project:
+            break
+    assert sum(a.units.get("inf", 0) for a in g.armies_at("S002", 0)) == before + 3
+    assert g.regions["S002"].project is None
+
+
+def test_rally_within_n_cells():
+    """n칸 이내 병력 집결: 육상 n칸 안의 내 육군을 이 지역으로(멀면 자동 이동), 범위 밖·공격 중 부대는 빼고."""
+    g = new_game(player_start="S002", n_enemies=1)
+    w = g.world
+    ring1 = sorted(w.land_adj["S002"])[:2]
+    _own(g, 0, ring1)
+    far = next(n for n in sorted(w.land_adj[ring1[0]]) if n != "S002" and n not in w.land_adj["S002"])
+    _own(g, 0, [far])
+    for a in [a for a in g.armies.values() if a.loc in ring1 + [far]]:
+        g.remove_army(a)
+    a1 = g.new_army(0, ring1[0], {"inf": 2})
+    a2 = g.new_army(0, ring1[1], {"tank": 1})
+    a3 = g.new_army(0, far, {"inf": 1})
+    assert {a.id for a in g.rally_candidates(0, "S002", 1)} == {a1.id, a2.id}
+    k, u = g.rally(0, "S002", 2)
+    assert k == 3 and u == 4
+    assert all((a.order and a.order["path"][-1] == "S002") or a.goto == "S002" for a in (a1, a2, a3))
+
+
+def test_coalition_peace_does_not_drag_player_in():
+    """연합 회원(AI)이 강화해도 플레이어는 끌려 들어가지 않는다: 상대가 강화를 제안하고 플레이어가 고른다."""
+    g = new_game(player_start="S002", n_enemies=3)
+    _neutral_ai(g, 1, 2, 3)
+    g.dip.coalitions[1] = {"members": {0, 1}, "since": 0}
+    D.declare_war(g, 3, 0)
+    assert D.at_war(g, 0, 3) and D.at_war(g, 1, 3)
+    g.pending_proposals.clear()
+    D.make_peace(g, 1, 3)
+    assert not D.at_war(g, 1, 3) and D.at_war(g, 0, 3)
+    assert g.pending_proposals == [{"from": 3, "kind": "peace"}]
+    D.sign_treaty(g, 3, 0, "peace")                 # 플레이어가 수락하면 그때 강화
+    assert not D.at_war(g, 0, 3)
+
+
+def test_peace_cancels_orders_into_former_enemy_and_evicts():
+    """강화하면 상대 땅으로 가던 명령은 취소되고, 남은 명령·옛 세이브로 남은 부대도 그 땅에 머물지 못한다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    _neutral_ai(g, 1)
+    tgt = sorted(g.world.land_adj["S002"])[0]
+    _own(g, 1, [tgt])
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    D.declare_war(g, 0, 1)
+    a = g.new_army(0, "S002", {"inf": 2})
+    ok, _ = g.order_army(a.id, tgt)                     # 빈 적 땅으로 이동 명령
+    assert ok and a.order
+    D.make_peace(g, 0, 1)                               # 플레이어가 강화를 수락
+    assert a.order is None
+    a.order = {"type": "move", "path": [tgt]}            # 남은 명령이 있어도
+    g._exec_move(a, [tgt])
+    assert a.loc == "S002"                              # 들어가지 않는다
+    a.loc = tgt                                          # 이미 들어가 있던 부대(옛 세이브)
+    g.evict_trespassers()
+    assert g.regions[a.loc].owner == 0
