@@ -848,7 +848,10 @@ def start_from_setup(app):
     s = app.setup
     if not any(s.victories.values()):
         s.victories["conquest"] = True
-    seed = int(s.seed) if s.seed.strip().isdigit() else random.randrange(1_000_000)
+    try:
+        seed = int(s.seed.strip())             # '②'·'²'는 isdigit() 가 참이어도 int() 가 못 읽는다
+    except ValueError:
+        seed = random.randrange(1_000_000)
     settings = Settings(
         n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
@@ -1287,10 +1290,24 @@ def draw_save_slots(app):
             return
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "취소"):
         close(app)
+        return
+    _esc_close(app)
 
 
 def close(app):
     app.modal = None
+
+
+def _esc_close(app) -> bool:
+    """Esc 로 지금 창을 닫는다(수량 창·입력칸이 열려 있으면 그쪽이 먼저). 닫았으면 True."""
+    if getattr(app, "qty", None) or app.gui.focus:
+        return False
+    for k in list(app.gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            app.gui.keys.remove(k)
+            close(app)
+            return True
+    return False
 
 
 def draw_rebellion(app):
@@ -1520,6 +1537,7 @@ def draw_diplomacy(app):
     if gui.button((mx, r.y + 270, mw, 38), "제안하기", "primary"):
         op0 = D.opinion(g, fid, pid)
         res2, counter2, info2 = D.respond_offer(g, fid, pid, ds.offer)
+        ds.counter = None                        # 새 제안의 결과가 나오면 예전 수정안은 더는 유효하지 않다
         if res2 == "accept":
             gain = D.opinion(g, fid, pid) - op0
             app.toast(f"거래 성사! 상대 우호도 {gain:+.2f}" if abs(gain) >= 0.005 else "거래 성사!")
@@ -1532,7 +1550,10 @@ def draw_diplomacy(app):
             app.toast("거절당했습니다: " + info2, t.bad)
     if ds.counter:
         gui.wrap((mx, r.y + 316), f"수정안: 돈 {ds.counter['give']['money']:,}을 달라고 합니다.", mw, 12, t.warn)
-        if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary"):
+        still = (D.evaluate_offer(g, fid, pid, ds.counter)[0] == "accept"
+                 and ds.counter["give"].get("money", 0) <= g.player.money)
+        if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary", enabled=still,
+                      tooltip=None if still else "자금이 모자라거나 상황이 바뀌어 이 수정안은 더는 유효하지 않습니다"):
             D.execute_offer(g, pid, fid, ds.counter)
             D.trade_done_opinion(g, fid, pid, ds.counter)
             ds.counter = None
@@ -1610,13 +1631,20 @@ def draw_diplomacy(app):
         tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
                f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}"
                if can_war else "불가침·동맹 중에는 먼저 파기")
-        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war, tooltip=tip):
-            ok, msg = D.declare_war(g, pid, fid)
-            app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
-            app.changed()
+        confirm = getattr(app, "war_confirm", None) == fid and can_war
+        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger",
+                      enabled=can_war, tooltip=tip + ("\n한 번 더 눌러야 선포됩니다." if can_war else "")):
+            if confirm:                              # 측면 패널과 같이 두 번 눌러야 선포(오클릭 방지)
+                app.war_confirm = None
+                ok, msg = D.declare_war(g, pid, fid)
+                app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
+                app.changed()
+            else:
+                app.war_confirm = fid
     if D.same_coalition(g, pid, fid) and gui.button((r.right - 24 - bw, r.y + 58 + 0, bw, 28), "연합 탈퇴",
                                                          "danger", size=12, tooltip="모든 회원 우호도 -50"):
         D.leave_coalition(g, pid)
+    _esc_close(app)
 
 
 # ------------------------------------------------------------------ 랭킹·로그·도움말·종료
@@ -1692,6 +1720,8 @@ def draw_ranking(app):
         app.modal = ("ranking", keys[i + 1])
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)
 
 
 STAT_RANGES = (("최근 1년", C.TURNS_PER_YEAR), ("최근 2년", 2 * C.TURNS_PER_YEAR), ("전체", None))
@@ -1931,18 +1961,20 @@ def draw_log(app):
     gui.end_scroll("log", area, len(evs) * 24)
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)
 
 
-HELP = """[조작]
+HELP = f"""[조작]
 좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
 Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드
-P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
+P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제·창 닫기
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
 · 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
-· 좌측 [내정]: 세율·자원 시장·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
+· 좌측 [내정]: 세율·잉여 식량·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
 · [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
 · 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
 · 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
@@ -1953,18 +1985,26 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 각 내 지역은 턴마다 슬롯 1개: 건물 착공, 유닛 생산, 인접 중립 지역 편입 중 하나.
 · 비용은 매 턴 나눠서 내고, 자금이 모자라면 멈춥니다. 취소하면 낸 비용의 50% 환급.
 · 자국 영토 안에서는 2칸, 그 밖은 1칸 이동. 해군은 턴당 한 칸: 항구→해역, 해역→해역, 해역→상륙·입항.
-· 산출 Y = 30P + 150g(농장) + 150g(어장) + 1000g(공장)φ + 600g(은행)
+· 산출 Y = 30P + {C.FARM_OUTPUT}×농장 단계 + {C.FISH_OUTPUT}×어장 단계 + 공장(넣은 연료 1개당) + {C.BANK_OUTPUT}g(은행). 하천 농장 ×{C.RIVER_FARM_MULT:g}, 하천 어장 ×{C.RIVER_FISH_MULT:g}.
 · 세수 = Y × 세율. 세율 10%(전제군주제 12%)보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
-· 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. 10 이상·식량 충분일 때 인구 증가, -50 이하부터 반란.
-· 전쟁 피로도: 선전포고 +15, 당하면 +10, 전쟁 중 턴당 +0.75, 당하면 +0.5, 평시 턴당 1 회복.
+· 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. {C.POP_GROWTH_MIN_H} 이상·식량 충분일 때 인구 증가, {C.REBEL_THRESHOLD} 이하부터 반란.
+· 전쟁 피로도: 선전포고 +{C.WAR_WEARY_START["aggressor"]:g}, 당하면 +{C.WAR_WEARY_START["defender"]:g}, 전쟁 중 턴당 +{C.WAR_WEARY_TURN["aggressor"]:g}(당한 쪽 +{C.WAR_WEARY_TURN["defender"]:g}), 평시 턴당 {C.WAR_WEARY_RECOVERY:g} 회복.
 · 점령한 적 지역은 4턴 저항 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
 · 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 방어선은 돌격 방어를 높입니다.
 · 승리: 정복 / 과학 / 경제 / 외교 / 시간 종료. 진행 상황은 [국가 현황]에 나옵니다."""
 
 
 def draw_help(app):
+    gui = app.gui
     r = modal_frame(app, 820, 560, "도움말")
-    app.gui.wrap((r.x + 24, r.y + 60), HELP, r.w - 48, 13)
+    area = pygame.Rect(r.x + 16, r.y + 56, r.w - 32, r.h - 56 - 70)      # 글이 길면 휠로 넘긴다
+    content = getattr(app, "_help_h", 2000)
+    off = gui.begin_scroll("help", area, content)
+    y_end = gui.wrap((area.x + 8, area.y + 4 - off), HELP, area.w - 24, 13)
+    app._help_h = y_end - (area.y - off) + 8
+    gui.end_scroll("help", area, app._help_h)
+    if _esc_close(app):
+        return
     if app.gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
 
@@ -2157,3 +2197,5 @@ def draw_specialty(app):
         app.toast("모든 지역을 자동 배분으로 되돌렸습니다.")
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)

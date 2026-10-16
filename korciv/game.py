@@ -501,6 +501,11 @@ class Game:
         take = {k: min(v, a.units.get(k, 0)) for k, v in units.items() if v > 0}
         if not take or sum(take.values()) >= a.count():
             return None, "분리할 유닛을 고르세요(전부는 불가)."
+        rest = {k: n - take.get(k, 0) for k, n in a.units.items() if n - take.get(k, 0) > 0}
+        for part in (rest, take):
+            t = Army(0, a.owner, a.loc, part)
+            if "naval" in t.kinds() and (t.cargo_used() > t.cargo_cap() or t.air_used() > t.air_cap()):
+                return None, "함대에 실린 육군·항공기를 실을 칸이 모자랍니다(상륙함·항공모함과 함께 나누거나 먼저 하역)."
         moved_dmg = {}
         for k, v in take.items():
             moved_dmg[k] = self._split_dmg(a, k, v)
@@ -1411,7 +1416,7 @@ class Game:
                 n = t["joint"] + 1
                 name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
             add("annex", t["target"], name, t["cost"], t["turns"])
-        for step in self.science_available(fid):
+        for step in (self.science_available(fid) if "science" in self.settings.victories else ()):
             if not self.science_site_ok(fid, rid, step):
                 continue
             busy = self.science_busy(fid, step)
@@ -3776,11 +3781,11 @@ class Game:
         r = self.regions[rid]
         if r.owner != fid:
             return False, "내 지역이 아닙니다."
+        if state == "pin" and kind not in r.spec_pin and len(r.spec_pin) >= C.SPECIALTY_MAX_TYPES:
+            return False, f"한 지역에는 최대 {C.SPECIALTY_MAX_TYPES}종까지 공급합니다."   # 기존 상태는 그대로
         r.spec_pin.discard(kind)
         r.spec_block.discard(kind)
         if state == "pin":
-            if len(r.spec_pin) >= C.SPECIALTY_MAX_TYPES:
-                return False, f"한 지역에는 최대 {C.SPECIALTY_MAX_TYPES}종까지 공급합니다."
             r.spec_pin.add(kind)
         elif state == "block":
             r.spec_block.add(kind)
@@ -4089,9 +4094,12 @@ class Game:
             rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_SUPPRESS_HAPPY)
             for a in self.armies_at(rid, fid):
                 for k, n in list(a.units.items()):
-                    loss = int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random())
-                    a.units[k] = max(0, n - loss)
+                    loss = min(n, int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random()))
+                    if loss:
+                        self._split_dmg(a, k, loss)      # 잃은 유닛 몫의 피해 기록도 함께 덜어 낸다(해산과 같게)
+                        a.units[k] = n - loss
                 a.units = {k: v for k, v in a.units.items() if v > 0}
+                a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
                 if a.empty():
                     self.remove_army(a)
             msg = f"{name}: 반란 진압 성공 (행복도 +5, 진압 병력 10% 손실)"

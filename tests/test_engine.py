@@ -3739,3 +3739,67 @@ def test_river_farm_bonus():
     assert R.region_output(0, 1, 0, 0, 0) == pytest.approx(120)
     assert R.region_output(0, 0, 1, 0, 0) == pytest.approx(150)
     assert R.region_output(0, 0, 1, 0, 0, fish_mult=C.RIVER_FISH_MULT) == pytest.approx(120)
+
+
+def _port_fleet(g, units):
+    """중립 해안 지역 하나를 플레이어 땅(항구)으로 만들고 그곳에 함대를 둔다."""
+    coast = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [coast])
+    g.regions[coast].b["port"] = 1
+    for a in list(g.armies_at(coast)):
+        g.remove_army(a)
+    return g.new_army(0, coast, units)
+
+
+def test_split_fleet_keeps_cargo_within_capacity():
+    """QA: 짐을 실은 함대에서 상륙함·항모를 떼면 실린 유닛이 사라지거나, 구축함이 상륙함 없이 보병을 싣고 가면 안 된다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    fl = _port_fleet(g, {"lst": 1, "dd": 1, "inf": 4})
+    b, msg = g.split_army(fl.id, {"lst": 1})                 # 남는 쪽(구축함+보병)이 실을 칸이 없다
+    assert b is None and msg and fl.units == {"lst": 1, "dd": 1, "inf": 4}
+    b, msg = g.split_army(fl.id, {"dd": 1, "inf": 4})        # 떼어 낸 쪽(구축함+보병)이 실을 칸이 없다
+    assert b is None and msg and fl.units == {"lst": 1, "dd": 1, "inf": 4}
+    b, _ = g.split_army(fl.id, {"inf": 4})                   # 항구에서 하역은 된다
+    assert b is not None and b.units == {"inf": 4} and fl.units == {"lst": 1, "dd": 1}
+    cv = _port_fleet(g, {"cv": 1, "dd": 1, "ftr": 3})
+    b, msg = g.split_army(cv.id, {"cv": 1})                  # 항모를 떼면 구축함에 전투기가 남는다
+    assert b is None and cv.units == {"cv": 1, "dd": 1, "ftr": 3}
+
+
+def test_suppress_loss_keeps_damage_within_hp():
+    """QA: 반란 진압 성공으로 병력이 줄면 피해 기록도 함께 줄어 남은 유닛 최대 체력을 넘지 않는다."""
+    import random
+    for s in range(12):
+        g = new_game(player_start="S002", n_enemies=1)
+        rid = g.player.capital
+        for a in list(g.armies_at(rid, 0)):
+            g.remove_army(a)
+        a = g.new_army(0, rid, {"inf": 3})
+        a.dmg = {"inf": 25.0}
+        g.rng = random.Random(s)
+        g.suppress_chance = lambda fid, r: 1.0
+        g.pending_rebellions.append(rid)
+        g.resolve_rebellion(0, rid, "suppress")
+        if a.id in g.armies:
+            assert a.dmg.get("inf", 0) <= a.hp_max("inf") + 1e-9
+
+
+def test_specialty_pin_over_limit_keeps_previous_state():
+    """QA: 고정이 최대 종류 수에 막히면 그 종류의 기존 '제외' 상태를 지우지 않는다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    rid = g.player.capital
+    for i in range(C.SPECIALTY_MAX_TYPES):
+        assert g.set_specialty(0, rid, f"k{i}", "pin")[0]
+    g.set_specialty(0, rid, "x", "block")
+    ok, _ = g.set_specialty(0, rid, "x", "pin")
+    assert not ok and "x" in g.regions[rid].spec_block
+
+
+def test_science_steps_hidden_when_science_victory_off():
+    """QA: 과학승리를 끈 판에서는 과학 단계를 지을 수 없다(경제승리를 끄면 경제 단계가 숨는 것과 같게)."""
+    g = Game(Settings(seed=5, n_enemies=1, player_start="S002", victories=("conquest", "time")))
+    g.set_player_government("presidential")
+    assert not [o for o in g.options(0, "S002") if o["kind"] == "science"]
+    g = Game(Settings(seed=5, n_enemies=1, player_start="S002"))
+    g.set_player_government("presidential")
+    assert [o for o in g.options(0, "S002") if o["kind"] == "science"]

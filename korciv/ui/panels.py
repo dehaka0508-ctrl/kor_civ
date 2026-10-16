@@ -524,7 +524,7 @@ def draw_action_tab(app, body):
         gui.text((x, y), "점령당하는 중이라 슬롯을 쓸 수 없습니다.", 13, t.bad)
         return
     if r.b["factory"] or r.b["power"]:
-        if gui.button((x, y, w, 28), "연료 배정 (국가 현황 › 자원 배정)", size=12):
+        if gui.button((x, y, w, 28), "연료 배정 (자원 배정 탭)", size=12):
             app.left_open, app.left_tab = True, "energy"
         y += 36
     if r.project:
@@ -1014,7 +1014,8 @@ def draw_nation_tab(app, body):
     amt = max(0, min(int(getattr(app, "food_sell_amt", 0)), stock_f))
     price = g.sell_price(pid, "food")
     gui.text((x, y + 2), "비축 식량 판매", 12, t.text, "semibold")
-    amt, _ = gui.slider((x + 96, y + 2, w - 96 - 80, 20), amt, 0, max(1, stock_f), 1, "food_sell",
+    sx = x + int(measure("비축 식량 판매", 12, "semibold")[0]) + 16      # 손잡이(반지름 10)가 글자를 덮지 않게
+    amt, _ = gui.slider((sx, y + 2, x + w - 80 - sx, 20), amt, 0, max(1, stock_f), 1, "food_sell",
                         enabled=stock_f > 0)
     amt = int(min(amt, stock_f))
     app.food_sell_amt = amt
@@ -1050,7 +1051,7 @@ def draw_nation_tab(app, body):
             items = g.projects_by_priority(pid)
             app.toast(f"지출 우선순위: {lab}")
     y += 68
-    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted)
+    gui.text((x, y - 2), "자금이 모자라면 위에서부터 비용을 내고 아래 작업이 정지됩니다.", 11, t.muted, max_w=w)
     y += 20
     y = draw_priority_list(app, x, y, w, items)
     gui.text((x, y + 6), "국가 통계·재정·특산물 재고는 [국가 현황] 탭에 있습니다.", 11, t.muted)

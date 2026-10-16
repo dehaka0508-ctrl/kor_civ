@@ -204,10 +204,20 @@ class App:
     def save(self, name="slot1"):
         if not self.game:
             return False
-        os.makedirs(SAVE_DIR, exist_ok=True)
         path = os.path.join(SAVE_DIR, name + ".sav")
-        with open(path, "wb") as f:
-            pickle.dump({"version": VERSION, "game": self.game}, f)
+        tmp = path + ".tmp"
+        try:
+            os.makedirs(SAVE_DIR, exist_ok=True)
+            with open(tmp, "wb") as f:
+                pickle.dump({"version": VERSION, "game": self.game}, f)
+            os.replace(tmp, path)            # 다 쓴 뒤에 바꿔 넣어 실패해도 예전 저장은 그대로
+        except (OSError, pickle.PicklingError) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            self.toast(f"저장하지 못했습니다: {e}", self.theme.bad)
+            return False
         self.toast(f"저장했습니다: {path}")
         return True
 
@@ -259,6 +269,8 @@ class App:
         self.map.center_on(self.game.player.capital, zoom=2.0)
         self.map.invalidate()
         self.toast("불러왔습니다.")
+        if self.game.game_over:
+            self.modal = ("gameover", None)      # 끝난 판: 턴 종료만 막힌 채 멈춰 보이지 않게 결과를 다시 보여 준다
 
     def toast(self, text, color=None):
         self.toasts.append([text, color or self.theme.text, pygame.time.get_ticks()])
@@ -401,9 +413,11 @@ class App:
                 s.ai_place = i
             g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + rowh // 2 - 7, 14, 14),
                    radius=3)
-            g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, weight="semibold", anchor="midleft", max_w=150)
-            g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12, t.muted if not rid else t.text,
-                   anchor="midright", max_w=90)
+            on = i == s.ai_place                      # 고른 칸은 쪽빛 바탕이라 글자를 밝게
+            g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, (255, 255, 255) if on else None, weight="semibold",
+                   anchor="midleft", max_w=150)
+            g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12,
+                   (255, 255, 255) if on else (t.muted if not rid else t.text), anchor="midright", max_w=90)
         self.map_input(pick_mode=True)
         if self.hover in self.world.regions:
             taken = self.start_owner(self.hover)
@@ -438,7 +452,9 @@ class App:
         self.set_map_view()
         qty_open = bool(getattr(self, "qty", None))
         modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
-        self.gui.input_enabled = not modal_open
+        # 우클릭 메뉴 위에 마우스가 있으면 그 아래 버튼(턴 종료 등)은 반응하지 않는다(메뉴가 나중에 그려져도 먼저 눌리지 않게)
+        under_ctx = bool(self.ctx_menu) and pygame.Rect(self.ctx_menu[0], (170, 84)).collidepoint(self.gui.mouse)
+        self.gui.input_enabled = not modal_open and not under_ctx
         self.draw_map()
         self.draw_topbar()
         h = sh - TOP_H - 90
@@ -448,6 +464,7 @@ class App:
         self.draw_mode_chips()
         self.draw_end_turn()
         self.draw_toasts()
+        self.gui.input_enabled = not modal_open
         if self.ctx_menu:
             self.draw_ctx_menu()
         if not modal_open:
@@ -1127,6 +1144,8 @@ class App:
         if node in g.regions:
             o = g.regions[node].owner
             if o not in (NEUTRAL, g.player_id):
+                sw, sh = self.lsize()
+                pos = (max(0, min(pos[0], sw - 174)), max(0, min(pos[1], sh - 88)))   # 메뉴(170×84)가 화면 안에
                 self.ctx_menu = (pos, o, node)
 
     def draw_ctx_menu(self):
@@ -1220,7 +1239,7 @@ class App:
             if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 g.keys.remove(k)                     # 이 Enter는 여기서 소비(새로 뜬 대사 창이 같은 Enter로 닫히지 않게)
                 if pygame.key.get_mods() & pygame.KMOD_SHIFT or not self.next_region():
-                    self.end_turn()
+                    self.request_end_turn()
             elif k.key == pygame.K_ESCAPE:
                 if self.sel_army:
                     self.sel_army = None
@@ -1277,6 +1296,12 @@ class App:
         f = self.game.player
         return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
                 "weary": round(f.war_weary), "tax": round(f.tax * 100)}
+
+    def request_end_turn(self):
+        """버튼·Enter 입력으로 턴 종료: 방금 턴을 넘겼으면(연타·더블클릭) 무시한다."""
+        if pygame.time.get_ticks() < getattr(self, "enter_guard", 0):
+            return
+        self.end_turn()
 
     def end_turn(self):
         g = self.game
@@ -1503,6 +1528,7 @@ class App:
         g = self.game
         return [rid for rid in g.review_order(g.player_id)
                 if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ
+                and not g.resisting(g.regions[rid])
                 and not g.regions[rid].focus and not getattr(g.regions[rid], "pop_focus", False)]
 
     def next_region(self):
@@ -1533,7 +1559,7 @@ class App:
             gui.block(skip)
             gui.shadow(skip, 4, 4)
             if gui.button(skip, "", "default"):
-                self.end_turn()
+                self.request_end_turn()
             pygame.draw.rect(self.screen, t.vermilion, gui.R(skip), 1, border_radius=int(4 * gui.u))
             gui.text(skip.center, "바로 턴 종료", 15, t.vermilion, "title", anchor="center")
             c = (r.right - 4, r.y + 4)
@@ -1541,7 +1567,7 @@ class App:
             gui.circle(t.indigo_dk, c, 13, 2)
             gui.text(c, str(len(queue)), 12, t.indigo_dk, "bold", anchor="center")
         elif gui.button(r, "턴 종료", "seal", size=19, weight="title", enabled=not g.game_over):
-            self.end_turn()
+            self.request_end_turn()
 
     def draw_compass(self):
         """지도 오른쪽 아래 나침반(윤도)과 축척."""
@@ -1627,6 +1653,7 @@ class App:
     # ------------------------------------------------------------ 외교
     def open_diplomacy(self, fid):
         self.dip_state = modals.DiploDraft(fid)
+        self.war_confirm = None
         self.modal = ("diplomacy", fid)
 
 

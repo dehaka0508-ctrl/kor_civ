@@ -743,3 +743,206 @@ def test_sell_stored_food_slider(app):
     frame(app)
     q, gain = g.market_sell(g.player_id, "food", app.food_sell_amt)
     assert q == 200 and f.res["food"] == 300 and gain == pytest.approx(200 * g.sell_price(g.player_id, "food"))
+
+
+def _main_game(app, **kw):
+    kw.setdefault("seed", 4)
+    kw.setdefault("n_enemies", 2)
+    app.start_game(Settings(**kw))
+    g = app.game
+    g.set_player_government("presidential")
+    app.scene = "main"
+    g.pending_proposals.clear()
+    g.pending_rebellions.clear()
+    g.dialogues = []
+    app.modal = None
+    for f in g.factions:
+        f.met = {x.id for x in g.factions} - {f.id}
+    return g
+
+
+def _key(app, k, mod=0):
+    app.gui.begin([pygame.event.Event(pygame.KEYDOWN, key=k, mod=mod, unicode="", scancode=0)])
+    app.frame()
+
+
+def test_seed_with_unicode_digit_does_not_crash(app):
+    """QA: 시드 칸의 '②'·'²'처럼 isdigit() 는 참이지만 int() 가 못 읽는 글자로 건국해도 멈추지 않는다."""
+    from korciv.ui import modals
+    for bad in ("②", "²", "12²"):
+        app.setup.seed = bad
+        modals.start_from_setup(app)
+        assert app.game is not None
+    app.setup.seed = "１２"                     # 전각 숫자는 그대로 시드로 쓴다
+    modals.start_from_setup(app)
+    assert app.game.settings.seed == 12
+    app.setup.seed = ""
+
+
+def test_end_turn_double_click_ends_one_turn(app):
+    """QA: [턴 종료]를 빠르게 두 번 누르거나 Enter를 연타해도 한 턴만 넘어간다."""
+    g = _main_game(app)
+    from korciv import ai as AI
+    AI.auto_slots(g, g.player_id, military=False)
+    app.next_region = lambda: False
+    real = g.end_turn
+
+    def end_turn():
+        real()
+        g.pending_proposals.clear()
+        g.pending_rebellions.clear()
+        g.dialogues = []
+    g.end_turn = end_turn
+    t0 = g.turn
+    app.request_end_turn()
+    app.modal = None
+    app.request_end_turn()                    # 바로 이어진 두 번째 입력은 무시
+    assert g.turn == t0 + 1
+    app.enter_guard = 0
+    app.modal = None
+    app.request_end_turn()
+    assert g.turn == t0 + 2
+    del app.next_region
+
+
+def test_context_menu_stays_on_screen(app):
+    """QA: 화면 오른쪽 아래에서 연 우클릭 메뉴가 화면 밖으로 나가지 않는다."""
+    g = _main_game(app)
+    sw, sh = app.lsize()
+    other = next(f for f in g.factions if f.id != g.player_id)
+    app.sel_army = None
+    app.right_click(other.capital, (sw - 5, sh - 5))
+    (x, y), _, _ = app.ctx_menu
+    assert x + 170 <= sw and y + 84 <= sh
+    frame(app)
+    # 메뉴가 [다음 지역]·[턴 종료] 버튼과 겹쳐도 메뉴의 [외교]가 눌린다
+    t0 = g.turn
+    pos = (int((x + 85) * app.gui.u), int((y + 41) * app.gui.u))
+    old = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: pos
+    try:
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+        app.frame()
+    finally:
+        pygame.mouse.get_pos = old
+    assert app.modal and app.modal[0] == "diplomacy" and g.turn == t0
+    app.modal = None
+    app.ctx_menu = None
+
+
+def test_review_queue_skips_resisting_regions(app):
+    """QA: [다음 지역]은 점령 저항 중이라 슬롯을 못 쓰는 지역을 건너뛴다."""
+    from korciv import diplomacy as D
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    cap = g.player.capital
+    other = next(f.id for f in g.factions if f.id != pid)
+    tgt = sorted(g.world.land_adj[cap])[0]
+    g.transfer_region(tgt, other)
+    for a in list(g.armies_at(tgt)):
+        g.remove_army(a)
+    D.declare_war(g, pid, other)
+    g.dialogues = []
+    a = g.new_army(pid, cap, {"inf": 2})
+    assert g.capture_now(a.id, tgt)[0] and g.resisting(g.regions[tgt])
+    assert tgt not in app.review_queue()
+
+
+def test_stale_counter_offer_cleared_after_other_trade(app):
+    """QA: 수정안을 받은 뒤 다른 거래(선물)가 성사되면 옛 수정안은 지워지고, 돈이 모자라면 수정안 수락이 막힌다."""
+    from korciv import diplomacy as D
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    other = next(f.id for f in g.factions if f.id != pid)
+    g.player.money = 5000
+    g.factions[other].money = 5000
+    app.open_diplomacy(other)
+    ds = app.dip_state
+    ds.counter = {"give": D.empty_offer()["give"] | {"money": 1100},
+                  "take": D.empty_offer()["take"] | {"money": 1000}}
+    ds.offer["give"]["money"] = 5000                         # 전 재산 선물
+    btn = {}
+    real_button = app.gui.button
+
+    def spy(rect, label, *a, **k):
+        btn[label] = rect
+        return real_button(rect, label, *a, **k)
+    app.gui.button = spy
+    frame(app)
+    r = pygame.Rect(btn["제안하기"])
+    u = app.gui.u
+    pos = (int(r.centerx * u), int(r.centery * u))
+    old = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: pos
+    try:
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+        app.frame()
+    finally:
+        pygame.mouse.get_pos = old
+        app.gui.button = real_button
+    assert g.player.money == 0 and ds.counter is None
+    app.modal = None
+
+
+def test_loaded_game_over_save_shows_result(app, monkeypatch, tmp_path):
+    """QA: 게임이 끝난 뒤 저장한 파일을 불러오면 결과 창이 다시 뜬다(턴 종료만 막힌 채 멈춰 보이지 않게)."""
+    from korciv.ui import app as A
+    monkeypatch.setattr(A, "SAVE_DIR", str(tmp_path))
+    g = _main_game(app, n_enemies=1)
+    g.game_over = True
+    g.winner = ((1,), "conquest")
+    assert app.save("slot1")
+    app.load("slot1")
+    assert app.active_modal() == "gameover"
+    app.modal = None
+
+
+def test_escape_closes_info_modals(app):
+    """QA: 도움말·로그·랭킹·특산물·저장 슬롯·외교 창은 Esc로 닫힌다."""
+    g = _main_game(app, n_enemies=1)
+    other = next(f.id for f in g.factions if f.id != g.player_id)
+    for open_ in (lambda: setattr(app, "modal", ("help", None)), lambda: setattr(app, "modal", ("log", None)),
+                  lambda: setattr(app, "modal", ("ranking", None)), lambda: setattr(app, "modal", ("specialty", None)),
+                  lambda: app.open_slots("save"), lambda: app.open_diplomacy(other)):
+        open_()
+        frame(app)
+        _key(app, pygame.K_ESCAPE)
+        assert app.modal is None
+
+
+def test_diplomacy_modal_war_needs_confirm(app):
+    """QA: 외교 창의 [선전포고]도 측면 패널처럼 한 번 더 눌러야 선포된다."""
+    from korciv import diplomacy as D
+    g = _main_game(app, n_enemies=1)
+    pid = g.player_id
+    other = next(f.id for f in g.factions if f.id != pid)
+    app.open_diplomacy(other)
+    btn = {}
+    real_button = app.gui.button
+
+    def spy(rect, label, *a, **k):
+        btn[label] = rect
+        return real_button(rect, label, *a, **k)
+    app.gui.button = spy
+    try:
+        frame(app)
+
+        def click(label):
+            r = pygame.Rect(btn[label])
+            u = app.gui.u
+            pos = (int(r.centerx * u), int(r.centery * u))
+            old = pygame.mouse.get_pos
+            pygame.mouse.get_pos = lambda: pos
+            try:
+                app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+                app.frame()
+            finally:
+                pygame.mouse.get_pos = old
+        click("선전포고")
+        assert not D.at_war(g, pid, other)
+        frame(app)
+        click("정말 선전포고?")
+        assert D.at_war(g, pid, other)
+    finally:
+        app.gui.button = real_button
+        app.modal = None

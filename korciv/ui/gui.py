@@ -430,8 +430,7 @@ class Gui:
             pygame.key.start_text_input()
         if focused:
             for s in self.text_events:
-                if len(value) < max_len:
-                    value += s
+                value = (value + s)[:max_len]       # IME 가 여러 글자를 한 번에 확정해도 최대 길이를 넘지 않게
             for k in self.keys:
                 if k.key == pygame.K_BACKSPACE:
                     value = value[:-1]
