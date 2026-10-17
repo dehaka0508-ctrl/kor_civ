@@ -1645,13 +1645,27 @@ class Game:
     def annex_cost(self, fid, rid) -> float:
         return R.annex_cost(self.region_output_estimate(rid), self.region_count(fid))
 
+    def annex_weight(self, p) -> int:
+        """공동 편입에서 이 작업이 차지하는 지역 수: 광역시면 구성 지역 수(v1.2.19), 아니면 1."""
+        m = M.get(self, getattr(p, "metro", None))
+        return len(m["members"]) if m else 1
+
+    def joint_annex_reduction(self, n, metro=False) -> float:
+        """공동 편입 기간 감소율. 광역시가 끼면 최대 50%."""
+        red = R.joint_reduction(n)
+        return min(red, C.METRO_ANNEX_MAX_REDUCTION) if metro else red
+
     def annex_targets(self, fid, rid):
         w = self.world
         cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)   # 육상 인접만(해로 편입 없음)
-        joint = {}
+        joint, jm = {}, set()
         for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid]):
             if p.kind == "annex":
-                joint[p.key] = joint.get(p.key, 0) + 1
+                joint[p.key] = joint.get(p.key, 0) + self.annex_weight(p)
+                if p.metro is not None:
+                    jm.add(p.key)
+        me = M.of(self, rid)                      # 광역시는 구성 지역 수만큼의 공동 편입
+        w_self = len(me["members"]) if me else 1
         out = []
         for v in sorted(cands):
             rr = self.regions[v]
@@ -1659,9 +1673,10 @@ class Game:
                 continue                          # 내 군대가 이미 점령 중
             base = self.neutral_turns(fid, v)
             n = joint.get(v, 0)
+            red = self.joint_annex_reduction(n + w_self, bool(me) or v in jm)
             out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
-                        "value": self.region_value(v)[0], "joint": n, "sea": False,
-                        "eff_turns": R.joint_turns(base, n + 1),
+                        "value": self.region_value(v)[0], "joint": n, "sea": False, "self_weight": w_self,
+                        "reduction": red, "eff_turns": max(1, math.ceil(base * (1 - red) - 1e-9)),
                         # 다른 세력의 점령·편입이 끝나기까지 남은 턴(가장 빠른 것). 경쟁 판단용
                         "rival_left": self.rival_left(fid, v)})
         return out
@@ -1738,9 +1753,9 @@ class Game:
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
             name = f"편입: {self.info(t['target']).name} [{t['value']}]"
-            if t["joint"]:
-                n = t["joint"] + 1
-                name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
+            n = t["joint"] + t["self_weight"]
+            if n > 1:
+                name += f" · 공동 {n}곳 −{t['reduction']:.0%} (약 {t['eff_turns']}턴)"
             add("annex", t["target"], name, t["cost"], t["turns"])
         for step in (self.science_available(fid) if "science" in self.settings.victories else ()):
             if not self.science_site_ok(fid, rid, step):
@@ -4468,15 +4483,21 @@ class Game:
         if p.kind == "annex":
             # 공동 편입: 함께하는 지역들의 진행도는 공유된다(막 합류한 지역도 가장 앞선 진행도 기준)
             members = [q for q in self.unique_projects([r for r in self.regions.values() if r.owner == rr.owner])
-                       if q.kind == "annex" and q.key == p.key]          # 광역시 편입은 한 건으로
-            n = len(members)
+                       if q.kind == "annex" and q.key == p.key]          # 광역시 편입은 한 건(구성 지역 수만큼)
+            n = sum(self.annex_weight(q) for q in members)
             rest = max(0.0, max(m.turns for m in members) - max(m.progress for m in members))
-            rest *= 1 - R.joint_reduction(n)
+            rest *= 1 - self.joint_annex_reduction(n, any(q.metro is not None for q in members))
         return max(1, math.ceil(rest - 1e-9)) if rest > 0 else 0
 
     def joint_count(self, fid, target) -> int:
-        return sum(1 for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid])
+        """같은 대상을 함께 편입하는 지역 수(광역시는 구성 지역 수만큼)."""
+        return sum(self.annex_weight(p) for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid])
                    if p.kind == "annex" and p.key == target)
+
+    def joint_reduction_of(self, fid, target) -> float:
+        ps = [p for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid])
+              if p.kind == "annex" and p.key == target]
+        return self.joint_annex_reduction(sum(self.annex_weight(p) for p in ps), any(p.metro is not None for p in ps))
 
     def _advance_annexes(self):
         """편입 게이지를 올린다(같은 세력이 같은 대상을 여러 지역에서 편입하면 진행도를 함께 쌓는다).
@@ -4493,7 +4514,9 @@ class Game:
             funded = [rr for rr in members if getattr(rr.project, "funded", False)]
             if not funded:
                 continue
-            step = 1 / (1 - R.joint_reduction(len(funded)))
+            # 광역시 편입은 구성 지역 수만큼의 공동 편입(광역시가 끼면 기간 감소 최대 50%)
+            n = sum(self.annex_weight(rr.project) for rr in funded)
+            step = 1 / (1 - self.joint_annex_reduction(n, any(rr.project.metro is not None for rr in funded)))
             prog = max(rr.project.progress for rr in members) + step
             for rr in members:
                 rr.project.progress = prog

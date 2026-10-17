@@ -128,6 +128,7 @@ METRO_MIN_POP = 100          # 묶는 지역들의 인구 합(만 명)
 METRO_DEF_PER_REGION = 0.02  # 지역 n곳을 묶으면 방어력 ×(1 − 0.02(n − 1))
 METRO_SPEC_HAPPY = 0.5       # 광역시에 공급한 특산물 1종의 행복도 효과(지역 하나일 때의 절반, 대신 광역시 전체에)
 METRO_L6_KEYS = ("farm", "fishery", "factory", "bank")   # 광역시에서만 6단계
+METRO_ANNEX_MAX_REDUCTION = 0.5   # 광역시 편입: 구성 지역 수만큼의 공동 편입으로 치되 기간 감소는 최대 50%
 PROD_L6_MULT = 1.2           # 농장·어장·은행 6단계: 5단계 산출 × 1.2
 FACTORY_L6_MULT = 1.1        # 첨단산업단지: 연료 1개당 5단계 산출 × 1.1(연료는 6개까지)
 POWER_SITE_DISCOUNT = 1.0  # 화력발전소 소재지: 건설비 할인 없음(대신 발전소 1단계로 시작)

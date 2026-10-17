@@ -1964,7 +1964,7 @@ def draw_priority_list(app, x, y, w, items):
         if p.kind == "annex":
             jn = app.game.joint_count(rr.owner, p.key)
             if jn > 1:
-                state += f" · 공동 {jn}곳 −{R.joint_reduction(jn):.0%}"
+                state += f" · 공동 {jn}곳 −{app.game.joint_reduction_of(rr.owner, p.key):.0%}"
         gui.text((row.x + 8, row.y + 21), f"턴당 {p.per_turn:,.0f} · {state}", 11,
                  (t.bad if p.stalled and not dragged else sub))
         pr = pin_rect(i)

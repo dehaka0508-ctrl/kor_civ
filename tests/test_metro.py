@@ -245,3 +245,23 @@ def test_cancel_and_save_load_keep_metro():
     assert ok and all(g.regions[r].project is None for r in sel)
     assert g.idle_slots(0) == sum(1 for r in g.regions_of(0) if r.id not in sel and not r.project
                                   and not r.occ and not g.resisting(r) and not r.focus) + 1
+
+
+def test_metro_annex_counts_as_joint_annex_capped_at_half():
+    """광역시의 편입은 구성 지역 수만큼의 공동 편입(2곳 −33%, 3곳 −50%, …)으로 치되 최대 50% 감소."""
+    for n_extra, red in ((1, 0.33), (3, 0.5)):
+        g, sel = _setup(n_extra=n_extra)
+        ok, _ = g.create_metro(0, "S002", sel)
+        assert ok
+        tgt = next(o for o in g.options(0, "S002") if o["kind"] == "annex")
+        assert f"공동 {len(sel)}곳 −{red:.0%}" in tgt["name"]
+        ok, msg = g.start_project(0, "S002", "annex", tgt["key"])
+        assert ok, msg
+        p = g.regions["S002"].project
+        assert g.joint_count(0, tgt["key"]) == len(sel)
+        assert g.project_left("S002") == math.ceil(p.turns * (1 - red) - 1e-9)
+        g._fund_projects()
+        g._advance_annexes()
+        assert p.progress == pytest.approx(1 / (1 - red))
+    # 광역시가 끼지 않은 공동 편입은 그대로(4곳 −60%)
+    assert R.joint_reduction(4) == pytest.approx(0.6)
