@@ -768,6 +768,7 @@ class App:
         self.draw_battle_marks()
         self.draw_science_sites()
         self.draw_focus()
+        self.draw_metros()
         self.draw_capitals()
         self.draw_occupations()
         self.draw_orders()
@@ -837,6 +838,28 @@ class App:
             pygame.draw.circle(self.screen, self.theme.vermilion, c, max(5, int(8 * u)))
             pygame.draw.circle(self.screen, (247, 241, 227), c, max(5, int(8 * u)), max(1, int(1.5 * u)))
             ui_icon(self.screen, "swords", c, (247, 241, 227), 0.55 * u)
+
+    def draw_metros(self):
+        """광역시(v1.2.19): 구성 지역을 금색 테두리로 감싸고 중심에 이름 표찰."""
+        from .. import metro as M
+        g = self.game
+        mv = self.map
+        u = ui_scale()
+        for m in M.metros(g).values():
+            c = m["center"]
+            if not (self.fog_reveal or g.is_visible(g.player_id, c) or g.regions[c].owner == g.player_id):
+                continue
+            col = mix(self.faction_rgb(g.regions[c].owner), (25, 18, 12), 0.35)
+            for r in m["members"]:
+                mv.outline(self.screen, r, col, max(2, int(2 * u)))
+            x, y = mv.label_screen(c)
+            if not mv.view.collidepoint(x, y):
+                continue
+            t = render_text(m["name"], 11, (247, 241, 227), "bold")
+            box = t.get_rect(center=(x, y + (24 if mv.z >= 2 else 14) * u)).inflate(int(10 * u), int(4 * u))
+            pygame.draw.rect(self.screen, col, box, border_radius=int(6 * u))
+            pygame.draw.rect(self.screen, (212, 175, 55), box, max(1, int(u)), border_radius=int(6 * u))
+            self.screen.blit(t, t.get_rect(center=box.center))
 
     def draw_capitals(self):
         g = self.game
@@ -1333,7 +1356,9 @@ class App:
 
     def next_idle(self):
         g = self.game
-        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ and not g.resisting(r)]
+        from .. import metro as M
+        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ and not g.resisting(r)
+                and M.center_of(g, r.id) == r.id]                  # 광역시는 중심 하나
         if not idle:
             self.toast("빈 슬롯이 없습니다.")
             return

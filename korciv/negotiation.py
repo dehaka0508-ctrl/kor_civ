@@ -17,6 +17,7 @@ import random
 
 from . import config as C
 from . import diplomacy as D
+from . import rules as RL
 from .state import NEUTRAL
 
 RES = ("oil", "coal", "elec", "specialty")
@@ -77,7 +78,7 @@ def avg_factory_unit(g, fid) -> float:
     if not facts:
         return 0.0
     m = g.mods(fid)
-    per = sum(C.FACTORY_UNIT_OUTPUT[min(r.b["factory"], 5) - 1] for r in facts) / len(facts)
+    per = sum(RL.factory_unit(r.b["factory"]) for r in facts) / len(facts)
     return per * m.mult("output_factory") * m.mult("output_prod") * g.factions[fid].tax
 
 

@@ -7,18 +7,30 @@ from . import config as C
 
 
 def g(level: int) -> float:
-    """단계 배수 g(L) = L (1 + 0.2 (L - 1)). 1~5단계: 1.0, 2.4, 4.2, 6.4, 9.0"""
+    """단계 배수 g(L) = L (1 + 0.2 (L - 1)). 1~5단계: 1.0, 2.4, 4.2, 6.4, 9.0.
+    6단계(광역시 종합금융본부, v1.2.19)는 5단계 × 1.2 = 10.8."""
     if level <= 0:
         return 0.0
+    if level >= 6:
+        return g(5) * C.PROD_L6_MULT
     return level * (1 + C.LEVEL_GROWTH * (level - 1))
 
 
+def factory_unit(level: int) -> float:
+    """공장 연료 1개당 산출: 1000/1200/1400/1600/2000, 6단계(첨단산업단지)는 2000 × 1.1."""
+    if level <= 0:
+        return 0.0
+    if level >= 6:
+        return C.FACTORY_UNIT_OUTPUT[4] * C.FACTORY_L6_MULT
+    return C.FACTORY_UNIT_OUTPUT[level - 1]
+
+
 def factory_output(level: int, fuel=None) -> float:
-    """공장: 연료 1개당 단계별 산출(1000/1200/1400/1600/2000), 단계 L이면 L개까지. fuel=None 이면 가득."""
+    """공장: 연료 1개당 단계별 산출(factory_unit), 단계 L이면 L개까지. fuel=None 이면 가득."""
     if level <= 0:
         return 0.0
     n = level if fuel is None else max(0, min(level, fuel))
-    return C.FACTORY_UNIT_OUTPUT[min(level, 5) - 1] * n
+    return factory_unit(level) * n
 
 
 def region_output(pop, farm, fishery, factory, bank, fuel=None,

@@ -7,6 +7,7 @@ import pygame
 
 from .. import config as C
 from .. import diplomacy as D
+from .. import metro as M
 from .. import rules as R
 from ..leaders import GOV_BY_KEY, LEADER_BY_KEY, gov_buff_scale
 from ..state import BUILDING_NAMES, NEUTRAL
@@ -164,8 +165,11 @@ def draw_region_info(app, rect):
     explored = g.is_explored(pid, node) or app.fog_reveal
     visible = g.is_visible(pid, node) or app.fog_reveal
     gui.text((x, rect.y + 12), info.name, 18, weight="bold", max_w=w - 30)
-    gui.text((x, rect.y + 38), f"{info.rtype} · 조선 {info.do8}도 · {info.ns}" + (f" · {info.island}" if info.island else ""),
-             12, t.muted)
+    mt = M.of(g, node) if visible else None
+    gui.text((x, rect.y + 38), (f"{mt['name']} · 지역 {len(mt['members'])}곳" + (" · 중심" if mt["center"] == node else "")
+                                + " · " if mt else "")
+             + f"{info.rtype} · 조선 {info.do8}도 · {info.ns}" + (f" · {info.island}" if info.island else ""),
+             12, t.accent if mt else t.muted, max_w=w)
     y = rect.y + 62
     owner = r.owner if visible else g.player.last_seen.get(node, r.owner)
     if not explored:
@@ -402,6 +406,8 @@ def draw_chips(gui, x, y, w, chips):
 
 
 def project_name(app, p, rid=None):
+    if getattr(p, "metro", None) is not None and p.name:
+        return p.name
     if getattr(p, "group", None):
         return f"{p.name} {p.group['target']}단계"
     if p.kind == "build":
@@ -437,6 +443,9 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
     grp = app.game.group_regions(p) if getattr(p, "group", None) else []
     if grp:
         name += f" (지역 {len(grp)}곳)"
+    mt = M.get(app.game, getattr(p, "metro", None))
+    if mt:
+        name = f"{mt['name']}: {name}"
     gui.text((x, y), name, 14, weight="semibold", max_w=w - 70)
     gui.text((x + w, y), f"남은 {app.game.project_left(rid)}턴", 12, t.muted, anchor="topright")
     y += 22
@@ -515,7 +524,8 @@ def draw_action_tab(app, body):
     rid = app.sel
     if not rid or rid in app.world.seas or g.regions[rid].owner != pid:
         gui.text((x, body.y), "내 구역을 선택하면 슬롯을 지정할 수 있습니다.", 13, t.muted)
-        idle = [r for r in g.regions_of(pid) if not r.project and not r.occ and not g.resisting(r)]
+        idle = [r for r in g.regions_of(pid) if not r.project and not r.occ and not g.resisting(r)
+                and M.center_of(g, r.id) == r.id]                   # 광역시는 중심 하나
         yb = auto_slot_controls(app, x, body.y + 26, w)
         y = section(gui, x, yb, w, f"빈 슬롯 {len(idle)}곳")
         area = pygame.Rect(body.x, y, body.w, body.bottom - y)
@@ -530,13 +540,22 @@ def draw_action_tab(app, body):
         return
     r = g.regions[rid]
     y = body.y
-    gui.text((x, y), app.world.regions[rid].name, 15, weight="bold")
+    mt = M.of(g, rid)
+    gui.text((x, y), app.world.regions[rid].name if not mt else mt["name"], 15, weight="bold")
     y += 26
     # 점령 저항 중에는 산출·생산이 없으니 다른 명령은 보이지 않는다
     phase, k = g.resist_phase(r)
     if phase == "resist":
         gui.wrap((x, y), f"점령 저항 중({r.resist['resist'] - k}턴 남음)", w, 14, t.bad)
         return
+    if mt:
+        y = _metro_header(app, x, y, w, mt)
+    elif not r.occ:
+        ok_c, _ = M.can_center(g, pid, rid)
+        if ok_c and gui.button((x, y, w, 28), "광역자치단체 지정", size=12,
+                               tooltip=f"이 지역을 중심으로 육상 {C.METRO_RANGE}칸 안의 내 지역을 골라 하나의 지역(광역시)으로 묶습니다."):
+            app.modal = ("metro", {"center": rid, "sel": set(), "name": ""})
+        y += 34
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
     on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
     if on != r.focus:
@@ -578,6 +597,9 @@ def draw_action_tab(app, body):
     # 생산 건물: 최대 단계까지 지은 건물은 '… 건설 완료'와 지금 턴당 산출을 남겨 둔다
     prod = []
     for key, spec in C.PROD_BUILDINGS.items():
+        if mt:                               # 광역시: 통합 건물(탄광·정유 따로)과 지역별 특산물 시설을 모두 나열
+            prod += [o for o in opts if o["kind"] == "build" and o["key"] == key]
+            continue
         o = next((o for o in opts if o["kind"] == "build" and o["key"] == key), None)
         if o:
             prod.append(o)
@@ -622,6 +644,8 @@ def draw_action_tab(app, body):
                 label = g.build_label(rid, o["key"], o["level"])          # 예: '공업 단지 건설'
             if o["kind"] == "build" and o["key"] == "line":
                 label = o["name"] + f" {o['level']}단계"
+            if o.get("pool"):
+                label = o["name"]                                            # 예: '광역 경작지 4단계
             gui.text((x, yy + 2), label, 13, t.text if o["ok"] else t.muted, "semibold", max_w=w - 70)
             sub = f"총 {o['cost']:,.0f} · {o['turns']}턴 · 턴당 {o['per_turn']:,.0f}"
             if o.get("oil"):
@@ -657,7 +681,8 @@ def draw_action_tab(app, body):
                 if o["kind"] == "unit":
                     ok, msg = g.start_units(pid, rid, o["key"], qty)
                 else:
-                    ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+                    ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"),
+                                              site=o.get("site"), pool=o.get("pool"))
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
@@ -670,6 +695,33 @@ def draw_action_tab(app, body):
                     app.changed()
             yy += 60 if (o["kind"] in ("build", "science", "econ", "unit")) else 44
     gui.end_scroll("actions", area, content)
+
+
+def _metro_header(app, x, y, w, mt):
+    """광역시 행동 탭 머리: 구성 지역·통합 단계·해제(두 번 눌러 확인)."""
+    gui, g, t = app.gui, app.game, app.theme
+    names = [g.info(r).short for r in mt["members"]]
+    y = gui.wrap((x, y), f"지역 {len(names)}곳 하나로 · 중심 {g.info(mt['center']).short} · " + ", ".join(names),
+                 w, 11, t.muted) + 2
+    lv = []
+    for pool, key in M.POOLS:
+        el = M.pool_members(g, mt, pool)
+        if el and key in ("farm", "fishery", "factory", "bank", "power"):
+            lv.append(f"{M.POOL_NAMES[pool].replace('광역 ', '')} {M.pool_level(g, mt, pool)}")
+    y = gui.wrap((x, y), "통합 단계: " + " · ".join(lv) + f" · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,
+                 t.text) + 4
+    armed = getattr(app, "metro_dissolve", None) == mt["id"]
+    if gui.button((x, y, w, 26), "한 번 더 누르면 해제" if armed else "광역시 지정 해제", "danger" if armed else "default",
+                  size=12, tooltip="해제하면 건물 단계 = 묶기 전 단계 + 묶은 뒤 올린 단계, 유일 건물은 중심(항구는 해안 지역), "
+                                   "부대는 중심으로. 통합 건물 공사 중이면 50% 환급하고 취소."):
+        if armed:
+            app.metro_dissolve = None
+            ok, msg = g.dissolve_metro(g.player_id, mt["center"])
+            app.toast(msg)
+            app.changed()
+        else:
+            app.metro_dissolve = mt["id"]
+    return y + 32
 
 
 def auto_slot_controls(app, x, y, w):
@@ -1903,7 +1955,9 @@ def draw_priority_list(app, x, y, w, items):
         gui.rect(t.accent if dragged else t.panel_alt, row, radius=8)
         fg = (255, 255, 255) if dragged else t.text
         sub = (235, 240, 255) if dragged else t.muted
+        mt = M.get(app.game, getattr(p, "metro", None))
         label = (f"{project_name(app, p, rid)} · 지역 {len(app.game.group_regions(p))}곳" if getattr(p, "group", None)
+                 else f"{mt['name']} · {project_name(app, p, rid)}" if mt
                  else f"{app.world.regions[rid].short} · {project_name(app, p, rid)}")
         gui.text((row.x + 8, row.y + 3), f"{i + 1}. {label}", 12, fg, "semibold", max_w=w - 80)
         state = "정지" if p.stalled else f"남은 {app.game.project_left(rid)}턴"
@@ -2059,8 +2113,8 @@ def draw_energy_tab(app, body):
     for r in facts:
         u = plan["factories"].get(r.id, {})
         lv = r.b["factory"]
-        per = C.FACTORY_UNIT_OUTPUT[min(lv, 5) - 1]
-        gui.text((x, yy), f"{app.world.regions[r.id].name} · {lv}단계 · 1개당 {per:,}", 12, weight="semibold",
+        per = R.factory_unit(lv)
+        gui.text((x, yy), f"{app.world.regions[r.id].name} · {lv}단계 · 1개당 {per:,.0f}", 12, weight="semibold",
                  max_w=w - 70)
         gui.text((x + w, yy), f"{u.get('units', 0)}/{lv}", 12, t.good if u.get("units") == lv else t.warn,
                  anchor="topright")

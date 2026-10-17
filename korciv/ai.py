@@ -2232,9 +2232,9 @@ def front_need(g, fid, front, pool) -> dict:
     cap = g.factions[fid].capital
     wt = {}
     for c in front:
-        e = sum(_front_count(a) + 0.5 * a.units.get("art", 0) for n in w.land_adj[c]
-                if g.regions[n].owner in en or g.regions[n].owner == NEUTRAL
-                for a in (g.hostile_units_at(fid, n) if g.is_visible(fid, n) else ()))
+        near = {a.id: a for n in w.land_adj[c] if g.regions[n].owner in en or g.regions[n].owner == NEUTRAL
+                for a in (g.hostile_units_at(fid, n) if g.is_visible(fid, n) else ())}   # 광역시는 같은 부대가 겹친다
+        e = sum(_front_count(a) + 0.5 * a.units.get("art", 0) for a in near.values())
         wt[c] = 1.0 + e + (2.0 if c == cap else 0.0)
     order = sorted(front, key=lambda c: (-wt[c], c))
     if pool < len(front):

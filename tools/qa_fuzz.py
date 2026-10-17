@@ -61,10 +61,23 @@ def check(g, where):
                 report("프로젝트 진행", f"{where} {rid} {p.kind}:{p.key} {p.progress}/{p.turns}")
             if r.owner == NEUTRAL:
                 report("중립 지역 프로젝트", f"{where} {rid}")
+            mt = getattr(p, "metro", None)
+            if mt is not None and getattr(r, "metro", None) != mt:
+                report("광역시 작업 불일치", f"{where} {rid} 작업 metro={mt} 지역 metro={getattr(r, 'metro', None)}")
             grp = getattr(p, "group", None)
             if grp is not None and (rid not in grp["lines"] or set(grp["lines"]) != set(grp["cost"])
                                     or p.per_turn < -1e-9 or p.paid < -1e-6):
                 report("묶음 공사 불일치", f"{where} {rid} {p.name} {sorted(grp['lines'])}")
+        mid = getattr(r, "metro", None)
+        if mid is not None:
+            m = getattr(g, "metros", {}).get(mid)
+            if m is None or rid not in m["members"]:
+                report("광역시 소속 불일치", f"{where} {rid} metro={mid}")
+            elif len({g.regions[x].owner for x in m["members"]}) != 1:
+                report("광역시 주인 갈라짐", f"{where} {m['name']} {[g.regions[x].owner for x in m['members']]}")
+            elif len({id(g.regions[x].project) for x in m["members"]}) != 1 and not any(
+                    getattr(g.regions[x], "lost_project", None) for x in m["members"]):
+                report("광역시 슬롯 불일치", f"{where} {m['name']}")
         for fid, o in r.occs.items():
             if o["progress"] > o["need"] + 1:
                 report("점령 진행 초과", f"{where} {rid} {o}")
@@ -246,6 +259,27 @@ def player_turn(g, rng):
         rng.shuffle(ids)
         if ids:
             g.set_priority_order(pid, ids, manual=rng.random() < 0.5)
+    if rng.random() < 0.04 and mine:                    # 광역시 지정·해제(v1.2.19): 조건을 맞춰 가끔 지정
+        from korciv import metro as MT
+        inm = [r for r in mine if MT.of(g, r) is not None]
+        free = [r for r in mine if MT.can_center(g, pid, r)[0]
+                and any(n in mine and MT.can_center(g, pid, n)[0] for n in g.world.land_adj[r])]
+        if inm and (not free or rng.random() < 0.25):
+            g.dissolve_metro(pid, rng.choice(inm))
+        elif free:
+            c = rng.choice(free)
+            cands = MT.candidates(g, pid, c)
+            sel = [c] + [r for r in cands[1:] if c in g.world.land_adj[r]][:rng.randint(1, 4)]
+            if len(sel) >= 2 and rng.random() < 0.5:
+                for r in sel:
+                    rr = g.regions[r]
+                    rr.b["farm"] = max(rr.b["farm"], 5)
+                    rr.happy = max(rr.happy, 1.0)
+                    rr.pop = max(rr.pop, 100.0 / len(sel))
+                    rr.pop = min(rr.pop, 60.0)
+                g.regions[c].b["factory"] = 5
+                g.regions[c].b["bank"] = 5
+            g.create_metro(pid, c, sel, rng.choice(["", "시험"]))
     if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.2.17)
         g.set_priority_mode(pid, rng.choice(list(g.PRIORITY_SORTS) + [None]))
     # 외교

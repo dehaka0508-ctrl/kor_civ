@@ -213,6 +213,26 @@ def force_state(app, rng):
         app.mode_popup = mode if rng.random() < 0.5 else None
         app.mil_open = set(rng.sample(C.UNIT_ORDER, 3))
         app.changed()
+    if rng.random() < 0.06:
+        # 광역시(v1.2.19): 조건을 맞춰 지정하고 그 지역 행동 탭, 또는 지정 창을 연다
+        from korciv import metro as MT
+        mine = [r.id for r in g.regions_of(pid) if MT.can_center(g, pid, r.id)[0]]
+        if mine:
+            c = rng.choice(mine)
+            cands = MT.candidates(g, pid, c)
+            sel = [c] + [r for r in cands[1:] if c in g.world.land_adj[r]][:3]
+            if rng.random() < 0.5 and len(sel) >= 2:
+                for r in sel:
+                    rr = g.regions[r]
+                    rr.b["farm"] = 5
+                    rr.happy = max(rr.happy, 1.0)
+                    rr.pop = min(max(rr.pop, 100.0 / len(sel)), 60.0)
+                g.regions[c].b.update(factory=5, bank=5)
+                g.create_metro(pid, c, sel, "")
+                app.select(rng.choice(sel))
+                app.left_open, app.left_tab, app.tab = True, "region", "action"
+            else:
+                app.modal = ("metro", {"center": c, "sel": set(sel[1:]), "name": ""})
     if k < 0.3:
         app.left_open = True
         app.left_tab = rng.choice([t[0] for t in panels.SIDE_TABS] + ["region"] * 3)

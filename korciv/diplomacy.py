@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from . import config as C
+from . import rules as R
 from .leaders import gov_opinion_bias
 from .state import NEUTRAL
 
@@ -909,7 +910,7 @@ def energy_eval(g, fid, supply) -> tuple:
         u = a["coal"] + a["oil"] + a["elec"]
         for k in ("coal", "oil", "elec"):
             used[k] += a[k]
-        out += u * C.FACTORY_UNIT_OUTPUT[min(lv, 5) - 1] * k_out
+        out += u * R.factory_unit(lv) * k_out
         room += max(0, lv - u)
     left = {k: max(0.0, int(supply.get(k, 0)) - used[k]) for k in ("oil", "coal")}
     left["elec"] = max(0.0, int(supply.get("elec", 0)) + gen - used["elec"])

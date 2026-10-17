@@ -10,6 +10,7 @@ import pygame
 from .. import config as C
 from .. import diplomacy as D
 from .. import flags as FL
+from .. import metro as M
 from .. import rules as R
 from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_scale
 from ..state import NEUTRAL, Settings
@@ -1051,6 +1052,83 @@ def draw_active_modal(app):
         draw_bombard(app)
     elif name == "stat_chart":
         draw_stat_chart(app)
+    elif name == "metro":
+        draw_metro(app)
+
+
+def draw_metro(app):
+    """광역자치단체 지정(v1.2.19): 중심에서 육상 2칸 안의 내 지역을 골라 하나의 지역으로 묶는다."""
+    g, gui, t = app.game, app.gui, app.theme
+    st = app.modal[1]
+    center = st["center"]
+    pid = g.player_id
+    ok_c, why = M.can_center(g, pid, center)
+    if not ok_c:
+        close(app)
+        app.toast(why, t.bad)
+        return
+    cands = M.candidates(g, pid, center)
+    st["sel"] &= set(cands)
+    dist = M.distances(g, center, C.METRO_RANGE)
+    r = modal_frame(app, 920, 640, f"광역자치단체 지정 — 중심 {g.info(center).name}")
+    lx, lw = r.x + 24, 430
+    gui.text((lx, r.y + 58), f"함께 묶을 지역 (육상 {C.METRO_RANGE}칸 안의 내 지역)", 13, weight="semibold")
+    if gui.button((lx + lw - 150, r.y + 52, 70, 26), "모두", size=11):
+        st["sel"] = set(cands) - {center}
+    if gui.button((lx + lw - 74, r.y + 52, 74, 26), "비우기", size=11):
+        st["sel"] = set()
+    area = pygame.Rect(lx, r.y + 88, lw, r.h - 88 - 80)
+    row_h = 30
+    off = gui.begin_scroll("metro_cands", area, len(cands) * row_h)
+    yy = area.y - off
+    for c in cands:
+        rr = g.regions[c]
+        busy = " · 작업 중" if rr.project else ""
+        lab = f"{g.info(c).name} · 인구 {rr.pop:.1f} · {dist.get(c, 0)}칸{busy}" if c != center else \
+            f"{g.info(c).name} (중심) · 인구 {rr.pop:.1f}{busy}"
+        on = c == center or c in st["sel"]
+        v = gui.checkbox((lx, yy, lw - 10, 26), lab, on, enabled=c != center, size=12)
+        if c != center and v != on:
+            (st["sel"].add if v else st["sel"].discard)(c)
+        yy += row_h
+    gui.end_scroll("metro_cands", area, len(cands) * row_h)
+    # 오른쪽: 조건·미리보기·이름
+    sel = [center] + sorted(st["sel"])
+    ok, items = M.check(g, pid, center, sel)
+    rx, rw = lx + lw + 24, r.right - (lx + lw + 24) - 24
+    y = r.y + 58
+    gui.text((rx, y), "지정 조건", 13, weight="semibold")
+    y += 24
+    for k, o, d in items:
+        gui.text((rx, y), ("✓ " if o else "✗ ") + k, 12, t.good if o else t.bad, "semibold", max_w=rw - 120)
+        gui.text((rx + rw, y), d, 12, t.muted, anchor="topright", max_w=150)
+        y += 22
+    pv = M.preview(g, center, sel)
+    y += 8
+    gui.text((rx, y), "묶으면 (평균 단계, 소수점 내림)", 13, weight="semibold")
+    y += 24
+    parts = [f"{M.POOL_NAMES[p].replace('광역 ', '')} {lv}단계×{n}" for p, (lv, n) in pv["pools"].items() if lv or p in
+             ("farm", "factory", "bank")]
+    parts += [C.SINGLE_BUILDINGS[k]["name"] + " 있음" for k, v in pv["singles"].items() if v]
+    y = gui.wrap((rx, y), " · ".join(parts) or "없음", rw, 12) + 6
+    y = gui.wrap((rx, y), f"방어력 ×{max(0.0, 1 - C.METRO_DEF_PER_REGION * (len(sel) - 1)):.2f} · 유닛 하나 생산 → "
+                          f"{len(sel)}개 · 농장·어장·공장·은행 6단계 가능", rw, 11, t.muted) + 4
+    if pv["stopped"]:
+        y = gui.wrap((rx, y), f"진행 중인 작업 {len(pv['stopped'])}건은 중단됩니다(50% 환급).", rw, 11, t.warn) + 4
+    y += 6
+    gui.text((rx, y), "이름 (비우면 " + M.default_name(g, pid, center) + ")", 12, t.muted)
+    st["name"] = gui.text_input((rx, y + 20, rw, 32), "metro_name", st.get("name", ""), size=13, max_len=12)
+    if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
+        close(app)
+        return
+    if gui.button((r.right - 144, r.bottom - 60, 120, 42), "지정", "primary", enabled=ok, size=15, weight="bold"):
+        done, msg = g.create_metro(pid, center, sel, st.get("name", ""))
+        app.toast(msg, None if done else t.bad)
+        if done:
+            close(app)
+            app.changed()
+        return
+    _esc_close(app)
 
 
 def _units_text(units):
@@ -2315,6 +2393,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 자원·특산물 협상: 외교 창 [자원·특산물 협상]이나 AI 제의 창에서 수량·값을 부르면 상대가 수락하거나 역제의합니다(1~4회). 마지막 제안보다 나쁜 값이면 결렬되어 그 턴엔 다시 못 합니다.
 · [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계를 목표 단계까지 '○○국 방어선' 묶음 공사 한 건으로 짓습니다. 대상 지역의 진행 중 작업은 중단(50% 환급), 턴 수 = 모든 방어선 건설 턴의 합 ÷ 지역 수(올림), 비용은 묶음 전체로 매 턴 냅니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
 · 지출 우선순위 정렬 버튼은 해제할 때까지 유지됩니다(다시 누르거나 직접 옮기면 해제).
+· 광역시: 행동 탭 [광역자치단체 지정]으로 중심에서 육상 2칸 안의 내 지역을 하나로 묶습니다(인구 100만·공업 단지·금융 단지·식량 흑자·평균 행복도 0 이상). 슬롯·행복도 하나, 건물은 평균 단계 × 지역 수, 유닛 하나 생산 → 지역 수만큼, 농장·어장·공장·은행 6단계. 언제든 해제할 수 있습니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]

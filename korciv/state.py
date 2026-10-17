@@ -35,6 +35,11 @@ class Project:
     # 국경 방어선 묶음 공사(v1.2.15): 대상 지역들이 이 Project 하나를 함께 가리킨다.
     # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
     group: Optional[dict] = None
+    # 광역시 작업(v1.2.19): 구성 지역 모두가 이 Project 하나를 가리킨다. site = 실제로 짓는 지역(특산물·방어선·
+    # 과학·경제·편입 등), pool = 통합 건물 종류(farm·fishery·factory·bank·power·coal·oil·shelter·aa)
+    metro: Optional[int] = None
+    site: Optional[str] = None
+    pool: Optional[str] = None
 
     @property
     def remaining(self) -> int:
@@ -72,6 +77,7 @@ class Region:
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
+    metro: Optional[int] = None           # 속한 광역시 ID(v1.2.19)
     war_from: Optional[int] = None        # 전쟁으로 빼앗긴 원 주인(v1.2.17): 동맹·연합국이 되찾으면 이 나라에 돌려준다
     lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
