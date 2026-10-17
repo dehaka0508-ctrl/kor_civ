@@ -4833,3 +4833,19 @@ def test_priority_mode_stays_until_turned_off():
     ids = [r.id for r in g.projects_by_priority(0)]
     g.set_priority_order(0, ids[::-1], manual=True)
     assert f.prio_mode is None and [r.id for r in g.projects_by_priority(0)] == ids[::-1]
+
+
+def test_fog_lifted_after_game_over():
+    """v1.2.18: 게임이 끝나면(승리 뒤 [지도 계속 보기]) 전장의 안개를 걷는다 — 모든 지역·국명이 보이고,
+    탐색·조우 기록 자체는 바뀌지 않는다."""
+    g = new_game(meet=False, player_start="S002", n_enemies=3, fog=2)
+    far = next(r for r in g.world.order if not g.is_explored(0, r))
+    other = next(f.id for f in g.factions if f.id != 0 and not g.has_met(0, f.id))
+    assert not g.is_visible(0, far) and g.seen_name(other) == g.UNKNOWN_NAME
+    explored0, met0 = set(g.player.explored), set(g.player.met)
+    g._win((0,), "conquest")
+    assert g.game_over and g.fog_lifted()
+    assert g.is_visible(0, far) and g.is_explored(0, far) and g.has_met(0, other)
+    assert g.seen_name(other) == g.fname(other)
+    g._update_fog()
+    assert g.player.explored == explored0 and g.player.met == met0

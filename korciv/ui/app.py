@@ -572,7 +572,7 @@ class App:
         met = getattr(g.player, "met", set()) | {pid}
         alive = [f.id for f in g.factions if f.alive]
         wars = {(a + 2, b + 2) for i, a in enumerate(alive) for b in alive[i + 1:]
-                if (a in met and b in met or self.fog_reveal) and D.at_war(g, a, b)}
+                if (a in met and b in met or self.fog_reveal or g.fog_lifted()) and D.at_war(g, a, b)}
         return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political"}
 
     def order_colors(self):
@@ -688,7 +688,8 @@ class App:
         busy = 0 if pick_mode or not self.game else hash(frozenset(
             r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
         key = ("pick", self.setup.start, self.pick_popup, tuple(self.setup.ai_starts[: self.setup.n_enemies])) if pick_mode else (
-            self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "", self.fog_reveal, id(self.game),
+            self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "",
+            self.fog_reveal or bool(self.game and self.game.game_over), id(self.game),
                                                               self.game.turn if self.game else 0,
                                                               self.show_terrain, busy)
         # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)

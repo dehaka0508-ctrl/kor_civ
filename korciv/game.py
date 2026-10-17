@@ -335,9 +335,14 @@ class Game:
 
     UNKNOWN_NAME, UNKNOWN_LEADER = "미지의 국가", "수수께끼의 지도자"
 
+    def fog_lifted(self) -> bool:
+        """전장의 안개를 걷었는가: 안개 '없음'이거나 게임이 끝났을 때(v1.2.18 — 승리·패배 뒤 [지도 계속 보기]에서는
+        모든 지역·부대·국명·지도자가 보인다)."""
+        return self.settings.fog == 0 or bool(getattr(self, "game_over", False))
+
     def has_met(self, viewer, fid) -> bool:
-        """viewer 가 fid 세력과 조우했는가(전장의 안개가 없으면 항상 참)."""
-        if self.settings.fog == 0 or fid == viewer or fid == NEUTRAL or fid is None:
+        """viewer 가 fid 세력과 조우했는가(전장의 안개가 없거나 게임이 끝났으면 항상 참)."""
+        if self.fog_lifted() or fid == viewer or fid == NEUTRAL or fid is None:
             return True
         return fid in getattr(self.factions[viewer], "met", set())
 
@@ -5135,7 +5140,7 @@ class Game:
 
     # ------------------------------------------------------------------ 전장의 안개
     def visible(self, fid) -> set:
-        if self.settings.fog == 0:
+        if self.fog_lifted():
             return set(self.regions) | set(self.world.seas)
         v = self._visible.get(fid)
         if v is None:
@@ -5194,6 +5199,8 @@ class Game:
 
     def _update_fog_inner(self, initial=False):
         self._visible = {}
+        if getattr(self, "game_over", False):
+            return                             # 끝난 판: 안개를 걷어 보여 줄 뿐 탐색·조우 기록은 그대로 둔다
         for f in self.factions:
             if not f.alive:
                 continue
@@ -5235,9 +5242,9 @@ class Game:
                         f.met.add(o.id)
 
     def is_visible(self, fid, node) -> bool:
-        return self.settings.fog == 0 or node in self.visible(fid)
+        return self.fog_lifted() or node in self.visible(fid)
 
     def is_explored(self, fid, node) -> bool:
-        if self.settings.fog == 0 or node in self.world.seas:
+        if self.fog_lifted() or node in self.world.seas:
             return True
         return node in self.factions[fid].explored
