@@ -318,6 +318,10 @@ def _offer_to_player(g, fid, pid, res, n, sell) -> bool:
     플레이어는 수락·거절하거나 값을 불러 협상할 수 있다."""
     key = f"trade_{res}_{'s' if sell else 'b'}"
     f = g.factions[fid]
+    pf = g.factions[pid]
+    # 플레이어의 거래 제의 거절 설정(v1.2.21): 구매(상대가 사겠다)·판매(상대가 팔겠다)·이 나라
+    if (pf.ai.get("reject_sell") if sell else pf.ai.get("reject_buy")) or fid in pf.ai.get("reject_from", ()):
+        return False
     if g.turn - f.ai.get(key, -99) < C.AI_TRADE_EVERY * 2:
         return False
     st = NG.start(g, fid, pid, res, n, ai_sells=sell, init="ai")

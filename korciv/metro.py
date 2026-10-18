@@ -565,7 +565,7 @@ def complete(g, f, p):
         return
     if p.kind == "unit":
         n = len(sel)
-        g.add_units(f.id, site, p.key, n)
+        g.deliver_units(f.id, site, p.key, n)
         g.event("complete", f"{name}에서 {C.UNITS[p.key]['name']} {n}개 생산 완료", region=site, fids=(f.id,))
         if getattr(p, "repeat", 0) > 0:
             ok, msg = start(g, f.id, m["id"], "unit", p.key)

@@ -78,6 +78,7 @@ class Region:
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
     metro: Optional[int] = None           # 속한 광역시 ID(v1.2.19)
+    rally: Optional[str] = None           # 생산 집결지(v1.2.21): 여기서 만든 육군은 이 지역으로 자동 이동
     war_from: Optional[int] = None        # 전쟁으로 빼앗긴 원 주인(v1.2.17): 동맹·연합국이 되찾으면 이 나라에 돌려준다
     lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
@@ -202,6 +203,8 @@ class Faction:
     met: set = field(default_factory=set)   # 조우한 세력(시야 안에 그 세력의 영토·군대가 들어온 적이 있음)
     flag: Optional[dict] = None     # 직접 만든 국기(없으면 세력 색으로 만든 기본 국기, flags.faction_flag)
     prio_mode: Optional[str] = None  # 지출 우선순위 자동 정렬 규칙(v1.2.17): 해제할 때까지 계속 그 규칙대로
+    rally: Optional[str] = None      # 일괄 생산 집결지(v1.2.21): 지역 집결지가 없으면 여기로(편입으로 받은 보병 포함)
+    annex_disband: set = field(default_factory=set)   # 편입이 끝나면 넘겨받는 보병을 바로 해산할 대상 지역(v1.2.21)
 
 
 @dataclass

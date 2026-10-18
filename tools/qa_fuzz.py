@@ -103,6 +103,16 @@ def check(g, where):
             report("세율 범위", f"{where} f{f.id} {f.tax}")
         if not finite(f.war_weary) or f.war_weary < -1e-6:
             report("전쟁 피로 이상", f"{where} f{f.id} {f.war_weary}")
+    for f in g.factions:
+        for rr in g.regions.values():
+            rl = getattr(rr, "rally", None)
+            if rl is not None and rr.owner == f.id and rl not in g.regions:
+                report("집결지 이상", f"{where} {rr.id} rally={rl}")
+        if f.alive and getattr(f, "rally", None) is not None and f.rally not in g.regions:
+            report("일괄 집결지 이상", f"{where} f{f.id} rally={f.rally}")
+    for r in g.regions.values():
+        if getattr(r, "rally", None) is not None and r.owner == NEUTRAL:
+            report("중립 지역 집결지", f"{where} {r.id} rally={r.rally}")
     for aid, a in g.armies.items():
         if a.id != aid:
             report("부대 id 불일치", f"{where} {aid}")
@@ -282,6 +292,37 @@ def player_turn(g, rng):
             g.create_metro(pid, c, sel, rng.choice(["", "시험"]))
     if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.2.17)
         g.set_priority_mode(pid, rng.choice(list(g.PRIORITY_SORTS) + [None]))
+    # v1.2.21 편의 기능: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입]·자동 해산, 우선순위 고정, 생산 집결지
+    if rng.random() < 0.3:
+        tgts = {n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner != pid}
+        hot = [t for t in sorted(tgts) if g.attack_candidates(pid, t)]
+        if hot:
+            t = rng.choice(hot)
+            cands = g.attack_candidates(pid, t)
+            lead = rng.choice(cands)
+            extra = [x.id for x in cands if x.id != lead.id and rng.random() < 0.7] + [rng.choice([999999, lead.id])]
+            g.attack_now(lead.id, t, rng.choice(["assault", "surprise"]), extra=extra)
+    if rng.random() < 0.2:
+        neu = sorted({n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner == NEUTRAL})
+        if neu:
+            t = rng.choice(neu)
+            g.annex_from(pid, t, every=rng.random() < 0.5)
+            if rng.random() < 0.5:
+                (f.annex_disband.add if rng.random() < 0.7 else f.annex_disband.discard)(t)
+    if rng.random() < 0.05:
+        rows = g.priority_rows(pid)
+        if rows:
+            g.toggle_pin(pid, rng.choice(rng.choice(rows)).id)
+    if rng.random() < 0.06 and mine:
+        tgt = rng.choice(list(g.regions)) if rng.random() < 0.2 else rng.choice(mine + [None])
+        g.set_rally(pid, rng.choice(mine + [None, None]), tgt)
+    if rng.random() < 0.03:
+        k = rng.choice(["reject_buy", "reject_sell"])
+        f.ai[k] = not f.ai.get(k)
+        if others_ := [o.id for o in g.factions if o.alive and o.id != pid]:
+            rf = f.ai.setdefault("reject_from", set())
+            o = rng.choice(others_)
+            (rf.discard if o in rf else rf.add)(o)
     # 외교
     others = [o.id for o in g.factions if o.alive and o.id != pid]
     if others and rng.random() < 0.3:

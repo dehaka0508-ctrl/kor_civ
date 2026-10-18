@@ -1298,3 +1298,237 @@ def test_map_mode_popup_click_not_stolen_by_panel_below(app):
     finally:
         pygame.mouse.get_pos = orig
         g.toggle_pin = orig_pin
+
+
+# ------------------------------------------------------------------ v1.2.21 편의성 개선
+class _Spy:
+    """gui.button·checkbox 를 감싸 그린 위치를 기억하고, 그 자리를 눌러 본다. draw() 는 기록을 비우고 한 프레임 그린다."""
+
+    def __init__(self, app):
+        self.app, self.rects = app, {}
+        self.real_button, self.real_check = app.gui.button, app.gui.checkbox
+
+        def button(rect, label, *a, **k):
+            self.rects[label] = ("button", rect)
+            return self.real_button(rect, label, *a, **k)
+
+        def checkbox(rect, label, *a, **k):
+            self.rects[label] = ("check", rect)
+            return self.real_check(rect, label, *a, **k)
+        app.gui.button, app.gui.checkbox = button, checkbox
+
+    def close(self):
+        self.app.gui.button, self.app.gui.checkbox = self.real_button, self.real_check
+
+    def draw(self):
+        self.rects = {}
+        frame(self.app)
+
+    def find(self, prefix):
+        return next((k for k in self.rects if k.startswith(prefix)), None)
+
+    def click(self, label):
+        kind, rect = self.rects[label]
+        r = pygame.Rect(rect)
+        u = self.app.gui.u
+        pos = (int((r.x + 9) * u) if kind == "check" else int(r.centerx * u), int(r.centery * u))
+        old = pygame.mouse.get_pos
+        pygame.mouse.get_pos = lambda: pos
+        try:
+            self.app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+            self.app.frame()
+        finally:
+            pygame.mouse.get_pos = old
+
+
+def test_battle_modal_attacks_with_several_armies(app):
+    """공격 확인 창에서 함께 공격할 부대를 고르면 한 전투로 합쳐 싸운다(협공 보너스)."""
+    from korciv import diplomacy as D
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    w = g.world
+    tgt = next(t for t in sorted(w.land_adj["S002"]) if any(n != "S002" for n in w.land_adj[t]))
+    side = next(n for n in sorted(w.land_adj[tgt]) if n != "S002")
+    g.transfer_region(side, 0)
+    g.transfer_region(tgt, 1)
+    for r in (tgt, side, "S002"):
+        for a in list(g.armies_at(r)):
+            g.remove_army(a)
+    D.declare_war(g, 0, 1)
+    g.dialogues = []
+    g.new_army(1, tgt, {"inf": 5})
+    a = g.new_army(0, "S002", {"inf": 4})
+    b = g.new_army(0, side, {"inf": 4})
+    app.select("S002")
+    app.sel_army = a.id
+    app.right_click(tgt, (500, 400))
+    assert app.modal and app.modal[0] == "battle"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        st = app.modal[1]
+        assert b.id in st["cands"]
+        spy.click("모두")
+        assert b.id in st["extra"]
+        spy.draw()
+        spy.click("전투")
+    finally:
+        spy.close()
+    assert g.army_fought(a.id) or a.id not in g.armies
+    assert g.army_fought(b.id) or b.id not in g.armies
+
+
+def test_neutral_panel_annex_buttons_and_auto_disband(app):
+    """내 땅과 맞닿은 중립 지역 [행동] 탭: [편입]·[최대 편입]·자동 해산 체크."""
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    w = g.world
+    for n in sorted(w.land_adj["S002"]):
+        if g.regions[n].owner == NEUTRAL:
+            g.transfer_region(n, 0)
+    g.player.money = 10 ** 6
+    cand = {}
+    for r in sorted(r for r in g.regions if g.regions[r].owner == 0):
+        for n in w.land_adj[r]:
+            if g.regions[n].owner == NEUTRAL:
+                cand.setdefault(n, set()).add(r)
+    tgt = max(sorted(cand), key=lambda n: len(cand[n]))
+    app.left_open = False
+    app.select(tgt)
+    assert app.tab == "action"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        assert spy.find("최대 편입") and spy.find("편입 (")
+        spy.click(spy.find("편입 ("))
+        assert g.joint_count(0, tgt) == 1
+        spy.draw()
+        spy.click(spy.find("최대 편입"))
+        assert g.joint_count(0, tgt) >= 2 and not g.annex_sources(0, tgt)
+        spy.draw()
+        spy.click("자동 해산")
+        assert tgt in g.player.annex_disband
+        # 내정 탭 지출 우선순위: 같은 대상 편입은 한 줄
+        app.left_tab = "nation"
+        spy.draw()
+    finally:
+        spy.close()
+    rows = g.priority_rows(0)
+    assert sum(1 for row in rows if row[0].project.kind == "annex" and row[0].project.key == tgt) == 1
+
+
+def test_diplomacy_trade_reject_checkboxes(app):
+    """외교 탭 하단 '모든 구매/판매 제의 거절', 국가 상세의 '이 국가의 거래 제의 거절'."""
+    g = _main_game(app, seed=7, n_enemies=2)
+    app.left_open, app.left_tab, app.dip_view = True, "diplo", None
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        spy.click("모든 구매 제의 거절")
+        assert g.player.ai.get("reject_buy") is True and not g.player.ai.get("reject_sell")
+        spy.draw()
+        spy.click("모든 판매 제의 거절")
+        assert g.player.ai.get("reject_sell") is True
+        other = next(f.id for f in g.factions if f.id != g.player_id and f.alive)
+        app.dip_view = other
+        spy.draw()
+        spy.click("이 국가의 거래 제의 거절")
+        assert other in g.player.ai["reject_from"]
+        spy.draw()
+        spy.click("이 국가의 거래 제의 거절")
+        assert other not in g.player.ai["reject_from"]
+    finally:
+        spy.close()
+
+
+def test_tab_shortcuts_and_flag_click(app):
+    """Space 로 [행동]→[부대]→[지역 정보], Q/W/E 로 바로 가기. 지도 위 군기를 누르면 그 부대의 [부대] 탭."""
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    app.select("S002")
+    app.tab = "action"
+    _key(app, pygame.K_SPACE)
+    assert app.tab == "army"
+    _key(app, pygame.K_SPACE)
+    assert app.tab == "info"
+    _key(app, pygame.K_SPACE)
+    assert app.tab == "action"
+    _key(app, pygame.K_e)
+    assert app.tab == "info"
+    _key(app, pygame.K_w)
+    assert app.tab == "army"
+    _key(app, pygame.K_q)
+    assert app.tab == "action"
+    # 군기 클릭
+    app.map.center_on("S002", zoom=6.0)
+    app.map.invalidate()
+    extra = g.new_army(0, "S002", {"tank": 2})
+    app.tab = "info"
+    frame(app)
+    hits = [h for h in app._flag_hits if h[1] == extra.id]
+    assert hits
+    pos = hits[0][0].center
+    old = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: pos
+    try:
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)]); app.frame()
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)]); app.frame()
+    finally:
+        pygame.mouse.get_pos = old
+    assert app.tab == "army" and app.sel_army == extra.id and app.left_open
+
+
+def test_split_stepper_has_big_steps(app):
+    """병력이 많으면 분리·해산 수량을 ±5·±10 으로도 조절한다."""
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    a = g.new_army(0, "S002", {"inf": 30})
+    app.select("S002")
+    app.sel_army = a.id
+    app.left_open, app.left_tab, app.tab = True, "region", "army"
+    app.split = {}
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        spy.click("+10")
+        assert app.split.get("inf") == 10
+        spy.draw()
+        spy.click("+5")
+        assert app.split.get("inf") == 15
+        spy.draw()
+        spy.click("−10")
+        assert app.split.get("inf") == 5
+    finally:
+        spy.close()
+
+
+def test_rally_pick_flow(app):
+    """[생산 집결지 지정] → 지도에서 내 지역 클릭. Esc·우클릭·[취소]로 그만둔다. 군사 탭 [일괄 지정]."""
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    dest = sorted(g.world.land_adj["S002"])[0]
+    g.transfer_region(dest, 0)
+    app.select("S002")
+    app.left_open, app.left_tab, app.tab = True, "region", "army"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        spy.click("생산 집결지 지정")
+        assert app.rally_pick == "S002"
+        frame(app)                                   # 안내 띠
+        _key(app, pygame.K_ESCAPE)
+        assert app.rally_pick is None
+        app.start_rally_pick("S002")
+        app.right_click(dest, (400, 300))
+        assert app.rally_pick is None
+        app.start_rally_pick("S002")
+        spy.draw()
+        spy.click("취소 (Esc)")
+        assert app.rally_pick is None
+        app.start_rally_pick("S002")
+        app.finish_rally_pick(dest)
+        assert g.regions["S002"].rally == dest
+        app.left_open, app.left_tab = True, "army"
+        spy.draw()
+        spy.click("일괄 지정")
+        assert app.rally_pick == "*"
+        app.finish_rally_pick("S002")
+        assert g.player.rally == "S002" and g.regions["S002"].rally is None
+        frame(app)                                   # 집결지 깃발 표시
+    finally:
+        spy.close()

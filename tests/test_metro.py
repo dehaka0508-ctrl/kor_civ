@@ -265,3 +265,34 @@ def test_metro_annex_counts_as_joint_annex_capped_at_half():
         assert p.progress == pytest.approx(1 / (1 - red))
     # 광역시가 끼지 않은 공동 편입은 그대로(4곳 −60%)
     assert R.joint_reduction(4) == pytest.approx(0.6)
+
+
+def test_border_line_group_takes_whole_metro_slot():
+    """v1.2.21 QA: 국경 방어선 일괄 건설이 광역시 구성 지역 일부에만 작업을 넣어 슬롯이 갈라지던 문제.
+    구성 지역 하나라도 대상이면 광역시 모두가 함께 묶음 공사를 하고, 턴 수는 광역시를 한 슬롯으로 나눈다."""
+    g, sel = _setup()
+    ok, msg = g.create_metro(0, "S002", sel, "")
+    assert ok, msg
+    m = M.of(g, "S002")
+    # 광역시 바깥 이웃 하나를 적국 땅으로: 구성 지역 가운데 일부만 그 나라와 맞닿는다
+    outer = sorted({n for r in sel for n in g.world.land_adj[r]} - set(sel))
+    enemy = outer[0]
+    _own(g, 1, [enemy])
+    touching = [r for r in sel if enemy in g.world.land_adj[r]]
+    assert 0 < len(touching) < len(sel)
+    ok, _ = g.start_project(0, "S002", "unit", "inf")              # 광역시 슬롯 하나에 진행 중 작업
+    assert ok
+    plan = g.border_line_plan(0, 1, 2)
+    assert set(m["members"]) <= set(plan["lines"])
+    assert all(plan["lines"][r] == [] for r in m["members"] if r not in touching)
+    assert plan["slots"] == len({M.center_of(g, r) for r in plan["lines"]})
+    ok, msg = g.build_border_lines(0, 1, 2)
+    assert ok, msg
+    ps = {id(g.regions[r].project) for r in m["members"]}
+    assert len(ps) == 1 and g.regions["S002"].project.group is not None
+    p = g.regions["S002"].project
+    for _ in range(p.turns):
+        g._fund_projects()
+        g._phase_projects(("build",))
+    assert all(g.regions[r].project is None for r in m["members"])
+    assert all(g.regions[r].lines.get(enemy, 0) >= 2 for r in touching)

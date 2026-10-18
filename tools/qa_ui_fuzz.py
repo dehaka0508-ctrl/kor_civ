@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 import pygame                                      # noqa: E402
 
 from korciv import config as C                     # noqa: E402
-from korciv.state import Settings                  # noqa: E402
+from korciv.state import NEUTRAL, Settings         # noqa: E402
 from korciv.ui import app as appmod                # noqa: E402
 from korciv.ui import modals, panels               # noqa: E402
 from korciv.ui.gui import UI                       # noqa: E402
@@ -30,7 +30,8 @@ from korciv.ui.gui import UI                       # noqa: E402
 KEYS = [pygame.K_RETURN, pygame.K_ESCAPE, pygame.K_a, pygame.K_p, pygame.K_1, pygame.K_2, pygame.K_3,
         pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_F1, pygame.K_F2, pygame.K_F5, pygame.K_F9,
         pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN, pygame.K_EQUALS, pygame.K_MINUS,
-        pygame.K_TAB, pygame.K_BACKSPACE, pygame.K_SPACE, pygame.K_n, pygame.K_s, pygame.K_q, pygame.K_DELETE]
+        pygame.K_TAB, pygame.K_BACKSPACE, pygame.K_SPACE, pygame.K_n, pygame.K_s, pygame.K_q, pygame.K_DELETE,
+        pygame.K_w, pygame.K_e]
 
 PROBLEMS = Counter()
 EXAMPLES = {}
@@ -233,6 +234,33 @@ def force_state(app, rng):
                 app.left_open, app.left_tab, app.tab = True, "region", "action"
             else:
                 app.modal = ("metro", {"center": c, "sel": set(sel[1:]), "name": ""})
+    if rng.random() < 0.06:
+        # v1.2.21: 생산 집결지 고르기, 여러 부대로 함께 공격하는 확인 창, 중립 지역 [행동] 탭
+        mine = [r.id for r in g.regions_of(pid)]
+        r2 = rng.random()
+        if mine and r2 < 0.35:
+            app.start_rally_pick(rng.choice(mine + [None]))
+            if rng.random() < 0.5:
+                g.set_rally(pid, rng.choice(mine + [None]), rng.choice(mine))
+        elif r2 < 0.7:
+            tgts = sorted({n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner != pid})
+            hot = [t for t in tgts if g.attack_candidates(pid, t)]
+            if hot:
+                t = rng.choice(hot)
+                cands = g.attack_candidates(pid, t)
+                lead = cands[0]
+                app.select(lead.loc)
+                app.sel_army = lead.id
+                app.modal = ("battle", {"army": lead.id, "node": t, "mode": "assault",
+                                        "extra": {x.id for x in cands[1:] if rng.random() < 0.6}})
+        else:
+            neu = sorted({n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner == NEUTRAL})
+            if neu:
+                t = rng.choice(neu)
+                if rng.random() < 0.5:
+                    g.annex_from(pid, t, every=rng.random() < 0.5)
+                app.select(t)
+                app.left_open, app.left_tab, app.tab = True, "region", "action"
     if k < 0.3:
         app.left_open = True
         app.left_tab = rng.choice([t[0] for t in panels.SIDE_TABS] + ["region"] * 3)

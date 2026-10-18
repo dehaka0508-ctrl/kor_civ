@@ -1149,13 +1149,22 @@ def draw_battle(app):
     can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS) and not g.mods(army.owner).value("no_surprise")
     if not can_surprise:
         st["mode"] = "assault"
-    bd = g.battle_breakdown(army, node, st["mode"])
+    # 함께 공격할 부대(v1.2.21): 이번 턴 이 지역을 바로 공격할 수 있는 다른 내 부대
+    ck = (g.turn, army.id, node, len(g.armies))
+    if st.get("cands_key") != ck:
+        st["cands"] = [a.id for a in g.attack_candidates(army.owner, node, exclude={army.id})]
+        st["cands_key"] = ck
+    cands = [g.armies[i] for i in st["cands"] if i in g.armies and not g.army_acted(i)]
+    st["extra"] = {i for i in st.setdefault("extra", set()) if i in {a.id for a in cands}}
+    extra = [a for a in cands if a.id in st["extra"]]
+    bd = g.battle_breakdown(army, node, st["mode"], extra=extra)
     if bd is None:
         close(app)
         return
     n_oc = len(bd["outcomes"])
     box_h = 112 + 20 * max(1, min(6, max(len(bd["att_factors"]), len(bd["def_factors"]))))
-    r = modal_frame(app, 820, box_h + 124 + n_oc * 118 + 76,
+    cand_h = (34 + 28 * ((len(cands) + 1) // 2)) if cands else 0
+    r = modal_frame(app, 820, box_h + 124 + cand_h + n_oc * 118 + 76,
                     f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
     pv = bd["preview"]
     if can_surprise:
@@ -1163,13 +1172,13 @@ def draw_battle(app):
                             size=12)
         st["mode"] = "assault" if idx == 0 else "surprise"
     # 양측 체력: 지금 남은 체력 / 가득 찬 체력
-    att_hp = sum(army.hp_left(k) for k in bd["att_units"] if k in army.units)
-    att_max = sum(C.UNITS[k]["hp"] * n for k, n in bd["att_units"].items())
+    att_hp, att_max = bd["att_hp"], bd["att_max"]
     def_max = sum(C.UNITS[k]["hp"] * n for u in bd["def_units"].values() for k, n in u.items())
     def_hp = pv["def_hp"]
     colw = (r.w - 72) / 2
     for i, (title, units_txt, val, factors, color, hp, mx) in enumerate((
-            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
+            (f"공격 · {g.fname(army.owner)}" + (f" · 부대 {len(extra) + 1}개" if extra else ""),
+             _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
              bd["att_factors"], t.accent, att_hp, att_max),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
              " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.1f}",
@@ -1192,8 +1201,26 @@ def draw_battle(app):
             gui.text((x + 14, y), label, 12, max_w=colw - 100)
             gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if good else t.bad, "semibold", anchor="topright")
             y += 20
-    # 예상 결과: 양측 체력 막대(남은 체력 · 예상 피해 · 피해 뒤 남는 체력)와 생존 여부
     y = r.y + 64 + box_h + 14
+    if cands:
+        gui.text((r.x + 24, y), f"함께 공격할 부대 — 한 전투로 공격력을 합치고, 다른 방향에서 오면 협공 "
+                                f"+{C.FLANK_BONUS:.0%}/방향", 13, weight="semibold", max_w=r.w - 220)
+        if gui.button((r.right - 184, y - 4, 76, 24), "모두", size=11):
+            st["extra"] = {a.id for a in cands}
+        if gui.button((r.right - 100, y - 4, 76, 24), "비우기", size=11):
+            st["extra"] = set()
+        y += 26
+        cw = (r.w - 48 - 12) / 2
+        for i, a in enumerate(cands):
+            cx = r.x + 24 + (i % 2) * (cw + 12)
+            cy = y + (i // 2) * 28
+            on = a.id in st["extra"]
+            lab = f"{app.world.node_name(a.loc)} · {_units_text(a.units)}"
+            v = gui.checkbox((cx, cy, cw, 24), lab, on, size=12)
+            if v != on:
+                (st["extra"].add if v else st["extra"].discard)(a.id)
+        y += 28 * ((len(cands) + 1) // 2) + 8
+    # 예상 결과: 양측 체력 막대(남은 체력 · 예상 피해 · 피해 뒤 남는 체력)와 생존 여부
     gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
     lx = r.right - 24
     for lab, c in (("이미 잃은 체력", t.panel), ("예상 피해", t.warn), ("피해 뒤 남는 체력", t.muted)):
@@ -1236,7 +1263,7 @@ def draw_battle(app):
             fight = True
     if fight:
         # 플레이어 전투는 바로 치른다(AI는 턴 종료 때 그대로)
-        ok, msg = g.attack_now(army.id, node, st["mode"])
+        ok, msg = g.attack_now(army.id, node, st["mode"], extra=sorted(st.get("extra", ())))
         app.attack_mode = st["mode"]
         close(app)
         app.toast(msg, None if ok else t.bad)
@@ -2378,6 +2405,7 @@ HELP = f"""[조작]
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
 Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드
 P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제·창 닫기
+Space: 지역 메뉴 다음 탭   Q [행동] · W [부대] · E [지역 정보]   지도 위 군기를 누르면 그 부대의 [부대] 탭
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
 · 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
@@ -2387,10 +2415,14 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 · 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
 · 부대 명령은 바로 실행됩니다(이동·상륙·폭격·빈 땅 점령). 한 부대는 한 턴에 한 번 행동하고, 움직인 부대는 나누기는 되지만 합치기는 다음 턴에 됩니다.
 · 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
+· 여러 부대로 공격: 확인 창의 '함께 공격할 부대'에서 고르면 한 전투로 합쳐 싸웁니다(다른 방향에서 오면 협공 +10%/방향).
+· 생산 집결지: [부대] 탭 [생산 집결지 지정] 뒤 지도에서 내 지역을 누르면 그 지역에서 만든 육군이 그리로 자동 이동. [군사] 탭 [일괄 지정]은 모든 지역 + 편입으로 받는 보병.
+· 내 땅과 맞닿은 중립 지역 [행동] 탭: [편입](빈 이웃 한 곳) · [최대 편입](빈 이웃 모두) · 편입 중이면 [자동 해산](보병 대신 행복도 +0.5).
 · 포병·폭격기는 같은 병종끼리만 한 부대입니다. 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창([폭격]/Enter), 없는 곳은 이동. Shift+우클릭은 병력 없는 곳의 건물 폭격.
 · 수송: 부대 탭의 화물칸에서 상륙함은 [승선]·[하선], 항공모함은 [탑재]·[이함]. 바다에서 하선할 해안을 고르면 상륙(빈 적 땅은 점령).
 · 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. 판매분은 공장 배정보다 먼저 보내고, 모자라면 턴 끝에 시장가로 사서 메웁니다.
 · 자원·특산물 협상: 외교 창 [자원·특산물 협상]이나 AI 제의 창에서 수량·값을 부르면 상대가 수락하거나 역제의합니다(1~4회). 마지막 제안보다 나쁜 값이면 결렬되어 그 턴엔 다시 못 합니다.
+· AI 거래 제의가 귀찮으면 [외교] 탭 아래 '모든 구매/판매 제의 거절', 나라별로는 그 나라 상세 화면의 '이 국가의 거래 제의 거절'.
 · [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계를 목표 단계까지 '○○국 방어선' 묶음 공사 한 건으로 짓습니다. 대상 지역의 진행 중 작업은 중단(50% 환급), 턴 수 = 모든 방어선 건설 턴의 합 ÷ 지역 수(올림), 비용은 묶음 전체로 매 턴 냅니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
 · 지출 우선순위 정렬 버튼은 해제할 때까지 유지됩니다(다시 누르거나 직접 옮기면 해제).
 · 광역시: 행동 탭 [광역자치단체 지정]으로 중심에서 육상 2칸 안의 내 지역을 하나로 묶습니다(인구 100만·공업 단지·금융 단지·식량 흑자·평균 행복도 0 이상). 슬롯·행복도 하나, 건물은 평균 단계 × 지역 수, 유닛 하나 생산 → 지역 수만큼, 농장·어장·공장·은행 6단계. 언제든 해제할 수 있습니다.
