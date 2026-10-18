@@ -114,3 +114,43 @@ def test_clip_poly_keeps_inside_part():
     assert not len(MV.clip_poly(sq + 100, 0, 0, 20, 20))
     inner = np.array([[1.0, 1.0], [5.0, 1.0], [3.0, 4.0]])
     assert MV.clip_poly(inner, 0, 0, 20, 20) is inner
+
+
+def test_region_polygons_have_no_gaps_or_slivers():
+    """v1.2.25: 지역 다각형은 겹침·틈 없는 묶음 — 이웃이 함께 쓰는 경계는 같은 꼭짓점(따로 단순화해 어긋나지 않게)."""
+    shp = pytest.importorskip("shapely")
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    w = load_world()
+    regs = {rid: unary_union([Polygon(r).buffer(0) for r in geo["polys"]]) for rid, geo in w.geometry.items()}
+    U = unary_union(list(regs.values()))
+    holes = [Polygon(h).area for p in getattr(U, "geoms", [U]) for h in p.interiors]
+    assert not holes                                          # 지역 사이 틈 없음
+    tree = shp.STRtree(list(regs.values()))
+    ids = list(regs)
+    for i, rid in enumerate(ids):
+        for j in tree.query(regs[rid]):
+            if j <= i:
+                continue
+            inter = regs[rid].intersection(regs[ids[j]]).area
+            if inter > 1e-9:                                  # 겹치면 한 지역이 다른 지역을 둘러싼 경우뿐
+                small = min(regs[rid].area, regs[ids[j]].area)
+                assert inter == pytest.approx(small, rel=1e-3), (rid, ids[j], inter)
+
+
+def test_glow_is_colored_by_screen_owner_map():
+    """국경 안쪽 번짐: 세기만 저해상도에서 늘리고, 색·칠할 곳은 화면 해상도 주인 번호로(이웃으로 번지지 않게)."""
+    surf = pygame.Surface((4, 2))
+    surf.fill((100, 100, 100))
+    ds = pygame.Surface((4, 2))
+    ds.fill((200, 0, 0))                                      # 번짐 세기 200(전선 그림자 없음)
+    ids = pygame.Surface((4, 2))
+    ids.fill((0, 0, 0))
+    for x, code in enumerate((0, 1, 2, 3)):                   # 바다·중립·세력 2·세력 3
+        ids.fill((code, 0, 0), (x, 0, 1, 2))
+    lut = np.zeros((256, 3), np.uint8)
+    lut[2], lut[3] = (255, 0, 0), (0, 0, 255)
+    MV.MapView._fx_compose(surf, ds, ids, lut, False)
+    assert surf.get_at((0, 0))[:3] == (100, 100, 100) and surf.get_at((1, 0))[:3] == (100, 100, 100)
+    r2, b3 = surf.get_at((2, 0)), surf.get_at((3, 0))
+    assert r2[0] > 180 and r2[2] < 60 and b3[2] > 180 and b3[0] < 60

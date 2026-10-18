@@ -53,7 +53,8 @@ def main():
                 if done is not None:
                     ln = ln.difference(done.buffer(OUT_D))
                 parts.extend(g for g in getattr(ln, "geoms", [ln]) if not g.is_empty)
-            merged = linemerge(unary_union(parts)) if parts else None
+            u = unary_union(parts) if parts else None
+            merged = (linemerge(u) if u.geom_type == "MultiLineString" else u) if u is not None else None
             lines = []
             for g in (getattr(merged, "geoms", [merged]) if merged is not None else []):
                 if g.is_empty or g.length < 0.003:

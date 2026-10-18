@@ -229,6 +229,101 @@ def outer_river_lines(geom, name, ko_river):
     return [ln for ln in getattr(merged, "geoms", [merged]) if ln.geom_type == "LineString" and ln.length >= 0.002]
 
 
+COVER_TOL = 0.0025       # 그리기용 단순화(이웃과 함께 쓰는 경계는 똑같이 단순화한다, 꼭짓점 수는 예전과 비슷)
+SMALL_GAP = 2e-5         # 이보다 작은 틈은 가장 길게 맞닿은 이웃 하나에 붙이고, 큰 틈은 이웃들이 고르게 나눠 갖는다
+
+
+def make_coverage(geom):
+    """원자료 경계를 겹침·틈 없는 도형 묶음(coverage)으로 정리한다(v1.2.25).
+    남북 자료·행정동 합치기·보로노이 근사에서 생긴 이웃 지역 사이의 겹침은 한쪽(넓은 지역 먼저)만 남기고,
+    지역 사이에 갇힌 틈(어느 지역에도 속하지 않는 육지 구멍)은 맞닿은 이웃이 고르게 나눠 갖는다."""
+    import shapely
+    from shapely.strtree import STRtree
+    names = sorted(geom, key=lambda n: (-geom[n].area, n))
+    tree = STRtree([geom[n] for n in names])
+    clean = {}
+    n_ov = 0
+    for i, n in enumerate(names):
+        g = geom[n]
+        prev = [clean[names[j]] for j in tree.query(g) if j < i and clean[names[j]].intersects(g)]
+        if prev:
+            d = g.difference(unary_union(prev))
+            if d.area < g.area - 1e-12:
+                n_ov += 1
+            g = d
+        if not g.is_valid:
+            g = shapely.make_valid(g)
+        clean[n] = MultiPolygon([p for p in polygons_of(g) if p.area > 1e-12])
+    U = unary_union(list(clean.values()))
+    holes = [Polygon(r) for p in polygons_of(U) for r in p.interiors]
+    ctree = STRtree([clean[n] for n in names])
+    add = defaultdict(list)
+    big = 0
+
+    def longest(piece, cands):
+        return max(cands, key=lambda m: piece.boundary.intersection(clean[m].buffer(1e-7)).length)
+
+    for h in holes:
+        nb = [names[j] for j in ctree.query(h.buffer(1e-7)) if clean[names[j]].distance(h) < 1e-7]
+        if not nb:
+            continue
+        if h.area < SMALL_GAP or len(nb) == 1:
+            add[longest(h, nb)].append(h)
+            continue
+        big += 1
+        eps = max(0.0003, math.sqrt(h.area) / 40)
+        local = {m: clean[m].intersection(h.buffer(3 * eps)) for m in nb}
+        rest = h
+        for _ in range(400):
+            if rest.is_empty or rest.area < 1e-12:
+                break
+            grew = False
+            for m in nb:
+                piece = local[m].buffer(eps).intersection(rest)
+                if piece.area > 1e-12:
+                    add[m].append(piece)
+                    local[m] = local[m].union(piece)
+                    rest = rest.difference(piece)
+                    grew = True
+            if not grew:
+                break
+        if not rest.is_empty and rest.area > 1e-12:
+            add[longest(rest, nb)].append(rest)
+    for n, pieces in add.items():
+        clean[n] = unary_union([clean[n]] + pieces)
+    # 꼭짓점이 어긋난 채 거의 겹친 경계(남북·보로노이 근사 경계 등): 그 지역과 이웃의 경계선을 모두 잘라
+    # 면으로 다시 나누고, 면마다 원래 가장 많이 덮던 지역에 준다 → 이웃과 똑같은 꼭짓점을 쓰게 된다
+    from shapely.ops import polygonize
+    inv = shapely.coverage_invalid_edges([clean[n] for n in names])
+    bad = [names[i] for i in range(len(names)) if inv[i] is not None and not inv[i].is_empty]
+    if bad:
+        ctree = STRtree([clean[n] for n in names])
+        grp = set(bad)
+        for n in bad:
+            grp |= {names[j] for j in ctree.query(clean[n].buffer(1e-6)) if clean[names[j]].distance(clean[n]) < 1e-6}
+        grp = sorted(grp)
+        gtree = STRtree([clean[n] for n in grp])
+        faces = defaultdict(list)
+        for f in polygonize(unary_union([clean[n].boundary for n in grp])):
+            pt = f.representative_point()
+            hits = [grp[j] for j in gtree.query(pt) if clean[grp[j]].covers(pt)]
+            if not hits:                      # 어느 지역도 아니던 갇힌 면: 가장 길게 맞닿은 지역에
+                hits = [m for m in grp if clean[m].distance(f) < 1e-7]
+                if not hits:
+                    continue
+                faces[longest(f, hits)].append(f)
+                continue
+            faces[max(hits, key=lambda m: clean[m].intersection(f).area)].append(f)
+        for n in grp:
+            if faces[n]:
+                clean[n] = unary_union(faces[n])
+        print(f"경계 정리: 꼭짓점이 어긋난 경계 {len(bad)}곳(이웃 포함 {len(grp)}곳)을 면으로 다시 나눔", file=sys.stderr)
+    ok = shapely.coverage_is_valid(list(clean.values()))
+    print(f"경계 정리: 겹침 {n_ov}곳 잘라 냄, 틈 {len(holes)}곳 메움(큰 틈 {big}곳은 이웃이 나눔), "
+          f"coverage {'정상' if ok else '어긋남 남음'}", file=sys.stderr)
+    return clean
+
+
 DMZ_GAP_EPS = 0.03       # 남북 자료 사이 이 폭(약 5km) 아래의 틈(비무장지대)은 메운다. 바다에 닿는 틈(한강 하구 등)은 그대로
 DMZ_MIN_LON = 126.75     # 이보다 서쪽(한강·임진강 하구)은 메우지 않는다
 
@@ -376,21 +471,24 @@ def build():
             if shared.length >= min_len:
                 adjacency.add(tuple(sorted((by_name[a]["ID"], by_name[b]["ID"]))))
 
-    # ---- 렌더링용 단순화
+    # ---- 렌더링용 단순화(v1.2.25): 겹침·틈 없는 도형 묶음으로 정리한 뒤, 이웃과 함께 쓰는 경계를 똑같이 단순화한다
+    #      (예전에는 지역마다 따로 단순화해 이웃 경계가 서로 어긋나 겹치거나 틈이 보였다)
+    import shapely
+    cover = make_coverage(geom)
+    cnames = list(cover)
+    simp = dict(zip(cnames, shapely.coverage_simplify([cover[n] for n in cnames], COVER_TOL)))
     out_regions = {}
     for name, g in geom.items():
         rid = by_name[name]["ID"]
         polys = []
-        for p in polygons_of(g):
-            if p.area < 2e-5 and p.area < g.area * 0.02:
+        sg = simp[name]
+        for p in polygons_of(sg):
+            if p.is_empty or (p.area < 2e-5 and p.area < sg.area * 0.02):
                 continue  # 아주 작은 섬 조각 생략
-            s = p.simplify(0.0015, preserve_topology=True)
-            if s.is_empty:
-                continue
-            ring = [(round(x, 4), round(y, 4)) for x, y in s.exterior.coords]
+            ring = [(round(x, 4), round(y, 4)) for x, y in p.exterior.coords]
             polys.append(ring)
         if not polys:  # 조각이 모두 작으면 가장 큰 것 하나는 유지
-            p = max(polygons_of(g), key=lambda q: q.area)
+            p = max(polygons_of(sg), key=lambda q: q.area)
             polys.append([(round(x, 4), round(y, 4)) for x, y in p.exterior.coords])
         main = max(polygons_of(g), key=lambda q: q.area)
         lp = main.representative_point() if not main.centroid.within(main) else main.centroid
@@ -400,7 +498,8 @@ def build():
             "area": round(g.area, 6),
         }
 
-    # ---- 지형 경계(도하·산악 돌파) 선: terrain-borders.csv
+    # ---- 지형 경계(도하·산악 돌파) 선: terrain-borders.csv — 그리는 지역 경계(단순화한 도형)에서 따서 경계 위에 정확히 놓는다
+    geom = simp
     id2name = {r["ID"]: n for n, r in by_name.items()}
     terrain = []
     tpath = os.path.join(DATA, "terrain-borders.csv")
@@ -413,7 +512,7 @@ def build():
                 if not b:   # 국경 하천(외곽): 짝 없이 그 지역 바깥 경계 선만
                     if id2name.get(a) != row["구역A"]:
                         raise SystemExit(f"지형 경계 ID·이름 불일치: {row}")
-                    lines = [[(round(x, 4), round(y, 4)) for x, y in ln.simplify(0.0015).coords]
+                    lines = [[(round(x, 4), round(y, 4)) for x, y in ln.coords]
                              for ln in outer_river_lines(geom, id2name[a], row["지형"])]
                     terrain.append({"a": a, "b": "", "kind": row["구분"], "name": row["지형"], "note": row["근거"],
                                     "mult": float(row["공격배수"]), "connector": False, "lines": lines})
@@ -423,9 +522,11 @@ def build():
                 ga, gb = geom[id2name[a]], geom[id2name[b]]
                 cross = {src[id2name[a]], src[id2name[b]]} & {"N", "M"} and {src[id2name[a]], src[id2name[b]]} & {"S", "M"}
                 lines = []
-                for tol in ((0.02,) if cross else (0.0008, 0.004, 0.01)):
+                exact = False
+                for tol in ((1e-7, 0.02) if cross else (1e-7, 0.0008, 0.004, 0.01)):
                     shared = ga.boundary.intersection(gb.buffer(tol))
                     if shared.length >= 0.003:
+                        exact = tol < 1e-6
                         break
                 parts = []
                 if not shared.is_empty and shared.length >= 0.003:
@@ -434,7 +535,8 @@ def build():
                 for ln in parts:
                     if ln.geom_type != "LineString" or ln.length < 0.002:
                         continue
-                    ln = ln.simplify(0.0015)
+                    if not exact:                  # 맞닿은 경계는 이미 단순화된 꼭짓점 그대로(어긋나지 않게)
+                        ln = ln.simplify(0.0015)
                     lines.append([(round(x, 4), round(y, 4)) for x, y in ln.coords])
                 connector = not lines
                 if connector:  # 맞닿지 않은 경계(하구 등)는 가장 가까운 두 점을 잇는다

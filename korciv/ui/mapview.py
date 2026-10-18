@@ -613,22 +613,36 @@ class MapView:
             # 빗금(v1.2.22): 안개 낀 우리 땅과 헷갈리지 않게 주변국 땅에만 옅은 사선
             if fpts:
                 self._foreign_fill(surf, fpts, fland, 0.84 if not theme.dark else 0.7, u)
-        # 땅 칠하기
+        # 땅 칠하기(번짐 층이 있으면 같은 다각형으로 화면 해상도의 '주인 번호' 지도도 그린다)
+        fx = self._fx_layer(extra)
+        idsurf = None
+        if fx is not None and s / self.FX_RES > 1.5:
+            idsurf = pygame.Surface((W_, H_))
+            idsurf.fill((0, 0, 0))
         for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
             x0, y0, x1, y1 = bbox
             if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
                 continue
             fill = colors[rid][0]
+            code = (min(255, owners.get(rid, 1)), 0, 0)
             if (x1 - x0) * s < 1.5 and (y1 - y0) * s < 1.5:
                 p0 = (int(x0 * s + ox), int(y0 * s + oy))
                 if view.collidepoint(p0):
                     surf.set_at(p0, fill)
+                    if idsurf is not None:
+                        idsurf.set_at(p0, code)
                 continue
-            pygame.draw.polygon(surf, fill, sp(span))
-        # 국경 안쪽 번짐 + 전선 그림자: 지도 전체 층을 한 번 만들어 두고 보이는 부분만 잘라 붙인다
-        fx = self._fx_layer(extra)
+            pts = sp(span)
+            pygame.draw.polygon(surf, fill, pts)
+            if idsurf is not None:
+                pygame.draw.polygon(idsurf, code, pts)
+        # 국경 안쪽 번짐 + 전선 그림자: 세기는 지도 전체 층(저해상도)에서, 색과 칠할 곳은 화면 해상도의 주인 번호로
+        # (v1.2.25: 저해상도 층의 색을 그대로 늘리면 확대할수록 색이 이웃 지역으로 번져 경계와 어긋났다)
         if fx is not None:
-            layer, (bx0, by0) = fx
+            layer, (bx0, by0), lut, war_on, rgba = fx
+            fine = s / self.FX_RES > 1.5               # 층 한 칸이 화면에서 1.5픽셀보다 크면 화면 해상도로 색을 입힌다
+            if not fine:
+                layer = rgba
             res = self.FX_RES
             # 캐시 화면 → 기준 좌표 → 층 픽셀
             vx0, vy0 = (0 - ox) / s, (0 - oy) / s
@@ -642,8 +656,14 @@ class MapView:
                 tx, ty = (ix0 / res + bx0) * s + ox, (iy0 / res + by0) * s + oy
                 tw, th = (ix1 - ix0) / res * s, (iy1 - iy0) / res * s
                 if tw * th < 6e7:
-                    surf.blit(pygame.transform.smoothscale(part, (max(1, round(tw)), max(1, round(th)))),
-                              (round(tx), round(ty)))
+                    scaled = pygame.transform.smoothscale(part, (max(1, round(tw)), max(1, round(th))))
+                    if not fine:
+                        surf.blit(scaled, (round(tx), round(ty)))
+                    else:
+                        ds = pygame.Surface((W_, H_))
+                        ds.fill((0, 0, 0))
+                        ds.blit(scaled, (round(tx), round(ty)))
+                        self._fx_compose(surf, ds, idsurf, lut, war_on)
         # 한지 결
         if not theme.dark:
             tex = paper_texture()
@@ -880,17 +900,13 @@ class MapView:
         own = pygame.surfarray.array3d(idm)[..., 0].astype(np.int32)
         land = own > 0
         fb = _edges(own, land, thick=False)
-        rgb = np.zeros(own.shape + (3,), np.float32)
-        alp = np.zeros(own.shape, np.float32)
+        # 세기만 담은 층(R = 국경 안쪽 번짐, G = 전선 그림자). 색·칠할 곳은 그릴 때 화면 해상도 주인 번호로 정한다
+        gch = np.zeros(own.shape, np.float32)
+        wch = np.zeros(own.shape, np.float32)
         r1 = max(1, int(2.5 * res))
         if deep and fb.any():
-            g = np.clip(_box(_box(fb.astype(np.float32), r1), r1) * 2.6, 0, 1) ** 1.3 * 0.55
-            g *= own >= 2
-            lut = np.zeros((max(int(own.max()), max(deep)) + 1, 3), np.float32)
-            for k, c in deep.items():
-                lut[k] = c
-            rgb = lut[own]
-            alp = g
+            gch = np.clip(_box(_box(fb.astype(np.float32), r1), r1) * 2.6, 0, 1) ** 1.3 * 0.55
+        war_on = False
         if wars:
             m = max(int(own.max()), max(max(p) for p in wars)) + 1
             wl = np.zeros((m, m), bool)
@@ -904,20 +920,55 @@ class MapView:
             wb[:, 1:] |= ey
             wb[:, :-1] |= ey
             if wb.any():
-                wv = np.clip(_box(_box(wb.astype(np.float32), r1), r1) * 2.0, 0, 1) * 0.34 * land
-                k = wv / np.maximum(alp + wv, 1e-6)
-                rgb += (np.array((150, 52, 40), np.float32) - rgb) * k[..., None]
-                alp = alp + wv * (1 - alp)
-        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+                wch = np.clip(_box(_box(wb.astype(np.float32), r1), r1) * 2.0, 0, 1) * 0.34
+                war_on = True
+        layer = pygame.Surface((w, h))
         px = pygame.surfarray.pixels3d(layer)
-        px[...] = np.clip(rgb, 0, 255).astype(np.uint8)
+        px[..., 0] = np.clip(gch * 255, 0, 255).astype(np.uint8)
+        px[..., 1] = np.clip(wch * 255, 0, 255).astype(np.uint8)
+        px[..., 2] = 0
         del px
-        pa = pygame.surfarray.pixels_alpha(layer)
-        pa[...] = np.clip(alp * 255, 0, 255).astype(np.uint8)
-        del pa
-        out = (layer, (float(vx0), float(vy0)))
+        lut = np.zeros((256, 3), np.uint8)
+        for k, c in deep.items():
+            if 0 <= k < 256:
+                lut[k] = c
+        # 많이 축소했을 때(층 한 칸이 화면 1.5픽셀 미만)는 이 해상도에서 색까지 입힌 층을 그대로 늘려 쓴다
+        rgba = pygame.Surface((w, h), pygame.SRCALPHA)
+        rgba.fill((0, 0, 0, 0))
+        self._fx_compose(rgba, layer, idm, lut, war_on)
+        out = (layer, (float(vx0), float(vy0)), lut, war_on, rgba)
         self._fx = (key, out)
         return out
+
+    @staticmethod
+    def _fx_compose(surf, ds, idsurf, lut, war_on):
+        """세기 층(ds: R 번짐·G 전선 그림자)에 주인 번호(idsurf, 같은 크기)로 색을 입혀 surf 에 붙인다.
+        번짐은 세력 땅(번호 2 이상)에만 그 세력의 진한 색으로, 전선 그림자는 땅 위에만."""
+        d = pygame.surfarray.pixels3d(ds)
+        own = pygame.surfarray.pixels3d(idsurf)[..., 0]
+        alpha = d[..., 0].copy()
+        alpha[own < 2] = 0
+        w, h = surf.get_size()
+        out = pygame.Surface((w, h), pygame.SRCALPHA)
+        px = pygame.surfarray.pixels3d(out)
+        nz = alpha > 0                              # 색은 번짐이 있는 곳에만(전체를 칠하면 느리다)
+        if nz.any():
+            px[nz] = lut[own[nz]]
+        if war_on:
+            wv = d[..., 1]
+            m = (wv > 0) & (own > 0)
+            if m.any():
+                g = alpha[m].astype(np.uint16)
+                wm = wv[m].astype(np.uint16)
+                k = (wm.astype(np.float32) / np.maximum(g + wm, 1))[:, None]
+                c = px[m].astype(np.float32)
+                px[m] = (c + (np.array((150, 52, 40), np.float32) - c) * k).astype(np.uint8)
+                alpha[m] = np.minimum(g + (wm * (255 - g)) // 255, 255).astype(np.uint8)
+        del px, d, own
+        pa = pygame.surfarray.pixels_alpha(out)
+        pa[...] = alpha
+        del pa
+        surf.blit(out, (0, 0))
 
     def outline_overlay(self, overlay, rid, rgba, width=2, origin=None):
         """반투명 윤곽(overlay 의 왼쪽 위 = 화면 좌표 origin, 기본은 지도 view 왼쪽 위)."""
