@@ -218,6 +218,41 @@ def check(g, fid, center, sel) -> tuple:
     return all(it[1] for it in items), items
 
 
+def feasible(g, fid, center) -> tuple:
+    """이 지역을 중심으로 광역시를 지정할 길이 있는가(v1.2.24: 행동 탭 버튼 활성 여부). (가능 여부, [이유]).
+    중심과 이어진 후보를 모두 고른 경우로 인구·공업 단지·금융 단지를 보고, 식량·행복도는 유리한 지역만
+    골랐을 때도 못 채우면 불가능으로 본다(필요조건만 본다 — 실제 조합은 지정 화면에서 고른다)."""
+    ok_c, why = can_center(g, fid, center)
+    if not ok_c:
+        return False, [why]
+    cands = set(candidates(g, fid, center))
+    comp, stack = {center}, [center]
+    while stack:
+        u = stack.pop()
+        for v in g.world.land_adj[u]:
+            if v in cands and v not in comp:
+                comp.add(v)
+                stack.append(v)
+    reasons = []
+    if len(comp) < 2:
+        reasons.append(f"육상 {C.METRO_RANGE}칸 안에 함께 묶을 내 지역이 없습니다.")
+    regs = [g.regions[r] for r in comp]
+    pop = sum(r.pop for r in regs)
+    if pop < C.METRO_MIN_POP:
+        reasons.append(f"묶을 수 있는 지역을 모두 합쳐도 인구 {pop:,.1f}만(100만 이상 필요).")
+    if not any(r.b["factory"] >= 5 for r in regs):
+        reasons.append("묶을 수 있는 지역에 공업 단지(공장 5단계)가 없습니다.")
+    if not any(r.b["bank"] >= 5 for r in regs):
+        reasons.append("묶을 수 있는 지역에 금융 단지(은행 5단계)가 없습니다.")
+    surplus = {r.id: g.food_prod(fid, r) - r.pop * C.FOOD_PER_POP for r in regs}
+    if surplus[center] + sum(max(0.0, v) for k, v in surplus.items() if k != center) <= 0:
+        reasons.append("식량이 남는 지역만 골라도 식량 생산이 소비보다 적습니다.")
+    happy = g.regions[center].happy + sum(max(0.0, r.happy) for r in regs if r.id != center)
+    if happy < 0:
+        reasons.append("행복도가 높은 지역만 골라도 평균 행복도가 0보다 낮습니다.")
+    return not reasons, reasons
+
+
 def default_name(g, fid, center) -> str:
     short = g.info(center).short
     return short + ("특별시" if g.factions[fid].capital == center else "광역시")

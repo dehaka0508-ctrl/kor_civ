@@ -1596,3 +1596,18 @@ def test_metro_designation_by_clicking_map(app):
         spy.close()
     o = next(o for o in g.options(0, "S002") if o["kind"] == "annex")
     assert o["eff_turns"] < o["turns"]
+
+
+def test_metro_button_disabled_when_impossible(app):
+    """조건을 채울 수 없는 지역에서는 [광역자치단체 지정]이 비활성(눌러도 지정 화면이 열리지 않는다)."""
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    app.select("S002")
+    app.left_open, app.left_tab, app.tab = True, "region", "action"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        assert "광역자치단체 지정" in spy.rects
+        spy.click("광역자치단체 지정")
+    finally:
+        spy.close()
+    assert app.metro_pick is None

@@ -554,10 +554,12 @@ def draw_action_tab(app, body):
         return
     if mt:
         y = _metro_header(app, x, y, w, mt)
-    elif not r.occ:
-        ok_c, _ = M.can_center(g, pid, rid)
-        if ok_c and gui.button((x, y, w, 28), "광역자치단체 지정", size=12,
-                               tooltip=f"이 지역을 중심으로, 지도에서 육상 {C.METRO_RANGE}칸 안의 내 지역을 눌러 골라 하나의 지역(광역시)으로 묶습니다."):
+    else:
+        # 광역시를 만들 길이 없는 지역(조건을 못 채움·점령당하는 중)은 비활성으로 보이고 이유를 알려 준다(v1.2.24)
+        ok_m, why_m = M.feasible(g, pid, rid)
+        tip = (f"이 지역을 중심으로, 지도에서 육상 {C.METRO_RANGE}칸 안의 내 지역을 눌러 골라 하나의 지역(광역시)으로 묶습니다."
+               if ok_m else "지정할 수 없습니다:\n" + "\n".join("· " + s_ for s_ in why_m))
+        if gui.button((x, y, w, 28), "광역자치단체 지정", size=12, enabled=ok_m, tooltip=tip):
             app.start_metro_pick(rid)
         y += 34
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%

@@ -299,3 +299,25 @@ def test_border_line_group_takes_whole_metro_slot():
         g._phase_projects(("build",))
     assert all(g.regions[r].project is None for r in m["members"])
     assert all(g.regions[r].lines.get(enemy, 0) >= 2 for r in touching)
+
+
+def test_feasible_reports_why_designation_is_impossible():
+    """v1.2.24: 행동 탭 [광역자치단체 지정]은 조건을 채울 길이 없으면 비활성(이유를 툴팁으로)."""
+    g, sel = _setup()
+    ok, why = M.feasible(g, 0, "S002")
+    assert ok and not why
+    g.regions["S002"].b["factory"] = 4
+    ok, why = M.feasible(g, 0, "S002")
+    assert not ok and any("공업 단지" in w for w in why)
+    g.regions["S002"].b["factory"] = 5
+    for r in sel:
+        g.regions[r].happy = -20
+    ok, why = M.feasible(g, 0, "S002")
+    assert not ok and any("행복도" in w for w in why)
+    # 혼자뿐인 지역(같이 묶을 내 지역이 없음)
+    g2 = new_game(player_start="S002", n_enemies=1)
+    ok, why = M.feasible(g2, 0, "S002")
+    assert not ok and any("함께 묶을" in w for w in why)
+    # 가능하다고 본 경우 실제로 모두 고르면 지정 조건을 채운다(이 설정에서)
+    g3, sel3 = _setup()
+    assert M.feasible(g3, 0, "S002")[0] and M.check(g3, 0, "S002", sel3)[0]
