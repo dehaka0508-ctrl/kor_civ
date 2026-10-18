@@ -1532,3 +1532,67 @@ def test_rally_pick_flow(app):
         frame(app)                                   # 집결지 깃발 표시
     finally:
         spy.close()
+
+
+def _click_map(app, rid):
+    pos = tuple(int(v) for v in app.map.label_screen(rid))
+    old = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: pos
+    try:
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)]); app.frame()
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)]); app.frame()
+    finally:
+        pygame.mouse.get_pos = old
+
+
+def test_metro_designation_by_clicking_map(app):
+    """v1.2.23: [광역자치단체 지정] → 지도에서 육상 2칸 안의 내 지역을 눌러 넣고 빼고, Enter 로 지정(Esc 취소).
+    광역시 행동 탭의 편입 선택지는 줄어든 턴 수를 보여 준다."""
+    from korciv import metro as M
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    nb = sorted(g.world.land_adj["S002"])[:3]
+    for r in nb:
+        g.transfer_region(r, 0)
+    for r in ["S002"] + nb:
+        rr = g.regions[r]
+        rr.resist, rr.project, rr.happy = None, None, 10.0
+        rr.b["farm"] = 5
+    g.regions["S002"].b["factory"] = 5
+    g.regions[nb[0]].b["bank"] = 5
+    g.player.money = 10 ** 7
+    app.select("S002")
+    app.left_open, app.left_tab, app.tab = True, "region", "action"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        spy.click("광역자치단체 지정")
+    finally:
+        spy.close()
+    assert app.metro_pick and app.metro_pick["center"] == "S002" and app.modal is None
+    frame(app)
+    _key(app, pygame.K_ESCAPE)                                    # Esc: 취소
+    assert app.metro_pick is None
+    app.start_metro_pick("S002")
+    frame(app)
+    far = next(r for r in g.regions if g.regions[r].owner != 0 and r not in M.distances(g, "S002", 2))
+    app.toggle_metro_pick(far)                                     # 고를 수 없는 곳은 무시
+    assert not app.metro_pick["sel"]
+    for r in nb:
+        _click_map(app, r)
+    assert app.metro_pick["sel"] == set(nb)
+    _click_map(app, nb[2])                                         # 다시 누르면 뺀다
+    assert app.metro_pick["sel"] == set(nb[:2])
+    _click_map(app, nb[2])
+    t0 = g.turn
+    _key(app, pygame.K_RETURN)                                     # Enter: 지정(턴 종료로 넘어가지 않는다)
+    assert g.turn == t0 and app.metro_pick is None
+    m = M.of(g, "S002")
+    assert m and set(m["members"]) == {"S002", *nb}
+    assert app.sel == "S002" and app.tab == "action"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+    finally:
+        spy.close()
+    o = next(o for o in g.options(0, "S002") if o["kind"] == "annex")
+    assert o["eff_turns"] < o["turns"]

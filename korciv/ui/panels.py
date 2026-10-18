@@ -557,8 +557,8 @@ def draw_action_tab(app, body):
     elif not r.occ:
         ok_c, _ = M.can_center(g, pid, rid)
         if ok_c and gui.button((x, y, w, 28), "광역자치단체 지정", size=12,
-                               tooltip=f"이 지역을 중심으로 육상 {C.METRO_RANGE}칸 안의 내 지역을 골라 하나의 지역(광역시)으로 묶습니다."):
-            app.modal = ("metro", {"center": rid, "sel": set(), "name": ""})
+                               tooltip=f"이 지역을 중심으로, 지도에서 육상 {C.METRO_RANGE}칸 안의 내 지역을 눌러 골라 하나의 지역(광역시)으로 묶습니다."):
+            app.start_metro_pick(rid)
         y += 34
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
     on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
@@ -651,7 +651,9 @@ def draw_action_tab(app, body):
             if o.get("pool"):
                 label = o["name"]                                            # 예: '광역 경작지 4단계
             gui.text((x, yy + 2), label, 13, t.text if o["ok"] else t.muted, "semibold", max_w=w - 70)
-            sub = f"총 {o['cost']:,.0f} · {o['turns']}턴 · 턴당 {o['per_turn']:,.0f}"
+            eff = o.get("eff_turns", o["turns"])
+            turns_txt = f"{eff}턴(기본 {o['turns']}턴)" if eff < o["turns"] else f"{o['turns']}턴"
+            sub = f"총 {o['cost']:,.0f} · {turns_txt} · 턴당 {o['per_turn']:,.0f}"
             if o.get("oil"):
                 sub += f" · 석유 {o['oil']}"
             if not o["ok"]:

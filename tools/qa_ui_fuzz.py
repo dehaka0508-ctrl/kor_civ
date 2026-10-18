@@ -233,7 +233,8 @@ def force_state(app, rng):
                 app.select(rng.choice(sel))
                 app.left_open, app.left_tab, app.tab = True, "region", "action"
             else:
-                app.modal = ("metro", {"center": c, "sel": set(sel[1:]), "name": ""})
+                app.start_metro_pick(c)                    # 광역시 지정(지도 클릭 방식, v1.2.23)
+                app.metro_pick["sel"] = set(sel[1:])
     if rng.random() < 0.06:
         # v1.2.21: 생산 집결지 고르기, 여러 부대로 함께 공격하는 확인 창, 중립 지역 [행동] 탭
         mine = [r.id for r in g.regions_of(pid)]

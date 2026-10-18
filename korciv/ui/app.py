@@ -171,6 +171,7 @@ class App:
         self.war_confirm = None      # 선전포고 확인 대기 중인 세력
         self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
         self.rally_pick = None       # 생산 집결지 고르는 중: 지역 ID, 일괄이면 "*"
+        self.metro_pick = None       # 광역시 지정 중(v1.2.23): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
         self.tab = "action"
@@ -474,6 +475,8 @@ class App:
         self.draw_compass()
         self.gui.input_enabled = not modal_open and not under_ctx
         self.draw_rally_banner()
+        if getattr(self, "metro_pick", None) is not None:
+            modals.draw_metro_pick(self)
         self.draw_mode_chips()
         self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
         self.draw_end_turn()
@@ -553,6 +556,22 @@ class App:
                 # 시야 밖: 바랜 한지처럼(채도를 빼고 먹빛을 살짝)
                 fill = mix(desaturate(fill, 0.65), (120, 110, 92) if not t.dark else (0, 0, 0), 0.28)
             out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
+        mp = getattr(self, "metro_pick", None)
+        if mp and g and not pick_mode:
+            # 광역시 지정 중: 중심·고른 지역은 금빛, 고를 수 있는 지역은 밝게, 나머지는 어둡게
+            from .. import metro as M
+            cands = set(M.candidates(g, pid, mp["center"]))
+            gold = (212, 175, 55)
+            for rid, (fill, line) in out.items():
+                if rid == mp["center"]:
+                    fill = mix(fill, gold, 0.8)
+                elif rid in mp["sel"]:
+                    fill = mix(fill, gold, 0.55)
+                elif rid in cands:
+                    fill = mix(fill, (255, 255, 255), 0.45)
+                else:
+                    fill = mix(fill, (70, 64, 56) if not t.dark else (0, 0, 0), 0.4)
+                out[rid] = (fill, line)
         return out
 
     def map_extra(self, pick_mode=False):
@@ -759,6 +778,12 @@ class App:
                     self.screen.blit(glow, box.topleft)
                 mv.outline(self.screen, self.sel, (255, 248, 230), max(3, int(3 * u)))
                 mv.outline(self.screen, self.sel, self.theme.gold, max(2, int(2 * u)))
+        mp = getattr(self, "metro_pick", None)
+        if mp is not None:
+            # 광역시 지정 중: 고른 지역(중심 포함)에 금빛 윤곽
+            for rid in [mp["center"]] + sorted(mp["sel"]):
+                mv.outline(self.screen, rid, (255, 248, 230), max(3, int(3 * u)))
+                mv.outline(self.screen, rid, self.theme.gold, max(2, int(2 * u)))
         # 전투 강조 (1초)
         dt = pygame.time.get_ticks() - self.flash_t
         if dt < 1200 and g.battle_regions:
@@ -884,9 +909,83 @@ class App:
             self.rally_pick = None
             self.toast("집결지 지정을 취소했습니다.")
 
+    # ---- 광역시 지정(v1.2.23): 지도에서 지역을 눌러 고른다
+    def start_metro_pick(self, center):
+        from .. import metro as M
+        self.metro_pick = {"center": center, "sel": set(), "name": ""}
+        self.rally_pick = None
+        self.left_open = False
+        self.sel, self.sel_army = None, None      # 이동 범위·선택 윤곽이 고르기 색과 섞이지 않게
+        self.fit_regions(M.candidates(self.game, self.game.player_id, center),
+                         right_px=(modals.METRO_PANEL_W + 24) * self.gui.u)
+        self.changed()
+
+    def fit_regions(self, rids, right_px=0):
+        """rids 가 모두 보이게 지도를 옮기고 확대한다(오른쪽 right_px 만큼은 패널이 가리므로 비워 둔다)."""
+        mv = self.map
+        boxes = [mv.rbbox[r] for r in rids if r in mv.rbbox]
+        if not boxes:
+            return
+        x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        avail_w = max(100, mv.view.w - right_px)
+        bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+        z = min(avail_w / (bw * mv.fit), mv.view.h / (bh * mv.fit)) * 0.8
+        mv.z = max(2.0, min(12.0, z))
+        s = mv.scale
+        mv.cx = (x0 + x1) / 2 + right_px / 2 / s          # 패널 왼쪽 빈 곳의 가운데에 오게
+        mv.cy = (y0 + y1) / 2
+        mv._clamp()
+        mv.invalidate()
+
+    def cancel_metro_pick(self):
+        if self.metro_pick is not None:
+            self.metro_pick = None
+            self.gui.blur()
+            self.changed()
+
+    def toggle_metro_pick(self, node):
+        """지도에서 누른 지역을 광역시 후보에 넣거나 뺀다(중심에서 육상 2칸 안의 내 지역만)."""
+        from .. import metro as M
+        mp = self.metro_pick
+        g = self.game
+        if mp is None or node is None:
+            return
+        if node == mp["center"]:
+            self.toast("중심 지역은 늘 포함됩니다.")
+            return
+        if node not in M.candidates(g, g.player_id, mp["center"]):
+            self.toast(f"고를 수 없는 지역입니다(중심에서 육상 {C.METRO_RANGE}칸 안의 내 지역만).", self.theme.bad)
+            return
+        (mp["sel"].discard if node in mp["sel"] else mp["sel"].add)(node)
+        self.changed()
+
+    def confirm_metro_pick(self):
+        from .. import metro as M
+        mp = self.metro_pick
+        g = self.game
+        if mp is None:
+            return False
+        pid = g.player_id
+        sel = [mp["center"]] + sorted(mp["sel"])
+        ok, _ = M.check(g, pid, mp["center"], sel)
+        if not ok:
+            self.toast("지정 조건을 아직 채우지 못했습니다.", self.theme.bad)
+            return False
+        done, msg = g.create_metro(pid, mp["center"], sel, mp.get("name", ""))
+        self.toast(msg, None if done else self.theme.bad)
+        if done:
+            self.metro_pick = None
+            self.gui.blur()
+            self.select(sel[0])
+            self.left_open, self.left_tab, self.tab = True, "region", "action"
+            self.changed()
+        return done
+
     def start_rally_pick(self, rid):
         """생산 집결지 고르기 시작(rid=None 이면 일괄 지정): 다음에 지도에서 누른 내 지역이 집결지."""
         self.rally_pick = rid if rid is not None else "*"
+        self.metro_pick = None
         self.left_open = False
 
     def finish_rally_pick(self, node):
@@ -1181,6 +1280,9 @@ class App:
                     self.pick_popup = node
                     mv.invalidate()
                 return
+            if getattr(self, "metro_pick", None) is not None:
+                self.toggle_metro_pick(node)
+                return
             if getattr(self, "rally_pick", None) is not None:
                 self.finish_rally_pick(node)
                 return
@@ -1246,6 +1348,9 @@ class App:
 
     def right_click(self, node, pos):
         g = self.game
+        if getattr(self, "metro_pick", None) is not None:
+            self.toggle_metro_pick(node)              # 광역시 지정 중: 우클릭도 넣고 빼기
+            return
         if getattr(self, "rally_pick", None) is not None:
             self.rally_pick = None                   # 집결지 고르는 중 우클릭: 취소
             self.toast("집결지 지정을 취소했습니다.")
@@ -1395,7 +1500,14 @@ class App:
         for k in list(g.keys):
             if g.focus:
                 continue
-            if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE) and \
+                    getattr(self, "metro_pick", None) is not None:
+                g.keys.remove(k)                     # 광역시 지정 중: Enter 지정 · Esc 취소(턴 종료로 넘어가지 않게)
+                if k.key == pygame.K_ESCAPE:
+                    self.cancel_metro_pick()
+                else:
+                    self.confirm_metro_pick()
+            elif k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 g.keys.remove(k)                     # 이 Enter는 여기서 소비(새로 뜬 대사 창이 같은 Enter로 닫히지 않게)
                 if pygame.key.get_mods() & pygame.KMOD_SHIFT or not self.next_region():
                     self.request_end_turn()

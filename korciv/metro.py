@@ -447,6 +447,7 @@ def options(g, fid, mid) -> list:
             elif k == "annex" and ("annex", key) not in seen:
                 seen.add(("annex", key))
                 add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], site=r)
+                opts[-1]["eff_turns"] = o.get("eff_turns", o["turns"])     # 구성 지역 수만큼 줄어든 턴
             elif k in ("science", "econ") and (k, key) not in seen:
                 if k == "econ" and key == "exchange" and any("exchange" in g.regions[x].econ for x in sel):
                     continue                     # 증권거래소는 광역시에 하나
@@ -516,8 +517,11 @@ def start(g, fid, mid, kind, key, border=None, site=None, pool=None) -> tuple:
             return False, f"석유 {u['oil']} 필요"
         g.pay_oil(fid, u["oil"])
         c.h_delta += C.UNIT_START_HAPPY[u["weight"]]
+    name = o["name"]
+    if kind == "annex":
+        name = f"편입: {g.info(key).name}"          # '공동 n곳' 은 바뀌므로 이름에 넣지 않는다
     p = Project(kind=kind, key=key, level=o["level"], turns=o["turns"], per_turn=o["per_turn"],
-                border=o["border"], name=o["name"])
+                border=o["border"], name=name)
     p.metro, p.site, p.pool = mid, o["site"], o["pool"]
     g.proj_counter = getattr(g, "proj_counter", 0) + 1
     p.priority = g.proj_counter
@@ -526,7 +530,8 @@ def start(g, fid, mid, kind, key, border=None, site=None, pool=None) -> tuple:
         rr.project = p
         if not f.is_ai:
             rr.focus = rr.pop_focus = False
-    return True, f"{m['name']}: {o['name']} 착수 ({o['turns']}턴, 턴당 {o['per_turn']:,.0f})"
+    turns = g.project_left(m["center"]) if kind == "annex" else o["turns"]
+    return True, f"{m['name']}: {name} 착수 ({turns}턴, 턴당 {o['per_turn']:,.0f})"
 
 
 def complete(g, f, p):

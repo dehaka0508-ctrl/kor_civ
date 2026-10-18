@@ -260,6 +260,9 @@ def test_metro_annex_counts_as_joint_annex_capped_at_half():
         p = g.regions["S002"].project
         assert g.joint_count(0, tgt["key"]) == len(sel)
         assert g.project_left("S002") == math.ceil(p.turns * (1 - red) - 1e-9)
+        # v1.2.23: 행동 탭 선택지·착수 알림의 턴 수도 줄어든 값, 작업 이름에는 바뀌는 '공동 n곳'을 넣지 않는다
+        assert tgt["eff_turns"] == g.project_left("S002") < tgt["turns"]
+        assert f"({g.project_left('S002')}턴" in msg and p.name == f"편입: {g.info(tgt['key']).name}"
         g._fund_projects()
         g._advance_annexes()
         assert p.progress == pytest.approx(1 / (1 - red))

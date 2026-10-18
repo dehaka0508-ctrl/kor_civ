@@ -1860,8 +1860,10 @@ class Game:
             name = f"편입: {self.info(t['target']).name} [{t['value']}]"
             n = t["joint"] + t["self_weight"]
             if n > 1:
-                name += f" · 공동 {n}곳 −{t['reduction']:.0%} (약 {t['eff_turns']}턴)"
+                name += f" · 공동 {n}곳 −{t['reduction']:.0%}"
             add("annex", t["target"], name, t["cost"], t["turns"])
+            # 공동 편입(광역시는 구성 지역 수만큼)으로 줄어든 실제 소요 턴(v1.2.23: 행동 탭·착수 알림에 표시)
+            opts[-1]["eff_turns"] = t["eff_turns"]
         for step in (self.science_available(fid) if "science" in self.settings.victories else ()):
             if not self.science_site_ok(fid, rid, step):
                 continue
@@ -2297,6 +2299,9 @@ class Game:
             if key == "currency":
                 self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
                                      f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
+        if kind == "annex":
+            label = f"편입: {self.info(key).name}"
+            return True, f"{label} 착수 ({self.project_left(rid)}턴, 턴당 {opt['per_turn']:,.0f})"
         return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
 
     def cancel_project(self, fid, rid):
