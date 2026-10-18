@@ -127,13 +127,47 @@ def halo_text(text, size, color, halo, weight="semibold", rad=1):
     return s
 
 
-def draw_ridge_marks(surf, pts, k=1.0, spacing=11):
-    """산줄기: 경로를 따라 작은 산 모양(∧)을 찍는다(대동여지도식)."""
+# 산 모양 3가지(v1.2.22, 대동여지도식): 기준 높이 h·폭 w 에 곱하는 꼭짓점(x, y). 바닥은 열어 둔다.
+RIDGE_SHAPES = (
+    # 홑봉우리
+    ((-1.0, 0.45), (-0.15, -0.55), (0.0, -0.65), (0.15, -0.55), (1.0, 0.45)),
+    # 쌍봉(왼쪽이 낮은 두 봉우리)
+    ((-1.25, 0.45), (-0.55, -0.42), (-0.12, 0.0), (0.35, -0.72), (1.2, 0.45)),
+    # 뾰족한 높은 봉우리
+    ((-0.8, 0.45), (-0.05, -0.95), (0.05, -0.95), (0.8, 0.45)),
+)
+RIDGE_SHADE = (138, 148, 96)
+
+
+def _hash32(*xs):
+    v = 2166136261
+    for x in xs:
+        v = ((v ^ (x & 0xFFFFFFFF)) * 16777619) & 0xFFFFFFFF
+    v ^= v >> 13
+    return (v * 1274126177) & 0xFFFFFFFF
+
+
+def _ridge_pick(seed, i):
+    """산줄기 seed 의 i 번째 산: (모양, 크기 배율, 위아래 어긋남). 늘 같은 값(다시 그려도 흔들리지 않게).
+    두 개씩 짝을 지어 짝 안에서는 모양이 다르게 해, 같은 모양이 세 번 넘게 이어지지 않는다."""
+    v = _hash32(seed, i // 2)
+    shape = (v >> 5) % 3
+    if i % 2:
+        shape = (shape + 1 + ((v >> 9) & 1)) % 3
+    w = _hash32(seed + 7, i)
+    return shape, 0.85 + ((w >> 11) % 7) * 0.05, (((w >> 17) % 3) - 1) * 0.12
+
+
+def draw_ridge_marks(surf, pts, k=1.0, spacing=11, seed=0):
+    """산줄기: 경로를 따라 작은 산 모양을 찍는다(대동여지도식). 홑봉우리·쌍봉·뾰족한 봉우리를 섞어 늘어놓는다."""
     col = TERRAIN_COLORS["돌파"]
     step = spacing * k
-    h, w = 6 * k, 5.5 * k
+    h0, w0 = 6 * k, 5.5 * k
     lw = max(1, int(1.3 * k))
+    sw, sh = surf.get_size()
+    pad = 12 * k
     acc = 0.0
+    i = 0
     for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
         d = math.hypot(x2 - x1, y2 - y1)
         t = 0.0
@@ -142,10 +176,53 @@ def draw_ridge_marks(surf, pts, k=1.0, spacing=11):
             acc = 0.0
             f = t / d if d else 0
             x, y = x1 + (x2 - x1) * f, y1 + (y2 - y1) * f
-            tri = [(x - w, y + h * 0.45), (x, y - h * 0.65), (x + w, y + h * 0.45)]
-            pygame.draw.polygon(surf, RIDGE_FILL, tri)
-            pygame.draw.lines(surf, col, False, tri, lw)
+            i += 1
+            if x < -pad or y < -pad or x > sw + pad or y > sh + pad:
+                continue                    # 화면 밖은 건너뛴다(모양 순서는 그대로)
+            shape, sc, dy = _ridge_pick(seed, i - 1)
+            h, w = h0 * sc, w0 * sc
+            y += dy * h0
+            poly = [(x + px * w, y + py * h) for px, py in RIDGE_SHAPES[shape]]
+            pygame.draw.polygon(surf, RIDGE_FILL, poly)
+            # 오른쪽 비탈 그늘(가장 높은 봉우리 아래로 짧은 획)
+            top = min(range(len(poly)), key=lambda j: poly[j][1])
+            px, py = poly[top]
+            if k >= 0.7:
+                pygame.draw.line(surf, RIDGE_SHADE, (px + 0.9 * k, py + 2.2 * k),
+                                 (px + w * 0.45, y + h * 0.35), max(1, lw))
+            pygame.draw.lines(surf, col, False, poly, lw)
         acc += d - t
+
+
+def _clip_half(P, axis, val, keep_ge):
+    """다각형 P(n×2)를 축 axis 의 val 한쪽(keep_ge 면 ≥ 쪽)으로 자른다(Sutherland–Hodgman, numpy)."""
+    if not len(P):
+        return P
+    Q = np.roll(P, -1, axis=0)
+    a, b = P[:, axis], Q[:, axis]
+    ia = a >= val if keep_ge else a <= val
+    ib = b >= val if keep_ge else b <= val
+    cross = ia != ib
+    d = b - a
+    t = np.divide(val - a, d, out=np.zeros_like(a), where=d != 0)
+    out = np.empty((2 * len(P), 2))
+    out[0::2] = P
+    out[1::2] = P + (Q - P) * t[:, None]
+    keep = np.empty(2 * len(P), bool)
+    keep[0::2] = ia
+    keep[1::2] = cross
+    return out[keep]
+
+
+def clip_poly(P, x0, y0, x1, y1):
+    """화면 사각형 밖으로 크게 뻗은 다각형을 사각형(조금 넓게)으로 잘라 그리기를 빠르게 한다."""
+    if P[:, 0].min() >= x0 and P[:, 0].max() <= x1 and P[:, 1].min() >= y0 and P[:, 1].max() <= y1:
+        return P
+    for axis, val, ge in ((0, x0, True), (0, x1, False), (1, y0, True), (1, y1, False)):
+        P = _clip_half(P, axis, val, ge)
+        if not len(P):
+            break
+    return P
 
 
 def dashed(surf, p1, p2, color, width=2, dash=6):
@@ -230,6 +307,10 @@ class MapView:
         # 지형 경계: (종류, [선...], 연결선 여부)
         self.terrain_lines = [("도하" if t["kind"] == "도하" else "돌파", [proj_arr(l) for l in t["lines"]],
                                t["connector"]) for t in world.terrain_lines]
+        # 국경 하천(압록강·두만강: 한쪽만 우리 지역인 바깥 경계 강)인지
+        self.terrain_outer = [bool(t.get("a")) and not t.get("b") for t in world.terrain_lines]
+        # 중국·러시아와 맞닿은 국경선(v1.2.22): tools/build_foreign.py 가 우리 지역 경계에 맞춰 만든다
+        self.border_lines = [proj_arr(l) for l in fl.get("borders", []) if len(l) >= 2]
         # 지역 경계 선분: 두 지역이 함께 쓰는 선분(국경 후보)과 한 지역만 쓰는 선분(해안·바깥 경계)
         seg = {}
         for rid, arr, bbox in self.polys:
@@ -269,7 +350,10 @@ class MapView:
         self.poly_span = [put(arr) for _, arr, _ in self.polys]
         self.sea_span = {sid: [put(ext) for ext, _ in parts] for sid, parts in self.sea_polys.items()}
         self.foreign_span = [put(arr) for _, arr, _ in self.foreign_polys]
-        self.terrain_span = [(kind, [put(a) for a in lines], conn) for kind, lines, conn in self.terrain_lines]
+        self.terrain_span = [(kind, [put(a) for a in lines], conn, outer)
+                             for (kind, lines, conn), outer in zip(self.terrain_lines, self.terrain_outer)]
+        self.border_span = [put(a) for a in self.border_lines]
+        self.terrain_box = [[(*a.min(axis=0), *a.max(axis=0)) for a in lines] for _, lines, _ in self.terrain_lines]
         self.pair_span = [(a_, b_, put(c)) for a_, b_, c in self.pair_lines]
         # 광역(시·도)이 다른 두 지역 사이의 경계 = 광역 경계(같은 사슬로 한 번만 긋는다)
         self.pair_prov = {i for i, (a_, b_, _) in enumerate(self.pair_lines)
@@ -374,10 +458,7 @@ class MapView:
         if not self.view.collidepoint(pos):
             return None
         bx, by = self.to_base(*pos)
-        best, best_area = None, 1e18
-        for rid, arr, (x0, y0, x1, y1) in self.polys:
-            if x0 <= bx <= x1 and y0 <= by <= y1 and self.area[rid] < best_area and pip(bx, by, arr):
-                best, best_area = rid, self.area[rid]
+        best = self.pick_land(bx, by)
         if best:
             return best
         for _, arr, (x0, y0, x1, y1) in self.foreign_polys:
@@ -388,6 +469,14 @@ class MapView:
                 if pip(bx, by, ext) and not any(pip(bx, by, h) for h in holes):
                     return sid
         return None
+
+    def pick_land(self, bx, by):
+        """기준 좌표의 우리 지역(겹치면 작은 쪽), 없으면 None."""
+        best, best_area = None, 1e18
+        for rid, arr, (x0, y0, x1, y1) in self.polys:
+            if x0 <= bx <= x1 and y0 <= by <= y1 and self.area[rid] < best_area and pip(bx, by, arr):
+                best, best_area = rid, self.area[rid]
+        return best
 
     # ------------------------------------------------------------ 렌더
     def _screen_poly(self, arr):
@@ -474,9 +563,14 @@ class MapView:
         def sp(span):
             return T[span[0]:span[1]].tolist()
 
+        def sp_clip(span):                  # 큰 다각형(주변국 땅·해역): 화면 사각형으로 잘라서
+            return clip_poly(T[span[0]:span[1]], -16, -16, W_ + 16, H_ + 16).tolist()
+
         for sid, spans in self.sea_span.items():
             for span in spans:
-                pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), sp(span))
+                pts = sp_clip(span)
+                if len(pts) >= 3:
+                    pygame.draw.polygon(surf, sea_colors.get(sid, theme.sea), pts)
         # 청해파 무늬(화면 기준으로 깔아서 확대해도 굵기가 같다)
         R = max(10, int(24 * u))
         pat = sea_pattern(R, mix(theme.sea, (255, 255, 255), 0.55 if not theme.dark else 0.25), 46 if not theme.dark else 30)
@@ -509,12 +603,16 @@ class MapView:
         # 주변국 땅(플레이 불가): 바다 위, 우리 땅 아래에 옅은 회색으로
         if self.foreign_polys:
             fland = mix(theme.neutral, (128, 128, 124), 0.45 if not theme.dark else 0.25)
+            fpts = []
             for (_, arr, (x0, y0, x1, y1)), span in zip(self.foreign_polys, self.foreign_span):
                 if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
                     continue
-                pts = sp(span)
+                pts = sp_clip(span)
                 if len(pts) >= 3:                   # 테두리 없이(가까운·먼 조각의 이음매가 보이지 않게)
-                    pygame.draw.polygon(surf, fland, pts)
+                    fpts.append(pts)
+            # 빗금(v1.2.22): 안개 낀 우리 땅과 헷갈리지 않게 주변국 땅에만 옅은 사선
+            if fpts:
+                self._foreign_fill(surf, fpts, fland, 0.84 if not theme.dark else 0.7, u)
         # 땅 칠하기
         for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
             x0, y0, x1, y1 = bbox
@@ -581,23 +679,32 @@ class MapView:
             pts = sp(span)
             if len(pts) >= 2:
                 pygame.draw.lines(surf, border_ink, False, pts, bw)
+        # 나라 국경(중국·러시아, v1.2.22): 옅은 자줏빛 띠 + 일점쇄선. 국경 하천은 그 위에 그린다
+        if self.border_span:
+            self._national_border(surf, [sp(span) for span in self.border_span], theme, u)
 
         if show_terrain:
             tw = max(2, int((2 if self.z < 2 else (3 if self.z < 4 else 4)) * u))
             halo = mix(theme.sea, (255, 255, 255), 0.4)
-            for kind, spans, connector in self.terrain_span:
+            outer_halo = mix(TERRAIN_COLORS["도하"], (30, 25, 20), 0.45)
+            rk = 0.8 if self.z < 2 else (1.0 if self.z < 4 else (1.2 if self.z < 8 else 1.4))   # 확대하면 산 모양도 조금 크게
+            for li, (kind, spans, connector, outer) in enumerate(self.terrain_span):
                 col = TERRAIN_COLORS[kind]
-                for span in spans:
+                for si, span in enumerate(spans):
+                    bx0, by0, bx1, by1 = self.terrain_box[li][si]
+                    if bx1 * s + ox < -20 or bx0 * s + ox > W_ + 20 or by1 * s + oy < -20 or by0 * s + oy > H_ + 20:
+                        continue                    # 화면 밖 선은 건너뛴다
                     pts = sp(span)
                     if len(pts) < 2:
                         continue
                     if connector:
                         dashed(surf, pts[0], pts[-1], col, tw)
                     elif kind == "도하":
-                        pygame.draw.lines(surf, halo, False, pts, tw + 2)
+                        # 국경 하천은 바다색 테두리 대신 짙은 테두리(국경 띠 위에서 강으로 또렷하게)
+                        pygame.draw.lines(surf, outer_halo if outer else halo, False, pts, tw + 2)
                         pygame.draw.lines(surf, col, False, pts, tw)
                     else:
-                        draw_ridge_marks(surf, pts, u * (0.8 if self.z < 2 else 1.0))
+                        draw_ridge_marks(surf, pts, u * rk, seed=li * 31 + si)
         # 독도(동도·서도): 지역은 아니지만 지도에 그린다. 실제 크기로는 보이지 않아 최소 크기로 키운다
         land_c = colors.get(DOKDO_NEAR, (theme.neutral,))[0]   # 울릉군과 같은 색
         for lon, lat, r_deg in DOKDO:
@@ -670,6 +777,81 @@ class MapView:
         self.cache = surf
         self.cache_meta = {"key": full_key, "s": s, "cx": self.cx, "cy": self.cy,
                            "ox": ox, "oy": oy}    # 캐시 픽셀 = 기준 좌표 × s + (ox, oy)
+
+    def _foreign_fill(self, surf, polys, color, shade, u):
+        """주변국 땅: polys 를 color 로 칠하고 그 안에만 사선 빗금(shade 배 어둡게)을 긋는다.
+        투명 층에 칠한 뒤 빗금 무늬(바탕 흰색·선 회색)를 곱해서 한 번에 붙인다."""
+        w, h = surf.get_size()
+        layer = self.__dict__.get("_flayer")
+        if layer is None or layer.get_size() != (w, h):
+            layer = self._flayer = pygame.Surface((w, h), pygame.SRCALPHA)
+        layer.fill((0, 0, 0, 0))
+        rects = [pygame.draw.polygon(layer, (*color, 255), pts) for pts in polys]
+        r = rects[0].unionall(rects[1:]).clip(layer.get_rect())
+        if r.w <= 0 or r.h <= 0:
+            return                          # 화면에 걸친 주변국 땅이 없다
+        gap = max(6, int(9 * u))
+        key = (w, h, gap, shade)
+        pat = self.__dict__.get("_hatch_pat")
+        if pat is None or pat[0] != key:
+            p = pygame.Surface((w, h), pygame.SRCALPHA)
+            p.fill((255, 255, 255, 255))
+            c = int(255 * shade)
+            for x in range(-h, w, gap):
+                pygame.draw.line(p, (c, c, c, 255), (x, h), (x + h, 0), 1)
+            pat = self._hatch_pat = (key, p)
+        layer.blit(pat[1], r.topleft, area=r, special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(layer, r.topleft, area=r)
+
+    @staticmethod
+    def _national_border(surf, lines, theme, u):
+        """나라 국경: 바깥으로 옅게 번지는 띠 + 먹빛 일점쇄선(지도의 국경 기호)."""
+        w, h = surf.get_size()
+        bwid = max(5, int(8 * u))
+        vis = []
+        for pts in lines:
+            if len(pts) < 2:
+                continue
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            if max(xs) < -bwid or min(xs) > w + bwid or max(ys) < -bwid or min(ys) > h + bwid:
+                continue
+            vis.append((pts, min(xs), min(ys), max(xs), max(ys)))
+        if not vis:
+            return
+        lines = [v[0] for v in vis]
+        x0 = max(0, int(min(v[1] for v in vis)) - bwid)
+        y0 = max(0, int(min(v[2] for v in vis)) - bwid)
+        x1 = min(w, int(max(v[3] for v in vis)) + bwid + 1)
+        y1 = min(h, int(max(v[4] for v in vis)) + bwid + 1)
+        if x1 > x0 and y1 > y0:
+            band = pygame.Surface((x1 - x0, y1 - y0), pygame.SRCALPHA)
+            bc = (128, 70, 104, 80) if not theme.dark else (190, 120, 160, 70)
+            for pts in lines:
+                q = [(x - x0, y - y0) for x, y in pts]
+                pygame.draw.lines(band, bc, False, q, bwid)
+                for p in (q[0], q[-1]):
+                    pygame.draw.circle(band, bc, (int(p[0]), int(p[1])), bwid // 2)
+            surf.blit(band, (x0, y0))
+        ink = (88, 46, 72) if not theme.dark else (205, 160, 190)
+        lw = max(1, int(1.6 * u))
+        dash, dot, gap = 9 * u, 2 * u, 3.5 * u
+        pattern = ((dash, True), (gap, False), (dot, True), (gap, False))
+        for pts in lines:
+            i, left, on = 0, pattern[0][0], pattern[0][1]
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                d = math.hypot(x2 - x1, y2 - y1)
+                t = 0.0
+                while d - t > 1e-6:
+                    step = min(left, d - t)
+                    if on:
+                        f0, f1 = t / d, (t + step) / d
+                        pygame.draw.line(surf, ink, (x1 + (x2 - x1) * f0, y1 + (y2 - y1) * f0),
+                                         (x1 + (x2 - x1) * f1, y1 + (y2 - y1) * f1), lw)
+                    t += step
+                    left -= step
+                    if left <= 1e-6:
+                        i = (i + 1) % len(pattern)
+                        left, on = pattern[i]
 
     def _fx_layer(self, extra):
         """국경 안쪽 번짐(정치 지도)과 전쟁 국경 그림자: 지도 전체 크기의 반투명 층(내용이 바뀔 때만 다시 만든다).
