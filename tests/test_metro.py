@@ -9,7 +9,7 @@ from korciv import metro as M
 from korciv import rules as R
 from korciv.state import NEUTRAL
 
-from test_engine import _clear, _neutral_ai, _own, new_game
+from test_engine import _room, _clear, _neutral_ai, _own, new_game
 
 
 def _setup(n_extra=3, **kw):
@@ -19,6 +19,7 @@ def _setup(n_extra=3, **kw):
     nb = sorted(g.world.land_adj["S002"])[:n_extra]
     _own(g, 0, nb)
     sel = ["S002"] + nb
+    _room(g, sel)
     for r in sel:
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy = None, None, 10.0
@@ -119,7 +120,7 @@ def test_metro_slot_build_upgrades_all_and_level6():
         g.regions[r].b["bank"] = 5
         g.regions[r].b["factory"] = 5
     o6 = next(o for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "bank")
-    assert o6["level"] == 6 and "종합금융본부" in o6["name"]
+    assert o6["level"] == 6 and "광역 경제 타운" in o6["name"]
     assert R.g(6) == pytest.approx(R.g(5) * 1.2)
     assert R.factory_unit(6) == pytest.approx(2200) and R.factory_output(6) == pytest.approx(2200 * 6)
     assert R.region_output(0, 6, 0, 0, 0) == pytest.approx(R.region_output(0, 5, 0, 0, 0) * 1.2)
@@ -402,6 +403,7 @@ def test_metro_specialty_is_one_pooled_building():
     g.regions[spec[0]].b["specialty"] = 3                 # 3 + 1 + 1 … → 평균(내림)
     pre = {r: g.regions[r].b["specialty"] for r in el}
     avg = int(sum(pre.values()) // len(el))
+    _room(g, sel)
     ok, msg = g.create_metro(0, "S002", sel)
     assert ok, msg
     m = M.of(g, "S002")

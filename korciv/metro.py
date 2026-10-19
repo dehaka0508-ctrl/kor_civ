@@ -2,9 +2,9 @@
 
 지도·소유·부대 위치는 지역 단위 그대로 두고, 그 위에 묶음을 얹는다.
 - 슬롯 1개: 구성 지역 모두가 같은 작업(Project) 하나를 가리킨다.
-- 생산·방어 건물(농장·어장·공장·은행·발전소·특산물 시설·탄광·정유·방공호·대공포): 지을 수 있는 구성 지역들의 평균 단계(내림)를
+- 생산·방어 건물(농장·어장·공장·시장·발전소·특산물 시설·탄광·정유·방공호·대공포): 지을 수 있는 구성 지역들의 평균 단계(내림)를
   그 지역들에 실제로 적용한다(→ 산출·연료 소비가 '평균 단계 × 지역 수'). 광역시에서 한 단계 올리면 모두 함께 오른다.
-  농장·어장·공장·은행은 6단계까지(광역시 전용).
+  농장·어장·공장·시장은 6단계까지(광역시 전용).
 - 특산물 시설은 특산물이 있는 구성 지역들끼리 통합(v1.3.0), 방어선만 지역마다 따로(행동 탭에 지역별로 나열).
 - 항구·공항·사관학교: 하나라도 있으면 광역시 전체에 있는 것으로(항구는 해안 지역마다).
 - 행복도는 중심 값 하나(구성 지역은 같은 값), 특산물 배분·반란 판정도 한 지역처럼.
@@ -21,13 +21,13 @@ from . import rules as R
 from .state import NEUTRAL, Project
 
 # (통합 종류, 건물 키). 탄광·정유는 같은 '채굴 시설' 키지만 지을 수 있는 지역이 달라 따로 묶는다
-POOLS = (("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"),
+POOLS = (("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"), ("housing", "housing"),
          ("power", "power"), ("specialty", "specialty"), ("coal", "extract"), ("oil", "extract"),
          ("shelter", "shelter"), ("aa", "aa"))
 POOL_KEY = dict(POOLS)
 SINGLES = ("port", "airport", "academy")
-SNAP_KEYS = ("farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
-POOL_NAMES = {"farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 금융 지구",
+SNAP_KEYS = ("housing", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
+POOL_NAMES = {"housing": "광역 주거 지구", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
               "power": "광역 발전소", "specialty": "광역 특산물 시설", "coal": "광역 탄광", "oil": "광역 정유공장",
               "shelter": "광역 방공호", "aa": "광역 대공포"}
 
@@ -83,6 +83,8 @@ def pool_level(g, m, pool) -> int:
 
 
 def max_level(key) -> int:
+    if key in C.SINGLE_BUILDINGS or key in C.SITE_POWER:
+        return 1
     if key in C.METRO_L6_KEYS:
         return 6
     if key in C.PROD_BUILDINGS:
@@ -233,7 +235,7 @@ def check(g, fid, center, sel) -> tuple:
     fac = any(r.b["factory"] >= 5 for r in regs)
     bank = any(r.b["bank"] >= 5 for r in regs)
     items.append(("공업 단지(공장 5단계)", fac, "있음" if fac else "없음"))
-    items.append(("금융 단지(은행 5단계)", bank, "있음" if bank else "없음"))
+    items.append(("복합 무역 센터(시장 5단계)", bank, "있음" if bank else "없음"))
     prod = sum(g.food_prod(fid, r) for r in regs)
     cons = pop * C.FOOD_PER_POP
     items.append(("식량 생산 > 소비", prod > cons, f"{prod:,.1f} / {cons:,.1f}"))
@@ -244,7 +246,7 @@ def check(g, fid, center, sel) -> tuple:
 
 def feasible(g, fid, center) -> tuple:
     """이 지역을 중심으로 광역시를 지정할 길이 있는가(v1.3.0: 행동 탭 버튼 활성 여부). (가능 여부, [이유]).
-    중심과 이어진 후보를 모두 고른 경우로 인구·공업 단지·금융 단지를 보고, 식량·행복도는 유리한 지역만
+    중심과 이어진 후보를 모두 고른 경우로 인구·공업 단지·복합 무역 센터를 보고, 식량·행복도는 유리한 지역만
     골랐을 때도 못 채우면 불가능으로 본다(필요조건만 본다 — 실제 조합은 지정 화면에서 고른다)."""
     ok_c, why = can_center(g, fid, center)
     if not ok_c:
@@ -270,7 +272,7 @@ def feasible(g, fid, center) -> tuple:
     if not any(r.b["factory"] >= 5 for r in regs):
         reasons.append("묶을 수 있는 지역에 공업 단지(공장 5단계)가 없습니다.")
     if not any(r.b["bank"] >= 5 for r in regs):
-        reasons.append("묶을 수 있는 지역에 금융 단지(은행 5단계)가 없습니다.")
+        reasons.append("묶을 수 있는 지역에 복합 무역 센터(시장 5단계)가 없습니다.")
     surplus = {r.id: g.food_prod(fid, r) - r.pop * C.FOOD_PER_POP for r in regs}
     if surplus[center] + sum(max(0.0, v) for k, v in surplus.items() if k != center) <= 0:
         reasons.append("식량이 남는 지역만 골라도 식량 생산이 소비보다 적습니다.")
@@ -320,6 +322,10 @@ def create(g, fid, center, sel, name=None) -> tuple:
     m = {"id": mid, "owner": fid, "founder": fid, "center": center, "members": sel,
          "name": full_name(g, fid, center, name), "special": f.capital == center, "turn": g.turn,
          "pre": {r: {k: g.regions[r].b[k] for k in SNAP_KEYS} for r in sel}, "merge": {}}
+    for rid in sel:
+        rr = g.regions[rid]
+        f.money += sum(p.paid * C.PROJECT_REFUND for p in rr.queue)
+        rr.queue.clear()
     # 진행 중이던 작업은 모두 중단(일반 취소처럼 50% 환급, 다른 묶음 공사의 대상이면 그 지역만 빠진다)
     stopped = 0
     for r in sel:
@@ -394,6 +400,10 @@ def dissolve(g, mid, why="") -> bool:
     center = m["center"]
     owner = g.regions[center].owner
     # 작업: 통합 건물은 이어서 지을 수 없어 취소(50% 환급), 나머지는 그 지역(site)에서 이어서
+    for q in g.regions[center].queue:
+        if owner != NEUTRAL:
+            g.factions[owner].money += q.paid * C.PROJECT_REFUND
+    g.regions[center].queue.clear()
     p = shared_project(g, m)
     if p is not None:
         for r in sel:
@@ -484,7 +494,13 @@ def options(g, fid, mid) -> list:
         el = pool_members(g, m, pool)
         if not el:
             continue
-        lv = pool_level(g, m, pool) + 1
+        planned = [pool_level(g, m, pool)]
+        projects = g.local_projects(center) if not getattr(g, '_continuing', False) else (
+            [cr.project] if cr.project else [])
+        for p in projects:
+            if p.kind == 'build' and p.pool == pool:
+                planned.append(max_level(key) if p.chain else p.level)
+        lv = max(planned) + 1
         if lv > max_level(key):
             continue
         if key in C.PROD_BUILDINGS:
@@ -509,6 +525,9 @@ def options(g, fid, mid) -> list:
                 seen.add(("annex", key))
                 add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], site=r)
                 opts[-1]["eff_turns"] = o.get("eff_turns", o["turns"])     # 구성 지역 수만큼 줄어든 턴
+            elif k == 'repair' or (k == 'build' and key in C.SITE_POWER):
+                add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
+                    o['ok'], o['why'], o['level'], site=r)
             elif k in ("science", "econ") and (k, key) not in seen:
                 if k == "econ" and key == "exchange" and any("exchange" in g.regions[x].econ for x in sel):
                     continue                     # 증권거래소는 광역시에 하나
@@ -517,7 +536,7 @@ def options(g, fid, mid) -> list:
                     o["ok"], o["why"], o["level"], site=r)
     # 유일 건물(항구·공항·사관학교): 광역시에 하나도 없을 때만. 항구는 해안 지역에
     for key, spec in C.SINGLE_BUILDINGS.items():
-        if any(g.regions[r].b[key] for r in sel):
+        if any(g.reserved_level(r, key) for r in sel):
             continue
         site = center
         if key == "port":
@@ -528,7 +547,7 @@ def options(g, fid, mid) -> list:
         add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
             g.build_time(fid, key, spec["turns"]), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
-    port = next((r for r in sel if g.regions[r].b["port"] and g.info(r).coastal), None)
+    port = next((r for r in sel if g.projected_buildings(r).get('port') and g.info(r).coastal), None)
     for key in C.BUILD_UNITS:
         u = C.UNITS[key]
         site = center
@@ -540,7 +559,7 @@ def options(g, fid, mid) -> list:
                 ok, why = False, "항구 필요"
             else:
                 site = port
-        if ok and not g.can_pay_oil(fid, u["oil"]):
+        if ok and not cr.project and not g.can_pay_oil(fid, u["oil"]):
             ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
         per = g.unit_cost(fid, site, key)
         add("unit", key, f"{u['name']} ×{n}", per * u["turns"], u["turns"], ok, why, oil=u["oil"], site=site)
@@ -554,45 +573,9 @@ def options(g, fid, mid) -> list:
 
 def start(g, fid, mid, kind, key, border=None, site=None, pool=None) -> tuple:
     m = get(g, mid)
-    if m is None:
-        return False, "광역시가 없습니다."
-    sel = m["members"]
-    if any(g.regions[r].project is not None for r in sel):
-        return False, "이 광역시 슬롯은 이미 사용 중입니다."
-    if g.regions[m["center"]].owner != fid:
-        return False, "내 광역시가 아닙니다."
-    cands = [o for o in options(g, fid, mid) if o["kind"] == kind and o["key"] == key
-             and (border is None or o["border"] == border) and (pool is None or o["pool"] == pool)]
-    if site is not None and len(cands) > 1:
-        cands = [o for o in cands if o["site"] == site] or cands
-    if not cands:
-        return False, "선택할 수 없는 항목입니다."
-    o = cands[0]
-    if not o["ok"]:
-        return False, o["why"]
-    f = g.factions[fid]
-    c = g.regions[m["center"]]
-    if kind == "unit":
-        u = C.UNITS[key]
-        if not g.can_pay_oil(fid, u["oil"]):
-            return False, f"석유 {u['oil']} 필요"
-        g.pay_oil(fid, u["oil"])
-        c.h_delta += C.UNIT_START_HAPPY[u["weight"]]
-    name = o["name"]
-    if kind == "annex":
-        name = f"편입: {g.info(key).name}"          # '공동 n곳' 은 바뀌므로 이름에 넣지 않는다
-    p = Project(kind=kind, key=key, level=o["level"], turns=o["turns"], per_turn=o["per_turn"],
-                border=o["border"], name=name)
-    p.metro, p.site, p.pool = mid, o["site"], o["pool"]
-    g.proj_counter = getattr(g, "proj_counter", 0) + 1
-    p.priority = g.proj_counter
-    for r in sel:
-        rr = g.regions[r]
-        rr.project = p
-        if not f.is_ai:
-            rr.focus = rr.pop_focus = False
-    turns = g.project_left(m["center"]) if kind == "annex" else o["turns"]
-    return True, f"{m['name']}: {name} 착수 ({turns}턴, 턴당 {o['per_turn']:,.0f})"
+    if not m:
+        return False, '광역시가 없습니다.'
+    return g.start_project(fid, m['center'], kind, key, border=border, site=site, pool=pool)
 
 
 def complete(g, f, p):
@@ -634,12 +617,7 @@ def complete(g, f, p):
         g.deliver_units(f.id, site, p.key, n)
         g.event("complete", f"{name}에서 {C.UNITS[p.key]['name']} {n}개 생산 완료", region=site, fids=(f.id,))
         if getattr(p, "repeat", 0) > 0:
-            ok, msg = start(g, f.id, m["id"], "unit", p.key)
-            if ok:
-                q = g.regions[m["center"]].project
-                q.repeat, q.priority, q.pinned = p.repeat - 1, p.priority, p.pinned
-            elif not f.is_ai:
-                g.event("info", f"{name}: 연속 생산 중단(남은 {p.repeat}개) — {msg}", region=site, fids=(f.id,))
+            g._repeat_unit(f, g.regions[m['center']], p)
         return
     g._complete_project(f, g.regions[site], p)          # 과학·경제·천도: 그 지역에
 

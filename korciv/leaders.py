@@ -21,7 +21,7 @@ LEADERS = [
          buff=("천리장성", "방어선 효과 +20%"), debuff=("삼형제의 내분", "수도 함락 시 8턴 동안 전 지역 반란 확률 ×2"),
          fx={"line_k": 0.36, "capital_fall_rebel": 2.0}),
     dict(key="gcg", name="근초고왕", aggr=6,
-         buff=("해상 왕국", "항구 보유 지역에 은행 3단계 산출 추가"), debuff=("양면 전선", "육군 유지비 +5%"),
+         buff=("해상 왕국", "항구 보유 지역에 시장 3단계 산출 추가"), debuff=("양면 전선", "육군 유지비 +5%"),
          fx={"port_bank": 3, "upkeep_land": 0.05}),
     dict(key="mur", name="무령왕", aggr=3,
          buff=("중흥 외교", "거래 요구 기준 −0.1"), debuff=("웅진 천도", "방어선 건설비 +15%"),
@@ -57,7 +57,7 @@ LEADERS = [
          buff=("중립 외교", "제3국 전쟁으로 인한 우호도 감소 없음"), debuff=("폐모살제", "정치체제 버프 효과 50%만 적용"),
          fx={"neutral_diplomacy": True, "gov_buff_scale": 0.5}),
     dict(key="jjo", name="정조", aggr=4,
-         buff=("신해통공", "은행 산출 +20%"), debuff=("문체반정", "공장·정유·탄광·석탄액화공장·발전소 건설 시간 +20%"),
+         buff=("신해통공", "시장 산출 +20%"), debuff=("문체반정", "공장·정유·탄광·석탄액화공장·발전소 건설 시간 +20%"),
          fx={"output_bank": 0.20, "build_time_industry": 0.20}),
     dict(key="hon", name="홍경래", aggr=8,
          buff=("민란의 불꽃", "점령지 행복도(회복 목표) +15"), debuff=("반란", "모든 AI 시작 우호도 −15"),
@@ -96,7 +96,7 @@ LEADERS = [
          buff=("청해진", "해군 생산비 −25%, 시장 판매가 +15%"), debuff=("골품의 벽", "동맹·연합 체결 불가(조약은 가능)"),
          fx={"cost_naval": -0.25, "market_sell": 0.15, "no_alliance": True}),
     dict(key="jun", name="정중부", aggr=8,
-         buff=("무신정권", "군 생산비 −15%"), debuff=("문신 탄압", "은행 산출 −8%"),
+         buff=("무신정권", "군 생산비 −15%"), debuff=("문신 탄압", "시장 산출 −8%"),
          fx={"cost_mil": -0.15, "output_bank": -0.08}),
     dict(key="cho", name="최영", aggr=7,
          buff=("황금 보기를 돌같이", "육군 유지비 −15%"), debuff=("요동 정벌 반대", "개전 전쟁 피로 ×1.3"),
@@ -208,10 +208,10 @@ GOVERNMENTS = [
          buff=("", "모든 건물 건설 시간 −10%"), debuff=("", "전쟁 중 전쟁 피로 증가 +20%"),
          fx={"build_time_all": -0.10, "war_weary_rate": 0.20}),
     dict(key="parliamentary", buff_keys=("output_bank",), name="의원내각제", target=1.5,
-         buff=("", "은행 산출 +10%"), debuff=("", "선전포고 후 2턴 동안 공격 불가(의회 동의)"),
+         buff=("", "시장 산출 +10%"), debuff=("", "선전포고 후 2턴 동안 공격 불가(의회 동의)"),
          fx={"output_bank": 0.10, "parliament_delay": 2}),
     dict(key="socialist", buff_keys=("cost_factory",), name="사회주의", target=6.0,
-         buff=("", "공장 건설비 −15%"), debuff=("", "은행 산출 −20%"),
+         buff=("", "공장 건설비 −15%"), debuff=("", "시장 산출 −20%"),
          fx={"cost_factory": -0.15, "output_bank": -0.20}),
     dict(key="fascist", buff_keys=("cost_mil",), name="파시즘", target=9.5,
          buff=("", "군 생산비 −15%"), debuff=("", "모든 AI 시작 우호도 −5"),
@@ -294,7 +294,7 @@ def banned_govs(leader_key: str) -> set:
 
 
 def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=()) -> str:
-    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 > 은행이면 사회주의 +0.2.
+    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 > 시장이면 사회주의 +0.2.
     호전성' = 호전성 + U(−2, +2). 전체의 10%는 철인통치. banned 체제는 고르지 않는다."""
     if rng.random() < AI_PHILOSOPHER_P:
         return "philosopher"
@@ -304,7 +304,7 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
         if g["target"] is None or g["key"] in banned:
             continue
         s = 1 - abs(aggression - g["target"]) / 10 + rng.random() * 0.1
-        if g["key"] == "socialist" and factory_level > bank_level:   # 공장이 은행보다 많을 때만
+        if g["key"] == "socialist" and factory_level > bank_level:   # 공장이 시장보다 많을 때만
             s += 0.2
         if s > best_score:
             best, best_score = g["key"], s

@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--size", default="1280x800")
     ap.add_argument("--warm", type=int, default=0, help="퍼징 전에 AI가 플레이어 대신 진행할 턴 수(후반 상태 점검)")
+    ap.add_argument("--game-mode", choices=list(C.GAME_MODES), default="standard")
     a = ap.parse_args()
     rng = random.Random(a.seed)
     appmod.SAVE_DIR = tempfile.mkdtemp(prefix="korciv_qa_")
@@ -62,6 +63,7 @@ def main():
     pygame.mouse.get_pressed = lambda num_buttons=3: Mouse.pressed
     w, h = (int(x) for x in a.size.split("x"))
     app = appmod.App(width=w, height=h)
+    app.qa_mode = a.game_mode
     held = set()
     if a.warm:
         warm_up(app, a.warm, rng)
@@ -148,6 +150,7 @@ def main():
         print(f"{v}회 · {k}")
     if not PROBLEMS:
         print("문제 없음")
+    return bool(PROBLEMS)
 
 
 def recover(app):
@@ -166,7 +169,7 @@ RESTART_P = 0.12
 
 def warm_up(app, turns, rng):
     """플레이어도 AI가 조종하게 해서 turns 턴 진행한 뒤 다시 플레이어에게 넘긴다."""
-    app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(4, 9), fog=1))
+    app.start_game(Settings(mode=getattr(app, "qa_mode", "standard"), seed=rng.randrange(10 ** 6), n_enemies=rng.randint(4, 9), fog=1))
     g = app.game
     g.set_player_government("presidential")
     app.scene = "main"
@@ -185,6 +188,17 @@ def warm_up(app, turns, rng):
 def force_state(app, rng):
     """무작위 입력만으로는 닿기 어려운 화면 상태로 바로 옮긴다."""
     g = app.game
+    if g and g.player.alive and rng.random() < .10:
+        rid = g.player.capital
+        if g.regions[rid].owner == g.player_id:
+            g.start_project(g.player_id, rid, 'build', 'housing')
+            g.start_units(g.player_id, rid, 'inf', 2)
+            g.set_flooded(rid)
+            if not g.forecasts:
+                g.forecast_disaster('typhoon', duration=2)
+            app.select(rid)
+            app.left_open, app.left_tab, app.tab = True, 'region', 'action'
+            return
     r = rng.random()
     if r < 0.05 or (g is None and r < 0.5):
         app.scene = rng.choice(["title", "setup", "pick_start"])
@@ -194,7 +208,7 @@ def force_state(app, rng):
             app.setup.ai_pick = rng.randrange(max(1, app.setup.n_enemies))
         return
     if g is None or r < RESTART_P:
-        app.start_game(Settings(seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 15), fog=rng.choice([0, 1, 2]),
+        app.start_game(Settings(mode=getattr(app, "qa_mode", "standard"), seed=rng.randrange(10 ** 6), n_enemies=rng.randint(1, 15), fog=rng.choice([0, 1, 2]),
                                 player_leader=rng.choice(["sej", "cus", "yis", "kim", "ito"]),
                                 player_leader_name="큐에이"))
         if rng.random() < 0.7:
@@ -338,4 +352,4 @@ def force_state(app, rng):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -30,7 +30,7 @@ COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
 RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
 RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
-NEUTRAL_POP_PER_INF = 20   # 중립 지역 수비대: 인구 20만 명까지 보병 1, 40만 2, 60만 3 …(올림, v1.3.0). 편입하면 보병 1만 넘겨받는다
+NEUTRAL_POP_PER_INF = 15   # 기본모드 중립 보병: 15만 명당 1기(올림). 개척·혼돈은 1기, 편입 시 1기만 인계
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
 FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
@@ -80,7 +80,7 @@ SCIENCE_STEPS = ("lab", "observatory", "budget", "pad", "booster", "module", "pr
 SCIENCE = {
     "lab":        dict(name="항공우주연구소", unit=False, where="수도", tier=0),
     "observatory": dict(name="천체관측소", unit=False, where="산맥과 맞닿은 지역", tier=1),
-    "budget":     dict(name="예산 편성", unit=False, where="은행 5단계 지역", tier=2, verb="진행"),
+    "budget":     dict(name="예산 편성", unit=False, where="시장 5단계 지역", tier=2, verb="진행"),
     "pad":        dict(name="로켓 발사대", unit=False, where="바다와 맞닿은 지역", tier=3),
     "booster":    dict(name="로켓 추진체", unit=True, where="공장 5단계 지역", tier=4),
     "module":     dict(name="탑승 모듈", unit=True, where="공장 5단계 지역", tier=5),
@@ -108,19 +108,21 @@ PROD_BUILDINGS = {
     "farm":      {"name": "농장", "base": 400, "max": 5},
     "fishery":   {"name": "어장", "base": 400, "max": 5},
     "factory":   {"name": "공장", "base": 1500, "max": 5},
-    "bank":      {"name": "은행", "base": 1200, "max": 5},
+    "bank":      {"name": "시장", "base": 1200, "max": 5},
+    "housing":   {"name": "주거 지구", "base": 600, "max": 5},
     "power":     {"name": "발전소", "base": 1500, "max": 5},
     "specialty": {"name": "특산물 시설", "base": 600, "max": 3},
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
 PROD_TURNS_PER_LEVEL = 2
-CHAIN_BUILDINGS = ("farm", "fishery", "factory", "bank", "extract", "power", "specialty")   # [최대] 이어서 건설
+CHAIN_BUILDINGS = ("housing", "farm", "fishery", "factory", "bank", "extract", "power", "specialty")   # [최대] 이어서 건설
 # 생산 건물 단계별 이름(행동 탭 '○○ 건설', 완공 알림, 지역 정보)
 PROD_LEVEL_NAMES = {
+    "housing": ("저밀도 주택가", "밀집 주택가", "저층 아파트 단지", "고층 아파트 단지", "초고층 아파트 단지", "초고층 주상복합 타운"),
     "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장", "스마트팜 단지"),
     "fishery": ("낚시터", "나루터", "소형 포구", "어항", "대형 어항", "대규모 양식장"),
     "factory": ("공방", "작업장", "공장", "대형 공장", "공업 단지", "첨단산업단지"),
-    "bank":    ("전당포", "환전소", "은행", "은행 본사", "금융 단지", "종합금융본부"),
+    "bank":    ("장터", "상설 시장", "종합 상가", "상업 업무 지구", "복합 무역 센터", "광역 경제 타운"),
 }
 # 광역시(v1.3.0): 중심에서 육상 3칸 안의 내 지역들을 하나의 지역처럼 묶는다(v1.3.0: 2칸 → 3칸, 최대 25곳)
 METRO_RANGE = 3              # 중심에서 육상 이 칸 수 안의 지역만
@@ -128,9 +130,9 @@ METRO_MAX_REGIONS = 25       # 구성 지역 수 상한(서울 25개 구)
 METRO_MIN_POP = 100          # 묶는 지역들의 인구 합(만 명)
 METRO_DEF_PER_REGION = 0.02  # 지역 n곳을 묶으면 방어력 ×(1 − 0.02(n − 1))
 METRO_SPEC_HAPPY = 0.5       # 광역시에 공급한 특산물 1종의 행복도 효과(지역 하나일 때의 절반, 대신 광역시 전체에)
-METRO_L6_KEYS = ("farm", "fishery", "factory", "bank")   # 광역시에서만 6단계
+METRO_L6_KEYS = ("housing", "farm", "fishery", "factory", "bank")   # 광역시에서만 6단계
 METRO_ANNEX_MAX_REDUCTION = 0.5   # 광역시 편입: 구성 지역 수만큼의 공동 편입으로 치되 기간 감소는 최대 50%
-PROD_L6_MULT = 1.2           # 농장·어장·은행 6단계: 5단계 산출 × 1.2
+PROD_L6_MULT = 1.2           # 농장·어장·시장 6단계: 5단계 산출 × 1.2
 FACTORY_L6_MULT = 1.1        # 첨단산업단지: 연료 1개당 5단계 산출 × 1.1(연료는 6개까지)
 POWER_SITE_DISCOUNT = 1.0  # 화력발전소 소재지: 건설비 할인 없음(대신 발전소 1단계로 시작)
 
@@ -150,6 +152,24 @@ SINGLE_BUILDINGS = {
 ACADEMY_LOCAL = 0.25
 ACADEMY_ADJ = 0.10
 AIRPORT_CAPACITY = 20
+
+# 지역 면적·게임모드·기상. 인구 단위는 만 명, 면적 단위는 km².
+AREA_KM2_SCALE = 9321.3
+POP_AREA_PER_10K = (2.0, 1.2, 0.6, 0.25, 0.10, 0.04, 0.02)
+BUILDING_AREA_PER_LEVEL = {"farm": 10.0, "fishery": 3.0, "bank": 4.0,
+                           "factory": 2.0, "power": 1.0, "extract": 1.0,
+                           "specialty": 1.0, "hydro": 1.0, "nuclear": 1.0, "housing": 0.0}
+AREA_SHORTAGE = "부지 면적 부족 (주거 지구를 증축하거나 건물을 정리하세요)"
+DENSITY_BONUS_SCALE_MAX = 10.0
+GAME_MODES = {"standard": "기본모드", "frontier": "개척시대", "chaos": "혼돈의 강산"}
+WEATHER_CHANCE = 0.012       # 전국 기상 약 0.58회/년 + 국지 산불·지진
+FIRE_CHANCE = 0.004          # 산불 발화 추첨은 전국에서 한 번
+QUAKE_CHANCE = 0.005
+FIRE_OUT_CHANCE = 0.60
+FIRE_SPREAD_CHANCE = 0.06
+FLOOD_CHANCE = 0.012
+TYPHOON_FLOOD_CHANCE = 0.03
+SITE_POWER = {"hydro": ("수력발전소", 2), "nuclear": ("원자력발전소", 3)}
 
 # ---------------------------------------------------------------- 인구·행복도 (5절)
 G_MAX = 0.0025             # 원안 값 0.01 도 가능
@@ -491,7 +511,7 @@ AI_P2_ETA_MIN = 1.0
 AI_P2_ETA_MAX = 1.25
 AI_P2_ECON_RANK_BASE = 0.3   # 경제 조건 × (0.3 + 1.0 × GDP 순위 계수): 돈만 있으면 된다. 반기 랭킹 1위 ×1.3 → 꼴찌 ×0.3
 AI_P2_ECON_RANK_K = 1.0      #   (예전 '모아 둔 돈' 가점은 잔고 대신 이 순위 배수로)
-AI_P2_ECON_BANK_CAP = 0.12   # 경제 조건: 수도 2칸 안에 은행 3단계 이상(v0.32.0: 4단계 0.10 → 3단계 0.12, 과학의 은행 가점 0.08보다 크게)
+AI_P2_ECON_BANK_CAP = 0.12   # 경제 조건: 수도 2칸 안에 시장 3단계 이상(v0.32.0: 4단계 0.10 → 3단계 0.12, 과학의 시장 가점 0.08보다 크게)
 AI_P2_ECON_BANK_LV = 3
 AI_P2_ECON_RICH = 1.25       # GDP 1~2위가 다음 경제 단계를 감당할 수 있으면 경제 점수 ×1.25
 AI_P2_ECON_RICH_NET = 0.5    # 감당 가능: 순수입(세수 − 유지비)이 다음 단계 턴당 비용의 50% 이상
@@ -502,7 +522,7 @@ AI_P2_SCI_EARLY = 1.6       # 과학 조건 완비(산지·해안·석유·공�
                             #   필요량의 1/가중치 이상이면, 잔고는 턴당 비용 2/가중치 턴분이면 시작(30판씩 돌려 맞추는 값)
 AI_SCI_OBS_BOMB = 30          # 폭격 대상 가치: 보이는 적 천체관측소(부수면 과학승리를 다시 지을 때까지 막는다)
 AI_SCI_UNIT_BOMB = 6           # 폭격 대상 가치: 보이는 적 과학 유닛(추진체·탑승 모듈·발사체 연료) 1개당 +6(병력 공격력 합·건물 단계×2와 비교, 낮은 적극성)
-AI_ECON_TOP_PROD = 1.5      # GDP 1위 경제 방향: 공장·은행 가치 ×1.5 더(턴당 수입을 빨리 늘린다)
+AI_ECON_TOP_PROD = 1.5      # GDP 1위 경제 방향: 공장·시장 가치 ×1.5 더(턴당 수입을 빨리 늘린다)
 AI_P2_CONQ_RICH_TURNS = 20   # 정복 여윳돈 계수 = (잔고 − 비상금) / (세수 20턴분 + 비상금 4배), 0~1
 AI_P2_CONQ_MIL = 0.3         # 바라는 병력 × (1 + 0.3 × 여윳돈 계수)
 AI_P2_CONQ_TANK = 0.5        # 전차 확률 × (1 + 0.5 × 여윳돈 계수)
@@ -592,7 +612,7 @@ AI_KEY_GUARD = 2              # 승리 거점(발사대·경제 시설·공사 �
 AI_KEY_SHELTER = 2            # 승리 거점 방공호 목표 단계(전쟁 중·견제를 받으면 +1, 방공호 2단계부터 대공포 2단계까지)
 
 # ---------------------------------------------------------------- 승리 (10절)
-# 경제승리(기축통화): ① 수도를 포함해 서로 맞닿은 한 덩어리의 금융 단지(은행 5단계) 5곳 →
+# 경제승리(기축통화): ① 수도를 포함해 서로 맞닿은 한 덩어리의 복합 무역 센터(시장 5단계) 5곳 →
 # ② 금융 권역에 증권거래소(수도 포함 3곳) → ③ 수도에 경제특구 → ④ 경제특구 + 우호 선언 이상 관계 2개국이면
 # 증권거래소가 있는 지역에 국제금융센터 → ⑤ 국제금융센터 + 우호 선언 이상 3개국(그중 동맹 1곳 이상)이면
 # 수도에서 기축통화 지정. 완공하면 승리. 건물은 유닛 없이 지역에 남고, 점령당하면 사라진다.
@@ -612,7 +632,7 @@ AI_P3_LAST_STEP_DEF = 0.6     # 기축통화 하나만 남아 질주하는 경�
 AI_FUEL_ANNEX = 1.5            # 수로왕 '철의 왕국': 석탄·석유 지역 편입 이득 배수
 OBSERVATORY_BOMB_SHARE = 0.5   # 폭격이 건물을 맞히면 그 지역 천체관측소가 50% 확률로 파괴(과학 단계에서 빠져 다시 지어야)
 ECON_STAGES = 5                # 진척도 n/5: 금융 권역, 증권거래소 3곳, 경제특구, 국제금융센터, 기축통화
-EXCHANGE_BANK_BONUS = 0.10     # 증권거래소: 그 지역 은행 산출 +10%
+EXCHANGE_BANK_BONUS = 0.10     # 증권거래소: 그 지역 시장 산출 +10%
 IFC_GIFT_BONUS = 0.10          # 국제금융센터: 내 선물이 올리는 우호도 +10%
 ECON_PAUSE_REFUND = 0.5        # 건설 중 조건이 깨지면 중단하고 낸 돈의 50% 환급(진행도는 사라져 처음부터 다시)
 LOST_PROJECT_REFUND = 0.5      # 점령으로 멈춘 과학·경제 공사: 저항·회복 기간 안에 되찾으면 이어서, 못 되찾으면 낸 돈의 50% 환급
@@ -623,7 +643,7 @@ VICTORY_THREAT_FROM = 0.5
 VICTORY_THREAT_OP = 0.15     # v1.2.0: 절반(0.3 → 0.15)
 VICTORY_THREAT_WAR = 15
 VICTORY_THREAT_SCORE = 0.3     # 전쟁 대상 고를 때 점수 가산(최대)
-# AI가 경제승리를 목표로 삼으면: 생산 건물(공장·은행) 증축 가치 ×1.3, 연료(광산·유전·발전소) ×1.5,
+# AI가 경제승리를 목표로 삼으면: 생산 건물(공장·시장) 증축 가치 ×1.3, 연료(광산·유전·발전소) ×1.5,
 # 다음 경제 단계 비용을 모을 때까지 다른 공사에는 순수입의 절반만 쓰고(비축을 헐지 않음), 세율 상한 +2%p
 AI_ECON_PROD_MULT = 1.3
 AI_ECON_FUEL_MULT = 1.5

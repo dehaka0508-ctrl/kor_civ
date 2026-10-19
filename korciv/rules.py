@@ -156,11 +156,22 @@ def rebellion_probability(h: float) -> float:
     return min(1.0, 0.01 * 100 ** ((C.REBEL_THRESHOLD - h) / 50))
 
 
+def density_growth_max(density: float) -> float:
+    if density <= 400:
+        return 0.0025 + 0.0975 * math.log(400 / max(5.0, density)) / math.log(80)
+    return 0.0025 * max(0.05, 1 - math.log(density / 400) / math.log(50))
+
+
+def area_usage(pop, buildings) -> tuple:
+    housing = max(0, min(6, buildings.get("housing", 0)))
+    people = pop * C.POP_AREA_PER_10K[housing]
+    built = sum(buildings.get(k, 0) * area for k, area in C.BUILDING_AREA_PER_LEVEL.items())
+    return people + built, people, built
+
+
 def pop_growth_rate(h: float, g_max: float = C.G_MAX) -> float:
-    """g_pop(H) = G_MAX (0.1 + 0.9 clamp((H-5)/40, 0, 1)), H<5 이면 0"""
-    if h < C.POP_GROWTH_MIN_H:
-        return 0.0
-    x = max(0.0, min(1.0, (h - C.POP_GROWTH_MIN_H) / 40))
+    """밀도별 최대 성장률 × (0.1 + 0.9 clamp((H-5)/45, 0, 1))."""
+    x = max(0.0, min(1.0, (h - C.POP_GROWTH_MIN_H) / 45))
     return g_max * (0.1 + 0.9 * x)
 
 

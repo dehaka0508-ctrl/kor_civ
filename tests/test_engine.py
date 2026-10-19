@@ -224,12 +224,23 @@ def _own(g, fid, rids):
         g.transfer_region(rid, fid)
 
 
+def _room(g, rids):
+    """면적과 무관한 기존 엔진 테스트에서 건설할 수 있는 넓은 시험 부지를 만든다."""
+    import copy
+    from dataclasses import replace
+    g.world = copy.copy(g.world)
+    g.world.regions = dict(g.world.regions)
+    for rid in rids:
+        g.world.regions[rid] = replace(g.info(rid), area_km2=1000.0)
+
+
 def test_rebel_region_becomes_capital_and_inherits_state():
     g = new_game(player_start="S002", n_enemies=1)
     near = sorted(g.world.land_adj["S002"])[:3]
     _own(g, 0, near)
     rid = near[0]
     r = g.regions[rid]
+    _room(g, [rid])
     r.b["bank"] = 3
     r.sci.add("lab")
     pop, b = r.pop, dict(r.b)
@@ -878,7 +889,8 @@ def test_bombard_breaks_buildings():
     _own(g, 1, [tgt])
     D.declare_war(g, 0, 1)
     rr = g.regions[tgt]
-    rr.b.update(farm=0, fishery=0, factory=2, bank=0, specialty=0, shelter=0, aa=0, port=1)
+    rr.b = {k: 0 for k in rr.b}
+    rr.b.update(factory=2, port=1)
     rr.lines = {}
     a = g.new_army(0, "S002", {"art": 2})
     g.rng.random = lambda: 0.29                    # 포병 30% 판정 통과
@@ -1519,13 +1531,13 @@ def test_pop_focus():
     assert g.set_pop_focus(0, "S002", True)[0] and r.pop_focus and not r.focus
     p0 = r.pop
     g.player.war_weary = 40                        # 전쟁 피로는 인구 성장에 영향 없음(이주 문턱 −30 위)
-    expect = p0 * (C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.growth_happy(r)))
+    expect = p0 * (C.POP_FOCUS_GROWTH * g.growth_scale(r.id) + R.pop_growth_rate(g.growth_happy(r), g.density_growth(r.id)))
     g._phase_population()
     assert r.pop - p0 == pytest.approx(expect)
     g.player.war_weary = 80                        # 이주는 전쟁 피로 포함 실질 행복도(−60)로 판정
     p1 = r.pop
     g._phase_population()
-    assert r.pop == pytest.approx(p1 * (1 + C.POP_FOCUS_GROWTH + R.pop_growth_rate(g.growth_happy(r)))
+    assert r.pop == pytest.approx(p1 * (1 + C.POP_FOCUS_GROWTH * g.growth_scale(r.id) + R.pop_growth_rate(g.growth_happy(r), g.density_growth(r.id)))
                                   * (1 + C.MIGRATION_POP))
     g.set_focus(0, "S002", True)
     assert r.focus and not r.pop_focus             # 집중은 하나만
@@ -1537,21 +1549,19 @@ def test_crowd_penalty_tiers():
     big = next(rid for rid in g.world.order if g.info(rid).pop0 > 60)
     _own(g, 0, [small, big])
     rs, rb = g.regions[small], g.regions[big]
-    p0 = g.info(small).pop0
-    rs.pop = p0 * 1.99
-    assert g.crowd_penalty(rs) == 0
-    rs.pop = p0 * 2.0
-    assert g.crowd_penalty(rs) == -2
-    rs.pop = p0 * 2.5
-    assert g.crowd_penalty(rs) == -4
-    q0 = g.info(big).pop0
-    rb.pop = q0 * 1.4
-    assert g.crowd_penalty(rb) == -2
-    rb.pop = q0 * 1.5
-    assert g.crowd_penalty(rb) == -4
-    h = g.eff_happy(rb)
-    rb.pop = q0
-    assert g.eff_happy(rb) == pytest.approx(h + 4)
+    for rr in (rs, rb):
+        capacity = g.population_capacity(rr.id)
+        rr.pop = capacity * .99
+        assert g.crowd_penalty(rr) == 0
+        rr.pop = capacity
+        assert g.crowd_penalty(rr) == -2
+        # -4는 전체 사용 면적이 총면적의 110%인 경계다.
+        _, _, built = g.area_usage(rr.id)
+        rr.pop = (g.info(rr.id).area_km2 * 1.11 - built) / C.POP_AREA_PER_10K[rr.b['housing']]
+        assert g.crowd_penalty(rr) == -4
+        h = g.eff_happy(rr)
+        rr.pop = capacity * .9
+        assert g.eff_happy(rr) == pytest.approx(h + 4)
 
 
 def test_energy_coal_fields_and_plants_start():
@@ -1820,7 +1830,7 @@ def test_science_progress_text():
     g = new_game(player_start="S002", n_enemies=1)
     assert science_progress_text(g, 0) == "0/8 · 항공우주연구소 건설(수도)"
     g.player.science = ["lab", "observatory"]
-    assert science_progress_text(g, 0) == "2/8 · 예산 편성 진행(은행 5단계 지역)"
+    assert science_progress_text(g, 0) == "2/8 · 예산 편성 진행(시장 5단계 지역)"
     g.player.science = ["lab", "observatory", "budget", "pad"]
     assert science_progress_text(g, 0) == "4/8 · 로켓 추진체 생산(공장 5단계 지역)"
     g.player.science = list(C.SCIENCE_STEPS)
@@ -1932,7 +1942,7 @@ def test_production_level_names():
     assert g.build_label("S002", "factory", 5) == "공업 단지 건설"
     assert g.build_label("S002", "farm", 3) == "농장 건설"
     assert g.build_label("S002", "fishery", 1) == "낚시터 건설"
-    assert g.build_label("S002", "bank", 4) == "은행 본사 건설"
+    assert g.build_label("S002", "bank", 4) == "상업 업무 지구 건설"
     assert g.build_label("S002", "power", 2) == "발전소 2단계"
 
 
@@ -2519,6 +2529,7 @@ def test_ai_phase1_deficit_builds_production():
     g = new_game(player_start="S002", n_enemies=1, ai_starts=["S049"])   # 대구 중구(시작 위치를 고정)
     fid = 1
     f = g.factions[fid]
+    _room(g, [f.capital])
     _neutral_ai(g, fid)
     # 편입 가중치를 낮춰 생산 건물이 1순위가 되게 하고, 적자일 때 비축으로 짓는지 본다
     f.ai.update(phase=1, free=1.0, weights={"military": 0.5, "economy": 1, "expansion": 0.5, "defense": 1})
@@ -3164,6 +3175,7 @@ def test_chain_build_continues_to_max():
     g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
     g.player.money = 1e8
     rr = g.regions["S002"]
+    _room(g, [rr.id])
     lv0 = rr.b["farm"]
     ok, msg = g.start_project_max(0, "S002", "build", "farm")
     assert ok and rr.project.chain and "이어서" in msg
@@ -3678,7 +3690,7 @@ def test_neutral_garrison_by_population_and_annex_gives_one():
     from korciv.game import neutral_garrison
     # 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(v1.3.0, 올림)
     assert [neutral_garrison(p) for p in (0, 3, 15, 20, 20.1, 29, 31, 40, 40.5, 60, 120)] == \
-        [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 6]
+        [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 8]
     g = new_game(player_start="S002", n_enemies=1)
     big = max((r for r in g.world.order if g.regions[r].owner == NEUTRAL), key=lambda r: g.world.regions[r].pop0)
     gar = [a for a in g.armies_at(big) if a.owner == NEUTRAL]
@@ -4896,6 +4908,7 @@ def test_priority_mode_stays_until_turned_off():
     assert g.set_priority_mode(0, "unit") == "unit"
     assert g.projects_by_priority(0)[0].project.kind == "unit"
     # 나중에 착수한 건설·생산도 규칙대로 들어간다: 유닛은 모두 건설보다 앞
+    _room(g, [near[2]])
     assert g.start_project(0, near[2], "build", "farm")[0]
     assert g.start_project(0, near[3], "unit", "inf")[0]
     kinds = [r.project.kind for r in g.projects_by_priority(0)]

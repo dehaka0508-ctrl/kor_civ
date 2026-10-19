@@ -57,8 +57,14 @@ def check(g, where):
         if not finite(r.happy):
             report("행복도 NaN", f"{where} {rid}")
         for k, v in r.b.items():
-            if not isinstance(v, int) or v < 0 or v > 5:
+            top = 6 if r.metro is not None and k in C.METRO_L6_KEYS else 5
+            if not isinstance(v, int) or v < 0 or v > top:
                 report("건물 단계 범위", f"{where} {rid} {k}={v}")
+        if r.queue and g.queue_region(rid) is not r:
+            report('광역시 대기열 위치', f'{where} {rid}')
+        for queued in r.queue:
+            if queued is r.project or not finite(queued.paid) or queued.paid < 0:
+                report('대기열 상태', f'{where} {rid}')
         p = r.project
         if p is not None:
             if p.progress > p.turns or p.turns < 1:
@@ -148,11 +154,11 @@ def check(g, where):
                     report("외교 수치 NaN", f"{where} {key}")
 
 
-def run_sim(seed, turns, n):
+def run_sim(seed, turns, n, mode="standard"):
     rng = random.Random(seed)
     leaders = [l["key"] for l in LEADERS if l["key"] != "cus"]
     lineup = rng.sample(leaders, n)
-    g = Game(Settings(n_enemies=n - 1, seed=seed, all_ai=True, max_turns=turns, fog=rng.choice([0, 1, 2]),
+    g = Game(Settings(mode=mode, n_enemies=n - 1, seed=seed, all_ai=True, max_turns=turns, fog=rng.choice([0, 1, 2]),
                       difficulty=rng.randrange(len(C.DIFFICULTIES)), player_leader=lineup[0], ai_leaders=lineup[1:]))
     t = 0
     try:
@@ -162,6 +168,7 @@ def run_sim(seed, turns, n):
             check(g, f"sim seed={seed} turn={g.turn}")
             if t % 60 == 0:
                 g = pickle.loads(pickle.dumps(g))
+                print(f'진행: sim/{mode} seed={seed} turn={g.turn}', flush=True)
     except Exception:
         report("예외(sim)", f"seed={seed} turn={g.turn}\n" + traceback.format_exc())
     return g
@@ -197,12 +204,20 @@ def player_turn(g, rng):
         if rr.project and rng.random() < 0.08:
             g.cancel_project(pid, rid)
             continue
-        if rr.project:
+        ps = g.local_projects(rid)
+        if len(ps) > 1 and rng.random() < .2:
+            g.move_queued_project(pid, rid, rng.randrange(len(ps)), rng.randrange(len(ps)))
+        if rr.queue and rng.random() < .15:
+            g.cancel_queued_project(pid, rid, rng.randint(1, len(rr.queue)))
+        if len(ps) > 8:
             continue
         opts = g.options(pid, rid)
         if opts:
             o = rng.choice(opts)
-            g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"))
+            if rng.random() < .15 and g.can_chain(o['kind'], o['key']):
+                g.start_project_max(pid, rid, o['kind'], o['key'], site=o.get('site'), pool=o.get('pool'))
+            else:
+                g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"), site=o.get('site'), pool=o.get('pool'))
             acts += 1
         if rng.random() < 0.1:
             g.set_focus(pid, rid, rng.random() < 0.5)
@@ -372,10 +387,10 @@ def player_turn(g, rng):
     return acts
 
 
-def run_player(seed, turns, n):
+def run_player(seed, turns, n, mode="standard"):
     rng = random.Random(seed * 7 + 1)
     leaders = [l["key"] for l in LEADERS]
-    g = Game(Settings(n_enemies=n - 1, seed=seed, max_turns=turns, fog=rng.choice([0, 1, 2]),
+    g = Game(Settings(mode=mode, n_enemies=n - 1, seed=seed, max_turns=turns, fog=rng.choice([0, 1, 2]),
                       difficulty=rng.randrange(len(C.DIFFICULTIES)), player_leader=rng.choice(leaders),
                       player_leader_name="퍼저"))
     g.set_player_government(rng.choice(GOVERNMENTS)["key"])
@@ -389,6 +404,7 @@ def run_player(seed, turns, n):
             check(g, f"player seed={seed} turn={g.turn}")
             if g.turn % 50 == 0:
                 g = pickle.loads(pickle.dumps(g))
+                print(f'진행: player/{mode} seed={seed} turn={g.turn}', flush=True)
     except Exception:
         report("예외(player)", f"seed={seed} turn={g.turn}\n" + traceback.format_exc())
     return g
@@ -401,20 +417,23 @@ def main():
     ap.add_argument("--turns", type=int, default=200)
     ap.add_argument("--seed", type=int, default=100)
     ap.add_argument("--factions", type=int, default=0, help="0이면 판마다 2~10 무작위")
+    ap.add_argument("--game-mode", choices=["all"] + list(C.GAME_MODES), default="all")
     a = ap.parse_args()
     for i in range(a.games):
         seed = a.seed + i
         n = a.factions or random.Random(seed).randint(2, 10)
-        g = (run_sim if a.mode == "sim" else run_player)(seed, a.turns, n)
+        mode = list(C.GAME_MODES)[i % 3] if a.game_mode == "all" else a.game_mode
+        g = (run_sim if a.mode == "sim" else run_player)(seed, a.turns, n, mode)
         alive = sum(f.alive for f in g.factions)
-        print(f"{a.mode} seed={seed} 세력{n} → 턴 {g.turn - 1}, 생존 {alive}/{len(g.factions)}, "
+        print(f"{a.mode}/{mode} seed={seed} 세력{n} → 턴 {g.turn - 1}, 생존 {alive}/{len(g.factions)}, "
               f"승리 {g.winner[1] if g.winner else '-'}", flush=True)
     print("== 요약 ==")
     for k, v in PROBLEMS.most_common():
         print(f"{k}: {v}회")
     if not PROBLEMS:
         print("문제 없음")
+    return bool(PROBLEMS)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

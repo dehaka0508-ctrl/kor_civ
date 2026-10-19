@@ -60,7 +60,7 @@ SUB_MODES = {
     "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#000000", 6),
                  ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", None), ("nuclear", "원전", "#F08C00", None)],
     "building": [("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
-                 ("bank", "은행", "#2F9E44", 5), ("power", "발전소", "#FAB005", 5)],
+                 ("bank", "시장", "#2F9E44", 5), ("housing", "주거 지구", "#9C36B5", 5), ("power", "발전소", "#FAB005", 5)],
     "military": [("line", "방어선", "#C92A2A", 5), ("aa", "대공포", "#7048E8", 5), ("shelter", "방공호", "#5C940D", 5),
                  ("academy", "사관학교", "#E67700", None), ("airport", "공항", "#1864AB", None),
                  ("port", "항구", "#0C8599", None)],
@@ -199,7 +199,8 @@ class App:
 
     # ------------------------------------------------------------ 게임 시작·저장
     def start_game(self, settings: Settings):
-        self.game = Game(settings, self.world)
+        self.game = Game(settings)
+        self.world = self.game.world
         self.reset_ui()
         self.scene = "government"
         self.map.z = 1.0
@@ -274,6 +275,7 @@ class App:
         from .. import metro as M
         M.migrate(g)                             # 예전 세이브: 광역시 특산물 시설을 통합 건물로
         self.game = g
+        self.world = g.world
         self.modal = None
         self.reset_ui()
         self.scene = "main" if self.game.setup_done else "government"
@@ -654,7 +656,13 @@ class App:
 
     def overlay_level(self, sub, r, info, visible):
         """세부 모드의 단계(0 = 표시 안 함). 지금 보이지 않는 지역은 게임 시작 시점의 건물 상태로."""
-        b = r.b if visible else initial_buildings(info)
+        if visible:
+            b = r.b
+        elif self.game and self.game.settings.mode != 'standard':
+            b = {key: 0 for key in r.b}
+            b['port'] = int(info.island == '무연륙 섬')
+        else:
+            b = initial_buildings(info)
         lines = r.lines if visible else {}
         src = info.power_source or ""
         if sub == "specialty":
@@ -666,9 +674,9 @@ class App:
         if sub == "scenic":
             return 1 if info.scenic else 0
         if sub == "dam":
-            return info.power_self if "수력" in src else 0
+            return info.hydro
         if sub == "nuclear":
-            return info.power_self if "원자력" in src else 0
+            return info.nuclear
         if sub == "power":
             return b["power"] - (1 if ("수력" in src or "원자력" in src) else 0)   # 댐·원전은 자원 탭에서
         if sub == "line":
@@ -826,6 +834,7 @@ class App:
         self.draw_science_sites()
         self.draw_focus()
         self.draw_metros()
+        self.draw_weather_path()
         self.draw_rallies()
         self.draw_capitals()
         self.draw_occupations()
@@ -1035,6 +1044,16 @@ class App:
         self.toast(msg, None if ok else self.theme.bad)
         if ok:
             self.changed()
+
+    def draw_weather_path(self):
+        from .mapview import proj
+        g = self.game
+        event = g.weather if g.weather and g.weather['kind'] == 'typhoon' else next(
+            (e for e in g.forecasts if e['kind'] == 'typhoon'), None)
+        if event and event.get('path'):
+            points = [self.map.to_screen(*proj(*xy)) for xy in event['path']]
+            for a, b in zip(points, points[1:]):
+                self.dashed(a, b, self.theme.vermilion, dash=8, width_k=2)
 
     def draw_metros(self):
         """광역시(v1.3.0): 구성 지역 전체의 바깥 윤곽만 세력 색으로 굵게(안쪽 경계는 바탕 지도에서도 빼서
@@ -1685,6 +1704,8 @@ class App:
                        "famine": self.theme.warn, "victory": self.theme.good, "alert": self.theme.bad}.get(e["kind"])
                 self.toast(text, col)
                 shown += 1
+        if g.disaster_notice:
+            self.toast(g.disaster_notice, self.theme.bad)
         if g.new_ranking:
             self.modal = ("ranking", g.new_ranking)
         if g.game_over:
@@ -1739,6 +1760,14 @@ class App:
         gui.text((chip.x + 21, chip.centery), term, 11, t.gold_lt, "serif", anchor="center")
         gui.text((chip.x + 50, chip.centery), term_h, 11, t.gold_lt, "serif", anchor="center")
         gui.text((dx, 33), f"턴 {g.turn}", 11, dim, "semibold", anchor="midtop")
+        badges = g.disaster_badges()
+        if badges:
+            br = pygame.Rect(390, 32, 220, 20)
+            gui.rect(t.indigo_dk, br, radius=4)
+            gui.text(br.center, ' · '.join(b[0] for b in badges), 11, t.gold_lt, 'semibold',
+                     anchor='center', max_w=216)
+            if gui.hover(br):
+                gui.tooltip = '\n'.join(f'{label}: {tip}' for label, tip in badges)
         x = sw - 14
         snap = self.snapshot()
         highlight = pygame.time.get_ticks() - self.prev_t < 600

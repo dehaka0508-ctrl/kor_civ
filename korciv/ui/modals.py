@@ -25,6 +25,7 @@ class SetupState:
         self.leader = "sej"
         self.custom_name = ""
         self.n_enemies = 7
+        self.mode = "standard"
         self.difficulty = 2
         self.fog = 1
         self.victories = {k: True for k in C.VICTORY_TYPES}
@@ -144,12 +145,12 @@ VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
                 f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 단 어느 나라와든 전쟁 중이면 불발 —\n"
                 f"강화해 전쟁이 끝나는 순간 조건이 맞으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
-    "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 은행 5단계(금융 단지) 지역에서\n"
+    "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 시장 5단계(복합 무역 센터) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 정유공장 5단계 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
                f"(단계마다 {C.SCIENCE_TURNS}턴, 턴당 {C.SCIENCE_COST_PER_TURN:,}부터 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})\n"
                "천체관측소가 폭격으로 파괴되면 다른 단계를 다 마쳤어도 다시 지을 때까지 발사할 수 없습니다",
-    "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 금융 단지(은행 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
+    "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 복합 무역 센터(시장 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
                 f"증권거래소(수도 포함 {C.ECON_EXCHANGES}곳) → ③ 수도에 경제특구 → ④ 우호 선언 이상 관계 {C.ECON_IFC_FRIENDS}개국이면\n"
                 f"국제금융센터 → ⑤ 우호 선언 이상 {C.ECON_CURRENCY_FRIENDS}개국(동맹 {C.ECON_CURRENCY_ALLIES}곳 이상)이면 "
                 "수도에서 기축통화 지정. 완료하면 승리\n(살아 있는 다른 나라가 적으면 관계 조건은 그 과반수 + 동맹 1곳 이상.\n"
@@ -378,7 +379,7 @@ def draw_setup(app):
     # 머리글
     hr = gui.text((r.x + 40, r.y + 22), "건국", 28, t.text, "title")
     gui.text((hr.right + 10, r.y + 27), "建國", 22, mix(t.text, t.vermilion, 0.55), "title")
-    gui.text((hr.right + 80, r.y + 34), "새 나라를 세웁니다 · 426개 시군구 · 1턴 = 1주 · 2026년 1월 1주(소한) 시작 · 정치체제는 첫 턴에 고릅니다",
+    gui.text((hr.right + 80, r.y + 34), "새 나라를 세웁니다 · 427개 시군구 · 1턴 = 1주 · 2026년 1월 1주(소한) 시작 · 정치체제는 첫 턴에 고릅니다",
              11, t.muted, "semibold", max_w=r.right - 60 - hr.right - 80)
     gui.line(t.text, (r.x + 40, r.y + 66), (r.right - 40, r.y + 66), 2)
     gui.line(t.text, (r.x + 40, r.y + 70), (r.right - 40, r.y + 70), 1)
@@ -496,6 +497,10 @@ def draw_setup(app):
     w2 = r.right - 40 - x2
     y = r.y + 84
     _label(gui, x2, y, "판도", "版圖")
+    modes = list(C.GAME_MODES)
+    mi = gui.segmented((x2 + 78, y - 1, w2 - 78, 26), list(C.GAME_MODES.values()),
+                       modes.index(s.mode), size=11)
+    s.mode = modes[mi]
     y += 30
     gui.text((x2, y + 7), "적 세력", 13, t.text, "semibold")
     s.n_enemies = gui.stepper((x2 + 64, y, 120, 30), s.n_enemies, 1, C.MAX_ENEMIES)
@@ -862,7 +867,7 @@ def start_from_setup(app):
     except ValueError:
         seed = random.randrange(1_000_000)
     settings = Settings(
-        n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
+        mode=s.mode, n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
         player_leader_name=(s.custom_name.strip() or "이름 없는 지도자") if s.leader == "cus" else "",
         player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
@@ -938,7 +943,7 @@ def draw_start_popup(app, rid):
         y += 30
 
     blds = [f"{nm} {lv}단계" for nm, lv in (("농장", info.farm), ("어장", info.fishery), ("공장", info.factory),
-                                             ("은행", info.bank)) if lv]
+                                             ("시장", info.bank)) if lv]
     if info.specialty:
         blds.append("특산물 시설 1단계")
     if info.start_port:
@@ -1657,7 +1662,7 @@ def draw_proposal(app):
 
 
 # ------------------------------------------------------------------ 자원·특산물 협상(v1.3.0)
-NEGO_RES = ("oil", "coal", "elec", "specialty")
+NEGO_RES = ("food", "oil", "coal", "elec", "specialty")
 
 
 def _nego_default_price(g, pid, fid, res, i_buy) -> int:
@@ -1775,6 +1780,10 @@ def _draw_nego_window(app, ui, from_ai):
         else:
             info.append(f"내가 남기는 특산물 {NG.surplus(g, pid, 'specialty')}개/턴 · 상대 평균 행복도 "
                         f"{g.avg_happiness(fid):+.0f}")
+    elif res == 'food':
+        info.append(f'식량 비축: 나 {g.player.res.get("food",0):,.0f} · 상대 {g.factions[fid].res.get("food",0):,.0f}')
+        info.append(f'여유 식량: 나 {NG.surplus(g,pid,res)} · 상대 {NG.surplus(g,fid,res)} /턴')
+        info.append('가뭄·재해로 부족한 식량을 비축이 충분한 나라와 거래합니다.')
     else:
         info.append(f"시장: 살 때 {C.MARKET_BUY[res] * C.MONEY_SCALE:,.0f} · 팔 때 {g.sell_price(pid, res):,.0f}")
         if i_buy:
@@ -2454,7 +2463,7 @@ Space: 지역 메뉴 다음 탭   Q [행동] · W [부대] · E [지역 정보] 
 · AI 거래 제의가 귀찮으면 [외교] 탭 아래 '모든 구매/판매 제의 거절', 나라별로는 그 나라 상세 화면의 '이 국가의 거래 제의 거절'.
 · [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계를 목표 단계까지 '○○국 방어선' 묶음 공사 한 건으로 짓습니다. 대상 지역의 진행 중 작업은 중단(50% 환급), 턴 수 = 모든 방어선 건설 턴의 합 ÷ 지역 수(올림), 비용은 묶음 전체로 매 턴 냅니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
 · 지출 우선순위 정렬 버튼은 해제할 때까지 유지됩니다(다시 누르거나 직접 옮기면 해제).
-· 광역시: 행동 탭 [광역자치단체 지정]을 누른 뒤 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러 골라 하나로 묶습니다(인구 100만·공업 단지·금융 단지·식량 흑자·평균 행복도 0 이상). 슬롯·행복도 하나, 건물은 평균 단계 × 지역 수, 유닛 하나 생산 → 지역 수만큼, 농장·어장·공장·은행 6단계. 언제든 해제할 수 있습니다.
+· 광역시: 행동 탭 [광역자치단체 지정]을 누른 뒤 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러 골라 하나로 묶습니다(인구 100만·공업 단지·복합 무역 센터·식량 흑자·평균 행복도 0 이상). 슬롯·행복도 하나, 건물은 평균 단계 × 지역 수, 유닛 하나 생산 → 지역 수만큼, 농장·어장·공장·시장 6단계. 언제든 해제할 수 있습니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
@@ -2464,7 +2473,7 @@ Space: 지역 메뉴 다음 탭   Q [행동] · W [부대] · E [지역 정보] 
 · 공군: 어디서든 생산, 한 칸씩 이동(공항에서는 다른 공항으로 한 번에, 통행권 나라 공항 포함). 폭격·요격은 공항이 있는 지역에서만. 함재기는 항구에 정박했을 때만 육상으로 내립니다.
 · 폭격기는 {C.BOMB_RANGE}칸, 전투기 요격은 {C.FTR_DEFENSE_RANGE}칸 안까지(육지↔바다를 건너면 2칸으로 셈). 항공모함 1척에 함재기 {C.UNITS['cv']['air_capacity']}대.
 · 회복: 마지막 전투 뒤 {C.HEAL_AFTER_TURNS}턴이 지난 부대는 매 턴 유닛 1개당 체력 {C.HEAL_PER_UNIT:g}씩 회복합니다(이동·점령 중에도).
-· 산출 Y = 30P + {C.FARM_OUTPUT}×농장 단계 + {C.FISH_OUTPUT}×어장 단계 + 공장(넣은 연료 1개당) + {C.BANK_OUTPUT}g(은행). 하천 농장 ×{C.RIVER_FARM_MULT:g}, 하천 어장 ×{C.RIVER_FISH_MULT:g}.
+· 산출 Y = 30P + {C.FARM_OUTPUT}×농장 단계 + {C.FISH_OUTPUT}×어장 단계 + 공장(넣은 연료 1개당) + {C.BANK_OUTPUT}g(시장). 하천 농장 ×{C.RIVER_FARM_MULT:g}, 하천 어장 ×{C.RIVER_FISH_MULT:g}.
 · 세수 = Y × 세율. 세율 10%(전제군주제 12%)보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
 · 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. {C.POP_GROWTH_MIN_H} 이상·식량 충분일 때 인구 증가, {C.REBEL_THRESHOLD} 이하부터 반란.
 · 반란 대응: 요구 수용(돈 = 턴당 GDP × (−행복도) × {C.REBEL_PAY_GDP:g}, 행복도 +{C.REBEL_ACCEPT_HAPPY}) 또는 진압.

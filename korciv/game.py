@@ -10,9 +10,12 @@ from . import config as C
 from . import diplomacy as D
 from . import metro as M
 from . import rules as R
+from .queues import QueueMixin
+from .land import LandMixin, fit_initial, chaos_world
+from .disasters import DisasterMixin
 from .data import DO8, load_world
 from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
-from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES
+from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES, ALL_BUILDINGS
 from .text import josa, particle
 
 SUFFIXES = ("구역", "지구", "시", "군", "구")
@@ -27,8 +30,7 @@ def faction_name_from(short: str) -> str:
 
 def initial_buildings(info) -> dict:
     """게임 시작 시점의 건물 단계(지역 자료 기준). 전장의 안개로 모르는 지역은 지도에 이 상태로 보인다."""
-    b = {k: 0 for k in ("farm", "fishery", "factory", "bank", "power", "specialty",
-                        "extract", "shelter", "aa", "academy", "airport", "port")}
+    b = {k: 0 for k in ALL_BUILDINGS}
     b.update(farm=info.farm, fishery=info.fishery, factory=info.factory, bank=info.bank)
     if info.is_coal:
         b["extract"] = info.coal          # 탄광: ① 1단계로 시작, ② 0단계(건설 가능)
@@ -40,7 +42,9 @@ def initial_buildings(info) -> dict:
         b["port"] = 1
     if getattr(info, "start_airport", False):
         b["airport"] = 1                  # 현실 공항 소재지는 공항 1단계로 시작(v1.3.0)
-    return b
+    b["hydro"] = int(bool(info.hydro))
+    b["nuclear"] = int(bool(info.nuclear))
+    return fit_initial(info, b)
 
 
 def neutral_garrison(pop) -> int:
@@ -119,11 +123,18 @@ def pick_starts(world, rng, n, requested=()):
     return [r if r else next(rest) for r in fixed]
 
 
-class Game:
+class Game(QueueMixin, LandMixin, DisasterMixin):
     def __init__(self, settings: Settings | None = None, world=None):
         self.settings = settings or Settings()
         self.world = world or load_world()
         self.rng = random.Random(self.settings.seed)
+        if self.settings.mode not in C.GAME_MODES:
+            raise ValueError('알 수 없는 게임모드')
+        self.world_overrides = None
+        if self.settings.mode == 'chaos':
+            self.world = chaos_world(self.world, self.rng)
+            self.world_overrides = self.world.regions
+        self.init_disasters()
         self.turn = 1
         self.regions: dict[str, Region] = {}
         self.factions: list[Faction] = []
@@ -165,7 +176,20 @@ class Game:
     def __setstate__(self, s):
         self.__dict__.update(s)
         self.world = load_world()
+        if getattr(self, 'world_overrides', None):
+            import copy
+            self.world = copy.copy(self.world)
+            self.world.regions = self.world_overrides
+        if not hasattr(self, 'weather'):
+            self.init_disasters()
         for r in self.regions.values():   # 이전 버전 세이브 호환
+            if not hasattr(r, 'queue'):
+                r.queue = []
+            for key in ALL_BUILDINGS:
+                r.b.setdefault(key, 0)
+            if 'world_overrides' not in s:
+                r.b['hydro'] = int(bool(self.info(r.id).hydro))
+                r.b['nuclear'] = int(bool(self.info(r.id).nuclear))
             for attr in ("spec_pin", "spec_block"):
                 if not hasattr(r, attr):
                     setattr(r, attr, set())
@@ -212,9 +236,13 @@ class Game:
         w = self.world
         for rid in w.order:
             info = w.regions[rid]
-            b = initial_buildings(info)
-            self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=info.pop0, b=b)
-            self.new_army(NEUTRAL, rid, {"inf": neutral_garrison(info.pop0)})
+            frontier = self.settings.mode != 'standard'
+            b = {k: 0 for k in ALL_BUILDINGS} if frontier else initial_buildings(info)
+            if frontier and info.island == '무연륙 섬':
+                b['port'] = 1
+            pop = 1.0 if frontier else info.pop0
+            self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=pop, b=b)
+            self.new_army(NEUTRAL, rid, {"inf": 1 if frontier else neutral_garrison(pop)})
 
         st = self.settings
         n_ai = max(1, min(C.MAX_ENEMIES, st.n_enemies))
@@ -282,7 +310,8 @@ class Game:
         f.res = {"food": r.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
         # 시작 도시는 모든 경계(육지 경계·해안선)에 방어선 1단계를 갖고 시작한다(반란국은 해당 없음)
         for n in list(self.world.land_adj[rid]) + (["coast"] if self.world.regions[rid].coastal else []):
-            r.lines[n] = max(r.lines.get(n, 0), C.START_LINE_LEVEL)
+            if self.settings.mode == "standard":
+                r.lines[n] = max(r.lines.get(n, 0), C.START_LINE_LEVEL)
 
     def finalize_setup(self):
         """정치체제 선택 후 호출: 시작 자금·우호도 적용."""
@@ -292,15 +321,19 @@ class Game:
         self._mods.clear()
         for f in self.factions:
             f.money = C.START_MONEY * C.MONEY_SCALE * self.mods(f.id).mult("start_money")
-            self.regions[f.capital].pop *= self.mods(f.id).mult("start_pop")     # 온조왕 '십제'
+            if self.settings.mode == "standard":
+                self.regions[f.capital].pop *= self.mods(f.id).mult("start_pop")     # 온조왕 '십제'
         for a in self.factions:
             for b in self.factions:
                 if a.id != b.id and a.is_ai:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
+            if self.settings.mode == 'standard':
+                # 지도자 시작 인구 보정 후에도 초기 여유 면적을 보장한다.
+                from dataclasses import replace
+                r.b = fit_initial(replace(self.info(r.id), pop0=r.pop), r.b)
             r.output = self.calc_output(r.id, full=True)
-            r.food = R.food_output(r.b["farm"] * (C.RIVER_FARM_MULT if self.river_farm(r.id) else 1.0), r.b["fishery"],
-                                   1.0 if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
+            r.food = self.food_prod(r.owner, r)
         for f in self.factions:
             regs = self.regions_of(f.id)
             gdp = sum(r.output for r in regs)
@@ -946,7 +979,7 @@ class Game:
             if self.friendly_territory(fid, start) or True:
                 frontier = [(start, [])]
                 seen = {start}
-                for _ in range(C.LAND_STEPS_OWN):
+                for _ in range(1 if self.weather_at(start, "snow") else C.LAND_STEPS_OWN):
                     nxt = []
                     for u, path in frontier:
                         if not self.friendly_territory(fid, u):
@@ -1052,6 +1085,9 @@ class Game:
             # 과학승리 유닛은 싸우거나 남의 땅을 차지할 수 없다: 자국(연합) 영토로의 이동·상륙만
             out = {v: o for v, o in out.items() if o["action"] in ("move", "land")
                    and (w.is_sea(v) or self.friendly_territory(fid, v))}
+        if dom == 'land':
+            out = {v: o for v, o in out.items() if len(o.get('path', [])) <= 1
+                   or not any(self.weather_at(n, 'snow') for n in [army.loc] + o.get('path', []))}
         return out
 
     def order_army(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
@@ -1378,7 +1414,7 @@ class Game:
             if not amph:
                 terr = w.terrain_between(a.loc, target)
                 if terr:
-                    val *= terr["mult"]          # 도하·산악 돌파
+                    val *= self.terrain_multiplier(a.loc, target, terr)          # 도하·산악 돌파
                 elif w.is_bridge(a.loc, target):
                     val *= C.BRIDGE_ATTACK_MULT
             if mode == "assault":
@@ -1475,7 +1511,7 @@ class Game:
             terr = w.terrain_between(src, target)
             if terr:
                 add(af, f"{terr['kind']}({terr['name']})" + (f" — {self.info(src).short}" if len(armies) > 1 else ""),
-                    terr["mult"])
+                    self.terrain_multiplier(src, target, terr))
         if mode == "assault" and pv.get("sources", 1) > 1:
             n = pv["sources"]
             add(af, f"협공 {n}방향", 1 + C.FLANK_BONUS * (n - 1))
@@ -1706,6 +1742,13 @@ class Game:
         """지역 가치 1~10과 점수 구성 {항목: 점수}."""
         rr = self.regions[rid]
         info = self.info(rid)
+        if self.settings.mode != 'standard':
+            parts = {'기본': 1, '특산물': int(bool(info.specialties)),
+                     '수력': int(bool(info.hydro)), '원전': 2 * int(bool(info.nuclear)),
+                     '석탄': int(info.is_coal), '석유': 2 * int(info.is_oil),
+                     '경관': 0.5 * bool(info.scenic), '하천': 0.2 * self.river_farm(rid),
+                     '해안': 0.4 * info.coastal, '면적': info.area_km2 / 1000}
+            return max(1, min(10, math.floor(sum(parts.values())))), parts
         levels = sum(rr.b[k] for k in ("farm", "fishery", "factory", "bank", "power",
                                        "specialty", "extract"))
         singles = sum(rr.b[k] for k in ("port", "airport", "academy"))
@@ -1792,7 +1835,7 @@ class Game:
         """이 지역 슬롯에 넣을 수 있는 선택지 목록. 광역시 구성 지역이면 광역시 선택지(raw=True 면 그 지역만)."""
         rr = self.regions[rid]
         if not raw and getattr(rr, "metro", None) is not None:
-            return M.options(self, fid, rr.metro)
+            return self.queued_options(fid, rid, M.options(self, fid, rr.metro))
         info = self.info(rid)
         m = self.mods(fid)
         opts = []
@@ -1810,7 +1853,7 @@ class Game:
                          "border": border, "oil": oil})
 
         for key, spec in C.PROD_BUILDINGS.items():
-            lv = rr.b[key] + 1
+            lv = self.reserved_level(rid, key) + 1
             ok, why = True, ""
             if lv > spec["max"]:
                 continue
@@ -1827,34 +1870,43 @@ class Game:
             add("build", key, self.building_name(rid, key), cost, self.build_time(fid, key, R.prod_building_turns(lv)),
                 ok, why, lv)
         for key in ("shelter", "aa"):
-            lv = rr.b[key] + 1
+            lv = self.reserved_level(rid, key) + 1
             if lv <= 5:
                 add("build", key, C.DEF_BUILDINGS[key]["name"], R.def_building_cost(key, lv),
                     self.build_time(fid, key, R.def_building_turns(lv)), level=lv)
         borders = sorted(self.world.land_adj[rid]) + (["coast"] if info.coastal else [])
         for bkey in borders:
-            lv = rr.lines.get(bkey, 0) + 1
+            lv = self.reserved_level(rid, "line", bkey) + 1
             if lv > 5:
                 continue
             nm = "해안선" if bkey == "coast" else self.info(bkey).name
             add("build", "line", f"방어선({nm})", R.def_building_cost("line", lv) * m.mult("cost_line"),
                 self.build_time(fid, "line", R.def_building_turns(lv)), level=lv, border=bkey)
         for key, spec in C.SINGLE_BUILDINGS.items():
-            if rr.b[key]:
+            if self.reserved_level(rid, key):
                 continue
             ok, why = True, ""
             if key == "port" and not info.coastal:
                 continue
             add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
                 self.build_time(fid, key, spec["turns"]), ok, why, 1)
+        for key, (label, equivalent) in C.SITE_POWER.items():
+            if not getattr(info, key) or self.reserved_level(rid, key):
+                continue
+            ok = key != 'nuclear' or not rr.nuclear_destroyed
+            add('build', key, label + ' 건설', R.prod_building_cost('power', equivalent),
+                self.build_time(fid, 'power', R.prod_building_turns(equivalent)), ok,
+                '' if ok else '원전 재건설 영구 불가', level=1)
+        if rr.flooded:
+            add('repair', 'flood', '침수 복구', 0, 1)
         for key in C.BUILD_UNITS:
             u = C.UNITS[key]
             ok, why = True, ""
             if u["kind"] == "naval" and not info.coastal:
                 continue                      # 내륙 지역: 해군은 아예 표시하지 않는다(항구도 지을 수 없음)
-            if u["kind"] == "naval" and not rr.b["port"]:
+            if u["kind"] == "naval" and not self.projected_buildings(rid).get('port'):
                 ok, why = False, "항구 필요"
-            if ok and not self.can_pay_oil(fid, u["oil"]):
+            if ok and not rr.project and not self.can_pay_oil(fid, u["oil"]):
                 ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
@@ -1892,7 +1944,7 @@ class Game:
                          if r.id != rid and r.project and r.project.kind == "capital"), None)
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS,
                 busy is None, "" if busy is None else f"{josa(self.info(busy).name, '으로/로')} 천도 진행 중")
-        return opts
+        return self.queued_options(fid, rid, opts)
 
     # ---- 과학승리
     def science_turns(self, fid) -> int:
@@ -1982,7 +2034,7 @@ class Game:
         return "economic" in self.settings.victories
 
     def finance_cluster(self, fid) -> set:
-        """수도를 포함해 서로 맞닿은(육상 인접) 한 덩어리의 금융 단지(은행 5단계) 지역. 수도가 금융 단지가 아니면 빈 집합."""
+        """수도를 포함해 서로 맞닿은(육상 인접) 한 덩어리의 복합 무역 센터(시장 5단계) 지역. 수도가 복합 무역 센터가 아니면 빈 집합."""
         cap = self.factions[fid].capital
         rr = self.regions.get(cap)
         if not rr or rr.owner != fid or rr.b["bank"] < 5:
@@ -2161,7 +2213,7 @@ class Game:
 
     def building_name(self, rid, key, level=None) -> str:
         """건물 이름. 채굴 시설은 지역에 따라 '정유공장 증설'·'탄광 증설',
-        농장·어장·공장·은행은 단계별 이름(level 을 주면, 예: 공장 5단계 → 공업 단지)."""
+        농장·어장·공장·시장은 단계별 이름(level 을 주면, 예: 공장 5단계 → 공업 단지)."""
         if key == "extract":
             return "정유공장 증설" if self.info(rid).is_oil else "탄광 증설"
         if level and key in C.PROD_LEVEL_NAMES:
@@ -2194,6 +2246,11 @@ class Game:
         key, lv = opt["key"], opt["level"]
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
+        if key == 'housing':
+            old, new = C.POP_AREA_PER_10K[max(0, lv - 1)], C.POP_AREA_PER_10K[lv]
+            return f'인구 면적 −{(1 - new / old):.0%} · 과밀 완화'
+        if key in C.SITE_POWER:
+            return f'전기 {getattr(info, key)}/턴 · 연료 불필요'
         if key == "farm":
             fm = self.farm_mult(fid, rid)
             return (("하천 농장: " if self.river_farm(rid) else "")
@@ -2242,6 +2299,11 @@ class Game:
         lv = rr.b.get(key, 0)
         m = self.mods(fid)
         pm = m.mult("output_prod")
+        if key == 'housing':
+            old, new = C.POP_AREA_PER_10K[max(0, lv - 1)], C.POP_AREA_PER_10K[lv]
+            return f'인구 면적 −{(1 - new / old):.0%} · 과밀 완화'
+        if key in C.SITE_POWER:
+            return f'전기 {getattr(info, key)}/턴 · 연료 불필요'
         if key == "farm":
             fm = self.farm_mult(fid, rid)
             return (f"턴당 식량 {C.FARM_FOOD * lv * fm * m.mult('food_prod'):.0f}, "
@@ -2266,78 +2328,6 @@ class Game:
         if key == "extract":
             return f"석유 {info.oil + lv}/턴" if info.is_oil else f"석탄 {lv}/턴"
         return ""
-
-    def start_project(self, fid, rid, kind, key, border=None, name=None, site=None, pool=None):
-        rr = self.regions.get(rid)
-        if not rr or rr.owner != fid:
-            return False, "내 지역이 아닙니다."
-        if getattr(rr, "metro", None) is not None:
-            # 광역시: 슬롯 하나. 특산물·방어선처럼 지역마다 따로인 것은 이 지역(또는 site)에서
-            return M.start(self, fid, rr.metro, kind, key, border=border, site=site or rid, pool=pool)
-        if rr.project:
-            return False, "이 지역 슬롯은 이미 사용 중입니다."
-        if rr.occ:
-            return False, "점령당하는 중인 지역입니다."
-        if self.resisting(rr):
-            return False, "점령 저항 중인 지역은 생산할 수 없습니다."
-        opt = next((o for o in self.options(fid, rid) if o["kind"] == kind and o["key"] == key
-                    and (border is None or o["border"] == border)), None)
-        if not opt:
-            return False, "선택할 수 없는 항목입니다."
-        if not opt["ok"]:
-            return False, opt["why"]
-        f = self.factions[fid]
-        if kind == "unit":
-            u = C.UNITS[key]
-            if not self.can_pay_oil(fid, u["oil"]):
-                return False, f"석유 {u['oil']} 필요"
-            self.pay_oil(fid, u["oil"])
-            rr.h_delta += C.UNIT_START_HAPPY[u["weight"]]
-        rr.project = Project(kind=kind, key=key, level=opt["level"], turns=opt["turns"],
-                             per_turn=opt["per_turn"], border=opt["border"])
-        if not f.is_ai:
-            rr.focus = rr.pop_focus = False      # 건설·생산 중엔 집중 효과가 없으니 체크를 푼다
-        self.proj_counter = getattr(self, "proj_counter", 0) + 1
-        rr.project.priority = self.proj_counter
-        label = opt["name"]
-        if kind == "build":
-            if key == "line":
-                label = f"{opt['name']} {opt['level']}단계"
-            elif key not in C.SINGLE_BUILDINGS:
-                label = self.build_label(rid, key, opt["level"])      # 예: '공업 단지 건설', '발전소 2단계'
-        if kind == "econ":
-            if key == "currency":
-                self.econ_alert(fid, f"{josa(self.fname(fid), '이/가')} 기축통화 지정을 시작했습니다. "
-                                     f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
-        if kind == "annex":
-            label = f"편입: {self.info(key).name}"
-            return True, f"{label} 착수 ({self.project_left(rid)}턴, 턴당 {opt['per_turn']:,.0f})"
-        return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
-
-    def cancel_project(self, fid, rid):
-        rr = self.regions.get(rid)
-        if not rr or rr.owner != fid or not rr.project:
-            return False, "취소할 작업이 없습니다."
-        p = rr.project
-        refund = p.paid * C.PROJECT_REFUND
-        self.factions[fid].money += refund
-        msg = f"취소: {refund:,.0f} 환급"
-        if p.group is not None or p.metro is not None:
-            # 묶음 공사(국경 방어선)·광역시 작업은 한 건: 모든 지역에서 함께 취소
-            for r in self.regions.values():
-                if r.project is p:
-                    r.project = None
-            if p.kind == "unit" and p.key in C.UNITS:
-                back = -C.UNIT_START_HAPPY[C.UNITS[p.key]["weight"]]
-                self.regions[M.center_of(self, rid)].h_delta += back
-            return True, f"{p.name} 취소: {refund:,.0f} 환급"
-        if p.kind == "unit" and p.key in C.UNITS:
-            # 착수 때 깎인 행복도는 돌려준다(석유는 턴마다 들어오는 흐름이라 돌려주지 않는다)
-            back = -C.UNIT_START_HAPPY[C.UNITS[p.key]["weight"]]
-            rr.h_delta += back
-            msg += f" · 행복도 +{back:g} 회복"
-        rr.project = None
-        return True, msg
 
     def review_order(self, fid):
         """수도부터 영토를 얻은 순서대로."""
@@ -2607,14 +2597,14 @@ class Game:
         """이번 턴 채굴·자체 발전(점령당하는 중·저항 지역 제외)."""
         out = {"oil": 0, "coal": 0, "elec": 0}
         for r in self.regions_of(fid):
-            if r.occ or self.resisting(r):
+            if r.occ or self.resisting(r) or r.flooded:
                 continue
             info = self.info(r.id)
             if info.is_oil:
                 out["oil"] += info.oil + r.b["extract"]
-            elif info.is_coal:
+            if info.is_coal:
                 out["coal"] += r.b["extract"]
-            out["elec"] += info.power_self
+            out["elec"] += self.self_power(r.id)
         return out
 
     def energy_supply(self, fid) -> dict:
@@ -2632,7 +2622,7 @@ class Game:
         """이번 턴 특산물 생산(세종대왕 수라상·야율융서 공물 반영). {종류: 개수}"""
         made = {}
         for r in self.regions_of(f.id):
-            if r.occ or self.resisting(r) or not r.b["specialty"]:
+            if r.occ or self.resisting(r) or r.flooded or not r.b["specialty"]:
                 continue
             for sp in self.info(r.id).specialties:
                 made[sp] = made.get(sp, 0) + r.b["specialty"]
@@ -2666,7 +2656,7 @@ class Game:
 
     def energy_sites(self, fid):
         """연료를 받는 시설: (발전소 지역들, 공장 지역들). 공장은 단계가 높은 순."""
-        act = [r for r in self.regions_of(fid) if not r.occ and not self.resisting(r)]
+        act = [r for r in self.regions_of(fid) if not r.occ and not self.resisting(r) and not r.flooded]
         plants = sorted([r for r in act if r.b["power"] > 0], key=lambda r: (-r.b["power"], r.id))
         facts = sorted([r for r in act if r.b["factory"] > 0], key=lambda r: (-r.b["factory"], r.id))
         return plants, facts
@@ -2833,7 +2823,7 @@ class Game:
     def farm_mult(self, fid, rid) -> float:
         """농장 식량·산출 배수(지도자 효과 × 하천 농장). 광역시는 하나라도 하천 농장이면 전체가 하천 농장."""
         river = M.river_farm(self, rid) if getattr(self.regions[rid], "metro", None) is not None else self.river_farm(rid)
-        return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if river else 1.0)
+        return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if river else 1.0) * self.weather_farm_mult(rid)
 
     def fish_food_mult(self, fid, rid):
         """어장 식량 배수(식량·산출 같은 배수: 하천 어장 ×0.8, 해안선 점유 ×1.2)."""
@@ -2846,8 +2836,8 @@ class Game:
     def fish_mult(self, fid, rid):
         """어장 배수. 광역시는 구성 지역 가운데 가장 좋은 어장(하나라도 바다 어장이면 바다 어장) 기준."""
         if getattr(self.regions[rid], "metro", None) is not None:
-            return M.fish_mult(self, fid, rid)
-        return self._fish_mult_one(fid, rid)
+            return M.fish_mult(self, fid, rid) * self.weather_fish_mult(rid)
+        return self._fish_mult_one(fid, rid) * self.weather_fish_mult(rid)
 
     def _fish_mult_one(self, fid, rid):
         info = self.info(rid)
@@ -2861,6 +2851,8 @@ class Game:
     def calc_output(self, rid, full=False, owner=None):
         """full=True 면 공장에 연료가 가득 들어간다고 보고 계산(추정·미리보기용)."""
         rr = self.regions[rid]
+        if rr.flooded:
+            return 0.0
         owner = rr.owner if owner is None else owner
         m = self.mods(owner)
         phi = None if full else getattr(rr, "fuel_used", 0)
@@ -2872,7 +2864,7 @@ class Game:
                             m.mult("output_prod"), self.farm_mult(owner, rid))
         pb = m.value("port_bank", 0)
         if pb and rr.b["port"] and owner != NEUTRAL:
-            # 근초고왕 '해상 왕국': 항구가 있는 지역은 은행 3단계만큼 산출이 더 난다
+            # 근초고왕 '해상 왕국': 항구가 있는 지역은 시장 3단계만큼 산출이 더 난다
             y += C.BANK_OUTPUT * R.g(pb) * m.mult("output_bank") * m.mult("output_prod")
         if owner != NEUTRAL and owner == rr.owner:
             y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
@@ -2887,7 +2879,7 @@ class Game:
             if self.turn <= m.value("early_output_turns", 0):
                 y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 10턴
             y *= 1 + C.HAEDONG_OUTPUT * self.haedong_steps(owner)   # 발해 선왕 '해동성국'
-        return y
+        return y * (0.9 if self.weather_at(rid, "snow") else 1.0)
 
     def near_capital(self, fid, dist=2) -> set:
         """수도에서 육상 dist칸 이내 지역."""
@@ -2936,18 +2928,19 @@ class Game:
 
     def crowd_thresholds(self, rid) -> tuple:
         """과밀 행복도 감소가 시작되는 인구 (−2, −4)."""
-        p0 = self.info(rid).pop0
-        for top, a, b in C.CROWD_TIERS:
-            if top is None or p0 <= top:
-                return p0 * (1 + a), p0 * (1 + b)
+        capacity = self.population_capacity(rid)
+        r = self.regions[rid]
+        built = self.area_usage(rid)[2]
+        tier2 = max(0.0, (self.info(rid).area_km2 * 1.10 - built) / C.POP_AREA_PER_10K[r.b.get('housing', 0)])
+        return capacity, tier2
 
     def crowd_penalty(self, rr) -> float:
-        """과밀: 시작 인구 대비 크게 늘면 그 지역 행복도 −2, 더 늘면 −4."""
-        t1, t2 = self.crowd_thresholds(rr.id)
-        if rr.pop >= t2:
-            return C.CROWD_HAPPY[1]
-        if rr.pop >= t1:
-            return C.CROWD_HAPPY[0]
+        used = self.area_usage(rr.id)[0]
+        area = self.info(rr.id).area_km2
+        if used >= area * 1.10:
+            return -4.0
+        if used >= area - 1e-8:
+            return -2.0
         return 0.0
 
     def growth_happy(self, rr) -> float:
@@ -2956,7 +2949,7 @@ class Game:
             return rr.happy
         f = self.factions[rr.owner]
         h = (self.base_happy(rr) - rr.conscript - self.minority_penalty(rr.owner) + self.scenic_bonus(rr)
-             + self.crowd_penalty(rr))
+             + self.crowd_penalty(rr) + self.weather_happy(rr.id))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
@@ -2984,6 +2977,10 @@ class Game:
             rr.war_from, rr.war_turn = old, self.turn
         else:
             rr.war_from, rr.war_turn = None, None
+        # 예약은 옛 국가의 명령이다. 점령·할양 시 납부한 보류 작업은 옛 국가에 환급한다.
+        if old != NEUTRAL:
+            self.factions[old].money += sum(p.paid * C.PROJECT_REFUND for p in rr.queue)
+        rr.queue.clear()
         rr.rally = None                              # 생산 집결지는 주인이 바뀌면 지운다(v1.3.0)
         # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
         # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
@@ -3387,6 +3384,7 @@ class Game:
             if f.alive and f.is_ai:
                 ai.plan_turn(self, f.id)
         # 1. 외교: 제안·선전포고는 즉시 처리된다. 여기서는 턴 단위 갱신만.
+        self.disaster_damage()
         # 2~5. 이동 → 해전 → 폭격 → 지상 공격 (명령을 받은 부대는 이번 턴 회복하지 않는다)
         self._acted.update(a.id for a in self.armies.values() if a.order)
         self._acted.update(self.fought_armies())         # 이번 턴 바로 싸운 플레이어 부대도 회복하지 않는다
@@ -3401,7 +3399,8 @@ class Game:
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
         # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
-        drafted = self._phase_projects(("build", "unit", "science", "econ", "capital"))
+        drafted = self._phase_projects(("build", "unit", "science", "econ", "capital", "repair"))
+        self.promote_queues()
         self._phase_conscription(drafted)
         # 8~9. 자원, 세수·유지비
         for f in self.factions:
@@ -3434,6 +3433,7 @@ class Game:
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
                 a.order = None
         self.turn += 1
+        self.begin_disaster_turn()
         # 반기 랭킹: 해마다 1주차·25주차(첫해 제외, 첫 발표는 2년 차 1주차)
         if self.turn > C.TURNS_PER_YEAR and (self.turn - 1) % C.TURNS_PER_YEAR in C.RANKING_WEEKS:
             self._half_ranking()
@@ -4349,6 +4349,9 @@ class Game:
                     if tgt.owner != NEUTRAL:
                         self._cancel_hijacked(rr, tgt.owner)
                         continue
+                if not self.project_ready(rr.id, p):
+                    p.stalled = True
+                    continue
                 if f.money < p.per_turn:
                     p.stalled = True
                     continue
@@ -4360,6 +4363,8 @@ class Game:
 
     def food_prod(self, fid, r) -> float:
         """한 지역의 식량 생산(스탈린 '집단농장' 농장 +15%, 마오쩌둥 '해로운 새' −15%)."""
+        if r.flooded:
+            return 0.0
         m = self.mods(fid)
         return R.food_output(r.b["farm"] * self.farm_mult(fid, r.id), r.b["fishery"],
                              self.fish_food_mult(fid, r.id)) * m.mult("food_prod")
@@ -4395,8 +4400,13 @@ class Game:
     def _phase_projects(self, kinds):
         """진행. 이번 턴 군 유닛 생산에 쓴 지역 ID 집합을 돌려준다."""
         drafted = set()
+        seen = set()
         for rr in list(self.regions.values()):
             p = rr.project
+            if p is not None and id(p) in seen:
+                continue
+            if p is not None:
+                seen.add(id(p))
             if not p or p.kind not in kinds or p.kind == "annex" or rr.owner == NEUTRAL \
                     or not getattr(p, "funded", False):
                 continue
@@ -4407,19 +4417,30 @@ class Game:
                 drafted.update(M.members(self, rr.id))
             if p.progress >= p.turns and p.group is not None:
                 self._complete_line_group(f, p)
+                self.promote_queues()
                 continue
             if p.progress >= p.turns and p.metro is not None:
-                M.complete(self, f, p)
+                self._continuing = True
+                try:
+                    M.complete(self, f, p)
+                finally:
+                    self._continuing = False
+                self.promote_queue(rr.id)
                 continue
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
-                if getattr(p, "chain", False):
-                    self._chain_next(f, rr, p)
-                elif getattr(p, "line_plan", None):
-                    self._line_plan_next(f, rr, p)
-                elif p.kind == "unit" and getattr(p, "repeat", 0) > 0:
-                    self._repeat_unit(f, rr, p)
+                self._continuing = True
+                try:
+                    if getattr(p, 'chain', False):
+                        self._chain_next(f, rr, p)
+                    elif getattr(p, 'line_plan', None):
+                        self._line_plan_next(f, rr, p)
+                    elif p.kind == 'unit' and getattr(p, 'repeat', 0) > 0:
+                        self._repeat_unit(f, rr, p)
+                finally:
+                    self._continuing = False
+                self.promote_queue(rr.id)
         return drafted
 
     def can_chain(self, kind, key) -> bool:
@@ -4431,7 +4452,7 @@ class Game:
         광역시는 통합 건물 종류(pool)를 넘겨야 탄광·정유처럼 같은 건물 키를 쓰는 것을 구분한다."""
         ok, msg = self.start_project(fid, rid, kind, key, site=site, pool=pool)
         if ok and self.can_chain(kind, key):
-            self.regions[rid].project.chain = True
+            self._last_started.chain = True
             msg += " · 최대 단계까지 이어서 건설"
         return ok, msg
 
@@ -4440,7 +4461,7 @@ class Game:
         count = max(1, int(count))
         ok, msg = self.start_project(fid, rid, "unit", key)
         if ok and count > 1:
-            self.regions[rid].project.repeat = count - 1
+            self._last_started.repeat = count - 1
             msg += f" · {count}개 연속 생산"
         return ok, msg
 
@@ -4448,14 +4469,11 @@ class Game:
         """연속 생산: 방금 만든 유닛을 하나 더 착수(못 하면 알리고 멈춘다)."""
         if rr.owner != f.id or rr.project:
             return
-        ok, msg = self.start_project(f.id, rr.id, "unit", p.key)
-        if ok:
-            rr.project.repeat = p.repeat - 1
-            rr.project.priority = p.priority          # 자금 우선순위는 그대로
-            rr.project.pinned = getattr(p, "pinned", False)
-        elif not f.is_ai:
-            self.event("info", f"{self.info(rr.id).name}: 연속 생산 중단(남은 {p.repeat}개) — {msg}",
-                       region=rr.id, fids=(f.id,))
+        from dataclasses import replace
+        q = replace(p, repeat=p.repeat-1, progress=0, paid=0.0, funded=False,
+                    started=False, stalled=False, blocked_reason='')
+        self._set_active(rr.id, q)
+        self._activate_project(rr.id, q)
 
     def rally_candidates(self, fid, node, n) -> list:
         """node 로부터 육상 n칸 안에 있는 내 육군 가운데 불러올 수 있는 부대(이번 턴 전투했거나 공격·폭격·상륙
@@ -4540,7 +4558,7 @@ class Game:
             if not need:
                 plan["done"] += 1
                 continue
-            if r.occ or self.resisting(r):
+            if r.occ or self.resisting(r) or r.flooded:
                 plan["skipped"] += 1
                 continue
             cost = 0.0
@@ -4731,7 +4749,9 @@ class Game:
             step = 1 / (1 - self.joint_annex_reduction(n, any(rr.project.metro is not None for rr in funded)))
             prog = max(rr.project.progress for rr in members) + step
             for rr in members:
-                rr.project.progress = prog
+                # 예약 시점이 다르면 같은 대상의 기본 소요 턴도 달라질 수 있다.
+                # 짧은 작업은 자체 게이지 끝에서 기다리고 긴 작업의 게이지가 공유 진행을 이끈다.
+                rr.project.progress = min(prog, rr.project.turns)
                 rr.project.funded = False
             need = max(rr.project.turns for rr in members)
             if prog >= need - 1e-9:
@@ -4740,7 +4760,10 @@ class Game:
 
     def _complete_project(self, f, rr, p):
         name = self.info(rr.id).name
-        if p.kind == "build":
+        if p.kind == "repair":
+            rr.flooded = False
+            text = f"{name} 침수 복구 완료"
+        elif p.kind == "build":
             if p.key == "line":
                 rr.lines[p.border] = p.level
                 nm = "해안선" if p.border == "coast" else self.info(p.border).name
@@ -4812,7 +4835,7 @@ class Game:
     # ---- 8. 자원
     def _phase_resources(self, f: Faction):
         regs = self.regions_of(f.id)
-        active = [r for r in regs if not r.occ and not self.resisting(r)]   # 점령당하는 중·저항 지역은 생산 없음
+        active = [r for r in regs if not r.occ and not self.resisting(r) and not r.flooded]   # 점령당하는 중·저항 지역은 생산 없음
         res = f.res
         # 에너지: 이번 턴 확보량 → 발전소 → 전기 → 공장 (미리보기와 같은 계산). 남는 것은 시장에 팔린다
         plan = self.energy_plan(f.id)
@@ -4998,12 +5021,12 @@ class Game:
                 r.pop *= 1 + C.FAMINE_POP * r.famine
             else:
                 # 인구 상한 없음. 성장은 전쟁 피로를 뺀 행복도로 판정하고, 과밀 행복도 감소가 브레이크
-                g = R.pop_growth_rate(self.growth_happy(r)) * f.pop_mult
+                g = R.pop_growth_rate(self.growth_happy(r), self.density_growth(r.id)) * f.pop_mult
                 if self.pop_focus_active(r):
-                    g += C.POP_FOCUS_GROWTH          # 인구 성장 집중
-                g += getattr(f, "ration_bonus", 0.0)  # 잉여 식량 배급
+                    g += C.POP_FOCUS_GROWTH * self.growth_scale(r.id)
+                g += getattr(f, "ration_bonus", 0.0) * self.growth_scale(r.id)
                 if g > 0:
-                    r.pop += r.pop * g
+                    r.pop = max(r.pop, min(r.pop * (1 + g), self.population_capacity(r.id)))
             if self.eff_happy(r) <= C.MIGRATION_H:        # 이주는 전쟁 피로를 포함한 실질 행복도로 판정
                 r.pop *= 1 + C.MIGRATION_POP
             r.pop = max(0.1, r.pop)
@@ -5105,7 +5128,7 @@ class Game:
         if rebel:
             weary = (weary - getattr(f, "war_weary_def", 0.0)) * C.REBEL_WEARY_MULT
         h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
-             + self.scenic_bonus(rr) + self.crowd_penalty(rr))
+             + self.scenic_bonus(rr) + self.crowd_penalty(rr) + self.weather_happy(rr.id))
         if f.happy_floor_until > self.turn:
             h = max(0.0, h)
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))

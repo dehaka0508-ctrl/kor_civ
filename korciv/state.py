@@ -8,9 +8,9 @@ from . import config as C
 
 NEUTRAL = -1
 
-ALL_BUILDINGS = ["farm", "fishery", "factory", "bank", "power", "specialty", "extract",
+ALL_BUILDINGS = ["farm", "fishery", "factory", "bank", "power", "specialty", "extract", "housing", "hydro", "nuclear",
                  "shelter", "aa", "academy", "airport", "port"]
-BUILDING_NAMES = {**{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
+BUILDING_NAMES = {**{k: v[0] for k, v in C.SITE_POWER.items()}, **{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.DEF_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.SINGLE_BUILDINGS.items()}}
 
@@ -32,6 +32,8 @@ class Project:
     pinned: bool = False           # 지출 우선순위 맨 위 고정
     chain: bool = False            # 최대 건설: 완공되면 바로 다음 단계를 이어서 건설
     repeat: int = 0                # 군 유닛 연속 생산: 이번 것 뒤에 더 만들 개수
+    started: bool = True          # 대기 중인 유닛의 연료·행복도 비용은 최초 실행 때만
+    blocked_reason: str = ""
     # 국경 방어선 묶음 공사(v1.3.0): 대상 지역들이 이 Project 하나를 함께 가리킨다.
     # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
     group: Optional[dict] = None
@@ -58,6 +60,15 @@ class Region:
     econ: set = field(default_factory=set)       # 경제승리 시설(exchange / sez / ifc / currency)
     energy: dict = field(default_factory=dict)   # 수동 연료 배정 {"coal": n, "oil": n, "elec": n} (공장·발전소)
     project: Optional[Project] = None
+    queue: list[Project] = field(default_factory=list)
+    flooded: bool = False
+    fire_scar: float = 0.0
+    fire_turns: int = 0
+    fire_recovery: int = 0
+    nuclear_off_until: int = 0
+    nuclear_destroyed: bool = False
+    last_agri_damage: int = -999
+    quake_until: int = 0
     occs: dict = field(default_factory=dict)   # 무력 점령 진행 {fid: {"by", "progress", "need"}} (여러 세력 동시 가능)
     supplied: set = field(default_factory=set)
     spec_pin: set = field(default_factory=set)     # 수동 고정 공급 특산물
@@ -210,6 +221,7 @@ class Faction:
 
 @dataclass
 class Settings:
+    mode: str = "standard"
     n_enemies: int = 3
     difficulty: int = 2
     fog: int = 1

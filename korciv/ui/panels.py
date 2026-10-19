@@ -196,6 +196,10 @@ def draw_region_info(app, rect):
     off = gui.begin_scroll("left", scroll_rect, content_h)
     y0 = y
     y -= off
+    from .region_tools import draw_area, draw_status
+    y = draw_area(app, x, y, w, node)
+    if visible:
+        y = draw_status(app, x, y, w, node)
     y = kv(gui, x, y, w, "인구", f"{r.pop:,.1f}만 명")
     y_out = r.output if r.owner != NEUTRAL else g.calc_output(node, full=True)
     y = kv(gui, x, y, w, "산출(GDP)", f"{y_out:,.0f} /턴")
@@ -281,7 +285,7 @@ def draw_region_info(app, rect):
     # 건물
     y = section(gui, x, y + 6, w, "건물 단계")
     chips = []
-    for k in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa"):
+    for k in ("farm", "fishery", "factory", "bank", "housing", "power", "hydro", "nuclear", "specialty", "extract", "shelter", "aa"):
         if r.b[k]:
             if k in C.PROD_LEVEL_NAMES:
                 chips.append(f"{g.building_name(node, k, r.b[k])}({r.b[k]})")   # 예: 공업 단지(5)
@@ -322,6 +326,8 @@ def draw_region_info(app, rect):
         res.append(f"탄광 {info.coal}+{r.b['extract']}/턴")
     if info.power_source:
         res.append(power_text(info))
+        if info.hydro or info.nuclear:
+            res.append(f'자체 발전 가동 {g.self_power(node)}/턴' + (' · 직접 건설 필요' if not r.b['hydro'] and not r.b['nuclear'] else ''))
     if info.specialty:
         res += [f"특산물: {sp}" for sp in info.specialties]   # 두 종류면 따로 표기
     if info.scenic:
@@ -431,12 +437,14 @@ def project_name(app, p, rid=None):
         return f"과학 {k}단계: {C.SCIENCE[p.key]['name']}"
     if p.kind == "econ":
         return f"경제 {C.ECON_STEPS.index(p.key) + 2}단계: {C.ECON[p.key]['name']}"
+    if p.kind == "repair":
+        return "침수 복구"
     if p.kind == "capital":
         return "천도"
     return p.kind
 
 
-def draw_project(app, x, y, w, rid, p, can_cancel=True):
+def draw_project(app, x, y, w, rid, p, can_cancel=True, compact=False):
     gui = app.gui
     t = app.theme
     name = project_name(app, p, rid)
@@ -450,6 +458,19 @@ def draw_project(app, x, y, w, rid, p, can_cancel=True):
     mt = M.get(app.game, getattr(p, "metro", None))
     if mt:
         name = f"{mt['name']}: {name}"
+    if compact:
+        gui.text((x, y), name, 12, t.text, 'semibold', max_w=w-65)
+        if gui.button((x+w-60, y, 60, 23), '취소', size=11):
+            ok, msg = app.game.cancel_project(app.game.player_id, rid)
+            app.toast(msg)
+            app.changed()
+        y += 25
+        gui.progress((x, y, w, 6), min(1, p.progress / max(1, p.turns)), t.warn if p.stalled else t.accent)
+        y += 10
+        gui.text((x, y), p.blocked_reason if p.stalled and p.blocked_reason else
+                 f'남은 {app.game.project_left(rid)}턴 · 턴당 {p.per_turn:,.0f}', 11,
+                 t.bad if p.stalled else t.muted, max_w=w)
+        return y + 22
     gui.text((x, y), name, 14, weight="semibold", max_w=w - 70)
     gui.text((x + w, y), f"남은 {app.game.project_left(rid)}턴", 12, t.muted, anchor="topright")
     y += 22
@@ -520,6 +541,7 @@ def draw_sea_info(app, rect, sid):
 
 # ------------------------------------------------------------------ 우측 패널
 def draw_action_tab(app, body):
+    from .region_tools import draw_area, draw_status, draw_queue, area_effect
     gui = app.gui
     g = app.game
     t = app.theme
@@ -551,6 +573,17 @@ def draw_action_tab(app, body):
     mt = M.of(g, rid)
     gui.text((x, y), app.world.regions[rid].name if not mt else mt["name"], 15, weight="bold")
     y += 26
+    y = draw_area(app, x, y, w, rid)
+    y = draw_status(app, x, y, w, rid)
+    if any(g.regions[s].flooded for s in M.members(g, rid)):
+        if gui.button((x, y, w, 26), '침수 복구 · 1턴 / 무료', 'primary', size=12):
+            flooded = next(s for s in M.members(g, rid) if g.regions[s].flooded)
+            ok, msg = g.start_project(pid, flooded, 'repair', 'flood', site=flooded)
+            if ok and len(g.local_projects(rid)) > 1:
+                g.move_queued_project(pid, rid, len(g.local_projects(rid))-1, 0)
+            app.toast(msg, None if ok else t.bad)
+            app.changed()
+        y += 31
     # 점령 저항 중에는 산출·생산이 없으니 다른 명령은 보이지 않는다
     phase, k = g.resist_phase(r)
     if phase == "resist":
@@ -579,7 +612,7 @@ def draw_action_tab(app, body):
     # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
     pf = getattr(r, "pop_focus", False)
     can = pf or g.growth_happy(r) >= C.POP_FOCUS_MIN_H
-    on = gui.checkbox((x, y, w - 110, 26), f"인구 성장 집중 (+{C.POP_FOCUS_GROWTH * 100:g}%p/턴)", pf, size=13)
+    on = gui.checkbox((x, y, w - 110, 26), f"인구 성장 집중 (+{C.POP_FOCUS_GROWTH * g.growth_scale(rid) * 100:g}%p/턴)", pf, size=13)
     if on != pf:
         ok, msg = g.set_pop_focus(pid, rid, on)
         app.toast(msg, None if ok else t.bad)
@@ -592,8 +625,8 @@ def draw_action_tab(app, body):
         gui.text((x + w, y + 4), "행복도 5 이상 필요", 11, t.muted, anchor="topright")
     y += 32
     if r.project:
-        y = draw_project(app, x, y, w, rid, r.project)
-        y = section(gui, x, y, w, "슬롯 사용 중 — 완료 후 새 작업 지정")
+        y = draw_project(app, x, y, w, rid, r.project, compact=True)
+    y = draw_queue(app, x, y, w, rid)
     if r.occ:
         gui.text((x, y), "점령당하는 중이라 슬롯을 쓸 수 없습니다.", 13, t.bad)
         return
@@ -601,8 +634,6 @@ def draw_action_tab(app, body):
         if gui.button((x, y, w, 28), "연료 배정 (자원 배정 탭)", size=12):
             app.left_open, app.left_tab = True, "energy"
         y += 36
-    if r.project:
-        return
     opts = g.options(pid, rid)
     # 생산 건물: 최대 단계까지 지은 건물은 '… 건설 완료'와 지금 턴당 산출을 남겨 둔다
     prod = []
@@ -620,7 +651,8 @@ def draw_action_tab(app, body):
               (f"유닛 생산 · 최근 {g.drafted_turns(rid)}/{C.CONSCRIPT_WINDOW}턴 징집",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
-              ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
+              ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")]),
+              ('시설 정리', [{'kind': 'demolish', 'key': key, 'level': r.b[key]} for key in C.PROD_BUILDINGS if r.b[key]])]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
     content = sum(28 + sum(60 if o["kind"] in ("build", "science", "econ", "unit") else 44 for o in lst)
                   for _, lst in groups if lst)
@@ -635,6 +667,19 @@ def draw_action_tab(app, body):
         if title.startswith("유닛 생산") and gui.hover((x, top - 4, w, yy - top + 4)):
             gui.tooltip = f"{min(C.CONSCRIPT_PENALTY)}/{C.CONSCRIPT_WINDOW}턴부터 지역 행복도 감소"
         for o in lst:
+            if o['kind'] == 'demolish':
+                key = o['key']
+                label = C.PROD_BUILDINGS[key]['name']
+                gui.text((x, yy+2), f'{label} {o["level"]} → {o["level"]-1}단계', 12, t.muted, max_w=w-70)
+                tip = '광역시는 구성 지역 모두 1단계씩 철거합니다.' if mt else '이 건물을 1단계 철거합니다.'
+                if key == 'housing':
+                    tip += ' 주거 철거 시 인구 사용 면적이 늘어납니다.'
+                if gui.button((x+w-62, yy+3, 62, 27), '철거', size=11, tooltip=tip):
+                    ok, msg = g.demolish_building(pid, rid, key)
+                    app.toast(msg, None if ok else t.bad)
+                    app.changed()
+                yy += 44
+                continue
             if o["kind"] == "done":
                 lv = o["level"]
                 if o["key"] in C.PROD_LEVEL_NAMES:
@@ -662,6 +707,8 @@ def draw_action_tab(app, body):
             sub = f"총 {o['cost']:,.0f} · {turns_txt} · 턴당 {o['per_turn']:,.0f}"
             if o.get("oil"):
                 sub += f" · 석유 {o['oil']}"
+            if o['kind'] == 'build':
+                sub += ' · ' + area_effect(g, rid, o)
             if not o["ok"]:
                 sub = o["why"]
             gui.text((x, yy + 21), sub, 11, t.muted if o["ok"] else t.bad, max_w=w - 70)
@@ -670,7 +717,7 @@ def draw_action_tab(app, body):
                 eff = ("완료하면 유닛 1개 — 발사대 지역으로 옮긴다" if C.SCIENCE[o["key"]]["unit"]
                        else "완료하면 다음 과학 단계가 열린다")
             if o["kind"] == "econ":
-                eff = {"exchange": f"이 지역 은행 산출 +{C.EXCHANGE_BANK_BONUS:.0%}",
+                eff = {"exchange": f"이 지역 시장 산출 +{C.EXCHANGE_BANK_BONUS:.0%}",
                        "sez": "완료하면 국제금융센터가 열린다(우호 관계 필요)",
                        "ifc": f"내 선물의 우호도 효과 +{C.IFC_GIFT_BONUS:.0%}",
                        "currency": "완료하면 경제승리"}[o["key"]]
@@ -687,7 +734,7 @@ def draw_action_tab(app, body):
                 if not hasattr(app, "unit_qty"):
                     app.unit_qty = {}
                 app.unit_qty[qkey] = qty
-            if gui.button((x + w - 62, yy + 6, 62, 28), "지정", "primary" if o["ok"] else "default",
+            if gui.button((x + w - 62, yy + 6, 62, 28), "추가" if r.project else "지정", "primary" if o["ok"] else "default",
                           enabled=o["ok"], size=12,
                           tooltip=None if money >= o["per_turn"] else "현재 자금이 턴당 비용보다 적어 정지될 수 있습니다"):
                 if o["kind"] == "unit":
@@ -1498,8 +1545,8 @@ def draw_nation_tab(app, body):
     cons = max(1.0, last.get("food_cons", 1))
     desc = {"store": "잉여분을 비축합니다.",
             "sell": f"잉여분을 모두 개당 {g.sell_price(pid, 'food'):,.0f}에 팝니다 (약 +{surplus * g.sell_price(pid, 'food'):,.0f}/턴).",
-            "ration": f"전국 인구 성장률 +{min(C.FOOD_RATION_MAX, surplus / cons) * C.POP_FOCUS_GROWTH * 100:.2f}%p/턴 "
-                      f"(잉여 ÷ 소비 × 0.25%p)."}[mode]
+            "ration": f"밀도 400명/km² 기준 +{min(C.FOOD_RATION_MAX, surplus / cons) * C.POP_FOCUS_GROWTH * 100:.2f}%p/턴 "
+                      f"· 지역 밀도에 따라 최대 10배."}[mode]
     gui.text((x, y), desc, 11, t.muted, max_w=w)
     y += 20
     # 비축 식량 판매: 슬라이더로 양을 정해 시장 판매가로 판다
@@ -1764,7 +1811,7 @@ def econ_progress_text(g, pid) -> str:
     st = g.econ_stage(pid)
     head = f"{st}/{C.ECON_STAGES}"
     if st == 0:
-        return f"{head} · 금융 단지 {len(g.finance_cluster(pid))}/{C.ECON_CLUSTER}곳"
+        return f"{head} · 복합 무역 센터 {len(g.finance_cluster(pid))}/{C.ECON_CLUSTER}곳"
     if st == 1:
         return f"{head} · {g.econ_ready(pid, 'sez')[1]}"
     if st >= C.ECON_STAGES:

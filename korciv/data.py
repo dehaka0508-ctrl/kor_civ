@@ -5,7 +5,8 @@ import csv
 import json
 import os
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from . import config as C
 from functools import lru_cache
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -126,6 +127,9 @@ class RegionInfo:
     note: str
     output0: float
     food0: float
+    area_km2: float = 3.0
+    hydro: int = 0
+    nuclear: int = 0
     scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
     full: str = ""       # 원래 표기명(시·군·구 포함). 자료 파일의 지명 대조용
     coal_field: str = ""  # 탄전 구분 ①/② (탄광 열은 시작 탄광 단계)
@@ -171,6 +175,11 @@ class World:
         with open(os.path.join(data_dir, "map_geometry.json"), encoding="utf-8") as f:
             geo = json.load(f)
         self.geometry = geo["regions"]
+        self.regions = {rid: replace(info,
+            area_km2=max(3.0, round(self.geometry[rid]["area"] * C.AREA_KM2_SCALE, 1)),
+            hydro=info.power_self if "수력" in info.power_source else 0,
+            nuclear=info.power_self if "원자력" in info.power_source or "원전" in info.power_source else 0)
+            for rid, info in self.regions.items()}
         self.province_outlines = geo.get("provinces", {})
         self.do8_outlines = geo.get("do8", {})
         self.outlines_open = bool(geo.get("outline_open", False))   # 열린 선(새 형식)인가

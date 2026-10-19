@@ -224,6 +224,7 @@ def plan_turn(g, fid):
     _patrol_orders(g, f)
     _naval_orders(g, f, threat)
     _air_orders(g, f, threat)
+    _disaster_response(g, f)
     _slots(g, f, threat)
     # 슬롯이 비는 지역: 인구가 상한에 한참 못 미치고 민심·식량에 여유가 있으면 인구 성장 집중,
     # 아니면 생산 집중(둘 다 건설·생산 중엔 효과 없음)
@@ -353,6 +354,12 @@ def _trade_offers(g, f):
     if (g.turn + fid) % C.AI_TRADE_EVERY:
         return
     partners = trade_partners(g, fid)
+    if g.expected_food_balance(f) < g.total_pop(fid) * 2:
+        deficit = max(0, g.total_pop(fid) - sum(g.food_prod(fid, r) for r in g.regions_of(fid)))
+        for other in sorted(partners, key=lambda x: -g.factions[x].res.get('food', 0)):
+            n = min(int(math.ceil(deficit)), NG.surplus(g, other, 'food'))
+            if n > 0 and _trade_with(g, fid, other, 'food', n, sell=False):
+                break
     if not partners:
         return
     busy = {(c["from"], c["to"], c["res"]) for c in D.contracts(g)}
@@ -2458,6 +2465,14 @@ def _slots(g, f, threat, military=True):
     mil_need = max(0, mil_need - producing)
     for r in idle:
         info = g.info(r.id)
+        opts = g.options(fid, r.id)
+        housing = next((o for o in opts if o['kind'] == 'build' and o['key'] == 'housing' and o['ok']), None)
+        if housing and (g.area_usage(r.id)[0] >= info.area_km2 * .85 or
+                        any(o['why'] == C.AREA_SHORTAGE for o in opts)):
+            cands.append((20.0, r.id, 'build', 'housing', None, housing['per_turn']))
+        for o in opts:
+            if o['kind'] == 'build' and o['key'] in C.SITE_POWER and o['ok']:
+                cands.append((1.2 + max(0, -fuel['spare']), r.id, 'build', o['key'], None, o['per_turn']))
         # 편입
         for t in g.annex_targets(fid, r.id):
             # 이미 편입 중인 대상은 오래 걸리는(가치 4 이상) 곳만 공동 편입으로 거든다
@@ -2925,3 +2940,26 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
         if opts:
             _, key, cost = max(opts)
             start(r, key, cost=cost)
+
+
+def _disaster_response(g, f):
+    # 침수 복구는 무료·한 턴: 기존 공사 진행도를 보류하고 맨 앞에서 처리한다.
+    for r in g.regions_of(f.id):
+        if r.flooded and not any(p.kind == 'repair' and p.site == r.id for p in g.local_projects(r.id)):
+            ok, _ = g.start_project(f.id, r.id, 'repair', 'flood', site=r.id)
+            if ok and len(g.local_projects(r.id)) > 1:
+                g.move_queued_project(f.id, r.id, len(g.local_projects(r.id)) - 1, 0)
+    storms = [e for e in g.forecasts if e['kind'] == 'typhoon']
+    if g.weather and g.weather['kind'] == 'typhoon':
+        storms.append(g.weather)
+    for a in list(g.armies.values()):
+        if a.owner != f.id or a.domain() != 'naval' or not g.world.is_sea(a.loc):
+            continue
+        if not any(g.typhoon_danger(a.loc, e) for e in storms):
+            continue
+        reach = g.reachable(a)
+        ports = [rid for rid, o in reach.items() if rid in g.regions and
+                 g.regions[rid].owner == f.id and g.regions[rid].b['port'] and o['action'] == 'move']
+        if ports:
+            g.order_army(a.id, min(ports, key=lambda rid: len(reach[rid]['path'])))
+            a.disaster_shelter_turn = g.turn

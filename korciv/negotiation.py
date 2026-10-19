@@ -21,8 +21,8 @@ from . import rules as RL
 from .state import NEUTRAL
 from .text import josa
 
-RES = ("oil", "coal", "elec", "specialty")
-RES_NAMES = {"oil": "석유", "coal": "석탄", "elec": "전기", "specialty": "특산물"}
+RES = ("food", "oil", "coal", "elec", "specialty")
+RES_NAMES = {"food": "식량", "oil": "석유", "coal": "석탄", "elec": "전기", "specialty": "특산물"}
 MAX_ROUNDS = 4
 INSULT = 0.6            # 유보 가격의 60%(살 때는 1/0.6배)보다 나쁜 값은 무례한 제안: 인내를 하나 더 잃는다
 
@@ -89,6 +89,10 @@ def _eval(g, fid):
 
 def surplus(g, fid, res) -> int:
     """자기 발전소·공장에 다 넣고도 남는 턴당 양(특산물은 자기 지역에 공급하고 남는 양)."""
+    if res == 'food':
+        f = g.factions[fid]
+        net = sum(g.food_prod(fid, r) - r.pop * C.FOOD_PER_POP for r in g.regions_of(fid))
+        return max(0, int(net + max(0, f.res.get('food', 0) - g.total_pop(fid) * 4) / C.CONTRACT_TURNS))
     if res == "specialty":
         used = sum(len(r.supplied) for r in g.regions_of(fid))
         return max(0, D.spec_supply(g, fid) - used)
@@ -97,6 +101,8 @@ def surplus(g, fid, res) -> int:
 
 def supply_total(g, fid, res) -> int:
     """팔 수 있는 최대 턴당 양: 확보량(채굴·자체 발전 + 계약), 전기는 발전소 발전량까지."""
+    if res == "food":
+        return surplus(g, fid, res)
     if res == "specialty":
         return D.spec_supply(g, fid)
     n = g.energy_supply(fid)[res]
@@ -116,6 +122,8 @@ def buy_unit_value(g, fid, res, n) -> float:
     """res 를 턴당 n개 더 받으면 늘어나는 턴당 세수(공장 산출 증가 × 현행 세율)의 개당 값."""
     if n <= 0:
         return 0.0
+    if res == "food":
+        return C.MARKET_BUY["food"] * C.MONEY_SCALE
     fac, _ = D.energy_value(g, fid, res, n)
     return max(0.0, fac) / n
 
@@ -137,6 +145,17 @@ def reserve(g, ai, other, res, n, ai_sells, noise=1.0):
     tough, op = toughness(g, ai), op_factor(g, ai, other)
     urg, comfort = money_urgency(g, ai), money_comfort(g, ai)
     f = g.factions[ai]
+    if res == 'food':
+        if ai_sells:
+            n_ok = min(n, surplus(g, ai, res))
+            price = C.MARKET_SELL['food'] * C.MONEY_SCALE * (1.05 + .15 * tough - .1 * op)
+            return (price if n_ok else None), n_ok, '' if n_ok else '비축 식량이 부족합니다'
+        deficit = max(0, g.total_pop(ai) * C.FOOD_PER_POP - sum(g.food_prod(ai, r) for r in g.regions_of(ai)))
+        if not deficit:
+            return None, 0, '식량이 충분합니다'
+        n_ok = min(n, max(1, int(math.ceil(deficit))))
+        price = min(C.MARKET_BUY['food'] * C.MONEY_SCALE, f.money / max(1, n_ok * 3))
+        return (price if price >= 1 else None), n_ok, '' if price >= 1 else '낼 돈이 없습니다'
     if res == "specialty":
         v = D.spec_price(g, ai)
         happy, prox = happy_level(g, ai), rebel_proximity(g, ai)
