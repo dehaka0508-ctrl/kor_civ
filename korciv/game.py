@@ -2177,6 +2177,14 @@ class Game:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
         if opt.get("pool") and M.of(self, rid):
             el = M.pool_members(self, M.of(self, rid), opt["pool"])
+            if el and opt["key"] == "specialty":
+                # 구성 지역마다 특산물이 달라 지역별로(같은 특산물은 개수를 합쳐)
+                made = {}
+                for r in el:
+                    for sp in self.info(r).specialties:
+                        made[sp] = made.get(sp, 0) + 1
+                return (f"지역 {len(el)}곳 각각 턴당 {opt['level']}개: "
+                        + "·".join(f"「{sp}」" + (f"×{n}" if n > 1 else "") for sp, n in made.items()))
             if el:
                 return f"지역 {len(el)}곳 각각 " + self.building_effect(fid, el[0], dict(opt, pool=None))
         rr = self.regions[rid]
@@ -4410,9 +4418,10 @@ class Game:
         """최대 건설 대상: 생산 건물(농업·어업·공업·금융·채굴·발전소·특산물)."""
         return kind == "build" and key in C.CHAIN_BUILDINGS
 
-    def start_project_max(self, fid, rid, kind, key):
-        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다."""
-        ok, msg = self.start_project(fid, rid, kind, key)
+    def start_project_max(self, fid, rid, kind, key, site=None, pool=None):
+        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다.
+        광역시는 통합 건물 종류(pool)를 넘겨야 탄광·정유처럼 같은 건물 키를 쓰는 것을 구분한다."""
+        ok, msg = self.start_project(fid, rid, kind, key, site=site, pool=pool)
         if ok and self.can_chain(kind, key):
             self.regions[rid].project.chain = True
             msg += " · 최대 단계까지 이어서 건설"

@@ -44,8 +44,8 @@ def test_designation_conditions_and_names():
     assert not M.check(g, 0, "S002", sel)[0]
     for r in sel:
         g.regions[r].happy = 10
-    # 2칸 밖·남의 땅·떨어진 지역은 고를 수 없다
-    far = next(r for r in g.world.order if r not in M.distances(g, "S002", 2))
+    # 3칸 밖·남의 땅·떨어진 지역은 고를 수 없다
+    far = next(r for r in g.world.order if r not in M.distances(g, "S002", C.METRO_RANGE))
     assert not M.check(g, 0, "S002", sel + [far])[0]
     # 이름: 수도가 중심이면 특별시, 비우면 중심 지역 이름
     assert M.default_name(g, 0, "S002") == g.info("S002").short + "특별시"
@@ -128,7 +128,7 @@ def test_metro_slot_build_upgrades_all_and_level6():
     assert not any(o["kind"] == "build" and o["key"] == "bank" for o in plain.options(0, "S002"))
 
 
-def test_metro_units_multiply_and_specialty_separate():
+def test_metro_units_multiply():
     g, sel = _setup()
     g.player.res["oil"] = 10
     ok, _ = g.create_metro(0, "S002", sel)
@@ -321,3 +321,164 @@ def test_feasible_reports_why_designation_is_impossible():
     # 가능하다고 본 경우 실제로 모두 고르면 지정 조건을 채운다(이 설정에서)
     g3, sel3 = _setup()
     assert M.feasible(g3, 0, "S002")[0] and M.check(g3, 0, "S002", sel3)[0]
+
+
+def _own_ring(g, k):
+    """S002 에서 육상 k칸 안의 지역을 모두 플레이어 땅으로(광역시 후보가 되게)."""
+    d = M.distances(g, "S002", k)
+    _own(g, 0, [r for r in d if r != "S002"])
+    for r in d:
+        rr = g.regions[r]
+        rr.resist, rr.project, rr.happy, rr.occ = None, None, 10.0, None
+        rr.b["farm"] = 5
+    return d
+
+
+def test_metro_range_three_and_at_most_25_regions():
+    """v1.2.27: 중심에서 육상 3칸(3차 인접)까지, 구성 지역은 중심 포함 25곳까지(서울 25개 구)."""
+    assert C.METRO_RANGE == 3 and C.METRO_MAX_REGIONS == 25
+    g, _ = _setup()
+    d = _own_ring(g, 4)
+    cands = M.candidates(g, 0, "S002")
+    assert {r for r in d if d[r] <= 3} == set(cands)                 # 3칸까지는 후보, 4칸은 아님
+    assert any(d[r] == 3 for r in cands) and not any(d[r] == 4 for r in cands)
+    assert len(cands) > C.METRO_MAX_REGIONS
+    # [모두]: 이어진 후보를 가까운 순으로 25곳까지
+    pick = M.auto_pick(g, 0, "S002")
+    assert pick[0] == "S002" and len(pick) == C.METRO_MAX_REGIONS == len(set(pick))
+    assert set(pick) <= set(cands) and M._connected(g, "S002", pick)
+    assert max(d[r] for r in pick) <= min(d[r] for r in cands if r not in pick)   # 가까운 곳부터
+    ok, items = M.check(g, 0, "S002", pick)
+    assert ok, [i for i in items if not i[1]]
+    # 26곳은 안 된다
+    extra = next(r for r in cands if r not in pick and any(n in pick for n in g.world.land_adj[r]))
+    ok, items = M.check(g, 0, "S002", pick + [extra])
+    assert not ok and not dict((k, o) for k, o, _ in items)["구성 지역(2~25곳)"]
+    assert dict((k, d_) for k, _, d_ in items)["구성 지역(2~25곳)"] == "26곳 — 1곳을 빼야 함"
+    assert not g.create_metro(0, "S002", pick + [extra])[0]
+    ok, msg = g.create_metro(0, "S002", pick)
+    assert ok, msg
+    assert len(M.of(g, "S002")["members"]) == C.METRO_MAX_REGIONS
+
+
+def test_feasible_population_counts_only_top_25():
+    """지정 가능 여부(버튼 활성)의 인구는 인구가 많은 25곳(중심 포함)까지만 더한다."""
+    g, _ = _setup()
+    d = _own_ring(g, 3)
+    regs = sorted((g.regions[r] for r in d if r != "S002"), key=lambda r: -r.pop)
+    for r in regs:
+        r.pop = 1.0
+    g.regions["S002"].pop = 1.0
+    for r in regs[:C.METRO_MAX_REGIONS - 1]:
+        r.pop = 3.0                                     # 25곳 합 1 + 24×3 = 73만
+    for r in regs[C.METRO_MAX_REGIONS - 1:]:
+        r.pop = 2.9                                     # 나머지를 다 더하면 100만을 넘지만 25곳까지만 묶을 수 있다
+    assert sum(g.regions[r].pop for r in d) >= C.METRO_MIN_POP
+    ok, why = M.feasible(g, 0, "S002")
+    assert not ok and any("인구" in w for w in why)
+
+
+def test_metro_specialty_is_one_pooled_building():
+    """v1.2.27: 특산물 시설도 탄광·정유처럼 하나로 — 특산물이 있는 구성 지역들의 평균 단계, 한 번에 함께 오른다."""
+    g, _ = _setup()
+    d = _own_ring(g, 3)
+    spec = sorted(r for r in d if g.info(r).specialty and r != "S002")[:3]
+    assert len(spec) == 3
+    pick = [r for r in M.auto_pick(g, 0, "S002")]
+    # 특산물 지역 셋이 이어져 들어가도록: 중심에서 그 지역들까지의 길을 넣는다
+    sel = set(pick[:10])
+    for r in spec:
+        sel |= {r}
+        path, cur = [r], r
+        while d[cur] > 0:
+            cur = min((n for n in g.world.land_adj[cur] if n in d and d[n] == d[cur] - 1), key=str)
+            path.append(cur)
+        sel |= set(path)
+    sel = ["S002"] + sorted(sel - {"S002"})
+    assert len(sel) <= C.METRO_MAX_REGIONS
+    el = [r for r in sel if g.info(r).specialty]
+    for r in el:
+        g.regions[r].b["specialty"] = 1
+    g.regions[spec[0]].b["specialty"] = 3                 # 3 + 1 + 1 … → 평균(내림)
+    pre = {r: g.regions[r].b["specialty"] for r in el}
+    avg = int(sum(pre.values()) // len(el))
+    ok, msg = g.create_metro(0, "S002", sel)
+    assert ok, msg
+    m = M.of(g, "S002")
+    assert M.pool_members(g, m, "specialty") == el
+    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el)
+    assert all(g.regions[r].b["specialty"] == 0 for r in sel if r not in el)
+    # 행동 탭: 지역별 특산물 시설 대신 '광역 특산물 시설' 하나(비용 = 한 지역 비용 × 특산물 지역 수)
+    opts = [o for o in g.options(0, sel[3]) if o["kind"] == "build" and o["key"] == "specialty"]
+    assert len(opts) == 1 and opts[0]["pool"] == "specialty"
+    o = opts[0]
+    assert o["level"] == avg + 1 and o["name"] == f"광역 특산물 시설 {avg + 1}단계"
+    assert o["cost"] == pytest.approx(R.prod_building_cost("specialty", avg + 1) * len(el))
+    eff = g.building_effect(0, "S002", o)
+    assert eff.startswith(f"지역 {len(el)}곳 각각 턴당 {avg + 1}개")
+    assert all(f"「{sp}」" in eff for r in el for sp in g.info(r).specialties)
+    ok, msg = g.start_project_max(0, "S002", "build", "specialty", pool="specialty")
+    assert ok, msg
+    p = g.regions["S002"].project
+    assert p.pool == "specialty" and p.chain
+    for _ in range(p.turns):
+        g._fund_projects()
+        g._phase_projects(("build",))
+    assert [g.regions[r].b["specialty"] for r in el] == [avg + 1] * len(el)
+    # 3단계가 끝: 더 올릴 수 없다
+    for r in el:
+        g.regions[r].b["specialty"] = 3
+    assert not any(o["kind"] == "build" and o["key"] == "specialty" for o in g.options(0, "S002"))
+    # 해제: 묶기 전 + (지금 − 묶은 시점 평균), 최대 3단계
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok
+    assert {r: g.regions[r].b["specialty"] for r in el} == {r: min(3, v + 3 - avg) for r, v in pre.items()}
+
+
+def test_migrate_old_save_pools_specialty():
+    """v1.2.26 이전 세이브: 특산물 시설이 지역별이던 광역시는 불러올 때 통합 건물로 맞춘다."""
+    g, _ = _setup()
+    d = _own_ring(g, 3)
+    sel = M.auto_pick(g, 0, "S002")
+    ok, _ = g.create_metro(0, "S002", sel)
+    assert ok
+    m = M.of(g, "S002")
+    el = M.pool_members(g, m, "specialty")
+    assert len(el) >= 2
+    del m["merge"]["specialty"]                            # 예전 광역시: 특산물은 통합하지 않았다
+    for r in el:
+        m["pre"][r].pop("specialty", None)
+    levels = [3] + [1] * (len(el) - 1)
+    for r, lv in zip(el, levels):
+        g.regions[r].b["specialty"] = lv
+    M.migrate(g)
+    avg = sum(levels) // len(el)
+    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el) and m["merge"]["specialty"] == avg
+    M.migrate(g)                                           # 두 번 불러도 그대로
+    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el)
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok and [g.regions[r].b["specialty"] for r in el] == levels     # 해제하면 지역별 단계로 돌아간다
+
+
+def test_metro_max_button_keeps_pool_kind():
+    """[최대]는 고른 통합 건물 종류 그대로: 탄광·정유가 함께 있는 광역시에서 광역 정유공장을 눌렀으면 정유공장."""
+    g, sel = _setup()
+    a, b = sel[1], sel[2]
+    real = g.info
+
+    class _Info:
+        def __init__(self, info, coal, oil):
+            self._i, self.is_coal, self.is_oil = info, coal, oil
+
+        def __getattr__(self, k):
+            return getattr(self._i, k)
+    g.info = lambda rid: (_Info(real(rid), True, False) if rid == a else
+                          _Info(real(rid), False, True) if rid == b else real(rid))
+    ok, msg = g.create_metro(0, "S002", sel)
+    assert ok, msg
+    pools = [o["pool"] for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "extract"]
+    assert pools == ["coal", "oil"]
+    ok, msg = g.start_project_max(0, "S002", "build", "extract", pool="oil")
+    assert ok, msg
+    p = g.regions["S002"].project
+    assert p.pool == "oil" and p.chain and "정유" in p.name

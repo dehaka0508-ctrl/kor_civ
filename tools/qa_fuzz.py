@@ -73,6 +73,8 @@ def check(g, where):
             m = getattr(g, "metros", {}).get(mid)
             if m is None or rid not in m["members"]:
                 report("광역시 소속 불일치", f"{where} {rid} metro={mid}")
+            elif len(m["members"]) > C.METRO_MAX_REGIONS:
+                report("광역시 지역 수 초과", f"{where} {m['name']} {len(m['members'])}곳")
             elif len({g.regions[x].owner for x in m["members"]}) != 1:
                 report("광역시 주인 갈라짐", f"{where} {m['name']} {[g.regions[x].owner for x in m['members']]}")
             elif len({id(g.regions[x].project) for x in m["members"]}) != 1 and not any(
@@ -280,6 +282,10 @@ def player_turn(g, rng):
             c = rng.choice(free)
             cands = MT.candidates(g, pid, c)
             sel = [c] + [r for r in cands[1:] if c in g.world.land_adj[r]][:rng.randint(1, 4)]
+            if rng.random() < 0.3:
+                sel = MT.auto_pick(g, pid, c)            # [모두]: 3칸 안 가까운 25곳까지(v1.2.27)
+                if rng.random() < 0.3:
+                    sel = sel + [r for r in cands if r not in sel][:1]   # 26곳: 거절되어야 한다
             if len(sel) >= 2 and rng.random() < 0.5:
                 for r in sel:
                     rr = g.regions[r]

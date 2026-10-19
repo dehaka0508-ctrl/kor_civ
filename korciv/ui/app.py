@@ -271,6 +271,8 @@ class App:
             return
         if any(not hasattr(f, "met") for f in g.factions):
             g._update_fog()                      # v0.0.0 세이브: 조우 기록을 지금 시야로 채운다
+        from .. import metro as M
+        M.migrate(g)                             # v1.2.26 이전 세이브: 광역시 특산물 시설을 통합 건물로
         self.game = g
         self.modal = None
         self.reset_ui()
@@ -594,7 +596,25 @@ class App:
         alive = [f.id for f in g.factions if f.alive]
         wars = {(a + 2, b + 2) for i, a in enumerate(alive) for b in alive[i + 1:]
                 if (a in met and b in met or self.fog_reveal or g.fog_lifted()) and D.at_war(g, a, b)}
-        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political"}
+        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political",
+                "metro": {r: mid for mid, m in self.shown_metros() for r in m["members"]}}
+
+    def shown_metros(self):
+        """지도에 하나로 그릴 광역시 [(번호, 광역시)]: 중심이 보이거나 내 것(안개 공개면 모두)."""
+        from .. import metro as M
+        g = self.game
+        if not g:
+            return []
+        pid = g.player_id
+        return [(mid, m) for mid, m in M.metros(g).items()
+                if self.fog_reveal or g.is_visible(pid, m["center"]) or g.regions[m["center"]].owner == pid]
+
+    def map_group(self, rid):
+        """지도에서 rid 와 함께 하나로 보이는 지역들(광역시면 구성 지역 모두)."""
+        for _, m in self.shown_metros():
+            if rid in m["members"]:
+                return list(m["members"])
+        return [rid]
 
     def order_colors(self):
         """이동 범위·명령 화살표 색: 이동은 내 나라 색(직접 만든 국기의 배경 색 1), 공격·상륙·폭격은 정해진 색."""
@@ -712,7 +732,8 @@ class App:
             self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "",
             self.fog_reveal or bool(self.game and self.game.game_over), id(self.game),
                                                               self.game.turn if self.game else 0,
-                                                              self.show_terrain, busy)
+                                                              self.show_terrain, busy,
+            tuple((mid, len(m["members"])) for mid, m in self.shown_metros()))
         # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)
         mv.draw_base(self.screen, key, self.theme, lambda: self.region_colors(pick_mode), self.sea_colors,
                      self.mode, self.map_labels, show_terrain=self.show_terrain,
@@ -764,26 +785,27 @@ class App:
         if self.hover in self.world.seas:
             mv.sea_outline(self.screen, self.hover, mix(self.theme.sea_line, self.theme.accent, 0.5), 2)
         if self.hover and self.hover in self.world.regions:
-            mv.outline(self.screen, self.hover, self.theme.text, 1)
+            mv.group_outline(self.screen, self.map_group(self.hover), self.theme.text, 1)
         if self.sel:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
             else:
-                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만)
-                box = mv.screen_bbox([self.sel], pad=int(10 * u))
+                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만). 광역시는 바깥 윤곽만
+                grp = self.map_group(self.sel)
+                box = mv.screen_bbox(grp, pad=int(10 * u))
                 if box and box.w > 0 and box.h > 0:
                     glow = pygame.Surface(box.size, pygame.SRCALPHA)
                     for wdt, a in ((12, 30), (8, 50), (4, 90)):
-                        mv.outline_overlay(glow, self.sel, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
+                        mv.group_outline(glow, grp, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
                     self.screen.blit(glow, box.topleft)
-                mv.outline(self.screen, self.sel, (255, 248, 230), max(3, int(3 * u)))
-                mv.outline(self.screen, self.sel, self.theme.gold, max(2, int(2 * u)))
+                mv.group_outline(self.screen, grp, (255, 248, 230), max(3, int(3 * u)))
+                mv.group_outline(self.screen, grp, self.theme.gold, max(2, int(2 * u)))
         mp = getattr(self, "metro_pick", None)
         if mp is not None:
-            # 광역시 지정 중: 고른 지역(중심 포함)에 금빛 윤곽
-            for rid in [mp["center"]] + sorted(mp["sel"]):
-                mv.outline(self.screen, rid, (255, 248, 230), max(3, int(3 * u)))
-                mv.outline(self.screen, rid, self.theme.gold, max(2, int(2 * u)))
+            # 광역시 지정 중: 고른 지역(중심 포함)을 묶은 모습 그대로 바깥 윤곽만 금빛으로
+            grp = [mp["center"]] + sorted(mp["sel"])
+            mv.group_outline(self.screen, grp, (255, 248, 230), max(3, int(3 * u)))
+            mv.group_outline(self.screen, grp, self.theme.gold, max(2, int(2 * u)))
         # 전투 강조 (1초)
         dt = pygame.time.get_ticks() - self.flash_t
         if dt < 1200 and g.battle_regions:
@@ -945,7 +967,7 @@ class App:
             self.changed()
 
     def toggle_metro_pick(self, node):
-        """지도에서 누른 지역을 광역시 후보에 넣거나 뺀다(중심에서 육상 2칸 안의 내 지역만)."""
+        """지도에서 누른 지역을 광역시 후보에 넣거나 뺀다(중심에서 육상 3칸 안의 내 지역만, 중심 포함 최대 25곳)."""
         from .. import metro as M
         mp = self.metro_pick
         g = self.game
@@ -957,7 +979,13 @@ class App:
         if node not in M.candidates(g, g.player_id, mp["center"]):
             self.toast(f"고를 수 없는 지역입니다(중심에서 육상 {C.METRO_RANGE}칸 안의 내 지역만).", self.theme.bad)
             return
-        (mp["sel"].discard if node in mp["sel"] else mp["sel"].add)(node)
+        if node in mp["sel"]:
+            mp["sel"].discard(node)
+        elif len(mp["sel"]) + 1 >= C.METRO_MAX_REGIONS:
+            self.toast(f"광역시는 중심을 포함해 {C.METRO_MAX_REGIONS}곳까지 묶을 수 있습니다.", self.theme.bad)
+            return
+        else:
+            mp["sel"].add(node)
         self.changed()
 
     def confirm_metro_pick(self):
@@ -1001,18 +1029,16 @@ class App:
             self.changed()
 
     def draw_metros(self):
-        """광역시(v1.2.19): 구성 지역을 금색 테두리로 감싸고 중심에 이름 표찰."""
-        from .. import metro as M
+        """광역시(v1.2.19): 구성 지역 전체의 바깥 윤곽만 세력 색으로 굵게(안쪽 경계는 바탕 지도에서도 빼서
+        하나의 지역처럼, v1.2.27), 중심에 이름 표찰."""
         g = self.game
         mv = self.map
         u = ui_scale()
-        for m in M.metros(g).values():
+        for _, m in self.shown_metros():
             c = m["center"]
-            if not (self.fog_reveal or g.is_visible(g.player_id, c) or g.regions[c].owner == g.player_id):
-                continue
             col = mix(self.faction_rgb(g.regions[c].owner), (25, 18, 12), 0.35)
-            for r in m["members"]:
-                mv.outline(self.screen, r, col, max(2, int(2 * u)))
+            if self.sel not in m["members"]:              # 선택 중이면 같은 자리에 금빛 선택 윤곽이 있다
+                mv.group_outline(self.screen, m["members"], col, max(2, int(2.5 * u)))
             x, y = mv.label_screen(c)
             if not mv.view.collidepoint(x, y):
                 continue

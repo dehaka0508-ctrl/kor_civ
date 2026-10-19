@@ -603,7 +603,7 @@ def draw_action_tab(app, body):
     # 생산 건물: 최대 단계까지 지은 건물은 '… 건설 완료'와 지금 턴당 산출을 남겨 둔다
     prod = []
     for key, spec in C.PROD_BUILDINGS.items():
-        if mt:                               # 광역시: 통합 건물(탄광·정유 따로)과 지역별 특산물 시설을 모두 나열
+        if mt:                               # 광역시: 통합 건물(탄광·정유 따로, 특산물 시설도 하나로)을 나열
             prod += [o for o in opts if o["kind"] == "build" and o["key"] == key]
             continue
         o = next((o for o in opts if o["kind"] == "build" and o["key"] == key), None)
@@ -697,7 +697,7 @@ def draw_action_tab(app, body):
             if g.can_chain(o["kind"], o["key"]) and gui.button(
                     (x + w - 62, yy + 36, 62, 22), "최대", "default", enabled=o["ok"], size=11,
                     tooltip="완공되면 바로 다음 단계를 이어서 짓습니다(마지막 단계까지)"):
-                ok, msg = g.start_project_max(pid, rid, o["kind"], o["key"])
+                ok, msg = g.start_project_max(pid, rid, o["kind"], o["key"], site=o.get("site"), pool=o.get("pool"))
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
@@ -762,7 +762,7 @@ def _metro_header(app, x, y, w, mt):
     lv = []
     for pool, key in M.POOLS:
         el = M.pool_members(g, mt, pool)
-        if el and key in ("farm", "fishery", "factory", "bank", "power"):
+        if el and key in ("farm", "fishery", "factory", "bank", "power", "specialty"):
             lv.append(f"{M.POOL_NAMES[pool].replace('광역 ', '')} {M.pool_level(g, mt, pool)}")
     y = gui.wrap((x, y), "통합 단계: " + " · ".join(lv) + f" · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,
                  t.text) + 4

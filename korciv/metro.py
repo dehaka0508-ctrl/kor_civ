@@ -1,11 +1,11 @@
-"""광역시(v1.2.19): 중심 지역에서 육상 2칸 안의 내 지역들을 묶어 하나의 지역처럼 다룬다.
+"""광역시(v1.2.19): 중심 지역에서 육상 3칸 안의 내 지역들(최대 25곳)을 묶어 하나의 지역처럼 다룬다.
 
 지도·소유·부대 위치는 지역 단위 그대로 두고, 그 위에 묶음을 얹는다.
 - 슬롯 1개: 구성 지역 모두가 같은 작업(Project) 하나를 가리킨다.
-- 생산·방어 건물(농장·어장·공장·은행·발전소·탄광·정유·방공호·대공포): 지을 수 있는 구성 지역들의 평균 단계(내림)를
+- 생산·방어 건물(농장·어장·공장·은행·발전소·특산물 시설·탄광·정유·방공호·대공포): 지을 수 있는 구성 지역들의 평균 단계(내림)를
   그 지역들에 실제로 적용한다(→ 산출·연료 소비가 '평균 단계 × 지역 수'). 광역시에서 한 단계 올리면 모두 함께 오른다.
   농장·어장·공장·은행은 6단계까지(광역시 전용).
-- 특산물 시설·방어선은 지역마다 따로(행동 탭에 지역별로 나열).
+- 특산물 시설은 특산물이 있는 구성 지역들끼리 통합(v1.2.27), 방어선만 지역마다 따로(행동 탭에 지역별로 나열).
 - 항구·공항·사관학교: 하나라도 있으면 광역시 전체에 있는 것으로(항구는 해안 지역마다).
 - 행복도는 중심 값 하나(구성 지역은 같은 값), 특산물 배분·반란 판정도 한 지역처럼.
 - 군 유닛은 하나를 생산하면 지역 수만큼 나온다. 공격받으면 광역시 안의 병력이 함께 방어하고(방어력 ×(1 − 0.02(n − 1))),
@@ -22,13 +22,14 @@ from .state import NEUTRAL, Project
 
 # (통합 종류, 건물 키). 탄광·정유는 같은 '채굴 시설' 키지만 지을 수 있는 지역이 달라 따로 묶는다
 POOLS = (("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"),
-         ("power", "power"), ("coal", "extract"), ("oil", "extract"), ("shelter", "shelter"), ("aa", "aa"))
+         ("power", "power"), ("specialty", "specialty"), ("coal", "extract"), ("oil", "extract"),
+         ("shelter", "shelter"), ("aa", "aa"))
 POOL_KEY = dict(POOLS)
 SINGLES = ("port", "airport", "academy")
-SNAP_KEYS = ("farm", "fishery", "factory", "bank", "power", "extract", "shelter", "aa") + SINGLES
+SNAP_KEYS = ("farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
 POOL_NAMES = {"farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 금융 지구",
-              "power": "광역 발전소", "coal": "광역 탄광", "oil": "광역 정유공장", "shelter": "광역 방공호",
-              "aa": "광역 대공포"}
+              "power": "광역 발전소", "specialty": "광역 특산물 시설", "coal": "광역 탄광", "oil": "광역 정유공장",
+              "shelter": "광역 방공호", "aa": "광역 대공포"}
 
 
 # ------------------------------------------------------------------ 조회
@@ -63,6 +64,8 @@ def eligible(g, pool, rid) -> bool:
         return info.is_coal
     if pool == "oil":
         return info.is_oil
+    if pool == "specialty":
+        return bool(info.specialty)
     return True
 
 
@@ -165,13 +168,27 @@ def can_center(g, fid, rid) -> tuple:
 
 
 def candidates(g, fid, center) -> list:
-    """중심에서 육상 2칸 안의 내 지역(광역시가 아니고 점령당하는 중·저항 중이 아닌 곳). 중심이 맨 앞, 가까운 순."""
+    """중심에서 육상 3칸(METRO_RANGE) 안의 내 지역(광역시가 아니고 점령당하는 중·저항 중이 아닌 곳). 중심이 맨 앞, 가까운 순."""
     dist = distances(g, center, C.METRO_RANGE)
     out = []
     for r, d in sorted(dist.items(), key=lambda x: (x[1], x[0])):
         rr = g.regions[r]
         if rr.owner == fid and getattr(rr, "metro", None) is None and not rr.occ and not g.resisting(rr):
             out.append(r)
+    return out
+
+
+def auto_pick(g, fid, center) -> list:
+    """[모두]: 중심과 이어진 후보를 가까운 순(같은 거리면 인구 많은 순)으로 최대 25곳(중심 포함)."""
+    cands = set(candidates(g, fid, center))
+    out, seen, layer = [center], {center}, [center]
+    while layer and len(out) < C.METRO_MAX_REGIONS:
+        nxt = sorted({v for u in layer for v in g.world.land_adj[u] if v in cands and v not in seen},
+                     key=lambda r: (-g.regions[r].pop, r))
+        nxt = nxt[:C.METRO_MAX_REGIONS - len(out)]
+        seen.update(nxt)
+        out += nxt
+        layer = nxt
     return out
 
 
@@ -198,9 +215,16 @@ def check(g, fid, center, sel) -> tuple:
     cand = set(candidates(g, fid, center)) if ok_c else set()
     bad = [r for r in sel if r not in cand]
     items = []
-    items.append(("구성 지역", ok_c and len(sel) >= 2 and not bad,
-                  why if not ok_c else (f"{len(sel)}곳" if not bad else
-                                        f"고를 수 없는 지역: {', '.join(g.info(r).name for r in bad)}")))
+    n_max = C.METRO_MAX_REGIONS
+    if not ok_c:
+        desc = why
+    elif bad:
+        desc = f"고를 수 없는 지역: {', '.join(g.info(r).name for r in bad)}"
+    elif len(sel) > n_max:
+        desc = f"{len(sel)}곳 — {len(sel) - n_max}곳을 빼야 함"
+    else:
+        desc = f"{len(sel)}곳"
+    items.append((f"구성 지역(2~{n_max}곳)", ok_c and 2 <= len(sel) <= n_max and not bad, desc))
     conn = _connected(g, center, sel)
     items.append(("서로 이어짐", conn, "중심과 육로로 이어진 지역만" if not conn else "이어짐"))
     regs = [g.regions[r] for r in sel]
@@ -237,9 +261,12 @@ def feasible(g, fid, center) -> tuple:
     if len(comp) < 2:
         reasons.append(f"육상 {C.METRO_RANGE}칸 안에 함께 묶을 내 지역이 없습니다.")
     regs = [g.regions[r] for r in comp]
-    pop = sum(r.pop for r in regs)
+    # 인구: 최대 25곳까지만 묶으므로 인구가 많은 25곳(중심 포함)의 합으로 본다
+    top = sorted((r.pop for r in regs if r.id != center), reverse=True)[:C.METRO_MAX_REGIONS - 1]
+    pop = g.regions[center].pop + sum(top)
     if pop < C.METRO_MIN_POP:
-        reasons.append(f"묶을 수 있는 지역을 모두 합쳐도 인구 {pop:,.1f}만(100만 이상 필요).")
+        most = "모두" if len(regs) <= C.METRO_MAX_REGIONS else f"인구가 많은 {C.METRO_MAX_REGIONS}곳을"
+        reasons.append(f"묶을 수 있는 지역을 {most} 합쳐도 인구 {pop:,.1f}만(100만 이상 필요).")
     if not any(r.b["factory"] >= 5 for r in regs):
         reasons.append("묶을 수 있는 지역에 공업 단지(공장 5단계)가 없습니다.")
     if not any(r.b["bank"] >= 5 for r in regs):
@@ -380,12 +407,12 @@ def dissolve(g, mid, why="") -> bool:
         else:
             p.metro = None
             g.regions[site].project = p
-    # 건물: 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 0~5단계
+    # 건물: 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 0~최대 단계(6단계는 광역시 전용이라 5단계로)
     for pool, key in POOLS:
         base = m["merge"].get(pool)
         if base is None:
             continue
-        top = 5 if key in C.PROD_BUILDINGS else C.DEF_BUILDINGS[key]["max"]
+        top = (C.PROD_BUILDINGS if key in C.PROD_BUILDINGS else C.DEF_BUILDINGS)[key]["max"]
         for r in pool_members(g, m, pool):
             rr = g.regions[r]
             pre = m["pre"].get(r, {}).get(key, 0)
@@ -474,9 +501,8 @@ def options(g, fid, mid) -> list:
         for o in raw[r]:
             k, key = o["kind"], o["key"]
             if k == "build" and key == "specialty":
-                add(k, key, f"{g.info(r).short} {o['name']}", o["cost"], o["turns"], o["ok"], o["why"],
-                    o["level"], site=r)
-            elif k == "build" and key == "line" and o["border"] not in sel:
+                continue                         # 특산물 시설은 통합 건물로(v1.2.27)
+            if k == "build" and key == "line" and o["border"] not in sel:
                 add(k, key, f"{g.info(r).short} {o['name']}", o["cost"], o["turns"], o["ok"], o["why"],
                     o["level"], border=o["border"], site=r)
             elif k == "annex" and ("annex", key) not in seen:
@@ -601,7 +627,7 @@ def complete(g, f, p):
                     g.regions[r].b[p.key] = 1
             g.event("complete", f"{name} {C.SINGLE_BUILDINGS[p.key]['name']} 완공", region=site, fids=(f.id,))
             return
-        g._complete_project(f, g.regions[site], p)      # 특산물 시설·방어선: 그 지역에
+        g._complete_project(f, g.regions[site], p)      # 방어선(예전 세이브의 지역별 특산물 시설도): 그 지역에
         return
     if p.kind == "unit":
         n = len(sel)
@@ -616,6 +642,23 @@ def complete(g, f, p):
                 g.event("info", f"{name}: 연속 생산 중단(남은 {p.repeat}개) — {msg}", region=site, fids=(f.id,))
         return
     g._complete_project(f, g.regions[site], p)          # 과학·경제·천도: 그 지역에
+
+
+def migrate(g):
+    """예전 세이브(v1.2.26 이전): 특산물 시설이 지역별이던 광역시를 통합 건물로 맞춘다(불러올 때 한 번)."""
+    for m in metros(g).values():
+        if "specialty" in m["merge"] or m.get("spec_pooled"):
+            continue
+        m["spec_pooled"] = True
+        el = pool_members(g, m, "specialty")
+        if not el:
+            continue
+        for r in el:
+            m["pre"].setdefault(r, {})["specialty"] = g.regions[r].b["specialty"]
+        lv = pool_level(g, m, "specialty")
+        m["merge"]["specialty"] = lv
+        for r in el:
+            g.regions[r].b["specialty"] = lv
 
 
 # ------------------------------------------------------------------ 점령·정리

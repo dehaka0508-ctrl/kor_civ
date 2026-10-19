@@ -545,7 +545,8 @@ class MapView:
     def _render(self, full_key, theme, colors, sea_colors, mode, labels, show_terrain=True, extra=None):
         """colors: rid -> (fill, outline). 화면보다 CACHE_MARGIN 만큼 넓게 그린다.
         extra: {"owners": rid -> 세력 코드(1=중립·미상, 2+세력 id), "deep": 코드 -> 진한 색, "wars": {(코드, 코드)},
-                "glow": 국경 안쪽 번짐 여부} — 국경선·번짐·전선 그림자에 쓴다.
+                "glow": 국경 안쪽 번짐 여부, "metro": rid -> 광역시 번호(안쪽 경계를 긋지 않음)}
+        — 국경선·번짐·전선 그림자에 쓴다.
         국경·해안선은 미리 이어 둔 경계 사슬로 바로 긋고, 번짐·전선 그림자는 지도 전체 층(_fx_layer)을 잘라 붙인다."""
         extra = extra or {}
         u = ui_scale()
@@ -672,10 +673,15 @@ class MapView:
                 for xx in range(0, W_, tw_):
                     surf.blit(tex, (xx, yy), special_flags=pygame.BLEND_RGB_MULT)
         # 시군구 경계(가는 선)·광역 경계(조금 짙고 굵게): 이웃한 두 지역의 경계 사슬을 한 번만 긋는다
+        # (같은 광역시의 구성 지역 사이 경계는 긋지 않는다 — 하나의 지역처럼, v1.2.27)
+        metro = extra.get("metro") or {}
         thin = s < 1.2
         pw = max(1, int((2 if self.z >= 2.5 else 1) * u))
         prov_ink = mix(theme.province_line, (40, 32, 24), 0.35) if not theme.dark else theme.province_line
         for (a_, b_, span), is_prov in pair_all:
+            ma = metro.get(a_)
+            if ma is not None and ma == metro.get(b_):
+                continue
             pts = sp(span)
             if len(pts) < 2:
                 continue
@@ -983,6 +989,54 @@ class MapView:
         for arr, bbox in self.polys_by_rid.get(rid, ()):
             if self._visible_bbox(bbox):
                 pygame.draw.lines(screen, color, True, self._screen_poly(arr), width)
+
+    def _group_chains(self, rids):
+        """여러 지역을 하나로 본 바깥 경계 사슬(묶음 밖 지역·바다·주변국과 맞닿은 변)과 그 사각형들."""
+        key = frozenset(rids)
+        cache = self.__dict__.setdefault("_group_cache", {})
+        hit = cache.get(key)
+        if hit is None:
+            if len(cache) > 64:
+                cache.clear()
+            pi = [i for i, (a_, b_, _) in enumerate(self.pair_lines) if (a_ in key) != (b_ in key)]
+            ci = [i for i, (r_, _) in enumerate(self.coast_lines) if r_ in key]
+            spans = [self.pair_span[i][2] for i in pi] + [self.coast_span[i][1] for i in ci]
+            boxes = np.array([self.pair_box[i] for i in pi] + [self.coast_box[i] for i in ci], float).reshape(-1, 4)
+            hit = cache[key] = (spans, boxes)
+        return hit
+
+    def group_outline(self, surf, rids, color, width=2, origin=None):
+        """광역시처럼 여러 지역을 하나로: 바깥 윤곽만 긋고 안쪽 경계는 긋지 않는다(v1.2.27).
+        origin: surf 왼쪽 위의 화면 좌표(반투명 덮개에 그릴 때). 기본은 화면에 바로."""
+        if len(rids) == 1:                  # 한 지역은 다각형 테두리 그대로
+            rid = next(iter(rids))
+            if origin is None:
+                self.outline(surf, rid, color, width)
+            else:
+                self.outline_overlay(surf, rid, color, width, origin=origin)
+            return
+        spans, boxes = self._group_chains(rids)
+        if not spans:
+            return
+        s = self.scale
+        ox, oy = self.offset()
+        pad = width + 2
+        v = self.view
+        vis = ((boxes[:, 2] * s + ox >= v.x - pad) & (boxes[:, 0] * s + ox <= v.right + pad)
+               & (boxes[:, 3] * s + oy >= v.y - pad) & (boxes[:, 1] * s + oy <= v.bottom + pad))
+        if origin is not None:
+            ox, oy = ox - origin[0], oy - origin[1]
+        rad = width / 2
+        for span, ok in zip(spans, vis.tolist()):
+            if not ok:
+                continue
+            pts = (self.verts[span[0]:span[1]] * s + (ox, oy)).tolist()
+            if len(pts) < 2:
+                continue
+            pygame.draw.lines(surf, color, False, pts, width)
+            if width >= 3:                  # 사슬이 만나는 곳이 끊겨 보이지 않게 끝을 둥글게
+                for p in (pts[0], pts[-1]):
+                    pygame.draw.circle(surf, color, p, rad)
 
     def _side_neighbors(self, world, single, res=3.0, d=0.8):
         """선분마다 양옆(법선 방향 ±d)을 지역 번호 래스터에서 찍어, 자기 지역이 아닌 쪽 지역(바다면 None)."""

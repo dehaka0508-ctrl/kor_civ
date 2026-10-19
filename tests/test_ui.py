@@ -1546,7 +1546,7 @@ def _click_map(app, rid):
 
 
 def test_metro_designation_by_clicking_map(app):
-    """v1.2.23: [광역자치단체 지정] → 지도에서 육상 2칸 안의 내 지역을 눌러 넣고 빼고, Enter 로 지정(Esc 취소).
+    """v1.2.23: [광역자치단체 지정] → 지도에서 육상 3칸 안의 내 지역을 눌러 넣고 빼고, Enter 로 지정(Esc 취소).
     광역시 행동 탭의 편입 선택지는 줄어든 턴 수를 보여 준다."""
     from korciv import metro as M
     g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
@@ -1574,7 +1574,7 @@ def test_metro_designation_by_clicking_map(app):
     assert app.metro_pick is None
     app.start_metro_pick("S002")
     frame(app)
-    far = next(r for r in g.regions if g.regions[r].owner != 0 and r not in M.distances(g, "S002", 2))
+    far = next(r for r in g.regions if g.regions[r].owner != 0 and r not in M.distances(g, "S002", C.METRO_RANGE))
     app.toggle_metro_pick(far)                                     # 고를 수 없는 곳은 무시
     assert not app.metro_pick["sel"]
     for r in nb:
@@ -1596,6 +1596,88 @@ def test_metro_designation_by_clicking_map(app):
         spy.close()
     o = next(o for o in g.options(0, "S002") if o["kind"] == "annex")
     assert o["eff_turns"] < o["turns"]
+
+
+def test_metro_pick_limit_25_and_drawn_as_one_region(app):
+    """v1.2.27: [모두]는 가까운 25곳까지, 지도에서 더 누르면 거절. 지정한 광역시는 바깥 윤곽만 긋고
+    구성 지역 사이 경계는 바탕 지도에서도 긋지 않는다(하나의 지역처럼)."""
+    from korciv import metro as M
+    from korciv.ui import mapview as MV
+    g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
+    d = M.distances(g, "S002", C.METRO_RANGE)
+    for r in d:
+        if r != "S002":
+            g.transfer_region(r, 0)
+        rr = g.regions[r]
+        rr.resist, rr.project, rr.happy, rr.occ = None, None, 10.0, None
+        rr.b["farm"] = 5
+    g.regions["S002"].b["factory"] = 5
+    g.regions["S002"].b["bank"] = 5
+    g.player.money = 10 ** 7
+    g._update_fog()                                                # 넘겨받은 땅도 지금 시야로(국경선이 남지 않게)
+    app.start_metro_pick("S002")
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        label = spy.find("모두")
+        assert label == f"모두 ({C.METRO_MAX_REGIONS - 1}곳)"
+        spy.click(label)
+    finally:
+        spy.close()
+    sel = app.metro_pick["sel"]
+    assert len(sel) == C.METRO_MAX_REGIONS - 1
+    rest = next(r for r in M.candidates(g, 0, "S002") if r not in sel and r != "S002")
+    app.toggle_metro_pick(rest)                                    # 26번째는 넣지 않는다
+    assert rest not in app.metro_pick["sel"] and len(app.metro_pick["sel"]) == C.METRO_MAX_REGIONS - 1
+    assert "25곳까지" in app.toasts[-1][0]
+    frame(app)
+    assert app.confirm_metro_pick()
+    m = M.of(g, "S002")
+    mem = set(m["members"])
+    assert len(mem) == C.METRO_MAX_REGIONS
+    # 바탕 지도: 구성 지역들은 같은 광역시 번호 → 그 사이 경계는 긋지 않는다
+    ex = app.map_extra()
+    assert {r for r, mid in ex["metro"].items() if mid == m["id"]} == mem
+    mv = app.map
+    inner = [i for i, (a_, b_, _) in enumerate(mv.pair_lines) if a_ in mem and b_ in mem]
+    assert inner
+    spans, boxes = mv._group_chains(m["members"])
+    want = ({mv.pair_span[i][2] for i, (a_, b_, _) in enumerate(mv.pair_lines) if (a_ in mem) != (b_ in mem)}
+            | {sp for r_, sp in mv.coast_span if r_ in mem})
+    assert set(spans) == want and len(boxes) == len(spans)
+    assert not {mv.pair_span[i][2] for i in inner} & set(spans)
+    # 그리는 선을 가로채 안쪽 경계 사슬이 그려지지 않는지 본다
+    app.fit_regions(m["members"])
+    drawn = []
+    real = pygame.draw.lines
+
+    def spy_lines(surf, color, closed, pts, width=1):
+        drawn.append(tuple((round(x, 1), round(y, 1)) for x, y in pts))
+        return real(surf, color, closed, pts, width)
+    pygame.draw.lines = spy_lines
+    try:
+        # 지형(하천·산맥)은 지역 경계를 따라 그대로 그리므로 빼고 본다
+        mv._render(("t",), app.theme, app.region_colors(), app.sea_colors(), app.mode, app.map_labels(), False, ex)
+        no_metro = dict(ex, metro={})
+        n_with = len(drawn)
+        mv._render(("t2",), app.theme, app.region_colors(), app.sea_colors(), app.mode, app.map_labels(), False,
+                   no_metro)
+    finally:
+        pygame.draw.lines = real
+    s = mv.scale
+    ox, oy = mv.offset()
+    ox += int(mv.view.w * MV.CACHE_MARGIN) - mv.view.x
+    oy += int(mv.view.h * MV.CACHE_MARGIN) - mv.view.y
+
+    def chain(i):
+        a0, a1 = mv.pair_span[i][2]
+        return tuple((round(x, 1), round(y, 1)) for x, y in (mv.verts[a0:a1] * s + (ox, oy)).tolist())
+    inner_pts = {chain(i) for i in inner}
+    assert not inner_pts & set(drawn[:n_with])                     # 광역시가 있으면 안쪽 경계를 긋지 않고
+    assert inner_pts & set(drawn[n_with:])                         # 없으면(예전처럼) 긋는다
+    frame(app)                                                     # 바깥 윤곽·선택 윤곽을 그려도 멈추지 않는다
+    app.select(sorted(mem - {"S002"})[0])
+    frame(app)
 
 
 def test_metro_button_disabled_when_impossible(app):
