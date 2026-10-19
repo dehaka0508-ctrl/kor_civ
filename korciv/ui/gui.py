@@ -430,8 +430,7 @@ class Gui:
             pygame.key.start_text_input()
         if focused:
             for s in self.text_events:
-                if len(value) < max_len:
-                    value += s
+                value = (value + s)[:max_len]       # IME 가 여러 글자를 한 번에 확정해도 최대 길이를 넘지 않게
             for k in self.keys:
                 if k.key == pygame.K_BACKSPACE:
                     value = value[:-1]
@@ -454,6 +453,21 @@ class Gui:
             value = min(hi, value + s)
         self.text(r.center, fmt.format(value), size, self.t.text, "semibold", anchor="center",
                   max_w=r.w - 2 * bw - 4)
+        return value
+
+    def stepper_multi(self, rect, value, lo, hi, steps=(10, 5, 1), size=11):
+        """[−10][−5][−] 값 [+][+5][+10] (v1.3.0: 병력이 많을 때 분리·해산·하선 수량 조절)."""
+        r = pygame.Rect(rect)
+        n = len(steps)
+        bw = max(18, min(40, (r.w - 44) // (2 * n)))
+        mid_w = r.w - 2 * n * bw
+        for i, st in enumerate(steps):
+            if self.button((r.x + i * bw, r.y, bw - 1, r.h), f"−{st}" if st != 1 else "−", size=size):
+                value = max(lo, value - st)
+            if self.button((r.right - (i + 1) * bw + 1, r.y, bw - 1, r.h), f"+{st}" if st != 1 else "+", size=size):
+                value = min(hi, value + st)
+        self.text((r.x + n * bw + mid_w / 2, r.centery), f"{value:,}", size + 1, self.t.text, "semibold",
+                  anchor="center", max_w=mid_w - 2)
         return value
 
     # ------------------------------------------------------------ 스크롤

@@ -138,7 +138,7 @@ LEADERS = [
          debuff=("문신의 신중함", "기습을 쓸 수 없다"),
          fx={"river_def_dmg": 0.5, "no_surprise": True}),
     dict(key="kwb", name="김원봉", aggr=7,
-         buff=("의열단", "보병을 포함한 기습이 성공하면 대상 지역의 생산·군사 건물 하나가 1단계 내려간다"),
+         buff=("의열단", "보병을 포함한 기습이 성공하면 대상 지역의 생산·군사 건물 하나가 1단계 내려간다(항구·공항·사관학교 제외)"),
          debuff=("현상금", "적 군사에게 유닛을 잃으면 그 유닛 생산비의 50%를 상대가 얻는다"),
          fx={"sabotage": True, "bounty": 0.5}),
     dict(key="yyl", name="야율융서", aggr=8,
@@ -174,8 +174,23 @@ LEADER_CATEGORIES = [
      ["yan", "tai", "kan", "toy", "taj", "ito", "yyl", "mac", "sta", "mao"]),
 ]
 _CAT_OF = {k: cid for cid, _, keys in LEADER_CATEGORIES for k in keys}
+# 게임 안 순서(AI 지도자 무작위 배정 등): 시드가 같으면 예전과 같은 지도자가 나오도록 고정해 둔다
 _ORDER = [k for _, _, keys in LEADER_CATEGORIES for k in keys] + ["cus"]
 LEADERS.sort(key=lambda l: _ORDER.index(l["key"]))
+
+# 시대(즉위·활동을 시작한 해, 기원전은 음수): 선택 화면은 분류마다 시대순으로 보여 준다(v1.3.0)
+LEADER_ERA = {
+    "dan": -2333, "egg": -57, "jum": -37, "onz": -18, "sur": 42, "dae": 698, "dog": 892, "gun": 901,
+    "wan": 918, "tae": 1392, "lee": 1948.6, "kim": 1948.7,
+    "gcg": 346, "ggt": 391, "mur": 501, "jin": 540, "sen": 632, "muy": 654, "sun": 818, "gon": 1351,
+    "sej": 1418, "hae": 1608, "jjo": 1776, "pak": 1961, "kdj": 1998,
+    "yon": 642, "jan": 828, "kgc": 1018, "jun": 1170, "cho": 1358, "gil": 1500, "yis": 1592, "hon": 1811,
+    "ahn": 1907, "kgu": 1919.3, "kwb": 1919.9,
+    "yan": 612, "tai": 645, "yyl": 993, "kan": 1260, "toy": 1592, "taj": 1636, "ito": 1905, "sta": 1945,
+    "mac": 1950.7, "mao": 1950.8,
+}
+LEADER_CATEGORIES = [(cid, title, sorted(keys, key=lambda k: LEADER_ERA.get(k, 9999)))
+                     for cid, title, keys in LEADER_CATEGORIES]
 
 for _l in LEADERS:
     _l["cat"] = _CAT_OF.get(_l["key"], "cus")

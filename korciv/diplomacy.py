@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from . import config as C
+from . import rules as R
 from .leaders import gov_opinion_bias
 from .state import NEUTRAL
 
@@ -364,6 +365,14 @@ def _peace_weary_relief(g, w, a, b):
                     fids=(side,))
 
 
+def _offer_peace_to_player(g, ai):
+    """AI 가 플레이어에게 강화를 제안(이미 같은 제안이 쌓여 있으면 그대로)."""
+    if ai == g.player_id or not g.factions[ai].alive or not at_war(g, ai, g.player_id):
+        return
+    if not any(p.get("from") == ai and p.get("kind") == "peace" for p in g.pending_proposals):
+        g.pending_proposals.append({"from": ai, "kind": "peace"})
+
+
 def make_peace(g, a, b, _done=None):
     done = _done if _done is not None else set()
     p = pair(a, b)
@@ -388,10 +397,17 @@ def make_peace(g, a, b, _done=None):
         elif r.owner == a:
             r.occs.pop(b, None)
     for army in list(g.armies.values()):
-        if army.owner in (a, b) and not g.world.is_sea(army.loc):
-            other = b if army.owner == a else a
-            if g.regions[army.loc].owner == other:
-                g.teleport_home(army)
+        if army.owner not in (a, b):
+            continue
+        other = b if army.owner == a else a
+        # 상대 땅을 향한 명령(이동·공격·여러 턴 이동)은 취소한다(강화한 턴에 남은 명령으로 다시 들어가지 않게)
+        o = army.order or {}
+        nodes = list(o.get("path") or []) + ([o["target"]] if o.get("target") else []) + \
+            ([army.goto] if getattr(army, "goto", None) else [])
+        if any(n in g.regions and g.regions[n].owner == other for n in nodes):
+            army.order, army.goto = None, None
+        if not g.world.is_sea(army.loc) and g.regions[army.loc].owner == other:
+            g.teleport_home(army)
     g.event("peace", f"{g.fname(a)}와(과) {g.fname(b)}이(가) 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
     _player_dialogue(g, "peace", a, b)
     for side, other in ((a, b), (b, a)):
@@ -401,7 +417,13 @@ def make_peace(g, a, b, _done=None):
         if cid is not None:
             for c in list(g.dip.coalitions[cid]["members"]):
                 if c != side and at_war(g, c, other):
+                    if g.player_id in (c, other) and not g.settings.all_ai:
+                        # 플레이어는 연합 회원이 강화했다고 끌려 들어가지 않는다: 상대가 강화를 제안하고 플레이어가 고른다
+                        _offer_peace_to_player(g, other if c == g.player_id else c)
+                        continue
                     make_peace(g, c, other, done)
+    if _done is None:
+        g._check_victory(time=False)     # 정복승리(v1.3.0): 강화로 전쟁이 끝나는 순간 조건이 맞으면 승리
 
 
 def op_baseline(g, a, b) -> float:
@@ -811,9 +833,14 @@ def _deliver(g, c):
             fa.specialty[k] -= 1
             fb.specialty[k] = fb.specialty.get(k, 0) + 1
     else:
-        q = min(q, max(0, int(math.floor(fa.res.get(res, 0) + 1e-9))))
-        fa.res[res] = fa.res.get(res, 0) - q
+        q = min(q, contract_capacity(g, c))
+        fa.res[res] = fa.res.get(res, 0) - q              # 판매분을 먼저 뺀다(모자라면 턴 끝에 시장가로 메운다)
         fb.res[res] = fb.res.get(res, 0) + q
+        if res in C.ENERGY and q:
+            sent = fa.__dict__.setdefault("sent", {})      # 이번 턴 계약으로 먼저 보낸 양(자원 배정 화면 표시용)
+            sent[res] = sent.get(res, 0) + q
+            recv = fb.__dict__.setdefault("recv", {})
+            recv[res] = recv.get(res, 0) + q
     if price > 0 and q > 0:
         pay = q * price
         fb.money -= pay
@@ -827,6 +854,26 @@ def _deliver(g, c):
                         f"{q}/{n}개만 오갔습니다" + (" (대금 부족)" if price > 0 and fb.money < price * n else ""),
                 fids=(c["from"], c["to"]))
     return q
+
+
+def contract_capacity(g, c) -> int:
+    """계약 c 로 이번 턴 보낼 수 있는 양(v1.3.0): 주는 쪽 턴당 확보량(채굴·자체 발전 + 받는 계약 − 다른 주는 계약)과
+    전기는 이번 턴 발전소 발전량까지. 판매는 배정보다 먼저라, 지금 재고가 모자라도(유닛에 석유를 썼거나 전기가
+    아직 발전 전이어도) 이만큼은 보내고 부족분은 턴 끝 자원 단계에서 시장가로 사서 메운다."""
+    fid, res = c["from"], c["res"]
+    if res not in C.ENERGY:                               # 식량: 비축만큼
+        return max(0, int(math.floor(g.factions[fid].res.get(res, 0) + 1e-9)))
+    cap = float(g.energy_mined(fid).get(res, 0))
+    for o in contracts(g):
+        if o is c or o["res"] != res:
+            continue
+        if o["to"] == fid:
+            cap += o["n"]
+        elif o["from"] == fid:
+            cap -= o["n"]
+    if res == "elec":
+        cap += g.energy_plan(fid)["elec_gen_int"]
+    return max(0, int(math.floor(max(cap, g.factions[fid].res.get(res, 0)) + 1e-9)))
 
 
 def run_contracts(g):
@@ -865,7 +912,7 @@ def energy_eval(g, fid, supply) -> tuple:
         u = a["coal"] + a["oil"] + a["elec"]
         for k in ("coal", "oil", "elec"):
             used[k] += a[k]
-        out += u * C.FACTORY_UNIT_OUTPUT[min(lv, 5) - 1] * k_out
+        out += u * R.factory_unit(lv) * k_out
         room += max(0, lv - u)
     left = {k: max(0.0, int(supply.get(k, 0)) - used[k]) for k in ("oil", "coal")}
     left["elec"] = max(0.0, int(supply.get("elec", 0)) + gen - used["elec"])
@@ -1225,6 +1272,7 @@ def update_turn(g):
                     and not AI.loyal(g, x, y)):       # 강국과 거기 기댄 나라는 서로 등을 돌리지 않는다
                 leave_alliance(g, x, y)
     d.rejected.clear()
+    d.__dict__.pop("nego_block", None)              # 깨진 협상은 다음 턴에 다시 할 수 있다
     temps = d.__dict__.get("op_temp")
     if temps:
         for k in list(temps):

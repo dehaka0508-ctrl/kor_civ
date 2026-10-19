@@ -22,6 +22,9 @@ from .theme import Theme, desaturate, fmt_money, hex2rgb, measure, mix, render_t
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), ".korciv", "saves")
 PREFS_PATH = os.path.join(os.path.expanduser("~"), ".korciv", "prefs.json")
+# 개발자 키(F2 안개 공개)는 개발 체크아웃에서만: 배포판(deploy 브랜치)에는 tests/ 폴더가 없다
+DEV_KEYS = os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                      "tests"))
 
 
 def load_prefs() -> dict:
@@ -161,18 +164,20 @@ class App:
         self.map.set_view((0, top, W, H - top))
 
     def reset_ui(self):
+        self.enter_guard = 0         # 턴 종료 직후 보호 시간은 다른 판(새 판·불러오기)으로 넘어가지 않는다
         self.sel = None              # 선택한 구역/해역 ID
         self.sel_army = None
         self.dip_view = None         # 외교 탭에서 상세 보기 중인 세력
         self.war_confirm = None      # 선전포고 확인 대기 중인 세력
         self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
+        self.rally_pick = None       # 생산 집결지 고르는 중: 지역 ID, 일괄이면 "*"
+        self.metro_pick = None       # 광역시 지정 중(v1.3.0): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
         self.tab = "action"
         self.mode = "political"
         self.left_open = True
         self.attack_mode = "assault"
-        self.bombard_mode = False
         self.toasts = []             # [text, color, t0]
         self.modal = None            # (name, data)
         self.flash_t = 0
@@ -204,10 +209,20 @@ class App:
     def save(self, name="slot1"):
         if not self.game:
             return False
-        os.makedirs(SAVE_DIR, exist_ok=True)
         path = os.path.join(SAVE_DIR, name + ".sav")
-        with open(path, "wb") as f:
-            pickle.dump({"version": VERSION, "game": self.game}, f)
+        tmp = path + ".tmp"
+        try:
+            os.makedirs(SAVE_DIR, exist_ok=True)
+            with open(tmp, "wb") as f:
+                pickle.dump({"version": VERSION, "game": self.game}, f)
+            os.replace(tmp, path)            # 다 쓴 뒤에 바꿔 넣어 실패해도 예전 저장은 그대로
+        except (OSError, pickle.PicklingError) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            self.toast(f"저장하지 못했습니다: {e}", self.theme.bad)
+            return False
         self.toast(f"저장했습니다: {path}")
         return True
 
@@ -220,8 +235,11 @@ class App:
         g, ver = App.read_save(path)
         if g is None:
             return None                  # 버전 표기가 없거나 이어서 할 수 없는 버전: 보이지 않음
-        return {"path": path, "mtime": os.path.getmtime(path), "version": ver,
-                "label": f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"}
+        try:
+            label = f"{g.player.name} · {g.date_label()} · 지역 {g.region_count(g.player_id)}곳"
+        except Exception:
+            return None                  # 내용이 망가진 저장: 이 슬롯만 비어 있는 것으로(시작 화면·슬롯 창이 멈추지 않게)
+        return {"path": path, "mtime": os.path.getmtime(path), "version": ver, "label": label}
 
     @staticmethod
     def read_save(path):
@@ -234,7 +252,8 @@ class App:
         if not isinstance(data, dict) or "game" not in data:
             return None, None
         ver = data.get("version")
-        return (data["game"] if compatible(ver) else None), ver
+        g = data["game"]
+        return (g if compatible(ver) and isinstance(g, Game) else None), ver
 
     def open_slots(self, mode):
         """mode: save / save_exit / load — 슬롯 선택 창."""
@@ -252,6 +271,8 @@ class App:
             return
         if any(not hasattr(f, "met") for f in g.factions):
             g._update_fog()                      # v0.0.0 세이브: 조우 기록을 지금 시야로 채운다
+        from .. import metro as M
+        M.migrate(g)                             # 예전 세이브: 광역시 특산물 시설을 통합 건물로
         self.game = g
         self.modal = None
         self.reset_ui()
@@ -259,6 +280,8 @@ class App:
         self.map.center_on(self.game.player.capital, zoom=2.0)
         self.map.invalidate()
         self.toast("불러왔습니다.")
+        if self.game.game_over:
+            self.modal = ("gameover", None)      # 끝난 판: 턴 종료만 막힌 채 멈춰 보이지 않게 결과를 다시 보여 준다
 
     def toast(self, text, color=None):
         self.toasts.append([text, color or self.theme.text, pygame.time.get_ticks()])
@@ -401,9 +424,11 @@ class App:
                 s.ai_place = i
             g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + rowh // 2 - 7, 14, 14),
                    radius=3)
-            g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, weight="semibold", anchor="midleft", max_w=150)
-            g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12, t.muted if not rid else t.text,
-                   anchor="midright", max_w=90)
+            on = i == s.ai_place                      # 고른 칸은 쪽빛 바탕이라 글자를 밝게
+            g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, (255, 255, 255) if on else None, weight="semibold",
+                   anchor="midleft", max_w=150)
+            g.text((cell[0] + cell[2] - 10, cell[1] + rowh // 2), place, 12,
+                   (255, 255, 255) if on else (t.muted if not rid else t.text), anchor="midright", max_w=90)
         self.map_input(pick_mode=True)
         if self.hover in self.world.regions:
             taken = self.start_owner(self.hover)
@@ -438,16 +463,27 @@ class App:
         self.set_map_view()
         qty_open = bool(getattr(self, "qty", None))
         modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
-        self.gui.input_enabled = not modal_open
+        # 우클릭 메뉴 위에 마우스가 있으면 그 아래 버튼(턴 종료 등)은 반응하지 않는다(메뉴가 나중에 그려져도 먼저 눌리지 않게)
+        under_ctx = bool(self.ctx_menu) and pygame.Rect(self.ctx_menu[0], (170, 84)).collidepoint(self.gui.mouse)
+        # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.3.0)
+        pop = self.mode_popup_rect()
+        under_pop = pop is not None and pop.collidepoint(self.gui.mouse)
+        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
         self.draw_map()
         self.draw_topbar()
         h = sh - TOP_H - 90
         rail = pygame.Rect(8, TOP_H + 12, panels.RAIL_W, h)
         panels.draw_side(self, rail, pygame.Rect(rail.right + 6, TOP_H + 12, LEFT_W, h))
         self.draw_compass()
+        self.gui.input_enabled = not modal_open and not under_ctx
+        self.draw_rally_banner()
+        if getattr(self, "metro_pick", None) is not None:
+            modals.draw_metro_pick(self)
         self.draw_mode_chips()
+        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
         self.draw_end_turn()
         self.draw_toasts()
+        self.gui.input_enabled = not modal_open
         if self.ctx_menu:
             self.draw_ctx_menu()
         if not modal_open:
@@ -522,6 +558,22 @@ class App:
                 # 시야 밖: 바랜 한지처럼(채도를 빼고 먹빛을 살짝)
                 fill = mix(desaturate(fill, 0.65), (120, 110, 92) if not t.dark else (0, 0, 0), 0.28)
             out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
+        mp = getattr(self, "metro_pick", None)
+        if mp and g and not pick_mode:
+            # 광역시 지정 중: 중심·고른 지역은 금빛, 고를 수 있는 지역은 밝게, 나머지는 어둡게
+            from .. import metro as M
+            cands = set(M.candidates(g, pid, mp["center"]))
+            gold = (212, 175, 55)
+            for rid, (fill, line) in out.items():
+                if rid == mp["center"]:
+                    fill = mix(fill, gold, 0.8)
+                elif rid in mp["sel"]:
+                    fill = mix(fill, gold, 0.55)
+                elif rid in cands:
+                    fill = mix(fill, (255, 255, 255), 0.45)
+                else:
+                    fill = mix(fill, (70, 64, 56) if not t.dark else (0, 0, 0), 0.4)
+                out[rid] = (fill, line)
         return out
 
     def map_extra(self, pick_mode=False):
@@ -543,8 +595,26 @@ class App:
         met = getattr(g.player, "met", set()) | {pid}
         alive = [f.id for f in g.factions if f.alive]
         wars = {(a + 2, b + 2) for i, a in enumerate(alive) for b in alive[i + 1:]
-                if (a in met and b in met or self.fog_reveal) and D.at_war(g, a, b)}
-        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political"}
+                if (a in met and b in met or self.fog_reveal or g.fog_lifted()) and D.at_war(g, a, b)}
+        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political",
+                "metro": {r: mid for mid, m in self.shown_metros() for r in m["members"]}}
+
+    def shown_metros(self):
+        """지도에 하나로 그릴 광역시 [(번호, 광역시)]: 중심이 보이거나 내 것(안개 공개면 모두)."""
+        from .. import metro as M
+        g = self.game
+        if not g:
+            return []
+        pid = g.player_id
+        return [(mid, m) for mid, m in M.metros(g).items()
+                if self.fog_reveal or g.is_visible(pid, m["center"]) or g.regions[m["center"]].owner == pid]
+
+    def map_group(self, rid):
+        """지도에서 rid 와 함께 하나로 보이는 지역들(광역시면 구성 지역 모두)."""
+        for _, m in self.shown_metros():
+            if rid in m["members"]:
+                return list(m["members"])
+        return [rid]
 
     def order_colors(self):
         """이동 범위·명령 화살표 색: 이동은 내 나라 색(직접 만든 국기의 배경 색 1), 공격·상륙·폭격은 정해진 색."""
@@ -659,9 +729,11 @@ class App:
         busy = 0 if pick_mode or not self.game else hash(frozenset(
             r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
         key = ("pick", self.setup.start, self.pick_popup, tuple(self.setup.ai_starts[: self.setup.n_enemies])) if pick_mode else (
-            self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "", self.fog_reveal, id(self.game),
+            self.mode, self.sub_mode()[0] if self.mode in SUB_MODES else "",
+            self.fog_reveal or bool(self.game and self.game.game_over), id(self.game),
                                                               self.game.turn if self.game else 0,
-                                                              self.show_terrain, busy)
+                                                              self.show_terrain, busy,
+            tuple((mid, len(m["members"])) for mid, m in self.shown_metros()))
         # 색·지명은 지도를 다시 그릴 때만 계산한다(매 프레임 계산하지 않음)
         mv.draw_base(self.screen, key, self.theme, lambda: self.region_colors(pick_mode), self.sea_colors,
                      self.mode, self.map_labels, show_terrain=self.show_terrain,
@@ -690,7 +762,7 @@ class App:
         g = self.game
         # 이동 범위
         army = g.armies.get(self.sel_army) if self.sel_army else None
-        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 전투한 부대는 범위 없음
+        if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 행동한 부대는 범위 없음
             reach = g.reachable(army)
             box = mv.screen_bbox(reach)
             if box and box.w > 0 and box.h > 0:
@@ -713,20 +785,27 @@ class App:
         if self.hover in self.world.seas:
             mv.sea_outline(self.screen, self.hover, mix(self.theme.sea_line, self.theme.accent, 0.5), 2)
         if self.hover and self.hover in self.world.regions:
-            mv.outline(self.screen, self.hover, self.theme.text, 1)
+            mv.group_outline(self.screen, self.map_group(self.hover), self.theme.text, 1)
         if self.sel:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
             else:
-                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만)
-                box = mv.screen_bbox([self.sel], pad=int(10 * u))
+                # 선택 지역: 은은한 금빛 번짐 + 흰·금 이중 윤곽(번짐 면은 지역 크기만큼만). 광역시는 바깥 윤곽만
+                grp = self.map_group(self.sel)
+                box = mv.screen_bbox(grp, pad=int(10 * u))
                 if box and box.w > 0 and box.h > 0:
                     glow = pygame.Surface(box.size, pygame.SRCALPHA)
                     for wdt, a in ((12, 30), (8, 50), (4, 90)):
-                        mv.outline_overlay(glow, self.sel, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
+                        mv.group_outline(glow, grp, (*self.theme.gold_lt, a), max(2, int(wdt * u)), origin=box.topleft)
                     self.screen.blit(glow, box.topleft)
-                mv.outline(self.screen, self.sel, (255, 248, 230), max(3, int(3 * u)))
-                mv.outline(self.screen, self.sel, self.theme.gold, max(2, int(2 * u)))
+                mv.group_outline(self.screen, grp, (255, 248, 230), max(3, int(3 * u)))
+                mv.group_outline(self.screen, grp, self.theme.gold, max(2, int(2 * u)))
+        mp = getattr(self, "metro_pick", None)
+        if mp is not None:
+            # 광역시 지정 중: 고른 지역(중심 포함)을 묶은 모습 그대로 바깥 윤곽만 금빛으로
+            grp = [mp["center"]] + sorted(mp["sel"])
+            mv.group_outline(self.screen, grp, (255, 248, 230), max(3, int(3 * u)))
+            mv.group_outline(self.screen, grp, self.theme.gold, max(2, int(2 * u)))
         # 전투 강조 (1초)
         dt = pygame.time.get_ticks() - self.flash_t
         if dt < 1200 and g.battle_regions:
@@ -738,6 +817,8 @@ class App:
         self.draw_battle_marks()
         self.draw_science_sites()
         self.draw_focus()
+        self.draw_metros()
+        self.draw_rallies()
         self.draw_capitals()
         self.draw_occupations()
         self.draw_orders()
@@ -807,6 +888,165 @@ class App:
             pygame.draw.circle(self.screen, self.theme.vermilion, c, max(5, int(8 * u)))
             pygame.draw.circle(self.screen, (247, 241, 227), c, max(5, int(8 * u)), max(1, int(1.5 * u)))
             ui_icon(self.screen, "swords", c, (247, 241, 227), 0.55 * u)
+
+    def draw_rallies(self):
+        """생산 집결지(v1.3.0): 집결지 지역에 작은 깃대 표시(일괄 지정은 금색)."""
+        g = self.game
+        mv = self.map
+        u = ui_scale()
+        pid = g.player_id
+        spots = {}
+        nat = getattr(g.player, "rally", None)
+        if nat:
+            spots[nat] = True
+        for r in g.regions_of(pid):
+            if getattr(r, "rally", None):
+                spots.setdefault(r.rally, False)
+        for rid, national in spots.items():
+            if rid not in g.regions or g.regions[rid].owner != pid:
+                continue
+            x, y = mv.label_screen(rid)
+            if not mv.view.collidepoint(x, y):
+                continue
+            x -= (22 if mv.z >= 2 else 12) * u
+            col = (212, 175, 55) if national else mix(self.faction_rgb(pid), (25, 18, 12), 0.2)
+            pygame.draw.line(self.screen, (30, 25, 20), (x, y - 12 * u), (x, y + 4 * u), max(1, int(1.5 * u)))
+            pygame.draw.polygon(self.screen, col, [(x, y - 12 * u), (x + 9 * u, y - 8 * u), (x, y - 4 * u)])
+            pygame.draw.polygon(self.screen, (30, 25, 20), [(x, y - 12 * u), (x + 9 * u, y - 8 * u), (x, y - 4 * u)], 1)
+
+    def draw_rally_banner(self):
+        """집결지 고르는 중이면 지도 위쪽에 안내 띠와 [취소](고를 때까지 남는다)."""
+        src = getattr(self, "rally_pick", None)
+        if src is None:
+            return
+        gui, t = self.gui, self.theme
+        sw, _ = self.lsize()
+        who = "모든 지역(일괄)" if src == "*" else self.world.node_name(src)
+        r = pygame.Rect(0, 0, 520, 40)
+        r.midtop = (sw // 2, TOP_H + 10)
+        gui.panel(r, radius=6)
+        gui.text((r.x + 14, r.centery), f"생산 집결지 지정: {who} → 지도에서 내 지역을 누르세요", 13, t.text,
+                 "semibold", anchor="midleft", max_w=r.w - 110)
+        if gui.button((r.right - 84, r.y + 6, 74, 28), "취소 (Esc)", size=11):
+            self.rally_pick = None
+            self.toast("집결지 지정을 취소했습니다.")
+
+    # ---- 광역시 지정(v1.3.0): 지도에서 지역을 눌러 고른다
+    def start_metro_pick(self, center):
+        from .. import metro as M
+        self.metro_pick = {"center": center, "sel": set(), "name": ""}
+        self.rally_pick = None
+        self.left_open = False
+        self.sel, self.sel_army = None, None      # 이동 범위·선택 윤곽이 고르기 색과 섞이지 않게
+        self.fit_regions(M.candidates(self.game, self.game.player_id, center),
+                         right_px=(modals.METRO_PANEL_W + 24) * self.gui.u)
+        self.changed()
+
+    def fit_regions(self, rids, right_px=0):
+        """rids 가 모두 보이게 지도를 옮기고 확대한다(오른쪽 right_px 만큼은 패널이 가리므로 비워 둔다)."""
+        mv = self.map
+        boxes = [mv.rbbox[r] for r in rids if r in mv.rbbox]
+        if not boxes:
+            return
+        x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        avail_w = max(100, mv.view.w - right_px)
+        bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+        z = min(avail_w / (bw * mv.fit), mv.view.h / (bh * mv.fit)) * 0.8
+        mv.z = max(2.0, min(12.0, z))
+        s = mv.scale
+        mv.cx = (x0 + x1) / 2 + right_px / 2 / s          # 패널 왼쪽 빈 곳의 가운데에 오게
+        mv.cy = (y0 + y1) / 2
+        mv._clamp()
+        mv.invalidate()
+
+    def cancel_metro_pick(self):
+        if self.metro_pick is not None:
+            self.metro_pick = None
+            self.gui.blur()
+            self.changed()
+
+    def toggle_metro_pick(self, node):
+        """지도에서 누른 지역을 광역시 후보에 넣거나 뺀다(중심에서 육상 3칸 안의 내 지역만, 중심 포함 최대 25곳)."""
+        from .. import metro as M
+        mp = self.metro_pick
+        g = self.game
+        if mp is None or node is None:
+            return
+        if node == mp["center"]:
+            self.toast("중심 지역은 늘 포함됩니다.")
+            return
+        if node not in M.candidates(g, g.player_id, mp["center"]):
+            self.toast(f"고를 수 없는 지역입니다(중심에서 육상 {C.METRO_RANGE}칸 안의 내 지역만).", self.theme.bad)
+            return
+        if node in mp["sel"]:
+            mp["sel"].discard(node)
+        elif len(mp["sel"]) + 1 >= C.METRO_MAX_REGIONS:
+            self.toast(f"광역시는 중심을 포함해 {C.METRO_MAX_REGIONS}곳까지 묶을 수 있습니다.", self.theme.bad)
+            return
+        else:
+            mp["sel"].add(node)
+        self.changed()
+
+    def confirm_metro_pick(self):
+        from .. import metro as M
+        mp = self.metro_pick
+        g = self.game
+        if mp is None:
+            return False
+        pid = g.player_id
+        sel = [mp["center"]] + sorted(mp["sel"])
+        ok, _ = M.check(g, pid, mp["center"], sel)
+        if not ok:
+            self.toast("지정 조건을 아직 채우지 못했습니다.", self.theme.bad)
+            return False
+        done, msg = g.create_metro(pid, mp["center"], sel, mp.get("name", ""))
+        self.toast(msg, None if done else self.theme.bad)
+        if done:
+            self.metro_pick = None
+            self.gui.blur()
+            self.select(sel[0])
+            self.left_open, self.left_tab, self.tab = True, "region", "action"
+            self.changed()
+        return done
+
+    def start_rally_pick(self, rid):
+        """생산 집결지 고르기 시작(rid=None 이면 일괄 지정): 다음에 지도에서 누른 내 지역이 집결지."""
+        self.rally_pick = rid if rid is not None else "*"
+        self.metro_pick = None
+        self.left_open = False
+
+    def finish_rally_pick(self, node):
+        g = self.game
+        src = self.rally_pick
+        self.rally_pick = None
+        if node not in g.regions:
+            self.toast("집결지 지정을 취소했습니다.")
+            return
+        ok, msg = g.set_rally(g.player_id, None if src == "*" else src, node)
+        self.toast(msg, None if ok else self.theme.bad)
+        if ok:
+            self.changed()
+
+    def draw_metros(self):
+        """광역시(v1.3.0): 구성 지역 전체의 바깥 윤곽만 세력 색으로 굵게(안쪽 경계는 바탕 지도에서도 빼서
+        하나의 지역처럼, v1.3.0), 중심에 이름 표찰."""
+        g = self.game
+        mv = self.map
+        u = ui_scale()
+        for _, m in self.shown_metros():
+            c = m["center"]
+            col = mix(self.faction_rgb(g.regions[c].owner), (25, 18, 12), 0.35)
+            if self.sel not in m["members"]:              # 선택 중이면 같은 자리에 금빛 선택 윤곽이 있다
+                mv.group_outline(self.screen, m["members"], col, max(2, int(2.5 * u)))
+            x, y = mv.label_screen(c)
+            if not mv.view.collidepoint(x, y):
+                continue
+            t = render_text(m["name"], 11, (247, 241, 227), "bold")
+            box = t.get_rect(center=(x, y + (24 if mv.z >= 2 else 14) * u)).inflate(int(10 * u), int(4 * u))
+            pygame.draw.rect(self.screen, col, box, border_radius=int(6 * u))
+            pygame.draw.rect(self.screen, (212, 175, 55), box, max(1, int(u)), border_radius=int(6 * u))
+            self.screen.blit(t, t.get_rect(center=box.center))
 
     def draw_capitals(self):
         g = self.game
@@ -889,7 +1129,17 @@ class App:
         g = self.game
         mv = self.map
         for a in g.armies.values():
-            if a.owner != g.player_id or not a.order:
+            if a.owner != g.player_id:
+                continue
+            if not a.order:
+                # 자동 이동 중(v1.3.0: 이번 구간은 이미 갔다): 지금 위치에서 최종 목적지까지 남은 경로를 점선으로
+                if getattr(a, "goto", None) and a.goto != a.loc:
+                    route = g.plan_route(a, a.goto) or [a.goto]
+                    pts = [mv.label_screen(a.loc)] + [mv.label_screen(n) for n in route]
+                    for p, q in zip(pts, pts[1:]):
+                        self.dashed(p, q, (255, 255, 255), width_k=4)
+                        self.dashed(p, q, self.order_colors()["move"])
+                    self.arrowhead(pts[-2], pts[-1], self.order_colors()["move"], outline=True)
                 continue
             o = a.order
             p0 = mv.label_screen(a.loc)
@@ -952,11 +1202,12 @@ class App:
             by_loc.setdefault(a.loc, []).append(a)
         u = ui_scale()
         ink = (30, 25, 20)
+        self._flag_hits = []
         for loc, arms in by_loc.items():
             x, y = mv.label_screen(loc)
             if not mv.view.collidepoint(x, y):
                 continue
-            arms.sort(key=lambda a: (a.owner != pid, a.owner, a.id))
+            arms.sort(key=lambda a: (a.owner != pid, a.owner, g.army_sort_key(a)))   # 같은 병종 순서(v1.3.0)
             # 군기: 장대 + 깃발(육군 제비꼬리·해군 뾰족한 삼각기·공군 날개깃) + 대표 병종 아이콘 + 총수
             fh = max(10, int(14 * u))
             flags = []
@@ -972,8 +1223,8 @@ class App:
             for a, num, fw in flags:
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
                 if g.army_acted(a.id):
-                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 전투한 부대: 흐리게
-                icon_key = "lst" if a.units.get("lst", 0) > 0 else max(a.units, key=lambda k: a.units[k] * C.UNITS[k]["cost"])
+                    col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 행동한 부대: 흐리게
+                icon_key = g.army_icon_unit(a)
                 kind = C.UNITS[icon_key]["kind"]
                 x0, y0 = int(fx), int(fy)
                 notch = 4 * u
@@ -996,6 +1247,9 @@ class App:
                 if a.order and a.owner == pid:
                     pygame.draw.circle(self.screen, (247, 241, 227), (int(x0 + fw), y0), max(3, int(3.5 * u)))
                     pygame.draw.circle(self.screen, ink, (int(x0 + fw), y0), max(3, int(3.5 * u)), 1)
+                if a.owner == pid:
+                    self._flag_hits.append((pygame.Rect(x0 - int(2 * u), y0 - int(3 * u), int(fw + 6 * u),
+                                                        int(fh + 9 * u)), a.id))
                 fx += fw + int(4 * u)
         # 줌 4배 이상: 인구 배지
         if mv.z >= 4:
@@ -1052,6 +1306,21 @@ class App:
                     self.pick_popup = node
                     mv.invalidate()
                 return
+            if getattr(self, "metro_pick", None) is not None:
+                self.toggle_metro_pick(node)
+                return
+            if getattr(self, "rally_pick", None) is not None:
+                self.finish_rally_pick(node)
+                return
+            hit = next((h for h in reversed(getattr(self, "_flag_hits", [])) if h[0].collidepoint(pos)), None)
+            if hit is not None and hit[1] in self.game.armies:
+                # 군기를 직접 누르면 그 부대를 고르고 [부대] 탭(v1.3.0)
+                a = self.game.armies[hit[1]]
+                if self.sel != a.loc or not (self.left_open and self.left_tab == "region"):
+                    self.select(a.loc)
+                self.sel_army = a.id
+                self.left_open, self.left_tab, self.tab = True, "region", "army"
+                return
             self.select(node)
         if gui.rclicked and not pick_mode:
             self.right_click(self.hover, gui.mouse)
@@ -1066,7 +1335,7 @@ class App:
         if node is None:
             self.sel_army = None
             return
-        mine = sorted(g.armies_at(node, g.player_id), key=lambda a: (-g.army_power(a), a.id))
+        mine = sorted(g.armies_at(node, g.player_id), key=g.army_pick_key)   # 아직 행동 안 한 부대 → 최대 체력 합 큰 부대
         cur = g.armies.get(self.sel_army) if self.sel_army else None
         if not cur or cur.loc != node:
             self.sel_army = mine[0].id if mine else None
@@ -1087,7 +1356,10 @@ class App:
             self.left_tab, self.tab = "region", (keep or ("army" if mine else "info"))
         else:
             # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보]). 보던 탭이 있으면 그대로
-            self.left_tab, self.tab = "region", (keep or ("action" if g.regions[node].owner == g.player_id else "info"))
+            own = g.regions[node].owner == g.player_id
+            near = g.regions[node].owner == NEUTRAL and any(
+                g.regions[n].owner == g.player_id for n in self.world.land_adj[node])   # 편입 버튼(v1.3.0)
+            self.left_tab, self.tab = "region", (keep or ("action" if own or near else "info"))
 
     def hidden_owner(self, node):
         """탐색했지만 지금 시야 밖인 타국 영토면 마지막으로 본 주인 세력, 아니면 None."""
@@ -1102,31 +1374,51 @@ class App:
 
     def right_click(self, node, pos):
         g = self.game
+        if getattr(self, "metro_pick", None) is not None:
+            self.toggle_metro_pick(node)              # 광역시 지정 중: 우클릭도 넣고 빼기
+            return
+        if getattr(self, "rally_pick", None) is not None:
+            self.rally_pick = None                   # 집결지 고르는 중 우클릭: 취소
+            self.toast("집결지 지정을 취소했습니다.")
+            return
         if not node:
             return
         army = g.armies.get(self.sel_army) if self.sel_army else None
         if army and army.owner == g.player_id and g.army_acted(army.id):
-            self.toast("이번 턴에 이미 전투한 부대입니다(합치기·분리·이동·공격 불가).", self.theme.bad)
+            self.toast("이번 턴에 이미 행동한 부대입니다(이동·공격은 다음 턴에).", self.theme.bad)
             return
         if army and army.owner == g.player_id:
-            # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
-            if not self.bombard_mode and node in g.regions:
+            solo = g.solo_army(army)
+            if node in g.regions:
                 opt = g.reachable(army).get(node)
-                if opt and opt["action"] == "attack" and g.hostile_units_at(army.owner, node):
+                hostile = g.hostile_units_at(army.owner, node)
+                shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                # 폭격 확인 창(v1.3.0): 포병·폭격기 부대는 적 병력이 있는 곳, 구축함·항모 함대는 폭격 대상,
+                # Shift+우클릭은 병력이 없어도(건물 폭격)
+                if g._can_bombard(army, node) and ((solo and hostile) or shift
+                                                   or (not solo and opt and opt["action"] == "bombard")):
+                    self.modal = ("bombard", {"army": army.id, "node": node})
+                    return
+                # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
+                if not solo and opt and opt["action"] == "attack" and hostile:
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
-                # 병력 없는 맞닿은 적 땅: 공격처럼 바로 진입해 점령
-                if opt and opt["action"] == "attack" and army.loc in self.world.land_adj.get(node, ()):
-                    ok, msg = g.capture_now(army.id, node)
-                    if ok:
-                        self.toast(msg)
-                        return
-            ok, msg = g.order_army(army.id, node, self.attack_mode, force_bombard=self.bombard_mode)
+            # 이동·상륙·빈 땅 점령은 바로 실행한다(v1.3.0). 포병·폭격기 부대는 병력이 없는 곳이면 이동
+            ok, msg = g.act_now(army.id, node, self.attack_mode, move_only=solo)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
+            if ok:
+                self.flash_t = pygame.time.get_ticks()
+                self.changed()
+                if army.id in g.armies:
+                    self.sel, self.sel_army = army.loc, army.id      # 움직인 부대를 계속 선택해 둔다
+                else:
+                    self.sel_army = None
             return
         if node in g.regions:
             o = g.regions[node].owner
             if o not in (NEUTRAL, g.player_id):
+                sw, sh = self.lsize()
+                pos = (max(0, min(pos[0], sw - 174)), max(0, min(pos[1], sh - 88)))   # 메뉴(170×84)가 화면 안에
                 self.ctx_menu = (pos, o, node)
 
     def draw_ctx_menu(self):
@@ -1148,13 +1440,22 @@ class App:
         if not army or army.owner != g.player_id or self.gui.over_ui():
             return
         if g.army_acted(army.id):
-            self.gui.tooltip = "이번 턴 전투 완료: 이동·공격 불가"
+            self.gui.tooltip = "이번 턴 행동 완료: 이동·공격은 다음 턴"
             return
         reach = g.reachable(army)
         opt = reach.get(node)
+        solo = g.solo_army(army)
+        shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+        hostile = node in g.regions and g.hostile_units_at(army.owner, node)
+        if node in g.regions and g._can_bombard(army, node) and ((solo and hostile) or shift):
+            opt = {"action": "bombard", "path": []}
+        elif solo and opt and opt["action"] == "bombard":
+            opt = None                           # 병력이 없는 곳은 이동(한 턴에 못 가면 자동 이동)
         if not opt:
+            if solo and node in g.regions and g.plan_route(army, node):
+                self.gui.tooltip = f"이동: {self.world.node_name(node)} (여러 턴 자동 이동)"
             return
-        act = "bombard" if self.bombard_mode else opt["action"]
+        act = opt["action"]
         lines = []
         name = self.world.node_name(node)
         if act == "move":
@@ -1164,7 +1465,15 @@ class App:
         elif act == "land":
             lines.append(f"상륙(하역): {name}")
         elif act == "bombard":
-            lines.append(f"폭격: {name}")
+            lines.append(f"폭격: {name} (우클릭 → 폭격 확인 창)")
+            pv = g.preview_bombard(army, node)
+            if pv:
+                lines.append(f"예상 피해 {pv['dmg']:.1f} ({pv['lo']:.1f}~{pv['hi']:.1f})"
+                             + (f" / 적 총 체력 {pv['def_hp']:.1f}" if pv["def_max"] else " · 방어 병력 없음(건물만)"))
+                if pv["bmb_max"]:
+                    lines.append(f"요격 피해 {pv['intercept']:.1f} (대공포 {pv['aa']}단계·공항 전투기 {pv['ftr']}대)")
+                if pv["building_p"]:
+                    lines.append(f"건물 피해 확률 {pv['building_p'] * 100:.0f}%")
         elif act == "attack":
             mode = self.attack_mode
             pv = g.preview_attack(army, node, mode)
@@ -1217,10 +1526,21 @@ class App:
         for k in list(g.keys):
             if g.focus:
                 continue
-            if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE) and \
+                    getattr(self, "metro_pick", None) is not None:
+                g.keys.remove(k)                     # 광역시 지정 중: Enter 지정 · Esc 취소(턴 종료로 넘어가지 않게)
+                if k.key == pygame.K_ESCAPE:
+                    self.cancel_metro_pick()
+                else:
+                    self.confirm_metro_pick()
+            elif k.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 g.keys.remove(k)                     # 이 Enter는 여기서 소비(새로 뜬 대사 창이 같은 Enter로 닫히지 않게)
                 if pygame.key.get_mods() & pygame.KMOD_SHIFT or not self.next_region():
-                    self.end_turn()
+                    self.request_end_turn()
+            elif k.key == pygame.K_ESCAPE and getattr(self, "rally_pick", None) is not None:
+                self.rally_pick = None
+                self.toast("집결지 지정을 취소했습니다.")
+                g.keys.remove(k)
             elif k.key == pygame.K_ESCAPE:
                 if self.sel_army:
                     self.sel_army = None
@@ -1242,7 +1562,7 @@ class App:
                 self.mode_popup = None
             elif k.key == pygame.K_F1:
                 self.modal = ("help", None)
-            elif k.key == pygame.K_F2:
+            elif k.key == pygame.K_F2 and DEV_KEYS:
                 self.fog_reveal = not self.fog_reveal
                 self.toast("개발자 안개 토글: " + ("전체 공개" if self.fog_reveal else "기본"))
                 self.changed()
@@ -1260,10 +1580,24 @@ class App:
             elif k.key == pygame.K_d and pygame.key.get_mods() & pygame.KMOD_CTRL:
                 self.theme.set_dark(not self.theme.dark)
                 self.changed()
+            elif k.key in (pygame.K_SPACE, pygame.K_q, pygame.K_w, pygame.K_e) and self.sel \
+                    and self.hidden_owner(self.sel) is None \
+                    and not pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
+                # 지역 메뉴 탭 바로 가기(v1.3.0): Space 다음 탭, Q 행동 · W 부대 · E 지역 정보
+                tabs = ("action", "army", "info")
+                if k.key == pygame.K_SPACE:
+                    cur = self.tab if (self.left_open and self.left_tab == "region") else None
+                    nxt = tabs[(tabs.index(cur) + 1) % 3] if cur in tabs else "action"
+                else:
+                    nxt = {pygame.K_q: "action", pygame.K_w: "army", pygame.K_e: "info"}[k.key]
+                self.left_open, self.left_tab, self.tab = True, "region", nxt
+                g.keys.remove(k)
 
     def next_idle(self):
         g = self.game
-        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ and not g.resisting(r)]
+        from .. import metro as M
+        idle = [r.id for r in g.regions_of(g.player_id) if not r.project and not r.occ and not g.resisting(r)
+                and M.center_of(g, r.id) == r.id]                  # 광역시는 중심 하나
         if not idle:
             self.toast("빈 슬롯이 없습니다.")
             return
@@ -1277,6 +1611,12 @@ class App:
         f = self.game.player
         return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
                 "weary": round(f.war_weary), "tax": round(f.tax * 100)}
+
+    def request_end_turn(self):
+        """버튼·Enter 입력으로 턴 종료: 방금 턴을 넘겼으면(연타·더블클릭) 무시한다."""
+        if pygame.time.get_ticks() < getattr(self, "enter_guard", 0):
+            return
+        self.end_turn()
 
     def end_turn(self):
         g = self.game
@@ -1387,7 +1727,7 @@ class App:
              f"구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
             ("money", "coin", "자금(만원)", f"{snap['money']:,.0f}", bad if f.money < 0 else None,
              f"자금 {fmt_money(f.money)}원\n진행 중 슬롯 턴당 지출 "
-             f"{sum(r.project.per_turn for r in g.regions_of(f.id) if r.project):,.0f}"),
+             f"{sum(p.per_turn for p in g.unique_projects(g.regions_of(f.id))):,.0f}"),
         ]
         for key, ic, label, val, col, tip in items:
             vw = max(measure(val, 15, "semibold")[0], measure(label, 10, "semibold")[0]) + 30
@@ -1417,8 +1757,7 @@ class App:
         t = self.theme
         u = ui_scale()
         sw, sh = self.lsize()
-        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
-        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
+        r, widths = self._mode_bar_layout()
         gui.shadow(r, 22, 6)
         pr = gui.R(r)
         cache = self.__dict__.setdefault("_mode_band", {})
@@ -1474,15 +1813,43 @@ class App:
         if gui.hover(tr):
             gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n강을 건너는 곳(도하)과 산줄기를 넘는 곳(산악 돌파)\n점선: 맞닿지 않은 하구·수로 경로"
 
+    def _mode_bar_layout(self):
+        """지도 모드 막대의 자리와 칩 폭."""
+        sw, sh = self.lsize()
+        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
+        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
+        return r, widths
+
+    SUB_ROW_H = 30
+    SUB_W = 128
+
+    def _sub_menu_rect(self, mode, x, bottom):
+        n = len(SUB_MODES[mode])
+        return pygame.Rect(x, bottom - n * (self.SUB_ROW_H + 4) - 12, self.SUB_W, n * (self.SUB_ROW_H + 4) + 8)
+
+    def mode_popup_rect(self):
+        """열려 있는 지도 모드 세부 메뉴의 자리(없으면 None)."""
+        popup = getattr(self, "mode_popup", None)
+        if popup not in SUB_MODES:
+            return None
+        r, widths = self._mode_bar_layout()
+        bx = r.x + 6
+        for (key, _), w in zip(MAP_MODES, widths):
+            if key == popup:
+                return self._sub_menu_rect(key, bx, r.y - 6)
+            bx += w + 4
+        return None
+
     def draw_sub_menu(self, mode, x, bottom, w):
         """자원·건물·군사 세부 메뉴(칩 위로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
         gui = self.gui
         t = self.theme
         opts = SUB_MODES[mode]
-        bh = 30
-        pw = 128
-        p = pygame.Rect(x, bottom - len(opts) * (bh + 4) - 12, pw, len(opts) * (bh + 4) + 8)
+        bh = self.SUB_ROW_H
+        pw = self.SUB_W
+        p = self._sub_menu_rect(mode, x, bottom)
         gui.panel(p)
+        gui.block(p)
         cur = self.sub_mode(mode)[0]
         for i, (key, name, col, top) in enumerate(opts):
             row = pygame.Rect(p.x + 6, p.y + 6 + i * (bh + 4), pw - 12, bh)
@@ -1503,6 +1870,7 @@ class App:
         g = self.game
         return [rid for rid in g.review_order(g.player_id)
                 if rid not in self.visited and not g.regions[rid].project and not g.regions[rid].occ
+                and not g.resisting(g.regions[rid])
                 and not g.regions[rid].focus and not getattr(g.regions[rid], "pop_focus", False)]
 
     def next_region(self):
@@ -1533,7 +1901,7 @@ class App:
             gui.block(skip)
             gui.shadow(skip, 4, 4)
             if gui.button(skip, "", "default"):
-                self.end_turn()
+                self.request_end_turn()
             pygame.draw.rect(self.screen, t.vermilion, gui.R(skip), 1, border_radius=int(4 * gui.u))
             gui.text(skip.center, "바로 턴 종료", 15, t.vermilion, "title", anchor="center")
             c = (r.right - 4, r.y + 4)
@@ -1541,7 +1909,7 @@ class App:
             gui.circle(t.indigo_dk, c, 13, 2)
             gui.text(c, str(len(queue)), 12, t.indigo_dk, "bold", anchor="center")
         elif gui.button(r, "턴 종료", "seal", size=19, weight="title", enabled=not g.game_over):
-            self.end_turn()
+            self.request_end_turn()
 
     def draw_compass(self):
         """지도 오른쪽 아래 나침반(윤도)과 축척."""
@@ -1627,6 +1995,7 @@ class App:
     # ------------------------------------------------------------ 외교
     def open_diplomacy(self, fid):
         self.dip_state = modals.DiploDraft(fid)
+        self.war_confirm = None
         self.modal = ("diplomacy", fid)
 
 
@@ -1646,10 +2015,10 @@ def main(argv=None):
         app.game.set_player_government("presidential")
         app.scene = "main"
         for _ in range(args.turns):
-            app.game.pending_rebellions and [app.game.resolve_rebellion(app.game.player_id, r, "tax")
-                                             for r in list(app.game.pending_rebellions)]
-            app.game.pending_proposals = []
             from .. import ai
+            for r in list(app.game.pending_rebellions):
+                ai.handle_rebellion(app.game, app.game.player_id, r)
+            app.game.pending_proposals = []
             ai.plan_turn(app.game, app.game.player_id)
             app.game.end_turn()
         app.game.pending_proposals = []

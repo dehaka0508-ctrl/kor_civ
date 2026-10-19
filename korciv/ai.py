@@ -11,6 +11,7 @@ from . import ai_phase as PH
 from . import ai_strategy as ST
 from . import config as C
 from . import diplomacy as D
+from . import negotiation as NG
 from . import rules as R
 from .leaders import GOV_AGGR_ADJ, LEADER_BY_KEY
 from .state import NEUTRAL
@@ -312,52 +313,42 @@ def mil_oil_want(g, f) -> int:
     return max(0, int(C.AI_TRADE_MIL_OIL - have + 0.999))
 
 
-def ai_accepts_trade(g, ai, other, res, n, price, ai_sells) -> bool:
-    """AI 가 다른 나라의 거래 제의(res 턴당 n개 × 12턴, 개당 price)를 받아들일까."""
-    if D.at_war(g, ai, other) or D.opinion(g, ai, other) < C.AI_TRADE_MIN_OP:
-        return False
-    if ai_sells:
-        have = D.spec_supply(g, ai) if res == "specialty" else g.energy_supply(ai)[res]   # 계약으로 내주는 몫은 뺀 양
-        if n > have:
-            return False
-        cost = D.spec_cost(g, ai, n) / n if res == "specialty" else energy_unit_cost(g, ai, res, n)
-        return price >= cost
-    f = g.factions[ai]
-    if f.money < price * n * 3:
-        return False
-    if res == "specialty":
-        val = D.spec_price(g, ai)
-    else:
-        val = energy_unit_value(g, ai, res, n, military=mil_oil_want(g, f) > 0)
-    return price <= val
-
-
-def _propose_trade(g, fid, other, res, n, price, sell):
-    """fid 가 other 에게 res 턴당 n개 × 12턴을 개당 price에 팔겠다(sell)·사겠다고 제의.
-    상대가 AI면 바로 판단하고, 플레이어면 다음 턴 시작에 제안 창으로 묻는다."""
-    if n <= 0 or price <= 0:
-        return False
-    seller, buyer = (fid, other) if sell else (other, fid)
-    o = g.factions[other]
-    if o.is_ai:
-        if ai_accepts_trade(g, other, fid, res, n, price, ai_sells=not sell):
-            D.make_trade(g, seller, buyer, res, n, price, fid)
-            return True
-        return False
+def _offer_to_player(g, fid, pid, res, n, sell) -> bool:
+    """플레이어에게 거래를 제의한다(v1.3.0): 협상을 열어 AI 의 첫 값을 부르고, 다음 턴 시작에 제안 창으로 묻는다.
+    플레이어는 수락·거절하거나 값을 불러 협상할 수 있다."""
     key = f"trade_{res}_{'s' if sell else 'b'}"
     f = g.factions[fid]
+    pf = g.factions[pid]
+    # 플레이어의 거래 제의 거절 설정(v1.3.0): 구매(상대가 사겠다)·판매(상대가 팔겠다)·이 나라
+    if (pf.ai.get("reject_sell") if sell else pf.ai.get("reject_buy")) or fid in pf.ai.get("reject_from", ()):
+        return False
     if g.turn - f.ai.get(key, -99) < C.AI_TRADE_EVERY * 2:
         return False
+    st = NG.start(g, fid, pid, res, n, ai_sells=sell, init="ai")
+    if st["status"] != "open":
+        return False
     f.ai[key] = g.turn
-    g.pending_proposals.append({"from": fid, "kind": "trade", "res": res, "n": int(n), "price": round(price, 1),
-                                "sell": bool(sell)})
+    g.pending_proposals.append({"from": fid, "kind": "trade", "res": res, "n": st["n"], "price": st["price"],
+                                "sell": bool(sell), "nego": st})
     return True
 
 
+def _trade_with(g, fid, other, res, n, sell) -> bool:
+    """fid 가 other 에게 res 턴당 n개 거래를 제의(sell: fid 가 판다). AI 끼리는 유보 가격이 겹치면 바로 맺는다."""
+    if n < 1:
+        return False
+    if g.factions[other].is_ai:
+        seller, buyer = (fid, other) if sell else (other, fid)
+        return NG.ai_deal(g, seller, buyer, res, n) is not None
+    return _offer_to_player(g, fid, other, res, n, sell)
+
+
 def _trade_offers(g, f):
-    """4턴마다: 남는 지하자원은 가장 값을 쳐 줄 나라에 팔고, 공장 빈 칸·군 생산 석유가 모자라면 남는 나라에서
-    산다(값은 파는 쪽 손해와 사는 쪽 가치의 가운데: 사는 쪽이 공장에 넣었을 때 금액 이하, 파는 쪽 시장 판매가 이상).
-    평균 행복도가 낮으면 이웃에게 특산물을 산다(이미 그 나라 지역에 공급하던 것도)."""
+    """4턴마다 자원·특산물 거래를 제의한다(v1.3.0 협상).
+    ① 지하자원 판매: 자기 발전소·공장에 다 넣고 남는 몫을, 빈 공장이 있어 가장 값을 쳐 줄 나라에.
+    ② 지하자원 구매: 빈 공장이 있고, 그걸 넣어 늘어나는 턴당 세수가 있으며 재정이 버틸 때(군 생산 석유도).
+    ③ 특산물 판매: 행복도가 높거나 돈이 급하면, 남는 특산물을 행복도가 낮은 나라에.
+    ④ 특산물 구매: 행복도가 낮거나 반란 문턱이 가까우면, 남는 특산물이 있는 이웃에게."""
     fid = f.id
     if (g.turn + fid) % C.AI_TRADE_EVERY:
         return
@@ -365,70 +356,77 @@ def _trade_offers(g, f):
     if not partners:
         return
     busy = {(c["from"], c["to"], c["res"]) for c in D.contracts(g)}
-    sup = g.energy_supply(fid)
-    _, left, room = D.energy_eval(g, fid, sup)
-    # 1) 남는 석유·석탄·전기 팔기
+    urg = NG.money_urgency(g, fid)
+    # ① 남는 석유·석탄·전기 팔기
     for k in ("oil", "elec", "coal"):
-        n = int(left[k])
+        n = NG.surplus(g, fid, k)
         if n < 1:
             continue
-        floor = energy_unit_cost(g, fid, k, n)
         best = None
         for x in partners:
             if (fid, x, k) in busy:
                 continue
-            val = energy_unit_value(g, x, k, n, military=g.factions[x].is_ai and mil_oil_want(g, g.factions[x]) > 0)
-            if val > floor * C.AI_TRADE_GAIN and (best is None or val > best[0]):
-                best = (val, x)
-        if best:
-            _propose_trade(g, fid, best[1], k, n, (floor + best[0]) / 2, sell=True)
-            break
-    # 2) 공장 빈 칸·군 생산 석유가 모자라면 사기
-    want_oil = mil_oil_want(g, f)
-    for k in ("elec", "coal", "oil"):
-        need = room if k != "oil" else max(room, want_oil)
-        if k == "oil" and not room:
-            need = want_oil
-        if need < 1:
-            continue
-        best = None
-        for x in partners:
-            if (x, fid, k) in busy:
-                continue
-            _, lx, _ = D.energy_eval(g, x, g.energy_supply(x))
-            q = int(min(need, lx[k]))
+            q = min(n, NG.factory_room(g, x))
             if q < 1:
                 continue
-            cost = energy_unit_cost(g, x, k, q)
-            val = energy_unit_value(g, fid, k, q, military=want_oil > 0)
-            if val > cost * C.AI_TRADE_GAIN and (best is None or val - cost > best[0]):
-                best = (val - cost, x, q, cost, val)
-        if best:
-            _, x, q, cost, val = best
-            if f.money >= (cost + val) / 2 * q * 3:
-                _propose_trade(g, fid, x, k, q, (cost + val) / 2, sell=False)
+            val = NG.buy_unit_value(g, x, k, q)
+            if val > 0 and (best is None or val > best[0]):
+                best = (val, x, q)
+        if best and _trade_with(g, fid, best[1], k, best[2], sell=True):
             break
-    # 3) 불행하면 이웃에게 특산물 사기
-    if g.avg_happiness(fid) < C.AI_SPEC_BUY_H:
+    # ② 빈 공장·군 생산 석유가 모자라면 사기(늘어나는 세수와 재정으로 판단)
+    room = NG.factory_room(g, fid)
+    want_oil = mil_oil_want(g, f)
+    if urg < 0.7:
+        for k in ("elec", "coal", "oil"):
+            need = room if k != "oil" else max(room, want_oil)
+            if need < 1:
+                continue
+            best = None
+            for x in partners:
+                if (x, fid, k) in busy:
+                    continue
+                q = int(min(need, NG.surplus(g, x, k)))
+                if q < 1:
+                    continue
+                val = NG.buy_unit_value(g, fid, k, q)
+                if k == "oil" and want_oil:
+                    val = max(val, C.MARKET_BUY["oil"] * C.MONEY_SCALE)
+                if val > 0 and (best is None or val > best[0]):
+                    best = (val, x, q)
+            if best and f.money >= best[0] * best[2] * 3:
+                _trade_with(g, fid, best[1], k, best[2], sell=False)
+                break
+    # ③ 행복도가 높거나 돈이 급하면 남는 특산물을 판다
+    spare = NG.surplus(g, fid, "specialty")
+    if spare >= 1 and (NG.happy_level(g, fid) >= 0.4 or urg >= 0.4):
+        cands = []
+        for x in partners:
+            if (fid, x, "specialty") in busy:
+                continue
+            w = NG.spec_want(g, x)
+            if w >= 1:
+                cands.append((g.avg_happiness(x), x, min(spare, w)))
+        if cands:
+            _, x, q = min(cands)
+            _trade_with(g, fid, x, "specialty", q, sell=True)
+    # ④ 불행하거나 반란이 가까우면 이웃에게 특산물을 산다
+    prox = NG.rebel_proximity(g, fid)
+    if g.avg_happiness(fid) < C.AI_SPEC_BUY_H or prox > 0:
         regs = g.regions_of(fid)
-        want = min(C.AI_SPEC_BUY_MAX, sum(1 for r in regs if g.eff_happy(r) < C.AI_SPEC_BUY_H
-                                          and len(r.supplied) < C.SPECIALTY_MAX_TYPES))
+        want = min(C.AI_SPEC_BUY_MAX, max(NG.spec_want(g, fid), 1 if prox > 0 else 0))
         if want >= 1:
-            price = D.spec_price(g, fid)
             nbrs = {g.regions[n].owner for r in regs for n in g.world.land_adj[r.id]} - {NEUTRAL, fid}
             cands = []
             for x in partners:
                 if x not in nbrs or (x, fid, "specialty") in busy:
                     continue
                 q = min(want, D.spec_supply(g, x))
-                if q < 1:
-                    continue
-                cost = D.spec_cost(g, x, q) / q
-                if price >= cost:
-                    cands.append((cost, -q, x, q))
-            if cands and f.money >= price * min(c[3] for c in cands) * 3:
-                _, _, x, q = min(cands)
-                _propose_trade(g, fid, x, "specialty", q, price, sell=False)
+                if q >= 1:
+                    cands.append((-NG.surplus(g, x, "specialty"), x, q))
+            if cands:
+                _, x, q = min(cands)
+                _trade_with(g, fid, x, "specialty", q, sell=False)
 
 
 def _tax(g, f):
@@ -446,7 +444,7 @@ def _tax(g, f):
     worst = min(hs)
     last = f.last
     net = last.get("net", 0.0)
-    spend = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
+    spend = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
     reserve = 300 + g.upkeep(f.id) * 5 + spend * 3
     at_war = bool(D.enemies(g, f.id))
     hi = 0.12 + 0.005 * max(0.0, eff_aggression(g, f) - 5) + (0.03 if at_war else 0.0)
@@ -673,6 +671,14 @@ def war_assessment(g, fid, e):
         if EG.sprint(f) == "conquest" and ST.posture_of(f) != "crisis":
             d -= C.AI_P3_SPRINT_PEACE      # 3페이즈 정복 질주: 이기고 있는 전쟁은 끝까지
             con.append("정복 질주")
+    # 정복승리(v1.3.0)는 전쟁 중에는 불발: 조건을 채운 나라는 강화를 서두르고, 그 상대는 강화를 꺼린다
+    if "conquest" in g.settings.victories:
+        if g.conquest_status(fid)["met"]:
+            d += C.AI_CONQ_READY_PEACE
+            pro.insert(0, "강화하면 정복승리")
+        elif g.conquest_status(e)["met"] and not (f.is_ai and ST.posture_of(f) == "crisis"):
+            d -= C.AI_CONQ_DENY_PEACE
+            con.insert(0, "강화하면 상대가 정복승리")
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 
@@ -1155,7 +1161,7 @@ def _harass_block(g, f, t, urg):
     regs = g.regions_of(fid)
     t_regs = {r.id for r in g.regions_of(t)}
     by_land = any(n in t_regs for r in regs for n in w.land_adj[r.id])
-    by_air = any(r.b["airport"] and any(v in t_regs for v in w.distances_from(r.id, C.BOMB_RANGE)) for r in regs)
+    by_air = any(r.b["airport"] and any(v in t_regs for v in w.air_distances(r.id, C.BOMB_RANGE)) for r in regs)
     seas = {s_ for r in regs if w.regions[r.id].coastal for s_ in w.regions[r.id].seas}
     seas |= {s2_ for s_ in list(seas) for s2_ in w.seas[s_].adj}
     by_sea = any(v in t_regs for s_ in seas for v in w.seas[s_].coast)
@@ -1252,8 +1258,6 @@ def handle_rebellion(g, fid, rid):
         return g.resolve_rebellion(fid, rid, "pay")
     if g.suppress_chance(fid, rid) >= 0.7:
         return g.resolve_rebellion(fid, rid, "suppress")
-    if f.tax >= C.REBEL_ACCEPT_TAX_CUT:
-        return g.resolve_rebellion(fid, rid, "tax")
     if f.money >= cost:
         return g.resolve_rebellion(fid, rid, "pay")
     return g.resolve_rebellion(fid, rid, "suppress")
@@ -2133,9 +2137,9 @@ def _carrier_orders(g, f, fl, h_tgt, at_port):
     # 대상 해안에 폭격 거리로 닿는 해역으로
     t_regs = {r.id for r in g.regions_of(h_tgt)}
     seas = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)
-            and any(u in t_regs for u in w.distances_from(v, C.BOMB_RANGE))]
+            and any(u in t_regs for u in w.air_distances(v, C.BOMB_RANGE))]
     if seas:
-        g.order_army(fl.id, max(seas, key=lambda v: (sum(1 for u in w.distances_from(v, C.BOMB_RANGE)
+        g.order_army(fl.id, max(seas, key=lambda v: (sum(1 for u in w.air_distances(v, C.BOMB_RANGE)
                                                          if u in t_regs and EG.key_region(g, u)), v)))
         return
     far = [v for v, o in reach.items() if o["action"] == "move" and w.is_sea(v)]
@@ -2175,7 +2179,8 @@ def _air_orders(g, f, threat):
     for a in [a for a in g.armies.values() if a.owner == fid and a.domain() == "air" and not a.order
               and a.units.get("ftr") and not a.units.get("bmb")]:
         reach = g.reachable(a)
-        bases = [v for v, o in reach.items() if o["action"] == "move"]
+        # 전투기는 공항이 있는 지역에서만 싸운다(v1.3.0): 공항으로만 옮긴다
+        bases = [v for v, o in reach.items() if o["action"] == "move" and g.regions[v].b["airport"]]
         if not bases:
             continue
         d_now = g.world.distances_from(hot, 6).get(a.loc, 99)
@@ -2239,9 +2244,9 @@ def front_need(g, fid, front, pool) -> dict:
     cap = g.factions[fid].capital
     wt = {}
     for c in front:
-        e = sum(_front_count(a) + 0.5 * a.units.get("art", 0) for n in w.land_adj[c]
-                if g.regions[n].owner in en or g.regions[n].owner == NEUTRAL
-                for a in (g.hostile_units_at(fid, n) if g.is_visible(fid, n) else ()))
+        near = {a.id: a for n in w.land_adj[c] if g.regions[n].owner in en or g.regions[n].owner == NEUTRAL
+                for a in (g.hostile_units_at(fid, n) if g.is_visible(fid, n) else ())}   # 광역시는 같은 부대가 겹친다
+        e = sum(_front_count(a) + 0.5 * a.units.get("art", 0) for a in near.values())
         wt[c] = 1.0 + e + (2.0 if c == cap else 0.0)
     order = sorted(front, key=lambda c: (-wt[c], c))
     if pool < len(front):
@@ -2397,7 +2402,7 @@ def _slots(g, f, threat, military=True):
         return
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
-    committed = sum(r.project.per_turn for r in regs if r.project and r.project.kind not in ("science", "econ"))
+    committed = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
     reserve = 200 + upkeep * 3
     avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
     eco = f.is_ai and f.ai.get("victory_goal") == "economic" and g.econ_enabled()
@@ -2411,7 +2416,7 @@ def _slots(g, f, threat, military=True):
     food_short = food_bal < 0 or f.res.get("food", 0) < f.last.get("food_cons", 1) * 2
     # 1페이즈: 이번 턴 예상 수지(세수 − 유지비 − 진행 중인 모든 공사비)가 적자면 생산 건물로 재정부터 늘린다
     p1 = f.is_ai and PH.phase(f) == 1
-    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    all_committed = sum(p.per_turn for p in g.unique_projects(regs))
     deficit = p1 and income - upkeep - all_committed < 0
     prod_k = C.AI_P1_DEFICIT_PROD if deficit else 1.0
     annex_k = C.AI_P1_DEFICIT_ANNEX if deficit else 1.0
@@ -2490,7 +2495,8 @@ def _slots(g, f, threat, military=True):
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             gain = dy * tax * horizon * wts.get("economy", 1)
             if key in ("farm", "fishery"):
-                dfood = C.FOOD_PER_G                       # 농장·어장은 단계마다 같은 양
+                dfood = (C.FISH_FOOD * g.fish_food_mult(fid, r.id) if key == "fishery"
+                         else C.FARM_FOOD * g.farm_mult(fid, r.id))
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory" and fuel["spare"] < 1:
                 # 남는 연료가 없으면 새 칸은 놀고, 이미 들어가는 연료의 1개당 산출 상승분만 이득
@@ -2820,13 +2826,13 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     if not idle or post == "crisis":
         return
     regs = g.regions_of(fid)
-    all_committed = sum(r.project.per_turn for r in regs if r.project)
+    all_committed = sum(p.per_turn for p in g.unique_projects(regs))
     net = income - upkeep - all_committed
     # 지금 공사 총비용을 다 대도 자금이 비상금 아래로 떨어지지 않을 만큼만(멈춤 방지): 여윳돈 절반 + 남는 순수입 12턴분
     budget = max(0.0, f.money - reserve) * C.AI_FILL_SAVINGS + max(0.0, net) * C.AI_FILL_NET_TURNS
     if spr in ("science", "economic"):
         # 질주: 승리 조건 공사 몇 턴분은 남겨 두고 나머지 여윳돈으로 지킨다
-        big = sum(r.project.per_turn for r in regs if r.project and r.project.kind in ("science", "econ"))
+        big = sum(p.per_turn for p in g.unique_projects(regs) if p.kind in ("science", "econ"))
         budget -= max(big, C.SCIENCE_COST_PER_TURN * C.MONEY_SCALE) * C.AI_P3_SPRINT_KEEP
     if f.ai.get("victory_goal") == "economic":
         budget -= econ_saving_target(g, fid)          # 다음 경제 단계 비용은 남겨 두고 '남는 돈'만
@@ -2911,7 +2917,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
                 continue
             cost = R.prod_building_cost(key, lv)
-            val = _delta_output(g, r.id, key) * tax + (C.FOOD_PER_G * C.MARKET_SELL["food"] if key != "bank" else 0)
+            val = _delta_output(g, r.id, key) * tax + ((C.FARM_FOOD if key == "farm" else C.FISH_FOOD) * C.MARKET_SELL["food"] if key != "bank" else 0)
             opts.append((val / cost, key, cost))
         if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
             cost = R.prod_building_cost("extract", r.b["extract"] + 1)

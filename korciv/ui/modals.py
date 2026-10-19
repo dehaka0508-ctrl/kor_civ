@@ -10,6 +10,7 @@ import pygame
 from .. import config as C
 from .. import diplomacy as D
 from .. import flags as FL
+from .. import metro as M
 from .. import rules as R
 from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_scale
 from ..state import NEUTRAL, Settings
@@ -140,7 +141,8 @@ def _num_input(gui, owner, rect, tid, value):
 
 VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
-                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시켜도 승리",
+                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 단 어느 나라와든 전쟁 중이면 불발 —\n"
+                f"강화해 전쟁이 끝나는 순간 조건이 맞으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
     "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 은행 5단계(금융 단지) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 정유공장 5단계 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
@@ -220,7 +222,7 @@ def draw_title(app):
             _logo["src"] = None
     src = _logo["src"]
     bw = 300
-    lw = min(sw * 0.62, (sh - 330) * (src.get_width() / src.get_height()) if src else 600, 900)
+    lw = min(sw * 0.72, (sh - 330) * (src.get_width() / src.get_height()) if src else 600, 1000)
     lh = lw * src.get_height() / src.get_width() if src else 120
     top = max(20, (sh - (lh + 28 + 50 + 50 + 40 + 40 + 30)) / 2 - 10)
     lr = pygame.Rect(int((sw - lw) / 2), int(top), int(lw), int(lh))
@@ -848,7 +850,10 @@ def start_from_setup(app):
     s = app.setup
     if not any(s.victories.values()):
         s.victories["conquest"] = True
-    seed = int(s.seed) if s.seed.strip().isdigit() else random.randrange(1_000_000)
+    try:
+        seed = int(s.seed.strip())             # '②'·'²'는 isdigit() 가 참이어도 int() 가 못 읽는다
+    except ValueError:
+        seed = random.randrange(1_000_000)
     settings = Settings(
         n_enemies=s.n_enemies, difficulty=s.difficulty, fog=s.fog,
         victories=tuple(k for k, v in s.victories.items() if v), player_leader=s.leader,
@@ -885,8 +890,12 @@ def draw_start_popup(app, rid):
         sub += f" · {info.island}"
     gui.text((x, r.y + 54), sub, 13, t.muted)
     y = r.y + 86
-    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False)
-    food = R.food_output(info.farm, info.fishery)
+    rfarm = C.RIVER_FARM_MULT if rid in w.river_regions else 1.0
+    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False,
+                          fish_mult=C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0,
+                          farm_mult=rfarm)
+    food = R.food_output(info.farm * rfarm, info.fishery,
+                         C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0)
     half = (cw - 20) // 2
 
     def stat(col, row, k, v, vc=None):
@@ -1020,6 +1029,8 @@ def draw_active_modal(app):
         draw_proposal(app)
     elif name == "diplomacy":
         draw_diplomacy(app)
+    elif name == "nego":
+        draw_nego(app)
     elif name == "ranking":
         draw_ranking(app)
     elif name == "log":
@@ -1038,8 +1049,93 @@ def draw_active_modal(app):
         draw_prefs(app)
     elif name == "battle":
         draw_battle(app)
+    elif name == "bombard":
+        draw_bombard(app)
     elif name == "stat_chart":
         draw_stat_chart(app)
+
+
+METRO_PANEL_W = 400
+
+
+def draw_metro_pick(app):
+    """광역자치단체 지정(v1.3.0, 지도 클릭 방식): 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러
+    넣고 뺀다. 오른쪽 패널에 고른 지역·지정 조건·묶은 모습 미리보기·이름과 [지정]/[취소]."""
+    g, gui, t = app.game, app.gui, app.theme
+    st = app.metro_pick
+    center = st["center"]
+    pid = g.player_id
+    ok_c, why = M.can_center(g, pid, center)
+    if not ok_c:
+        app.cancel_metro_pick()
+        app.toast(why, t.bad)
+        return
+    cands = M.candidates(g, pid, center)
+    if not st["sel"] <= set(cands):
+        st["sel"] &= set(cands)
+        app.changed()
+    sel = [center] + sorted(st["sel"])
+    ok, items = M.check(g, pid, center, sel)
+    pv = M.preview(g, center, sel)
+    sw, sh = gui.size()
+    w = METRO_PANEL_W
+    x0 = sw - w - 12
+    r = pygame.Rect(x0, 56 + 10, w, min(sh - 56 - 110, 640))
+    gui.panel(r, radius=6, ornament=True)
+    x, iw = r.x + 18, w - 36
+    y = r.y + 14
+    gui.text((x, y), "광역자치단체 지정", 18, weight="title")
+    y += 30
+    gui.text((x, y), f"중심 {g.info(center).name}", 13, t.accent, "semibold", max_w=iw)
+    y += 22
+    y = gui.wrap((x, y), f"지도에서 밝은 지역(육상 {C.METRO_RANGE}칸 안의 내 지역)을 누르면 넣고 다시 누르면 뺍니다. "
+                         f"금빛이 고른 지역입니다(중심 포함 최대 {C.METRO_MAX_REGIONS}곳).", iw, 11, t.muted, line_h=16) + 4
+    bw = (iw - 6) / 2
+    n_all = min(len(cands), C.METRO_MAX_REGIONS) - 1
+    if gui.button((x, y, bw, 26), f"모두 ({n_all}곳)", size=11,
+                  tooltip=(f"이어진 후보 가운데 가까운 {C.METRO_MAX_REGIONS - 1}곳(같은 거리면 인구 많은 순)"
+                           if len(cands) > C.METRO_MAX_REGIONS else None)):
+        st["sel"] = set(M.auto_pick(g, pid, center)) - {center}
+        app.changed()
+    if gui.button((x + bw + 6, y, bw, 26), "비우기", size=11, enabled=bool(st["sel"])):
+        st["sel"] = set()
+        app.changed()
+    y += 34
+    pop = sum(g.regions[c].pop for c in sel)
+    names = ", ".join(g.info(c).short for c in sel)
+    gui.text((x, y), f"고른 지역 {len(sel)}곳 · 인구 {pop:,.1f}만", 13, weight="semibold")
+    y += 20
+    y = gui.wrap((x, y), names, iw, 11, t.text, line_h=16) + 6
+    if pv["stopped"]:
+        y = gui.wrap((x, y), f"진행 중인 작업 {len(pv['stopped'])}건은 중단됩니다(50% 환급).", iw, 11, t.warn,
+                     line_h=16) + 4
+    gui.text((x, y), "지정 조건", 13, weight="semibold")
+    y += 22
+    for k, o, d in items:
+        gui.text((x, y), ("✓ " if o else "✗ ") + k, 12, t.good if o else t.bad, "semibold", max_w=iw - 130)
+        gui.text((x + iw, y), d, 12, t.muted, anchor="topright", max_w=128)
+        y += 20
+    y += 6
+    parts = [f"{M.POOL_NAMES[p].replace('광역 ', '')} {lv}단계×{n}" for p, (lv, n) in pv["pools"].items() if lv or p in
+             ("farm", "factory", "bank")]
+    parts += [C.SINGLE_BUILDINGS[k]["name"] + " 있음" for k, v in pv["singles"].items() if v]
+    gui.text((x, y), "묶으면 (평균 단계, 소수점 내림)", 12, weight="semibold")
+    y += 18
+    y = gui.wrap((x, y), " · ".join(parts) or "없음", iw, 11, line_h=16) + 2
+    y = gui.wrap((x, y), f"방어력 ×{max(0.0, 1 - C.METRO_DEF_PER_REGION * (len(sel) - 1)):.2f} · 유닛 하나 생산 → "
+                         f"{len(sel)}개", iw, 11, t.muted, line_h=16) + 6
+    gui.text((x, y), "이름 (비우면 " + M.default_name(g, pid, center) + ")", 11, t.muted)
+    had_focus = gui.focus == "metro_name"
+    st["name"] = gui.text_input((x, y + 18, iw, 30), "metro_name", st.get("name", ""), size=13, max_len=12)
+    if had_focus:                                  # 이름 칸의 Esc·Enter 는 칸에서만(지정 취소·확정으로 넘어가지 않게)
+        gui.keys = [k for k in gui.keys if k.key not in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER)]
+    by = max(y + 56, r.bottom - 52)
+    if gui.button((x, by, 110, 38), "취소 (Esc)", size=12):
+        app.cancel_metro_pick()
+        return
+    if gui.button((x + iw - 150, by, 150, 38), "지정 (Enter)", "primary", enabled=ok, size=14, weight="bold",
+                  tooltip=None if ok else "지정 조건을 모두 채워야 합니다."):
+        app.confirm_metro_pick()
 
 
 def _units_text(units):
@@ -1060,13 +1156,22 @@ def draw_battle(app):
     can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS) and not g.mods(army.owner).value("no_surprise")
     if not can_surprise:
         st["mode"] = "assault"
-    bd = g.battle_breakdown(army, node, st["mode"])
+    # 함께 공격할 부대(v1.3.0): 이번 턴 이 지역을 바로 공격할 수 있는 다른 내 부대
+    ck = (g.turn, army.id, node, len(g.armies))
+    if st.get("cands_key") != ck:
+        st["cands"] = [a.id for a in g.attack_candidates(army.owner, node, exclude={army.id})]
+        st["cands_key"] = ck
+    cands = [g.armies[i] for i in st["cands"] if i in g.armies and not g.army_acted(i)]
+    st["extra"] = {i for i in st.setdefault("extra", set()) if i in {a.id for a in cands}}
+    extra = [a for a in cands if a.id in st["extra"]]
+    bd = g.battle_breakdown(army, node, st["mode"], extra=extra)
     if bd is None:
         close(app)
         return
     n_oc = len(bd["outcomes"])
     box_h = 112 + 20 * max(1, min(6, max(len(bd["att_factors"]), len(bd["def_factors"]))))
-    r = modal_frame(app, 820, box_h + 124 + n_oc * 118 + 76,
+    cand_h = (34 + 28 * ((len(cands) + 1) // 2)) if cands else 0
+    r = modal_frame(app, 820, box_h + 124 + cand_h + n_oc * 118 + 76,
                     f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
     pv = bd["preview"]
     if can_surprise:
@@ -1074,13 +1179,13 @@ def draw_battle(app):
                             size=12)
         st["mode"] = "assault" if idx == 0 else "surprise"
     # 양측 체력: 지금 남은 체력 / 가득 찬 체력
-    att_hp = sum(army.hp_left(k) for k in bd["att_units"] if k in army.units)
-    att_max = sum(C.UNITS[k]["hp"] * n for k, n in bd["att_units"].items())
+    att_hp, att_max = bd["att_hp"], bd["att_max"]
     def_max = sum(C.UNITS[k]["hp"] * n for u in bd["def_units"].values() for k, n in u.items())
     def_hp = pv["def_hp"]
     colw = (r.w - 72) / 2
     for i, (title, units_txt, val, factors, color, hp, mx) in enumerate((
-            (f"공격 · {g.fname(army.owner)}", _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
+            (f"공격 · {g.fname(army.owner)}" + (f" · 부대 {len(extra) + 1}개" if extra else ""),
+             _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
              bd["att_factors"], t.accent, att_hp, att_max),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
              " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.1f}",
@@ -1103,8 +1208,26 @@ def draw_battle(app):
             gui.text((x + 14, y), label, 12, max_w=colw - 100)
             gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if good else t.bad, "semibold", anchor="topright")
             y += 20
-    # 예상 결과: 양측 체력 막대(남은 체력 · 예상 피해 · 피해 뒤 남는 체력)와 생존 여부
     y = r.y + 64 + box_h + 14
+    if cands:
+        gui.text((r.x + 24, y), f"함께 공격할 부대 — 한 전투로 공격력을 합치고, 다른 방향에서 오면 협공 "
+                                f"+{C.FLANK_BONUS:.0%}/방향", 13, weight="semibold", max_w=r.w - 220)
+        if gui.button((r.right - 184, y - 4, 76, 24), "모두", size=11):
+            st["extra"] = {a.id for a in cands}
+        if gui.button((r.right - 100, y - 4, 76, 24), "비우기", size=11):
+            st["extra"] = set()
+        y += 26
+        cw = (r.w - 48 - 12) / 2
+        for i, a in enumerate(cands):
+            cx = r.x + 24 + (i % 2) * (cw + 12)
+            cy = y + (i // 2) * 28
+            on = a.id in st["extra"]
+            lab = f"{app.world.node_name(a.loc)} · {_units_text(a.units)}"
+            v = gui.checkbox((cx, cy, cw, 24), lab, on, size=12)
+            if v != on:
+                (st["extra"].add if v else st["extra"].discard)(a.id)
+        y += 28 * ((len(cands) + 1) // 2) + 8
+    # 예상 결과: 양측 체력 막대(남은 체력 · 예상 피해 · 피해 뒤 남는 체력)와 생존 여부
     gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
     lx = r.right - 24
     for lab, c in (("이미 잃은 체력", t.panel), ("예상 피해", t.warn), ("피해 뒤 남는 체력", t.muted)):
@@ -1119,7 +1242,9 @@ def draw_battle(app):
         row = pygame.Rect(r.x + 24, y, r.w - 48, 110)
         gui.rect(t.panel_alt, row, radius=8)
         gui.text((row.x + 12, row.y + 8), oc["label"], 13, weight="semibold")
-        res = "적 전멸 → 진입·점령" if oc["capture"] else "적이 남음 → 진입 못 함"
+        back = g.liberation_owner(army.owner, node) if oc["capture"] else None
+        res = ("적 전멸 → 진입·점령" + (f"(직전 주인 {g.fname(back)}에게 반환)" if back is not None else "")
+               if oc["capture"] else "적이 남음 → 진입 못 함")
         gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "bold", anchor="topright")
         for j, (who, hp, mx, dmg, lost, col) in enumerate((
                 ("아군", att_hp, att_max, oc["att_dmg"], oc["att_lost"], t.accent),
@@ -1145,7 +1270,7 @@ def draw_battle(app):
             fight = True
     if fight:
         # 플레이어 전투는 바로 치른다(AI는 턴 종료 때 그대로)
-        ok, msg = g.attack_now(army.id, node, st["mode"])
+        ok, msg = g.attack_now(army.id, node, st["mode"], extra=sorted(st.get("extra", ())))
         app.attack_mode = st["mode"]
         close(app)
         app.toast(msg, None if ok else t.bad)
@@ -1154,6 +1279,106 @@ def draw_battle(app):
             if app.sel_army not in g.armies:
                 app.sel_army = None
             app.changed()
+    for k in list(gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            gui.keys.remove(k)
+            close(app)
+
+
+def draw_bombard(app):
+    """폭격 확인(v1.3.0): 쏘는 유닛·보정, 대상 병력, 예상 피해(요격 포함), 건물 피해 확률 → [폭격] / [취소]."""
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    st = app.modal[1]
+    army = g.armies.get(st["army"])
+    node = st["node"]
+    pv = g.preview_bombard(army, node) if army and not g.army_acted(army.id) else None
+    if pv is None:
+        close(app)
+        return
+    bmb = pv["bmb_max"] > 0
+    has_def = pv["def_max"] > 0
+    n_fac = max(1, min(5, len(pv["factors"])))
+    box_h = 104 + 20 * n_fac
+    res_h = 40 + (36 if has_def else 0) + (36 if bmb else 0) + 26
+    r = modal_frame(app, 760, 64 + box_h + 14 + res_h + 84,
+                    f"폭격 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
+    colw = (r.w - 72) / 2
+    y0 = r.y + 64
+    # 왼쪽: 쏘는 쪽
+    x = r.x + 24
+    gui.rect(t.panel_alt, (x, y0, colw, box_h), radius=10)
+    gui.text((x + 14, y0 + 10), f"폭격 · {g.fname(army.owner)}", 14, t.accent, "bold", max_w=colw - 28)
+    y = gui.wrap((x + 14, y0 + 34), _units_text(pv["units"]), colw - 28, 13)
+    gui.text((x + 14, y + 2), f"폭격 피해 {pv['dmg']:,.1f}", 16, weight="bold")
+    gui.text((x + colw - 14, y + 4), f"({pv['lo']:,.1f} ~ {pv['hi']:,.1f})", 12, t.muted, anchor="topright")
+    y += 30
+    gui.text((x + 14, y), "적용 보정", 12, t.muted, "semibold")
+    y += 20
+    if not pv["factors"]:
+        gui.text((x + 14, y), "없음", 12, t.muted)
+    for label, mult in pv["factors"][:5]:
+        gui.text((x + 14, y), label, 12, max_w=colw - 100)
+        gui.text((x + colw - 14, y), f"×{mult:.2f}", 12, t.good if mult > 1 else t.bad, "semibold", anchor="topright")
+        y += 20
+    # 오른쪽: 대상
+    x = r.x + 48 + colw
+    gui.rect(t.panel_alt, (x, y0, colw, box_h), radius=10)
+    who = ", ".join(g.fname(o) for o in pv["def_units"]) or g.fname(g.regions[node].owner)
+    gui.text((x + 14, y0 + 10), f"대상 · {who}", 14, t.bad, "bold", max_w=colw - 28)
+    if has_def:
+        y = gui.wrap((x + 14, y0 + 34), " / ".join(_units_text(u) for u in pv["def_units"].values()), colw - 28, 13)
+        gui.text((x + 14, y + 2), f"체력 {pv['def_hp']:,.0f} / {pv['def_max']:,.0f}", 15, weight="bold")
+        y += 28
+        gui.wrap((x + 14, y), "피해는 대상 지역의 모든 부대에 무작위로 나뉩니다.", colw - 28, 12, t.muted)
+    else:
+        gui.wrap((x + 14, y0 + 34), "방어 병력 없음 — 건물만 노립니다.", colw - 28, 13, t.muted)
+    if bmb:
+        yy = y0 + box_h - 26
+        txt = (f"요격: 대공포 {pv['aa']}단계 · 공항의 전투기 {pv['ftr']}대" if pv["intercept"] > 0
+               else "요격 없음(대공포·공항 전투기 없음)")
+        gui.text((x + 14, yy), txt, 12, t.warn if pv["intercept"] > 0 else t.muted, max_w=colw - 28)
+    # 예상 결과
+    y = y0 + box_h + 14
+    gui.text((r.x + 24, y), "예상 결과 (무작위 ±15%)", 14, weight="bold")
+    y += 30
+    rows = []
+    if bmb:
+        rows.append(("폭격기", pv["bmb_hp"], pv["bmb_max"], pv["intercept"], t.accent))
+    if has_def:
+        rows.append(("적군", pv["def_hp"], pv["def_max"], min(pv["def_hp"], pv["dmg"]), t.bad))
+    for lab, hp, mx, dmg, col in rows:
+        _hp_bar(gui, t, (r.x + 96, y, r.w - 360, 14), hp, max(hp, mx), dmg, col)
+        gui.text((r.x + 24, y + 7), lab, 13, col, "bold", anchor="midleft")
+        left = max(0.0, hp - dmg)
+        gui.text((r.right - 250, y + 7), f"{hp:,.0f} − {dmg:,.0f} → {left:,.0f}", 12, t.text, "semibold",
+                 anchor="midleft")
+        gui.text((r.right - 24, y + 7), "전멸 예상" if left <= 0.05 * max(1.0, hp) else "생존", 12,
+                 (t.good if lab == "적군" else t.bad) if left <= 0.05 * max(1.0, hp) else t.muted, "semibold",
+                 anchor="midright")
+        y += 36
+    bp = pv["building_p"]
+    gui.text((r.x + 24, y), (f"건물 피해: {bp * 100:.0f}% 확률로 생산·방어 건물(방어선 포함) 하나 −1단계"
+                             if bp else "부술 건물 없음"), 12, t.muted, max_w=r.w - 48)
+    if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
+        close(app)
+        return
+    fire = gui.button((r.right - 144, r.bottom - 60, 120, 42), "폭격", "danger", size=15, weight="bold")
+    for k in list(gui.keys):
+        if k.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not gui.focus:
+            gui.keys.remove(k)                   # Enter = [폭격]
+            fire = True
+    if fire:
+        ok, msg = g.act_now(army.id, node, force_bombard=True)
+        close(app)
+        app.toast(msg, None if ok else t.bad)
+        if ok:
+            app.flash_t = pygame.time.get_ticks()
+            if app.sel_army not in g.armies:
+                app.sel_army = None
+            app.changed()
+        return
     for k in list(gui.keys):
         if k.key == pygame.K_ESCAPE:
             gui.keys.remove(k)
@@ -1283,10 +1508,24 @@ def draw_save_slots(app):
             return
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "취소"):
         close(app)
+        return
+    _esc_close(app)
 
 
 def close(app):
     app.modal = None
+
+
+def _esc_close(app) -> bool:
+    """Esc 로 지금 창을 닫는다(수량 창·입력칸이 열려 있으면 그쪽이 먼저). 닫았으면 True."""
+    if getattr(app, "qty", None) or app.gui.focus:
+        return False
+    for k in list(app.gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            app.gui.keys.remove(k)
+            close(app)
+            return True
+    return False
 
 
 def draw_rebellion(app):
@@ -1296,7 +1535,7 @@ def draw_rebellion(app):
     rid = g.pending_rebellions[0]
     pid = g.player_id
     rr = g.regions[rid]
-    r = modal_frame(app, 560, 380, "반란 발생!")
+    r = modal_frame(app, 560, 300, "반란 발생!")
     info = app.world.regions[rid]
     gui.text((r.x + 24, r.y + 56), f"{info.name} · 실질 행복도 {g.eff_happy(rr):+.1f} · 인구 {rr.pop:.1f}만", 15,
              weight="semibold")
@@ -1306,13 +1545,18 @@ def draw_rebellion(app):
     p = g.suppress_chance(pid, rid)
     y = r.y + 140
     f = g.player
-    if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 산출 4턴분 {cost:,.0f} 지불 (행복도 +20)", "primary",
-                  enabled=f.money >= cost):
+    pct = cost / g.gdp(pid) * 100 if g.gdp(pid) > 0 else 0.0
+    ok = f.money >= cost
+    if gui.button((r.x + 24, y, r.w - 48, 44),
+                  f"요구 수용: {cost:,.0f} 지불 (행복도 +{C.REBEL_ACCEPT_HAPPY})" + ("" if ok else " — 자금 부족"),
+                  "primary", enabled=ok,
+                  tooltip=f"비용 = 턴당 GDP × (−행복도 {g.rebel_happy(rr):.0f}) × {C.REBEL_PAY_GDP:g} "
+                          f"= GDP의 {pct:.1f}%"):
         app.toast(g.resolve_rebellion(pid, rid, "pay"))
-    y += 52
-    if gui.button((r.x + 24, y, r.w - 48, 44), f"요구 수용: 세율 5%p 인하 ({f.tax*100:.0f}% → {max(0, f.tax*100-5):.0f}%, 행복도 +20)"):
-        app.toast(g.resolve_rebellion(pid, rid, "tax"))
-    y += 52
+        app.changed()                                # 행복도가 바뀌었으니 행복도 지도 캐시를 다시 그린다
+    gui.text((r.x + 24, y + 50), f"턴당 GDP의 {pct:.1f}% (GDP × 반란 판정 행복도 {g.rebel_happy(rr):.0f}에 비례)"
+             f" · 보유 자금 {f.money:,.0f}", 12, t.muted, max_w=r.w - 48)
+    y += 76
     if gui.button((r.x + 24, y, r.w - 48, 44), f"진압 (성공률 {p*100:.0f}%, 성공 시 행복도 +5·병력 10% 손실)", "danger"):
         msg = g.resolve_rebellion(pid, rid, "suppress")
         app.toast(msg, t.bad if "실패" in msg else None)
@@ -1353,8 +1597,11 @@ def draw_proposal(app):
             g.pending_proposals.pop(0)
             D.add_opinion(g, fid, g.player_id, -3)
         return
+    if kind == "trade" and not D.at_war(g, fid, g.player_id):
+        _draw_trade_proposal(app, prop)
+        return
     if kind == "trade":
-        # AI의 자원·특산물 거래 제의: 턴당 n개 × 12턴, 개당 값은 받는 턴마다
+        # (예전 세이브의 수락·거절 제의 화면 — 협상 화면으로 바뀌어 쓰이지 않는다)
         res, n, price, sell = prop["res"], prop["n"], prop["price"], prop["sell"]
         pid = g.player_id
         if D.at_war(g, fid, pid):
@@ -1381,6 +1628,9 @@ def draw_proposal(app):
         if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
             g.pending_proposals.pop(0)
         return
+    if kind == "peace" and not D.at_war(g, fid, g.player_id):
+        g.pending_proposals.pop(0)                 # 이미 전쟁이 끝났으면 강화 제안은 의미가 없다
+        return
     gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "
@@ -1393,6 +1643,212 @@ def draw_proposal(app):
     if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
         g.pending_proposals.pop(0)
         D.add_opinion(g, fid, g.player_id, -3)
+
+
+# ------------------------------------------------------------------ 자원·특산물 협상(v1.3.0)
+NEGO_RES = ("oil", "coal", "elec", "specialty")
+
+
+def _nego_default_price(g, pid, fid, res, i_buy) -> int:
+    """처음 띄울 값: 지하자원은 시장 판매가 근처, 특산물은 (사면) 상대 특산물 값의 60%, (팔면) 내 특산물 값."""
+    if res == "specialty":
+        v = D.spec_price(g, fid) * 0.6 if i_buy else D.spec_price(g, pid)
+    else:
+        v = g.sell_price(fid if i_buy else pid, res) * (1.1 if i_buy else 1.4)
+    return max(1, int(round(v)))
+
+
+def open_nego(app, fid):
+    """외교 창의 [자원·특산물 협상]: 플레이어가 먼저 값을 부르는 협상."""
+    g = app.game
+    app.nego = {"fid": fid, "st": None, "buy": True, "res": "coal", "n": 1,
+                "price": _nego_default_price(g, g.player_id, fid, "coal", True), "msg": ""}
+    app.modal = ("nego", fid)
+
+
+def _draw_trade_proposal(app, prop):
+    """AI 가 먼저 낸 거래 제의: 수락·거절하거나 값을 불러 협상한다."""
+    g = app.game
+    fid, pid = prop["from"], g.player_id
+    st = prop.get("nego")
+    if st is None:                                   # 예전 세이브의 제의: 협상 상태를 새로 연다
+        from .. import negotiation as NG
+        st = NG.start(g, fid, pid, prop["res"], prop["n"], ai_sells=prop["sell"], init="ai")
+        if st["status"] == "open":
+            st["price"] = float(prop["price"])
+        prop["nego"] = st
+    ui = prop.setdefault("ui", {"fid": fid, "st": st, "buy": st["ai_sells"], "res": st["res"], "n": st["n"],
+                                "price": int(round(st.get("price", prop["price"]))),
+                                "msg": "" if st["status"] == "open" else st.get("why", "")})
+    if _draw_nego_window(app, ui, from_ai=True):
+        g.pending_proposals.pop(0)
+
+
+def draw_nego(app):
+    ui = getattr(app, "nego", None)
+    if not ui or not app.game.factions[ui["fid"]].alive:
+        close(app)
+        return
+    if _draw_nego_window(app, ui, from_ai=False):
+        fid = ui["fid"]
+        app.nego = None
+        app.open_diplomacy(fid)                      # 협상을 마치면 외교 창으로 돌아간다
+
+
+def _draw_nego_window(app, ui, from_ai):
+    """협상 창. 끝났으면(닫기·거절) True."""
+    from .. import negotiation as NG
+    g = app.game
+    gui = app.gui
+    t = app.theme
+    pid, fid = g.player_id, ui["fid"]
+    f = g.factions[fid]
+    st = ui["st"]
+    r = modal_frame(app, 860, 600, f"거래 협상 — {g.seen_name(fid)}")
+    draw_flag(gui, (r.x + 24, r.y + 58, 30, 20), FL.faction_flag(f))
+    tough = NG.toughness(g, fid)
+    urg = NG.money_urgency(g, fid)
+    gui.text((r.x + 62, r.y + 58), f"{g.seen_leader(fid)} · 상대 우호도 {D.opinion(g, fid, pid):+.0f} · "
+             f"성향 {'깐깐함' if tough > 0.3 else ('온건함' if tough < -0.3 else '보통')} · "
+             f"재정 {'돈이 급함' if urg > 0.5 else ('넉넉함' if NG.money_comfort(g, fid) > 0.3 else '보통')}", 13, t.muted,
+             max_w=r.w - 90)
+    lx, lw = r.x + 24, 380
+    y = r.y + 92
+    started = st is not None
+    open_ = started and st["status"] == "open"
+    # ---- 거래 조건
+    if not started:
+        idx = gui.segmented((lx, y, lw, 30), ["내가 산다", "내가 판다"], 0 if ui["buy"] else 1, size=12)
+        nb = idx == 0
+        y += 38
+        ri = gui.segmented((lx, y, lw, 30), [NG.RES_NAMES[k] for k in NEGO_RES], NEGO_RES.index(ui["res"]), size=12)
+        nr = NEGO_RES[ri]
+        if nb != ui["buy"] or nr != ui["res"]:
+            ui["buy"], ui["res"], ui["n"] = nb, nr, 1
+            ui["price"] = _nego_default_price(g, pid, fid, nr, nb)
+        y += 40
+    else:
+        gui.text((lx, y), f"{'내가 산다' if st['ai_sells'] else '내가 판다'}: {NG.RES_NAMES[st['res']]}"
+                 f" (턴당 n개 × {C.CONTRACT_TURNS}턴)", 15, weight="bold")
+        y += 30
+    res, i_buy = ui["res"], ui["buy"]
+    mx_n = 30 if i_buy else max(1, NG.supply_total(g, pid, res))
+    gui.text((lx, y + 5), "턴당 수량", 13)
+    ui["n"] = gui.stepper((lx + 120, y, 150, 28), int(min(ui["n"], mx_n)), 1, mx_n, size=12) if open_ or not started \
+        else ui["n"]
+    if not (open_ or not started):
+        gui.text((lx + 195, y + 5), f"{ui['n']}", 13, weight="semibold", anchor="midtop")
+    y += 36
+    ref = max(1, _nego_default_price(g, pid, fid, res, i_buy))
+    step = max(1, int(round(ref * 0.05)))
+    gui.text((lx, y + 5), "개당 값", 13)
+    if open_ or not started:
+        ui["price"] = gui.stepper((lx + 120, y, 150, 28), int(ui["price"]), 1, max(ref * 20, 9999), step=step,
+                                  big=step * 5, size=12)
+        for i, (lab, k) in enumerate((("−10%", 0.9), ("+10%", 1.1))):
+            if gui.button((lx + 278 + i * 52, y, 48, 28), lab, size=11):
+                ui["price"] = max(1, int(round(ui["price"] * k)))
+    else:
+        gui.text((lx + 195, y + 5), f"{ui['price']:,}", 13, weight="semibold", anchor="midtop")
+    y += 36
+    n, p = int(ui["n"]), int(ui["price"])
+    gui.text((lx, y), f"턴당 {n * p:,} · {C.CONTRACT_TURNS}턴 합계 {n * p * C.CONTRACT_TURNS:,}"
+             + (" 지출" if i_buy else " 수입"), 13, t.accent, "semibold")
+    y += 26
+    # 참고 정보
+    info = []
+    if res == "specialty":
+        info.append(f"특산물 값(행복도 반영): 나 {D.spec_price(g, pid):,.0f} · 상대 {D.spec_price(g, fid):,.0f}")
+        if i_buy:
+            info.append(f"상대가 남기는 특산물 약 {NG.surplus(g, fid, 'specialty')}개/턴")
+        else:
+            info.append(f"내가 남기는 특산물 {NG.surplus(g, pid, 'specialty')}개/턴 · 상대 평균 행복도 "
+                        f"{g.avg_happiness(fid):+.0f}")
+    else:
+        info.append(f"시장: 살 때 {C.MARKET_BUY[res] * C.MONEY_SCALE:,.0f} · 팔 때 {g.sell_price(pid, res):,.0f}")
+        if i_buy:
+            room = NG.factory_room(g, pid)
+            v = NG.buy_unit_value(g, pid, res, max(1, min(n, room))) if room else 0
+            info.append(f"내 빈 공장 칸 {room} · 넣으면 개당 약 {v:,.0f}(산출×세율)")
+            info.append(f"상대가 남기는 양 약 {NG.surplus(g, fid, res)}개/턴 (넘으면 상대 공장 산출×세율 "
+                        f"{NG.avg_factory_unit(g, fid):,.0f}보다 비싸야)")
+        else:
+            info.append(f"내가 남기는 양 {NG.surplus(g, pid, res)}개/턴 · 팔 수 있는 양 {NG.supply_total(g, pid, res)}개/턴")
+            info.append(f"상대 빈 공장 칸 약 {NG.factory_room(g, fid)} (상대 산출×세율보다 비싸면 안 삼)")
+    for line in info:
+        y = gui.wrap((lx, y), line, lw, 12, t.muted) + 2
+    # ---- 협상 기록
+    hx, hw = lx + lw + 24, r.right - 24 - (lx + lw + 24)
+    gui.text((hx, r.y + 92), "협상", 14, weight="bold")
+    if started and st["status"] == "open":
+        gui.text((hx + hw, r.y + 94), f"상대: {NG.mood(st)}", 12, t.warn if st.get("final") else t.muted,
+                 anchor="topright")
+    box = pygame.Rect(hx, r.y + 118, hw, 330)
+    gui.rect(t.panel_alt, box, radius=8)
+    yy = box.y + 8
+    hist = st["hist"] if started else []
+    if not hist:
+        gui.wrap((box.x + 10, yy), "수량과 값을 정해 [제안하기]를 누르세요. 상대는 받아들이거나 값을 고쳐 부르고(역제의), "
+                 "인내가 다하면 마지막 제안을 합니다. 그보다 나쁜 값이면 협상이 깨져 이번 턴에는 다시 못 합니다.",
+                 box.w - 20, 12, t.muted)
+    for who, hn, hp, text in hist[-9:]:
+        me = who == "me"
+        head = ("나" if me else g.seen_leader(fid)) + f": 턴당 {hn}개 · 개당 {hp:,.0f}"
+        gui.text((box.x + 10, yy), head, 12, t.accent if me else t.text, "semibold", max_w=box.w - 20)
+        yy += 17
+        if text:
+            yy = gui.wrap((box.x + 18, yy), text, box.w - 28, 12, t.muted) + 4
+        else:
+            yy += 3
+    if ui.get("msg"):
+        gui.wrap((hx, box.bottom + 8), ui["msg"], hw, 12, t.bad if started and st["status"] in ("broken", "refused")
+                 else t.good)
+    # ---- 버튼
+    by = r.bottom - 62
+    done = False
+    if started and st["status"] in ("done", "broken", "refused", "closed"):
+        if gui.button((r.right - 164, by, 140, 42), "닫기", "primary"):
+            done = True
+        return done or _nego_esc(app)
+    if gui.button((lx, by, 150, 42), "제안하기", "primary", size=14):
+        if not started:
+            st = ui["st"] = NG.start(g, fid, pid, res, n, ai_sells=i_buy, init="player")
+            if st["status"] != "open":
+                ui["msg"] = st.get("why", "거래할 수 없습니다.")
+                return False
+        kind, text = NG.player_offer(g, st, n, p)
+        ui["n"] = st["n"]
+        if kind == "accept":
+            ui["msg"] = (f"거래 성사! {NG.RES_NAMES[res]} 턴당 {st['n']}개 × {C.CONTRACT_TURNS}턴, 개당 "
+                         f"{st['price']:,.0f}")
+            app.toast(ui["msg"])
+            app.changed()
+        elif kind in ("broken", "refused"):
+            ui["msg"] = "협상 결렬: " + text
+        else:
+            ui["msg"] = ""
+            if kind == "qty":
+                ui["n"] = st["n"]
+    ai_spoke = started and any(w == "ai" for w, *_ in st["hist"])
+    if ai_spoke and gui.button((lx + 162, by, 230, 42), f"상대 값 수락 (개당 {st['price']:,.0f})", size=13):
+        ok, msg = NG.accept_ai_price(g, st)
+        ui["msg"] = msg
+        if ok:
+            app.toast(msg)
+            app.changed()
+    if gui.button((r.right - 164, by, 140, 42), "거절" if from_ai else "그만두기"):
+        if started:
+            NG.walk_away(g, st)
+        return True
+    return _nego_esc(app)
+
+
+def _nego_esc(app) -> bool:
+    for k in list(app.gui.keys):
+        if k.key == pygame.K_ESCAPE:
+            app.gui.keys.remove(k)
+            return True
+    return False
 
 
 # ------------------------------------------------------------------ 외교 창
@@ -1513,6 +1969,7 @@ def draw_diplomacy(app):
     if gui.button((mx, r.y + 270, mw, 38), "제안하기", "primary"):
         op0 = D.opinion(g, fid, pid)
         res2, counter2, info2 = D.respond_offer(g, fid, pid, ds.offer)
+        ds.counter = None                        # 새 제안의 결과가 나오면 예전 수정안은 더는 유효하지 않다
         if res2 == "accept":
             gain = D.opinion(g, fid, pid) - op0
             app.toast(f"거래 성사! 상대 우호도 {gain:+.2f}" if abs(gain) >= 0.005 else "거래 성사!")
@@ -1525,7 +1982,10 @@ def draw_diplomacy(app):
             app.toast("거절당했습니다: " + info2, t.bad)
     if ds.counter:
         gui.wrap((mx, r.y + 316), f"수정안: 돈 {ds.counter['give']['money']:,}을 달라고 합니다.", mw, 12, t.warn)
-        if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary"):
+        still = (D.evaluate_offer(g, fid, pid, ds.counter)[0] == "accept"
+                 and ds.counter["give"].get("money", 0) <= g.player.money)
+        if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary", enabled=still,
+                      tooltip=None if still else "자금이 모자라거나 상황이 바뀌어 이 수정안은 더는 유효하지 않습니다"):
             D.execute_offer(g, pid, fid, ds.counter)
             D.trade_done_opinion(g, fid, pid, ds.counter)
             ds.counter = None
@@ -1535,8 +1995,13 @@ def draw_diplomacy(app):
     if gui.button((mx, r.y + 396, mw, 30), "초기화", size=12):
         ds.offer = D.empty_offer()
         ds.counter = None
+    if gui.button((mx, r.y + 432, mw, 34), "자원·특산물 협상", "primary" if st != -1 else "default",
+                  enabled=st != -1 and g.has_met(pid, fid),
+                  tooltip="석유·석탄·전기·특산물을 턴당 n개 × 12턴으로 사고팔며 값을 주고받습니다(역제의 1~4회)."):
+        open_nego(app, fid)
+        return
     # 진행 중인 자원 계약(이 나라와)
-    cy = r.y + 436
+    cy = r.y + 474
     cs = D.contracts_between(g, pid, fid)
     gui.text((mx, cy), f"진행 중인 자원 계약 {len(cs)}건", 12, weight="semibold")
     cy += 18
@@ -1603,13 +2068,20 @@ def draw_diplomacy(app):
         tip = (f"전쟁 피로도 +{C.WAR_WEARY_START['aggressor']:.0f}(전쟁 중 턴당 +{C.WAR_WEARY_TURN['aggressor']:g}), "
                f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}"
                if can_war else "불가침·동맹 중에는 먼저 파기")
-        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고", "danger", enabled=can_war, tooltip=tip):
-            ok, msg = D.declare_war(g, pid, fid)
-            app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
-            app.changed()
+        confirm = getattr(app, "war_confirm", None) == fid and can_war
+        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger",
+                      enabled=can_war, tooltip=tip + ("\n한 번 더 눌러야 선포됩니다." if can_war else "")):
+            if confirm:                              # 측면 패널과 같이 두 번 눌러야 선포(오클릭 방지)
+                app.war_confirm = None
+                ok, msg = D.declare_war(g, pid, fid)
+                app.toast(msg or f"{other.name}에 선전포고했습니다.", t.bad)
+                app.changed()
+            else:
+                app.war_confirm = fid
     if D.same_coalition(g, pid, fid) and gui.button((r.right - 24 - bw, r.y + 58 + 0, bw, 28), "연합 탈퇴",
                                                          "danger", size=12, tooltip="모든 회원 우호도 -50"):
         D.leave_coalition(g, pid)
+    _esc_close(app)
 
 
 # ------------------------------------------------------------------ 랭킹·로그·도움말·종료
@@ -1667,7 +2139,12 @@ def draw_ranking(app):
             gui.rect(t.panel_alt, pygame.Rect(x0 - 8, y - 2, r.w - 32, rh - 4), radius=6)
         gui.text((x0 + 4, ty), f"{pos}", fs, weight="bold", anchor="midleft")
         fh = min(20, rh - 10)
-        draw_flag(gui, (x0 + 50, ty - fh // 2, fh * 3 // 2, fh), FL.faction_flag(g.factions[fid]))
+        if g.knows_name(pid, fid):
+            draw_flag(gui, (x0 + 50, ty - fh // 2, fh * 3 // 2, fh), FL.faction_flag(g.factions[fid]))
+        else:                                    # 모르는 나라: 국기(색)로도 누구인지 드러나지 않게
+            box = pygame.Rect(x0 + 50, ty - fh // 2, fh * 3 // 2, fh)
+            gui.rect(t.panel_alt, box, radius=2)
+            gui.text(box.center, "?", fs - 2, t.muted, "bold", anchor="center")
         gui.text((x0 + 90, ty), g.seen_name(fid) + (" (나)" if me else ""), fs,
                  None if known else t.muted, "bold" if me else "regular", max_w=name_w - 46, anchor="midleft")
         for i, (k, _) in enumerate(cols):
@@ -1685,6 +2162,8 @@ def draw_ranking(app):
         app.modal = ("ranking", keys[i + 1])
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)
 
 
 STAT_RANGES = (("최근 1년", C.TURNS_PER_YEAR), ("최근 2년", 2 * C.TURNS_PER_YEAR), ("전체", None))
@@ -1924,40 +2403,70 @@ def draw_log(app):
     gui.end_scroll("log", area, len(evs) * 24)
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)
 
 
-HELP = """[조작]
-좌클릭: 구역·해역 선택   우클릭: 선택한 부대의 이동·공격 대상 지정
+HELP = f"""[조작]
+좌클릭: 구역·해역 선택   우클릭: 선택한 부대를 바로 이동·폭격·점령(적 병력이 있는 곳은 전투 확인 창)
 마우스 휠 / + -: 확대·축소   드래그 / 방향키: 지도 이동   더블클릭: 확대
 Enter: 다음 지역 / 턴 종료   Shift+Enter: 바로 턴 종료   Tab: 빈 슬롯 순회   A: 빈 슬롯 자동 지정   1~7: 지도 모드
-P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제
+P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선택 해제·창 닫기
+Space: 지역 메뉴 다음 탭   Q [행동] · W [부대] · E [지역 정보]   지도 위 군기를 누르면 그 부대의 [부대] 탭
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
 · 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
-· 좌측 [내정]: 세율·자원 시장·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
-· [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정.
+· 좌측 [내정]: 세율·잉여 식량·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
+· [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정. [매 턴 자동 배정](기본 켜짐)이면 턴마다 다시 배정.
 · 석유·석탄·전기·특산물은 쌓이지 않습니다: 매 턴 생산량(+계약)만큼 쓰고, 남는 석유·석탄·전기는 턴 종료 때 저절로 팝니다.
+· 부대 명령은 바로 실행됩니다(이동·상륙·폭격·빈 땅 점령). 한 부대는 한 턴에 한 번 행동하고, 움직인 부대는 나누기는 되지만 합치기는 다음 턴에 됩니다.
 · 적 병력이 있는 곳 공격: 확인 창에서 [전투]/Enter를 누르면 바로 싸웁니다. 그 턴에 싸운 부대는 더 움직이거나 합치고 나눌 수 없습니다.
-· 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. AI도 남는 자원을 팔고 모자라면 사자고 제안합니다.
+· 여러 부대로 공격: 확인 창의 '함께 공격할 부대'에서 고르면 한 전투로 합쳐 싸웁니다(다른 방향에서 오면 협공 +10%/방향).
+· 생산 집결지: [부대] 탭 [생산 집결지 지정] 뒤 지도에서 내 지역을 누르면 그 지역에서 만든 육군이 그리로 자동 이동. [군사] 탭 [일괄 지정]은 모든 지역 + 편입으로 받는 보병.
+· 내 땅과 맞닿은 중립 지역 [행동] 탭: [편입](빈 이웃 한 곳) · [최대 편입](빈 이웃 모두) · 편입 중이면 [자동 해산](보병 대신 행복도 +0.5).
+· 포병·폭격기는 같은 병종끼리만 한 부대입니다. 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창([폭격]/Enter), 없는 곳은 이동. Shift+우클릭은 병력 없는 곳의 건물 폭격.
+· 수송: 부대 탭의 화물칸에서 상륙함은 [승선]·[하선], 항공모함은 [탑재]·[이함]. 바다에서 하선할 해안을 고르면 상륙(빈 적 땅은 점령).
+· 외교 거래·선물의 자원은 '턴당 n개 × 12턴' 계약입니다. 판매분은 공장 배정보다 먼저 보내고, 모자라면 턴 끝에 시장가로 사서 메웁니다.
+· 자원·특산물 협상: 외교 창 [자원·특산물 협상]이나 AI 제의 창에서 수량·값을 부르면 상대가 수락하거나 역제의합니다(1~4회). 마지막 제안보다 나쁜 값이면 결렬되어 그 턴엔 다시 못 합니다.
+· AI 거래 제의가 귀찮으면 [외교] 탭 아래 '모든 구매/판매 제의 거절', 나라별로는 그 나라 상세 화면의 '이 국가의 거래 제의 거절'.
+· [군사] 탭 국경 방어선 일괄 건설: 맞닿은 나라를 고르면 그쪽 경계를 목표 단계까지 '○○국 방어선' 묶음 공사 한 건으로 짓습니다. 대상 지역의 진행 중 작업은 중단(50% 환급), 턴 수 = 모든 방어선 건설 턴의 합 ÷ 지역 수(올림), 비용은 묶음 전체로 매 턴 냅니다. 빼앗긴 방어 건물은 저항·회복 동안 꺼졌다가 되찾으면 그대로 돌아옵니다.
+· 지출 우선순위 정렬 버튼은 해제할 때까지 유지됩니다(다시 누르거나 직접 옮기면 해제).
+· 광역시: 행동 탭 [광역자치단체 지정]을 누른 뒤 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러 골라 하나로 묶습니다(인구 100만·공업 단지·금융 단지·식량 흑자·평균 행복도 0 이상). 슬롯·행복도 하나, 건물은 평균 단계 × 지역 수, 유닛 하나 생산 → 지역 수만큼, 농장·어장·공장·은행 6단계. 언제든 해제할 수 있습니다.
 · [부대] 탭의 [합치기]: 부대가 둘뿐이면 바로 합침. 셋 이상이면 합칠 부대를 체크한 뒤 Enter나 [합치기]를 한 번 더.
 
 [규칙 요약]
 · 각 내 지역은 턴마다 슬롯 1개: 건물 착공, 유닛 생산, 인접 중립 지역 편입 중 하나.
-· 비용은 매 턴 나눠서 내고, 자금이 모자라면 멈춥니다. 취소하면 낸 비용의 50% 환급.
+· 비용은 매 턴 나눠서 내고, 자금이 모자라면 멈춥니다. 취소하면 낸 비용의 50% 환급(유닛 생산은 착수 때 깎인 행복도도 돌려받음, 석유는 제외).
 · 자국 영토 안에서는 2칸, 그 밖은 1칸 이동. 해군은 턴당 한 칸: 항구→해역, 해역→해역, 해역→상륙·입항.
-· 산출 Y = 30P + 150g(농장) + 150g(어장) + 1000g(공장)φ + 600g(은행)
+· 공군: 어디서든 생산, 한 칸씩 이동(공항에서는 다른 공항으로 한 번에, 통행권 나라 공항 포함). 폭격·요격은 공항이 있는 지역에서만. 함재기는 항구에 정박했을 때만 육상으로 내립니다.
+· 폭격기는 {C.BOMB_RANGE}칸, 전투기 요격은 {C.FTR_DEFENSE_RANGE}칸 안까지(육지↔바다를 건너면 2칸으로 셈). 항공모함 1척에 함재기 {C.UNITS['cv']['air_capacity']}대.
+· 회복: 마지막 전투 뒤 {C.HEAL_AFTER_TURNS}턴이 지난 부대는 매 턴 유닛 1개당 체력 {C.HEAL_PER_UNIT:g}씩 회복합니다(이동·점령 중에도).
+· 산출 Y = 30P + {C.FARM_OUTPUT}×농장 단계 + {C.FISH_OUTPUT}×어장 단계 + 공장(넣은 연료 1개당) + {C.BANK_OUTPUT}g(은행). 하천 농장 ×{C.RIVER_FARM_MULT:g}, 하천 어장 ×{C.RIVER_FISH_MULT:g}.
 · 세수 = Y × 세율. 세율 10%(전제군주제 12%)보다 높으면 행복도가 떨어지고 낮으면 오릅니다.
-· 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. 10 이상·식량 충분일 때 인구 증가, -50 이하부터 반란.
-· 전쟁 피로도: 선전포고 +15, 당하면 +10, 전쟁 중 턴당 +0.75, 당하면 +0.5, 평시 턴당 1 회복.
+· 실질 행복도 = 행복도 − 전쟁 피로도 − 징집 피로. {C.POP_GROWTH_MIN_H} 이상·식량 충분일 때 인구 증가, {C.REBEL_THRESHOLD} 이하부터 반란.
+· 반란 대응: 요구 수용(돈 = 턴당 GDP × (−행복도) × {C.REBEL_PAY_GDP:g}, 행복도 +{C.REBEL_ACCEPT_HAPPY}) 또는 진압.
+· 전쟁 피로도: 선전포고 +{C.WAR_WEARY_START["aggressor"]:g}, 당하면 +{C.WAR_WEARY_START["defender"]:g}, 전쟁 중 턴당 +{C.WAR_WEARY_TURN["aggressor"]:g}(당한 쪽 +{C.WAR_WEARY_TURN["defender"]:g}), 평시 턴당 {C.WAR_WEARY_RECOVERY:g} 회복.
 · 점령한 적 지역은 4턴 저항 뒤 20턴에 걸쳐 회복, 36턴 동안 반란 없음.
-· 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 방어선은 돌격 방어를 높입니다.
-· 승리: 정복 / 과학 / 경제 / 외교 / 시간 종료. 진행 상황은 [국가 현황]에 나옵니다."""
+· 해방: 전쟁으로 빼앗긴 땅을 원 주인의 동맹·연합국이 되찾으면 원 주인에게 돌아갑니다.
+· 폭격: 생산·방어 건물 하나 −1단계(포병·함포 30%, 폭격기 60%), 항구·공항·사관학교는 폭격마다 각각 {C.SINGLE_BOMB_DESTROY:.0%} 확률로 파괴.
+· 같은 턴에 점령·편입이 끝나면: 무력 점령끼리는 주둔 병력의 남은 체력 합이 큰 쪽, 편입끼리는 맞닿은 지역 인구 합이 많은 쪽, 둘이 겹치면 무력 점령.
+· 돈과 턴을 들여 천도하면 새 수도의 모든 경계에 방어선 {C.START_LINE_LEVEL}단계가 생깁니다(시작 수도와 같음).
+· 전투: 방어측 피해 0.5rA²/(A+D), 공격측 피해 0.5rD²/(A+D). 전투력은 남은 체력에 비례합니다(체력 절반이면 절반). 방어선은 돌격 방어를 높입니다.
+· 승리: 정복 / 과학 / 경제 / 외교 / 시간 종료. 다른 나라를 모두 멸망시키면 설정과 관계없이 승리. 진행 상황은 [국가 현황]에 나옵니다."""
 
 
 def draw_help(app):
+    gui = app.gui
     r = modal_frame(app, 820, 560, "도움말")
-    app.gui.wrap((r.x + 24, r.y + 60), HELP, r.w - 48, 13)
+    area = pygame.Rect(r.x + 16, r.y + 56, r.w - 32, r.h - 56 - 70)      # 글이 길면 휠로 넘긴다
+    content = getattr(app, "_help_h", 2000)
+    off = gui.begin_scroll("help", area, content)
+    y_end = gui.wrap((area.x + 8, area.y + 4 - off), HELP, area.w - 24, 13)
+    app._help_h = y_end - (area.y - off) + 8
+    gui.end_scroll("help", area, app._help_h)
+    if _esc_close(app):
+        return
     if app.gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
 
@@ -2150,3 +2659,5 @@ def draw_specialty(app):
         app.toast("모든 지역을 자동 배분으로 되돌렸습니다.")
     if gui.button((r.right - 144, r.bottom - 56, 120, 40), "닫기", "primary"):
         close(app)
+        return
+    _esc_close(app)

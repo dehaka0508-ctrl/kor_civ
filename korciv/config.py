@@ -16,18 +16,21 @@ TAX_DEFAULT = 0.10
 TAX_MAX = 0.50
 
 POP_OUTPUT = 30            # 인구 1만 명당 산출
-FARM_OUTPUT = 150
-FISH_OUTPUT = 150
+FARM_OUTPUT = 120          # 농장 산출 120 × 단계(식량의 10배)
+FISH_OUTPUT = 150          # 바다 어장 산출 150 × 단계(식량의 10배)
 FACTORY_OUTPUT = 1000
 BANK_OUTPUT = 600
 LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
-FOOD_PER_G = 15            # 농장·바다 어장 식량 15 × 단계(단계에 비례), 산출은 그 10배
-FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000)   # 농장·어장 단계별 턴당 건설비
+FARM_FOOD = 12             # 농장 식량 12 × 단계
+FISH_FOOD = 15             # 바다 어장 식량 15 × 단계
+FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000, 1200)   # 6단계는 광역시만(v1.3.0)   # 농장·어장 단계별 턴당 건설비
 FOOD_PER_POP = 1           # 인구 1만 명당 식량 소비/턴
 START_FOOD_TURNS = 5       # 시작 식량 = 인구 * 5
 COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전부 보유) 시 바다 어장 식량·산출 +20%
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
-RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량 12×단계(바다 어장 15×단계의 80%)
+RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
+RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
+NEUTRAL_POP_PER_INF = 20   # 중립 지역 수비대: 인구 20만 명까지 보병 1, 40만 2, 60만 3 …(올림, v1.3.0). 편입하면 보병 1만 넘겨받는다
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
 FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
@@ -114,11 +117,21 @@ PROD_TURNS_PER_LEVEL = 2
 CHAIN_BUILDINGS = ("farm", "fishery", "factory", "bank", "extract", "power", "specialty")   # [최대] 이어서 건설
 # 생산 건물 단계별 이름(행동 탭 '○○ 건설', 완공 알림, 지역 정보)
 PROD_LEVEL_NAMES = {
-    "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장"),
-    "fishery": ("낚시터", "나루터", "소형 포구", "어항", "대형 어항"),
-    "factory": ("공방", "작업장", "공장", "대형 공장", "공업 단지"),
-    "bank":    ("전당포", "환전소", "은행", "은행 본사", "금융 단지"),
+    "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장", "스마트팜 단지"),
+    "fishery": ("낚시터", "나루터", "소형 포구", "어항", "대형 어항", "대규모 양식장"),
+    "factory": ("공방", "작업장", "공장", "대형 공장", "공업 단지", "첨단산업단지"),
+    "bank":    ("전당포", "환전소", "은행", "은행 본사", "금융 단지", "종합금융본부"),
 }
+# 광역시(v1.3.0): 중심에서 육상 3칸 안의 내 지역들을 하나의 지역처럼 묶는다(v1.3.0: 2칸 → 3칸, 최대 25곳)
+METRO_RANGE = 3              # 중심에서 육상 이 칸 수 안의 지역만
+METRO_MAX_REGIONS = 25       # 구성 지역 수 상한(서울 25개 구)
+METRO_MIN_POP = 100          # 묶는 지역들의 인구 합(만 명)
+METRO_DEF_PER_REGION = 0.02  # 지역 n곳을 묶으면 방어력 ×(1 − 0.02(n − 1))
+METRO_SPEC_HAPPY = 0.5       # 광역시에 공급한 특산물 1종의 행복도 효과(지역 하나일 때의 절반, 대신 광역시 전체에)
+METRO_L6_KEYS = ("farm", "fishery", "factory", "bank")   # 광역시에서만 6단계
+METRO_ANNEX_MAX_REDUCTION = 0.5   # 광역시 편입: 구성 지역 수만큼의 공동 편입으로 치되 기간 감소는 최대 50%
+PROD_L6_MULT = 1.2           # 농장·어장·은행 6단계: 5단계 산출 × 1.2
+FACTORY_L6_MULT = 1.1        # 첨단산업단지: 연료 1개당 5단계 산출 × 1.1(연료는 6개까지)
 POWER_SITE_DISCOUNT = 1.0  # 화력발전소 소재지: 건설비 할인 없음(대신 발전소 1단계로 시작)
 
 # 방어·군사 건물 (6절)
@@ -127,7 +140,8 @@ DEF_BUILDINGS = {
     "shelter": {"name": "방공호", "base": 300, "max": 5},
     "aa":      {"name": "대공포", "base": 500, "max": 5},
 }
-DEF_TURNS = [1, 2, 4, 8, 15]
+DEF_TURNS = [1, 2, 3, 4, 5]          # v1.3.0: 1·2·4·8·15 → 전쟁 중에도 쌓을 수 있게
+SINGLE_BOMB_DESTROY = 0.10   # v1.3.0: 1단계가 최대인 건물(항구·공항·사관학교)은 폭격당할 때마다 각각 10% 확률로 파괴
 SINGLE_BUILDINGS = {
     "academy": {"name": "사관학교", "cost": 3000, "turns": 6},
     "airport": {"name": "공항", "cost": 4000, "turns": 8},
@@ -183,8 +197,9 @@ BOMBED_HAPPY = -2
 REBEL_ACCEPT_HAPPY = 20
 REBEL_SUPPRESS_HAPPY = 5
 REBEL_SUPPRESS_LOSS = 0.10
-REBEL_ACCEPT_TURNS = 4     # 요구 수용: 산출 4턴분
-REBEL_ACCEPT_TAX_CUT = 0.05
+# 요구 수용(v1.3.0부터 돈 지급만, 세율 인하 없음): 턴당 GDP × (−반란 판정 행복도) × 이 값.
+# 행복도 −50이면 GDP의 5%, −100이면 10%
+REBEL_PAY_GDP = 0.001
 REBEL_THRESHOLD = -50
 REBEL_WEARY_MULT = 1.2      # 반란 판정: (선포한 전쟁의) 전쟁 피로를 ×1.2로 반영
 # 진압 실패 시 반란 지역이 그 지역을 수도로 하는 새 국가로 독립한다(건물·인구·산출·진행 중 공사 계승).
@@ -205,7 +220,7 @@ UNITS = {
     "tank": dict(name="전차", cost=750, turns=3, oil=1, upkeep=45, atk=20, df=20, bomb=0, hp=50, kind="land", cargo=4, weight="heavy"),
     "lst":  dict(name="상륙함", cost=500, turns=2, oil=1, upkeep=20, atk=0, df=0, bomb=0, hp=20, kind="naval", capacity=8, weight="heavy"),
     "dd":   dict(name="구축함", cost=1000, turns=3, oil=1, upkeep=60, atk=20, df=20, bomb=20, hp=50, kind="naval", weight="heavy"),
-    "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=4, weight="heavy"),
+    "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=6, weight="heavy"),
     # 전투기: 공격 불가. 돌격 방어와 폭격기 요격에만 쓰인다(방어 30)
     "ftr":  dict(name="전투기", cost=750, turns=3, oil=1, upkeep=45, atk=0, df=30, bomb=0, hp=30, kind="air", weight="heavy", intercept=30),
     "bmb":  dict(name="폭격기", cost=1000, turns=3, oil=1, upkeep=60, atk=0, df=0, bomb=40, hp=20, kind="air", weight="heavy"),
@@ -232,9 +247,13 @@ ASSAULT_UNITS = ("inf", "tank", "lst")
 NO_GROUND_COMBAT = ("art", "ftr", "bmb")   # 돌격·기습 전투력 0(방어에서도). 포병은 포격, 공군은 폭격·제공으로
 AIR_GROUND_SUPPORT = False                 # 공항 전투기의 지상전 지원 없음
 SURPRISE_UNITS = ("inf", "tank")
+# 포병·폭격기는 같은 병종끼리만 한 부대(v1.3.0): 다른 유닛과 합칠 수 없다(함대 화물칸은 예외).
+# 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창, 없는 곳은 이동
+SOLO_UNITS = ("art", "bmb")
 ART_RANGE = 2              # 포병 폭격: 육상 2칸(2차 인접)까지
 NAVAL_BOMB_RANGE = 2       # 구축함 함포: 해역에서 2칸(해안 지역과 그 인접 지역)까지
-BOMB_RANGE = 2             # 폭격기: 공항·항공모함에서 2칸까지
+BOMB_RANGE = 4             # 폭격기: 공항·항공모함에서 4칸까지(v1.3.0, 육지↔바다는 2칸으로 센다)
+FTR_DEFENSE_RANGE = 3      # 요격 전투기: 공항이 있는 지역에서 3칸까지 지킨다(같은 거리 계산)
 AIR_RANGE = 3              # 공군 재배치(공항 간 이동) 거리
 AIR_REBASE_RANGE = 3
 NAVAL_STEPS = 1            # 해군: 턴당 한 칸(항구→해역, 해역→해역, 해역→상륙·입항)
@@ -611,7 +630,12 @@ AI_ECON_FUEL_MULT = 1.5
 AI_ECON_SAVE_SPEND = 0.5
 AI_ECON_TAX_BONUS = 0.02
 # 정복승리: 전체 지역의 2/3 이상 + 반란이 일어날 수 있는 지역(반란 판정 행복도 −50 이하) 없음
+# + 어느 나라와도 전쟁 중이 아님(v1.3.0: 전쟁 중에는 불발, 강화해 전쟁이 없어지는 순간 조건이 맞으면 승리)
 CONQUEST_SHARE = 2 / 3
+AI_CONQ_READY_PEACE = 1.5    # 전쟁만 빼고 정복승리 조건을 채운 AI: 강화 욕구 +1.5(강화하면 승리)
+AI_CONQ_DENY_PEACE = 0.6     # 강화해 주면 상대가 정복승리하는 AI: 강화 욕구 −0.6(위기면 그대로)
+# 해방 반환(v1.3.0): 지금 주인이 이 턴 수 안에 전쟁으로 빼앗았고 직전 주인이 내 동맹·연합국일 때만
+LIBERATION_TURNS = 24
 VICTORY_TYPES = {"conquest": "정복승리", "science": "과학승리", "economic": "경제승리",
                  "diplomatic": "외교승리", "time": "시간 종료 승리"}
 # 시간 종료 승리: 정해진 턴(기본 480턴 = 10년, 시작 설정에서 최대 1200턴)이 되면 점수 1위가 승리.
@@ -649,5 +673,6 @@ REBEL_COLORS = ["#7C5E10", "#5F3DC4", "#1864AB", "#087F5B", "#9C36B5", "#E8590C"
 AMBUSH_TURNS = 4            # 선덕여왕 '대야성 함락': 선전포고를 당한 뒤 방어력 감소 턴
 CAPITAL_FALL_TURNS = 8     # 연개소문 '삼형제의 내분': 수도 함락 후 반란 확률 증가 턴
 MINORITY_REGIONS = 40       # 홍타이지 '소수민족': 이 수를 넘는 지역마다 행복도 감소
-HEAL_RATE = 0.10           # 한 턴 동안 아무것도 하지 않은 부대의 체력 회복(최대 체력 대비)
+HEAL_AFTER_TURNS = 2       # 마지막 전투 뒤 이만큼 턴이 지나면(v1.3.0)
+HEAL_PER_UNIT = 1.0        # 매 턴 유닛 1개당 체력 1씩 회복
 INDUSTRY_BUILDINGS = ("factory", "extract", "power")   # 공장·정유·탄광·발전소

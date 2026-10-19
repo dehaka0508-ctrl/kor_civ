@@ -7,6 +7,7 @@ from collections import deque
 
 from . import config as C
 from . import diplomacy as D
+from . import metro as M
 from . import rules as R
 from .data import DO8, load_world
 from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
@@ -35,7 +36,14 @@ def initial_buildings(info) -> dict:
         b["specialty"] = 1
     if info.start_port:
         b["port"] = 1
+    if getattr(info, "start_airport", False):
+        b["airport"] = 1                  # 현실 공항 소재지는 공항 1단계로 시작(v1.3.0)
     return b
+
+
+def neutral_garrison(pop) -> int:
+    """중립 지역 수비대 보병 수(v1.3.0): 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(올림, 최소 1). pop 은 만 명 단위."""
+    return max(1, int(math.ceil(pop / C.NEUTRAL_POP_PER_INF - 1e-9)))
 
 
 def unit_power(key: str) -> float:
@@ -126,6 +134,7 @@ class Game:
         self.pending_rebellions: list[str] = []   # 플레이어 대응 대기
         self.pending_proposals: list[dict] = []   # AI → 플레이어 제안
         self.fought: set = set()                  # 이번 턴 바로 전투한 플레이어 부대
+        self.moved: set = set()                   # 이번 턴 바로 이동·폭격·상륙한 플레이어 부대(합치기·분리는 가능)
         self.fought_targets: dict = {}            # (세력, 주인) -> 이번 턴 바로 공격한 지역
         self.dialogues: list[dict] = []           # 지도자 대사 팝업 대기 {kind, fid, turn}
         self.rankings: dict[int, list] = {}
@@ -162,7 +171,8 @@ class Game:
                 old = r.__dict__.pop("occ")
                 r.occs = {old["by"]: old} if old else {}
             for attr, v in (("resist", None), ("mil_hist", 0), ("conscript", 0.0), ("fuel_used", 0),
-                            ("pop_focus", False), ("econ", None), ("lost_project", None), ("lost_bld", None)):
+                            ("pop_focus", False), ("econ", None), ("lost_project", None), ("lost_bld", None),
+                            ("lost_def", None)):
                 if attr == "econ" and not hasattr(r, attr):
                     r.econ = set()
                     continue
@@ -186,10 +196,14 @@ class Game:
                         r.happy = min(C.HAPPY_MAX, r.happy + f.war_weary_applied)
                 del f.war_weary_applied
             for attr, v in (("last_declare", -999), ("last_aggr_end", -999), ("warmonger", 0),
-                            ("auto_energy", True), ("capital_fall_turn", -999), ("naval_off_until", 0)):
+                            ("auto_energy", True), ("capital_fall_turn", -999), ("naval_off_until", 0),
+                            ("energy_each_turn", True)):
                 if not hasattr(f, attr):
                     setattr(f, attr, v)
+            if not hasattr(f, "annex_disband"):     # v1.3.0 전 세이브
+                f.annex_disband = set()
         self._morale = {}
+        self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -198,7 +212,7 @@ class Game:
             info = w.regions[rid]
             b = initial_buildings(info)
             self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=info.pop0, b=b)
-            self.new_army(NEUTRAL, rid, {"inf": 1})
+            self.new_army(NEUTRAL, rid, {"inf": neutral_garrison(info.pop0)})
 
         st = self.settings
         n_ai = max(1, min(C.MAX_ENEMIES, st.n_enemies))
@@ -242,15 +256,25 @@ class Game:
     def _pick_starts(self, n, requested):
         return pick_starts(self.world, self.rng, n, requested)
 
+    def _take_garrison(self, rid, fid, garrison=None):
+        """중립 수비대를 넘겨받는다: 수비대 규모와 상관없이 보병 1만(나머지는 흩어진다)."""
+        garrison = [a for a in self.armies_at(rid) if a.owner == NEUTRAL] if garrison is None else garrison
+        for i, a in enumerate(garrison):
+            if a.id not in self.armies:
+                continue
+            if i == 0:
+                a.owner = fid
+                a.units, a.dmg = {"inf": 1}, {}
+            else:
+                self.remove_army(a)
+
     def _land_dist(self, a, b, cap):
         return land_dist(self.world, a, b, cap)
 
     def _give_start_region(self, f: Faction, rid: str):
         r = self.regions[rid]
         r.owner = f.id
-        for army in self.armies_at(rid):
-            if army.owner == NEUTRAL:
-                army.owner = f.id
+        self._take_garrison(rid, f.id)
         if self.world.regions[rid].island == "무연륙 섬":
             self.new_army(f.id, rid, {"lst": 1})
         f.res = {"food": r.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
@@ -273,7 +297,8 @@ class Game:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
             r.output = self.calc_output(r.id, full=True)
-            r.food = R.food_output(r.b["farm"], r.b["fishery"])
+            r.food = R.food_output(r.b["farm"] * (C.RIVER_FARM_MULT if self.river_farm(r.id) else 1.0), r.b["fishery"],
+                                   1.0 if self.sea_fishery(r.id) else C.RIVER_FISH_MULT)
         for f in self.factions:
             regs = self.regions_of(f.id)
             gdp = sum(r.output for r in regs)
@@ -313,9 +338,14 @@ class Game:
 
     UNKNOWN_NAME, UNKNOWN_LEADER = "미지의 국가", "수수께끼의 지도자"
 
+    def fog_lifted(self) -> bool:
+        """전장의 안개를 걷었는가: 안개 '없음'이거나 게임이 끝났을 때(v1.3.0 — 승리·패배 뒤 [지도 계속 보기]에서는
+        모든 지역·부대·국명·지도자가 보인다)."""
+        return self.settings.fog == 0 or bool(getattr(self, "game_over", False))
+
     def has_met(self, viewer, fid) -> bool:
-        """viewer 가 fid 세력과 조우했는가(전장의 안개가 없으면 항상 참)."""
-        if self.settings.fog == 0 or fid == viewer or fid == NEUTRAL or fid is None:
+        """viewer 가 fid 세력과 조우했는가(전장의 안개가 없거나 게임이 끝났으면 항상 참)."""
+        if self.fog_lifted() or fid == viewer or fid == NEUTRAL or fid is None:
             return True
         return fid in getattr(self.factions[viewer], "met", set())
 
@@ -380,6 +410,58 @@ class Game:
         return [a for a in self.armies.values()
                 if a.loc == loc and (owner is None or a.owner == owner)]
 
+    # ---- 포병·폭격기 단독 부대(v1.3.0)
+    @staticmethod
+    def solo_ok(units) -> bool:
+        """이 유닛 구성이 한 부대가 될 수 있는가: 포병·폭격기는 같은 병종끼리만(함대 화물칸은 예외)."""
+        keys = {k for k, n in units.items() if n > 0}
+        if any(C.UNITS[k]["kind"] == "naval" for k in keys):
+            return True
+        solo = keys & set(C.SOLO_UNITS)
+        return not solo or len(keys) == 1
+
+    @staticmethod
+    def solo_army(a) -> bool:
+        """포병만 또는 폭격기만으로 된 부대(우클릭: 적 병력이 있으면 폭격 확인 창, 없으면 이동)."""
+        keys = {k for k, n in a.units.items() if n > 0}
+        return len(keys) == 1 and next(iter(keys)) in C.SOLO_UNITS
+
+    @staticmethod
+    def solo_groups(units) -> list:
+        """units 를 한 부대씩 나눈 묶음: 포병·폭격기는 따로, 나머지는 한데."""
+        rest = {k: n for k, n in units.items() if n > 0 and k not in C.SOLO_UNITS}
+        return ([rest] if rest else []) + [{k: units[k]} for k in C.SOLO_UNITS if units.get(k, 0) > 0]
+
+    def new_armies_split(self, owner, loc, units, dmg=None) -> list:
+        """units(피해 기록 dmg)를 단독 부대 규칙에 맞게 나눠 새 부대들로 만든다."""
+        dmg = dmg or {}
+        made = []
+        for part in self.solo_groups(units):
+            b = self.new_army(owner, loc, part)
+            b.dmg = {k: dmg[k] for k in part if dmg.get(k, 0) > 0}
+            made.append(b)
+        return made
+
+    def enforce_solo(self):
+        """포병·폭격기가 다른 유닛과 섞인 부대(예전 세이브 등)를 병종별로 나눈다. 자동 이동 목적지와
+        이번 턴 행동 기록은 나눈 부대도 그대로 이어받는다."""
+        mv, fought = self.moved_armies(), self.__dict__.setdefault("fought", set())
+        for a in list(self.armies.values()):
+            if self.solo_ok(a.units):
+                continue
+            for k in C.SOLO_UNITS:
+                if a.units.get(k, 0) <= 0 or self.solo_ok(a.units):
+                    continue
+                b = self.new_army(a.owner, a.loc, {k: a.units.pop(k)})
+                d = a.dmg.pop(k, 0)
+                if d > 0:
+                    b.dmg[k] = d
+                b.goto = getattr(a, "goto", None)
+                if a.id in mv:
+                    mv.add(b.id)
+                if a.id in fought:
+                    fought.add(b.id)
+
     @staticmethod
     def _add_to_army(army, key, n):
         """유닛을 더한다. 그 종류가 없던 부대면 예전에 남은 피해 기록을 지워 새 유닛이 다친 채로 오지 않게 한다."""
@@ -405,12 +487,34 @@ class Game:
         return D.at_war(self, fid, other)
 
     def hostile_units_at(self, fid, loc):
-        return [a for a in self.armies_at(loc) if a.owner != fid and self.hostile(fid, a.owner)
+        """loc 의 적대 부대. 광역시 구성 지역이면 광역시 안 모든 지역의 부대(한 지역처럼 함께 지킨다)."""
+        locs = M.members(self, loc) if loc in self.regions else [loc]
+        return [a for l in locs for a in self.armies_at(l) if a.owner != fid and self.hostile(fid, a.owner)
                 and not a.empty()]
 
     def friendly_territory(self, fid, rid) -> bool:
         o = self.regions[rid].owner
         return o == fid or (o != NEUTRAL and D.same_coalition(self, fid, o))
+
+    def may_enter(self, fid, rid) -> bool:
+        """fid 의 육군이 이 지역에 들어가거나 머물 수 있는가: 중립·자국(연합)·전쟁 상대·통행권(동맹 포함)."""
+        o = self.regions[rid].owner
+        return (o == NEUTRAL or self.friendly_territory(fid, rid) or self.hostile(fid, o)
+                or D.has_passage(self, fid, o))
+
+    def evict_trespassers(self):
+        """들어갈 수 없는 나라 땅(강화해 전쟁이 끝난 나라 등)에 남은 육군은 가장 가까운 자국 영토로 돌아간다."""
+        for a in list(self.armies.values()):
+            if a.owner == NEUTRAL or self.world.is_sea(a.loc) or a.loc not in self.regions:
+                continue
+            if self.may_enter(a.owner, a.loc):
+                continue
+            where = self.info(a.loc).name
+            a.goto = None
+            self.teleport_home(a)
+            if a.owner == self.player_id and a.id in self.armies:
+                self.event("info", f"{where}의 부대가 전쟁 중이 아닌 나라 땅이라 {self.info(a.loc).name}(으)로 돌아왔습니다.",
+                           region=a.loc, fids=(a.owner,))
 
     @staticmethod
     def is_science_army(a) -> bool:
@@ -420,10 +524,58 @@ class Game:
         kind = C.UNITS[key]["kind"]
         sci = bool(C.UNITS[key].get("science"))
         for a in self.armies_at(loc, fid):
-            if a.domain() == kind and not a.order and self.is_science_army(a) == sci:
+            if a.domain() == kind and not a.order and self.is_science_army(a) == sci \
+                    and self.solo_ok(dict(a.units, **{key: a.units.get(key, 0) + n})):
                 self._add_to_army(a, key, n)
                 return a
         return self.new_army(fid, loc, {key: n})
+
+    # ---- 생산 집결지(v1.3.0)
+    def rally_of(self, fid, rid):
+        """rid 에서 만든 육군이 갈 집결지(지역 지정 → 일괄 지정 순). 내 땅이 아니거나 자기 자신이면 None."""
+        f = self.factions[fid]
+        tgt = getattr(self.regions[rid], "rally", None) or getattr(f, "rally", None)
+        if not tgt or tgt == rid or tgt not in self.regions or not self.friendly_territory(fid, tgt):
+            return None
+        return tgt
+
+    def set_rally(self, fid, rid, target):
+        """rid 의 생산 집결지(target=None 이면 해제). rid=None 이면 일괄 지정(지역별 지정은 지운다)."""
+        if target is not None and (target not in self.regions or self.regions[target].owner != fid):
+            return False, "집결지는 내 지역만 고를 수 있습니다."
+        if rid is None:
+            f = self.factions[fid]
+            f.rally = target
+            for r in self.regions_of(fid):
+                r.rally = None
+            return True, (f"생산 집결지 일괄 지정: {self.info(target).name}" if target else "일괄 생산 집결지 해제")
+        rr = self.regions.get(rid)
+        if rr is None or rr.owner != fid:
+            return False, "내 지역이 아닙니다."
+        for r in M.members(self, rid):
+            self.regions[r].rally = target
+        return True, (f"{self.info(rid).name} 생산 집결지: {self.info(target).name}" if target
+                      else f"{self.info(rid).name} 생산 집결지 해제")
+
+    def _send_to_rally(self, a, target):
+        if a.id not in self.armies or a.loc == target or a.domain() != "land":
+            return
+        if self.plan_route(a, target):
+            a.goto = target
+
+    def deliver_units(self, fid, loc, key, n=1):
+        """생산한 유닛을 내놓는다. 집결지가 있으면 육군은 따로 부대를 만들어 다음 턴부터 그리로 자동 이동."""
+        tgt = self.rally_of(fid, loc) if C.UNITS[key]["kind"] == "land" and not C.UNITS[key].get("science") else None
+        if tgt is None:
+            return self.add_units(fid, loc, key, n)
+        for a in self.armies_at(loc, fid):
+            if a.goto == tgt and not a.order and a.domain() == "land" \
+                    and self.solo_ok(dict(a.units, **{key: a.units.get(key, 0) + n})):
+                self._add_to_army(a, key, n)                 # 같은 집결지로 갈 부대가 아직 있으면 합친다
+                return a
+        a = self.new_army(fid, loc, {key: n})
+        self._send_to_rally(a, tgt)
+        return a
 
     def mil_power(self, fid) -> float:
         return sum(unit_power(k) * n for a in self.armies.values() if a.owner == fid
@@ -457,7 +609,7 @@ class Game:
         a = self.armies.get(army_id)
         if not a:
             return None, "부대가 없습니다."
-        if self.army_acted(a.id):
+        if self.army_fought(a.id):
             return None, "이번 턴에 이미 전투한 부대는 나눌 수 없습니다."
         if self.world.is_sea(a.loc) and a.count(("land",)) > 0 and any(
                 C.UNITS[k]["kind"] == "land" or k == "lst" for k, v in units.items() if v > 0):
@@ -465,6 +617,11 @@ class Game:
         take = {k: min(v, a.units.get(k, 0)) for k, v in units.items() if v > 0}
         if not take or sum(take.values()) >= a.count():
             return None, "분리할 유닛을 고르세요(전부는 불가)."
+        rest = {k: n - take.get(k, 0) for k, n in a.units.items() if n - take.get(k, 0) > 0}
+        for part in (rest, take):
+            t = Army(0, a.owner, a.loc, part)
+            if "naval" in t.kinds() and (t.cargo_used() > t.cargo_cap() or t.air_used() > t.air_cap()):
+                return None, "함대에 실린 육군·항공기를 실을 칸이 모자랍니다(상륙함·항공모함과 함께 나누거나 먼저 하역)."
         moved_dmg = {}
         for k, v in take.items():
             moved_dmg[k] = self._split_dmg(a, k, v)
@@ -474,6 +631,8 @@ class Game:
         b = self.new_army(a.owner, a.loc, take)
         b.dmg = {k: d for k, d in moved_dmg.items() if d > 0}
         self._validate_capacity(a)
+        if a.id in self.moved_armies():
+            self.moved_armies().add(b.id)        # 이번 턴 움직인 부대에서 나눈 부대도 더 움직이지 못한다
         return b, ""
 
     @staticmethod
@@ -489,10 +648,44 @@ class Game:
         return v * hp - part
 
     def merge_player(self, a_id, b_id):
-        """플레이어 합치기: 이번 턴 이미 전투한 부대는 합칠 수 없다(전투 뒤 상륙 병력 복귀 등 내부 합치기는 그대로)."""
+        """플레이어 합치기: 이번 턴 이미 행동(이동·전투)한 부대는 합칠 수 없다(v1.3.0, 내부 합치기는 그대로).
+        함대에 육군·공군을 싣는 것은 합치기가 아니라 [승선]·[탑재]로 한다."""
         if self.army_acted(a_id) or self.army_acted(b_id):
-            return False, "이번 턴에 이미 전투한 부대는 합칠 수 없습니다."
+            return False, "이번 턴에 이미 행동한 부대는 합칠 수 없습니다(다음 턴에)."
+        a, b = self.armies.get(a_id), self.armies.get(b_id)
+        if a and b and ("naval" in a.kinds() or "naval" in b.kinds()) and a.domain() != b.domain():
+            return False, "함대에 육군은 [승선], 공군은 [탑재]로 싣습니다."
         return self.merge_armies(a_id, b_id)
+
+    @staticmethod
+    def army_icon_unit(a) -> str:
+        """부대를 대표하는 병종(상륙함이 있으면 상륙함, 아니면 수 × 생산비가 가장 큰 병종)."""
+        if a.units.get("lst", 0) > 0:
+            return "lst"
+        return max(a.units, key=lambda k: (a.units[k] * C.UNITS[k]["cost"], k)) if a.units else "inf"
+
+    def army_sort_key(self, a):
+        """한 지역의 부대 표시 순서(v1.3.0): 대표 병종 순서(보병 → 포병 → 전차 → … ) → 유닛 수가 많은 순."""
+        k = self.army_icon_unit(a)
+        return (C.UNIT_ORDER.index(k) if k in C.UNIT_ORDER else 99, -a.count(), a.id)
+
+    def army_pick_key(self, a):
+        """지역을 눌렀을 때 먼저 고를 부대(v1.3.0): 이번 턴 아직 행동하지 않은 부대 → 최대 체력 합이 큰 부대."""
+        return (self.army_acted(a.id), -sum(a.hp_max(k) for k in a.units), a.id)
+
+    def mergeable(self, a, b) -> bool:
+        """플레이어 [합치기]로 두 부대를 합칠 수 있어 보이는가(같은 곳·이번 턴 행동 안 함·병종 규칙. 칸 수는 합칠 때)."""
+        if a.id == b.id or a.loc != b.loc or a.owner != b.owner or self.army_acted(a.id) or self.army_acted(b.id):
+            return False
+        if ("naval" in a.kinds() or "naval" in b.kinds()) and a.domain() != b.domain():
+            return False
+        merged = dict(a.units)
+        for k, v in b.units.items():
+            merged[k] = merged.get(k, 0) + v
+        kinds = {C.UNITS[k]["kind"] for k, n in merged.items() if n > 0}
+        if "naval" not in kinds and {"air", "land"} <= kinds:
+            return False
+        return self.solo_ok(merged)
 
     def merge_armies(self, a_id, b_id):
         a, b = self.armies.get(a_id), self.armies.get(b_id)
@@ -514,36 +707,183 @@ class Game:
                 return False, "항공기는 항공모함 탑재 칸만큼만 합칠 수 있습니다."
         elif "air" in kinds and "land" in kinds:
             return False, "공군과 육군은 합칠 수 없습니다."
+        if not self.solo_ok(merged):
+            return False, "포병·폭격기는 같은 병종끼리만 한 부대로 합칠 수 있습니다."
         a.units = merged
         for k, v in b.dmg.items():
             a.dmg[k] = a.dmg.get(k, 0) + v
         a.order = None
+        mv = self.moved_armies()
+        if b.id in mv:
+            mv.add(a.id)                         # 이번 턴 움직인 부대가 섞이면 합친 부대도 더 움직이지 못한다
         self.remove_army(b)
         return True, ""
 
-    def boarding_target(self, army_id):
-        """[탑승] 대상: 같은 지역에 주둔한 내 함대. 육군은 상륙함이, 공군은 항공모함이 있는 함대."""
+    # ---- 수송(v1.3.0): 상륙함 [승선]·[하선], 항공모함 [탑재]·[이함]. 부대 합치기와 따로 화물칸에 싣고 내린다
+    def cargo_fleets(self, army_id) -> list:
+        """army 를 실을 수 있는 같은 항구의 내 함대: 육군은 상륙함이, 공군은 항공모함이 있는 함대."""
         a = self.armies.get(army_id)
         if not a or self.world.is_sea(a.loc):
-            return None
-        dom = a.domain()
-        need = {"land": "lst", "air": "cv"}.get(dom)
+            return []
+        need = {"land": "lst", "air": "cv"}.get(a.domain())
         if need is None:
-            return None
-        for f in self.armies_at(a.loc, a.owner):
-            if f.id != a.id and f.domain() == "naval" and f.units.get(need):
-                return f
-        return None
+            return []
+        return [f for f in self.armies_at(a.loc, a.owner)
+                if f.id != a.id and f.domain() == "naval" and f.units.get(need)]
+
+    def boarding_target(self, army_id):
+        fl = self.cargo_fleets(army_id)
+        return fl[0] if fl else None
+
+    @staticmethod
+    def cargo_of(fleet) -> dict:
+        """함대 화물칸에 실린 육군·공군 {키: 수}."""
+        return {k: n for k, n in fleet.units.items() if n > 0 and C.UNITS[k]["kind"] in ("land", "air")}
+
+    @staticmethod
+    def cargo_room(fleet, key) -> int:
+        """fleet 에 key 유닛을 더 실을 수 있는 수(육군은 상륙함 수송 칸, 공군은 항공모함 탑재 칸)."""
+        kind = C.UNITS[key]["kind"]
+        if kind == "land":
+            return max(0, (fleet.cargo_cap() - fleet.cargo_used()) // max(1, C.UNITS[key].get("cargo", 1)))
+        if kind == "air":
+            return max(0, fleet.air_cap() - fleet.air_used())
+        return 0
+
+    def load_cargo(self, fleet_id, army_id, units=None):
+        """[승선]·[탑재]: 같은 항구의 육군을 상륙함에, 공군을 항공모함에 싣는다. units 를 주면 그만큼(없으면 전부),
+        칸이 모자라면 들어가는 만큼만(무거운 유닛부터). 반환 (실은 {키: 수}, 메시지)."""
+        fl, a = self.armies.get(fleet_id), self.armies.get(army_id)
+        if not fl or not a or fl.id == a.id or fl.owner != a.owner or fl.loc != a.loc:
+            return {}, "같은 항구에 있는 내 함대와 부대만 실을 수 있습니다."
+        if self.world.is_sea(a.loc):
+            return {}, "항구에서만 실을 수 있습니다."
+        if fl.domain() != "naval" or a.domain() not in ("land", "air"):
+            return {}, "실을 수 없는 부대입니다."
+        need = "lst" if a.domain() == "land" else "cv"
+        if not fl.units.get(need):
+            return {}, ("상륙함" if need == "lst" else "항공모함") + "이 없는 함대입니다."
+        if self.army_acted(a.id):
+            return {}, "이번 턴에 이미 행동한 부대는 다음 턴에 실을 수 있습니다."
+        want = {k: n for k, n in (units if units is not None else a.units).items() if n > 0 and a.units.get(k)}
+        took = {}
+        for k in sorted(want, key=lambda k: (-C.UNITS[k].get("cargo", 1), k)):
+            n = min(want[k], a.units.get(k, 0), self.cargo_room(fl, k))
+            if n <= 0:
+                continue
+            part = self._split_dmg(a, k, n)          # 싣는 유닛 몫의 피해 기록도 함께 옮긴다
+            a.units[k] -= n
+            self._add_to_army(fl, k, n)
+            if part > 0:
+                fl.dmg[k] = fl.dmg.get(k, 0.0) + part
+            took[k] = n
+        verb = "승선" if need == "lst" else "탑재"
+        if not took:
+            return {}, f"{verb}할 칸이 없습니다."
+        a.units = {k: v for k, v in a.units.items() if v > 0}
+        a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
+        if a.empty():
+            self.remove_army(a)
+        else:
+            a.order, a.goto = None, None
+        return took, f"{verb}: " + ", ".join(f"{C.UNITS[k]['name']} {n}" for k, n in took.items())
 
     def board(self, army_id):
-        """육군을 상륙함에, 공군을 항공모함에 태운다(같은 지역의 함대와 합침). (성공, 메시지, 함대)"""
+        """부대 전체를 같은 항구의 함대에 싣는다(load_cargo). (성공, 메시지, 함대)"""
         f = self.boarding_target(army_id)
         if f is None:
             return False, "태울 함대가 없습니다.", None
-        if self.army_acted(army_id) or self.army_acted(f.id):
-            return False, "이번 턴에 이미 전투한 부대는 태우거나 합칠 수 없습니다.", None
-        ok, msg = self.merge_armies(f.id, army_id)
-        return ok, (msg or "탑승 완료"), f
+        a = self.armies.get(army_id)
+        fits = (f.air_used() + a.count() <= f.air_cap()) if a.domain() == "air" else \
+            (f.cargo_used() + a.cargo_used() <= f.cargo_cap())
+        if not fits:
+            return False, "실을 칸이 모자랍니다.", None
+        took, msg = self.load_cargo(f.id, army_id)
+        return bool(took), msg, f
+
+    def landing_targets(self, fleet) -> dict:
+        """[하선]할 수 있는 곳 {지역: "land"/"capture"}: 항구에 있으면 그 지역, 바다에서는 맞닿은 해안 가운데
+        내·연합·통행권 땅("land")과 병력이 없는 적 땅("capture", 내리면 점령 시작). 적 병력이 있는 해안은 상륙 공격(전투 확인 창)."""
+        w = self.world
+        if not w.is_sea(fleet.loc):
+            return {fleet.loc: "land"}
+        out = {}
+        if not fleet.count(("land",)):
+            return out
+        fid = fleet.owner
+        sci = self.is_science_army(fleet)
+        for v in w.seas[fleet.loc].coast:
+            rr = self.regions[v]
+            if self.hostile_units_at(fid, v):
+                continue
+            if self.friendly_territory(fid, v) or (rr.owner != NEUTRAL and not self.hostile(fid, rr.owner)
+                                                   and D.has_passage(self, fid, rr.owner)):
+                out[v] = "land"
+            elif not sci and self.hostile(fid, rr.owner) and self.can_attack_now(fid, rr.owner):
+                out[v] = "capture"
+        return out
+
+    def unload_cargo(self, fleet_id, units=None, target=None):
+        """[하선]·[이함]: 항구에서는 그 지역에, 바다에서는 맞닿은 해안(landing_targets)에 내린다. 함재기는 항구에
+        정박했을 때만 내린다(육상으로만 이동). 바다에서 내린 병력은 이번 턴 더 움직이지 못한다. 반환 (새 부대 목록, 메시지)."""
+        fl = self.armies.get(fleet_id)
+        w = self.world
+        if not fl or fl.domain() != "naval":
+            return [], "함대가 없습니다."
+        if self.army_fought(fl.id):
+            return [], "이번 턴에 이미 전투한 함대입니다."
+        at_sea = w.is_sea(fl.loc)
+        if target is None:
+            target = None if at_sea else fl.loc
+        cargo = self.cargo_of(fl)
+        want = {k: min(n, cargo.get(k, 0)) for k, n in (units if units is not None else cargo).items()
+                if n > 0 and cargo.get(k)}
+        if at_sea:
+            if any(C.UNITS[k]["kind"] == "air" for k in want) and not any(C.UNITS[k]["kind"] == "land" for k in want):
+                return [], "함재기는 항구에 정박했을 때만 내릴 수 있습니다."
+            want = {k: n for k, n in want.items() if C.UNITS[k]["kind"] == "land"}
+        if not want:
+            return [], "내릴 유닛이 없습니다."
+        kind = self.landing_targets(fl).get(target)
+        if kind is None:
+            return [], "그곳에는 내릴 수 없습니다."
+        if kind == "capture" and self.army_acted(fl.id):
+            return [], "이번 턴에 움직인 함대는 빈 적 땅에 상륙할 수 없습니다(다음 턴에)."
+        made = []
+        for dom in ("land", "air"):
+            part = {k: n for k, n in want.items() if C.UNITS[k]["kind"] == dom}
+            if not part:
+                continue
+            dmg = {}
+            for k, n in part.items():
+                d = self._split_dmg(fl, k, n)
+                fl.units[k] -= n
+                if d > 0:
+                    dmg[k] = d
+            made += self.new_armies_split(fl.owner, target, part, dmg)    # 포병·폭격기는 따로 내린다
+        fl.units = {k: v for k, v in fl.units.items() if v > 0}
+        fl.dmg = {k: d for k, d in fl.dmg.items() if k in fl.units and d > 0}
+        mv = self.moved_armies()
+        for b in made:
+            if at_sea or fl.id in mv:
+                mv.add(b.id)                  # 상륙한 병력·움직인 함대에서 내린 병력은 이번 턴 더 움직이지 못한다
+        name = self.info(target).name
+        what = ", ".join(f"{C.UNITS[k]['name']} {n}" for k, n in want.items())
+        if at_sea:
+            mv.add(fl.id)
+            if kind == "capture":
+                owner = self.regions[target].owner
+                self.__dict__.setdefault("fought_targets", {}).setdefault((fl.owner, owner), set()).add(target)
+                self.begin_occupation(fl.owner, target)
+                self._update_fog()
+                if self.regions[target].owner == fl.owner:
+                    return made, f"상륙: {what} → {name}을(를) 차지했습니다."
+                return made, f"상륙: {what} → {name} 점령을 시작했습니다."
+            self._update_fog()
+            return made, f"상륙: {what} → {name}"
+        self._update_fog()
+        verb = "이함" if all(C.UNITS[k]["kind"] == "air" for k in want) else "하선"
+        return made, f"{verb}: {what} → {name}"
 
     def disband(self, army_id, units: dict):
         a = self.armies.get(army_id)
@@ -557,7 +897,7 @@ class Game:
             self._split_dmg(a, k, v)
             a.units[k] -= v
             if in_own:
-                self.regions[a.loc].h_delta += C.UNIT_DISBAND_HAPPY[C.UNITS[k]["weight"]] * v
+                self.regions[M.center_of(self, a.loc)].h_delta += C.UNIT_DISBAND_HAPPY[C.UNITS[k]["weight"]] * v
         a.units = {k: v for k, v in a.units.items() if v > 0}
         a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
         if a.empty():
@@ -637,6 +977,11 @@ class Game:
                 for v in self.land_within(start, C.ART_RANGE):
                     if self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
+                if self.solo_army(army):
+                    # 포병만인 부대는 돌격 전투력이 0이라, 맞닿은 적 병력도 공격 대신 포격한다
+                    for v, o in list(out.items()):
+                        if o["action"] == "attack" and self._can_bombard(army, v):
+                            out[v] = {"action": "bombard", "path": [], "strong": False}
         elif dom == "naval":
             has_cargo = army.count(("land",)) > 0
             start = army.loc
@@ -680,38 +1025,47 @@ class Game:
                             and out.get(v, {}).get("action") != "attack":
                         out.setdefault(v, {"action": "bombard", "path": [], "strong": False})
             if army.units.get("bmb") and army.units.get("cv"):
-                for v, d in w.distances_from(start, C.BOMB_RANGE).items():
+                for v, d in w.air_distances(start, C.BOMB_RANGE).items():
                     if not w.is_sea(v) and self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
         elif dom == "air":
+            # 공군(v1.3.0): 육군처럼 맞닿은 땅으로 한 칸씩, 공항에 있으면 다른 공항(내·연합·통행권 나라)으로 한 번에.
+            # 폭격은 공항이 있는 지역에서만
             if w.is_sea(army.loc):
                 return out
-            dist = w.distances_from(army.loc, C.AIR_RANGE)
-            for v, d in dist.items():
-                if v == army.loc or w.is_sea(v):
-                    continue
-                rr = self.regions[v]
-                if rr.owner == fid and rr.b["airport"]:
-                    out[v] = {"action": "move", "path": [v], "strong": True}
-                elif army.units.get("bmb") and d <= C.BOMB_RANGE and self.hostile(fid, rr.owner):
-                    out[v] = {"action": "bombard", "path": [], "strong": False}
+            start = army.loc
+            for v in w.land_adj[start]:
+                if self.air_can_stay(fid, v) and not self.hostile_units_at(fid, v):
+                    out[v] = {"action": "move", "path": [v], "strong": False}
+            if self.regions[start].b["airport"]:
+                for v, rr in self.regions.items():
+                    if (v != start and rr.b["airport"] and self.air_can_stay(fid, v)
+                            and not self.hostile_units_at(fid, v)):
+                        out[v] = {"action": "move", "path": [v], "strong": True}
+                if army.units.get("bmb"):
+                    for v, d in w.air_distances(start, C.BOMB_RANGE).items():
+                        if not w.is_sea(v) and v not in out and self.hostile(fid, self.regions[v].owner):
+                            out[v] = {"action": "bombard", "path": [], "strong": False}
         if any(army.units.get(k) for k in C.SCIENCE_UNITS):
             # 과학승리 유닛은 싸우거나 남의 땅을 차지할 수 없다: 자국(연합) 영토로의 이동·상륙만
             out = {v: o for v, o in out.items() if o["action"] in ("move", "land")
                    and (w.is_sea(v) or self.friendly_territory(fid, v))}
         return out
 
-    def order_army(self, army_id, target, mode="assault", force_bombard=False):
+    def order_army(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
+        """move_only: 폭격 대상이 되는 곳도 이동으로만 본다(포병·폭격기 부대 우클릭에서 적 병력이 없는 곳)."""
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
         if self.army_acted(a.id):
-            return False, "이번 턴에 이미 전투한 부대는 움직일 수 없습니다."
+            return False, "이번 턴에 이미 행동한 부대는 움직일 수 없습니다."
         a.goto = None
         if target is None:
             a.order = None
             return True, "명령 취소"
         reach = self.reachable(a)
+        if move_only:
+            reach = {v: o for v, o in reach.items() if o["action"] != "bombard"}
         if not force_bombard and target not in reach and target != a.loc:
             # 한 턴에 못 가는 곳: 최단 경로로 여러 턴에 걸쳐 자동 이동
             route = self.plan_route(a, target)
@@ -760,8 +1114,15 @@ class Game:
             if w.is_sea(v) or self.hostile_units_at(fid, v):
                 return False
             o = self.regions[v].owner
-            return self.friendly_territory(fid, v) or (not sci and o != NEUTRAL and not self.hostile(fid, o)
-                                                        and D.has_passage(self, fid, o))
+            if self.friendly_territory(fid, v):
+                return True
+            if sci:
+                return False                    # 과학 유닛은 자국(연합) 영토 안에서만
+            if o == NEUTRAL:
+                return True                     # 빈 중립 땅: 턴당 1칸씩 지나간다(들어서면 점령을 시작)
+            if self.hostile(fid, o):
+                return self.can_attack_now(fid, o)   # 병력 없는 적 땅: 들어서면 차지한다
+            return D.has_passage(self, fid, o)
 
         if dom == "land":
             if w.is_sea(start) or w.is_sea(target):
@@ -786,13 +1147,17 @@ class Game:
         elif dom == "air":
             if w.is_sea(target) or w.is_sea(start):
                 return None
-            bases = {r for r, rr in self.regions.items() if rr.owner == fid and rr.b["airport"]}
+
+            def can(v):
+                return self.air_can_stay(fid, v) and not self.hostile_units_at(fid, v)
+            if not can(target):
+                return None
+            bases = [r for r, rr in self.regions.items() if rr.b["airport"] and can(r)]
 
             def nbrs(u):
-                return [v for v in w.distances_from(u, C.AIR_RANGE) if v in bases or v == target]
-
-            def ok_mid(v):
-                return v in bases
+                out = [v for v in w.land_adj[u] if can(v)]
+                return out + bases if self.regions[u].b["airport"] else out
+            ok_mid = can
         else:
             return None
         prev = {start: None}
@@ -857,6 +1222,15 @@ class Game:
                                f"{self.world.node_name(a.goto)}까지 가는 길이 막혀 자동 이동을 멈춥니다.",
                                region=a.loc, fids=(a.owner,))
                 a.goto = None
+                continue
+            if a.owner != NEUTRAL and not self.factions[a.owner].is_ai:
+                # 플레이어 부대(v1.3.0): 다음 구간을 지금 간다. 적 병력이 있는 곳은 자동으로 싸우지 않고 멈춘다
+                if a.order["type"] == "attack" and self.hostile_units_at(a.owner, a.order["target"]):
+                    self.event("info", f"{self.world.node_name(a.loc)}의 부대: {self.info(a.order['target']).name}에 "
+                               f"적 병력이 있어 자동 이동을 멈춥니다.", region=a.loc, fids=(a.owner,))
+                    a.order, a.goto = None, None
+                    continue
+                self._run_order_now(a)
 
     def land_within(self, rid, k) -> set:
         """육상으로 k칸 이내 지역(자기 제외)."""
@@ -880,11 +1254,62 @@ class Game:
         if a.units.get("dd") and w.is_sea(a.loc) and w.distances_from(a.loc, C.NAVAL_BOMB_RANGE).get(target):
             out["dd"] = a.units["dd"]
         if a.units.get("bmb"):
-            base_ok = (not w.is_sea(a.loc) and self.regions[a.loc].b["airport"]
-                       and self.regions[a.loc].owner == a.owner) or a.units.get("cv")
-            if base_ok and w.distances_from(a.loc, C.BOMB_RANGE).get(target) is not None:
+            # 폭격기는 공항이 있는 지역(내 땅이나 통행권으로 들어간 나라의 공항)이나 항공모함에서만 출격
+            base_ok = (not w.is_sea(a.loc) and self.regions[a.loc].b["airport"]) or a.units.get("cv")
+            if base_ok and w.air_distances(a.loc, C.BOMB_RANGE).get(target) is not None:
                 out["bmb"] = a.units["bmb"]
         return out
+
+    def preview_bombard(self, a, tgt):
+        """폭격 확인 창·마우스 설명용 예상(무작위 ±15%의 가운데 값). 폭격할 수 없으면 None."""
+        if not self._can_bombard(a, tgt):
+            return None
+        units = self._bombard_units(a, tgt)
+        rr = self.regions[tgt]
+        fid = a.owner
+        m = self.mods(fid)
+        factors = []
+        eff = {k: self.eff(a, k) for k in units}
+        intercept, aa, ftr = 0.0, 0, 0
+        if units.get("bmb"):
+            ad, aa, ftr = self.air_defense(fid, tgt)
+            intercept = C.DAMAGE_K * ad                   # 폭격 전에 폭격기가 받는 요격 피해
+            eff["bmb"] = max(0.0, a.hp_left("bmb") - intercept) / C.UNITS["bmb"]["hp"]
+        dmg = 0.0
+        if units.get("art"):
+            dmg += eff["art"] * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
+            if abs(m.mult("bomb_art") - 1) >= 0.005:
+                factors.append((self.fx_source(fid, "bomb_art") + " — 포병", m.mult("bomb_art")))
+        if units.get("dd"):
+            nb = self.lead_mult(fid, "naval_bomb")
+            dmg += eff["dd"] * C.UNITS["dd"]["bomb"] * nb
+            if abs(nb - 1) >= 0.005:
+                factors.append((self.fx_source(fid, "naval_bomb") + " — 함포", nb))
+        if units.get("bmb"):
+            dmg += eff["bmb"] * C.UNITS["bmb"]["bomb"]
+        if rr.b["shelter"]:
+            sm = 1 / (1 + C.SHELTER_K * rr.b["shelter"])
+            dmg *= sm
+            factors.append((f"방공호 {rr.b['shelter']}단계", sm))
+        mo = self.morale(fid)
+        if abs(mo - 1) >= 0.005:
+            dmg *= mo
+            factors.append(("사기 저하", mo))
+        defenders = self.hostile_units_at(fid, tgt)
+        def_units = {}
+        for d in defenders:
+            u = def_units.setdefault(d.owner, {})
+            for k, n in d.units.items():
+                u[k] = u.get(k, 0) + n
+        guns = units.get("art", 0) + units.get("dd", 0) > 0
+        return {"units": units, "dmg": dmg, "lo": dmg * C.RAND_LO, "hi": dmg * C.RAND_HI, "factors": factors,
+                "def_units": def_units, "def_hp": sum(d.hp_left(k) for d in defenders for k in d.units),
+                "def_max": sum(d.hp_max(k) for d in defenders for k in d.units),
+                "intercept": intercept, "aa": aa, "ftr": ftr,
+                "bmb_hp": a.hp_left("bmb") if units.get("bmb") else 0.0,
+                "bmb_max": a.hp_max("bmb") if units.get("bmb") else 0.0,
+                "building_p": R.bomb_building_chance(guns, units.get("bmb", 0) > 0) if self.bomb_targets(tgt) else 0.0,
+                "shelter": rr.b["shelter"]}
 
     # ------------------------------------------------------------------ 전투 예측
     def air_support(self, fid, target, attack=True):
@@ -902,7 +1327,7 @@ class Game:
         arms = [a for a in self.armies.values() if a.owner == fid and a.units.get("ftr") and a.loc in near
                 and not w.is_sea(a.loc) and self.regions[a.loc].owner == fid and self.regions[a.loc].b["airport"]]
         per = C.FTR_SUPPORT_ATK if attack else C.FTR_SUPPORT_DEF
-        return per * sum(a.units["ftr"] for a in arms), arms
+        return per * sum(self.eff(a, "ftr") for a in arms), arms
 
     def amphib_mult(self, fid) -> float:
         """상륙 돌격 배수: 기본 ×0.8(근초고왕·쿠빌라이 보정), 맥아더 '인천상륙작전'은 감소 없이 +20%."""
@@ -914,6 +1339,12 @@ class Game:
         """마오쩌둥 '국공내전': 이 돌격에 보병을 10 이상 투입했는가."""
         return (self.mods(fid).mult("inf_wave") != 1.0
                 and sum(a.units.get("inf", 0) for a in armies) >= C.INF_WAVE_MIN)
+
+    @staticmethod
+    def eff(a, k) -> float:
+        """체력 비례 실효 수(v1.3.0): 남은 체력 ÷ 한 대 체력. 체력이 5 남은 보병 하나는 0.5(주는 피해 절반)."""
+        n = a.units.get(k, 0)
+        return max(0.0, n - a.dmg.get(k, 0.0) / C.UNITS[k]["hp"]) if n > 0 else 0.0
 
     def combat_strength(self, fid, armies, target, mode="assault"):
         """공격력 A 와 주 공격 경로를 계산."""
@@ -938,7 +1369,7 @@ class Game:
             for k, n in a.units.items():
                 if k not in (C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS):
                     continue
-                atk = C.UNITS[k]["atk"] * n
+                atk = C.UNITS[k]["atk"] * self.eff(a, k)
                 if k == "inf":
                     atk *= m.mult("atk_inf")
                 val += atk
@@ -972,7 +1403,7 @@ class Game:
     def defense_strength(self, fid_att, target, main_src, mode):
         defenders = self.hostile_units_at(fid_att, target)
         rr = self.regions[target]
-        dsum = sum(C.UNITS[k]["df"] * n * self.morale(a.owner) for a in defenders for k, n in a.units.items()
+        dsum = sum(C.UNITS[k]["df"] * self.eff(a, k) * self.morale(a.owner) for a in defenders for k in a.units
                    if k not in C.NO_GROUND_COMBAT)                   # 포병·공군은 돌격·기습 전투력 0
         if rr.owner != NEUTRAL and defenders and self.hostile(fid_att, rr.owner):
             dsum += self.air_support(rr.owner, target, False)[0] * self.morale(rr.owner)   # 근처 공항 전투기 방어 지원
@@ -986,6 +1417,7 @@ class Game:
             dsum *= self.mods(rr.owner).mult("def_coast")      # 이순신: 해안 지역 방어
         if self.ambushed(rr.owner, fid_att):
             dsum *= 1 - self.mods(rr.owner).value("ambushed_def")   # 선덕여왕 '대야성 함락'
+        dsum *= M.def_mult(self, target)                            # 광역시: 넓을수록 지키기 어렵다
         return dsum, defenders, line_level
 
     def ambushed(self, fid, attacker) -> bool:
@@ -1009,17 +1441,22 @@ class Game:
             return gov["name"]
         return "효과"
 
-    def battle_breakdown(self, army, target, mode="assault"):
-        """전투 확인 창용: 양측 병력, 적용되는 보정(이름, 배수), 예상 결과."""
+    def battle_breakdown(self, army, target, mode="assault", extra=()):
+        """전투 확인 창용: 양측 병력, 적용되는 보정(이름, 배수), 예상 결과. extra: 함께 공격할 부대들."""
         w = self.world
         fid = army.owner
         m = self.mods(fid)
         rr = self.regions[target]
-        pv = self.preview_attack(army, target, mode)
+        armies = [army] + [x for x in extra if x.id != army.id]
+        pv = self.preview_attack(army, target, mode, extra=armies[1:])
         if pv is None:
             return None
         allowed = C.SURPRISE_UNITS if mode == "surprise" else C.ASSAULT_UNITS
-        att_units = {k: n for k, n in army.units.items() if k in allowed and n > 0}
+        att_units = {}
+        for x in armies:
+            for k, n in x.units.items():
+                if k in allowed and n > 0:
+                    att_units[k] = att_units.get(k, 0) + n
         defenders = self.hostile_units_at(fid, target)
         def_units = {}
         for a in defenders:
@@ -1031,18 +1468,22 @@ class Game:
         def add(lst, label, mult):
             if abs(mult - 1.0) >= 0.005:
                 lst.append((label, mult))
-        amph = w.is_sea(army.loc)
-        if not amph:
-            terr = w.terrain_between(army.loc, target)
+        amph = any(w.is_sea(x.loc) for x in armies)
+        for src in dict.fromkeys(x.loc for x in armies if not w.is_sea(x.loc)):
+            terr = w.terrain_between(src, target)
             if terr:
-                add(af, f"{terr['kind']}({terr['name']})", terr["mult"])
+                add(af, f"{terr['kind']}({terr['name']})" + (f" — {self.info(src).short}" if len(armies) > 1 else ""),
+                    terr["mult"])
+        if mode == "assault" and pv.get("sources", 1) > 1:
+            n = pv["sources"]
+            add(af, f"협공 {n}방향", 1 + C.FLANK_BONUS * (n - 1))
         if att_units.get("inf"):
             add(af, self.fx_source(fid, "atk_inf") + " — 보병", m.mult("atk_inf"))
         if mode == "assault":
             add(af, self.fx_source(fid, "atk_assault"), m.mult("atk_assault"))
             if amph:
                 add(af, "상륙 돌격", self.amphib_mult(fid))
-            if self.inf_wave_on(fid, [army]):
+            if self.inf_wave_on(fid, armies):
                 add(af, self.fx_source(fid, "inf_wave"), m.mult("inf_wave"))
         if rr.owner != NEUTRAL and D.at_war(self, fid, rr.owner):
             allies_in = any(D.allied(self, fid, x) and D.at_war(self, x, rr.owner)
@@ -1073,6 +1514,8 @@ class Game:
                 add(df, self.fx_source(rr.owner, "def_coast"), om.mult("def_coast"))
             if self.ambushed(rr.owner, fid):
                 add(df, self.fx_source(rr.owner, "ambushed_def"), 1 - om.value("ambushed_def"))
+            if M.of(self, target):
+                add(df, f"{M.label(self, target)}({len(M.members(self, target))}개 지역) 넓은 방어", M.def_mult(self, target))
         for o in def_units:
             add(df, f"{self.fname(o)} 사기", self.morale(o))
         if rr.owner != NEUTRAL:
@@ -1120,20 +1563,24 @@ class Game:
         for label, dd, ad in outcomes:
             res.append({"label": label, "def_dmg": dd, "att_dmg": ad, "def_lost": losses(all_def, dd, C.ASSAULT_DAMAGE_ORDER if mode == "assault" else None),
                         "att_lost": losses(att_units, ad), "capture": dd >= pv["def_hp"] * 0.95})
+        att_hp = sum(x.hp_left(k) for x in armies for k in att_units if k in x.units)
+        att_max = sum(C.UNITS[k]["hp"] * n for k, n in att_units.items())
         return {"preview": pv, "att_units": att_units, "def_units": def_units, "att_factors": af,
-                "def_factors": df, "outcomes": res, "target_owner": rr.owner}
+                "def_factors": df, "outcomes": res, "target_owner": rr.owner, "att_hp": att_hp, "att_max": att_max,
+                "armies": len(armies)}
 
-    def preview_attack(self, army, target, mode="assault"):
-        """예상 교전 결과(r=1). 반환 dict: A, D, 기대 피해, 기습 성공률."""
+    def preview_attack(self, army, target, mode="assault", extra=()):
+        """예상 교전 결과(r=1). 반환 dict: A, D, 기대 피해, 기습 성공률. extra: 함께 공격할 부대들."""
         if self.world.is_sea(target):
             return None
-        A, sources, main = self.combat_strength(army.owner, [army], target, mode)
+        A, sources, main = self.combat_strength(army.owner, [army] + [x for x in extra if x.id != army.id],
+                                                target, mode)
         if len(sources) > 1 and mode == "assault":
             A *= 1 + C.FLANK_BONUS * (len(sources) - 1)
         Dv, defenders, line = self.defense_strength(army.owner, target, main, mode)
         dd, ad = R.battle_damage(A, Dv, 1.0)
         res = {"A": A, "D": Dv, "def_dmg": dd, "att_dmg": ad, "line": line, "defenders": sum(
-            a.count() for a in defenders)}
+            a.count() for a in defenders), "sources": len(sources)}
         if not self.world.is_sea(army.loc):
             res["terrain"] = self.world.terrain_between(army.loc, target)
         if mode == "surprise":
@@ -1165,7 +1612,8 @@ class Game:
         pool = []
         acted = self.__dict__.setdefault("_acted", set())
         for a in armies:
-            acted.add(a.id)                  # 전투·폭격에 휘말린 부대는 이번 턴 회복하지 않는다
+            acted.add(a.id)
+            a.last_combat = self.turn        # 전투·폭격에 휘말린 부대는 2턴 동안 회복하지 않는다(v1.3.0)
             for k, n in a.units.items():
                 if n > 0 and (unit_filter is None or k in unit_filter):
                     pool.append((a, k, n))
@@ -1271,13 +1719,58 @@ class Game:
     def annex_cost(self, fid, rid) -> float:
         return R.annex_cost(self.region_output_estimate(rid), self.region_count(fid))
 
+    def annex_sources(self, fid, target) -> list:
+        """target(중립)을 지금 편입 착수할 수 있는 내 지역: 맞닿고 슬롯이 비어 있음(광역시는 한 번만). 인구 많은 순."""
+        rr = self.regions.get(target)
+        if rr is None or rr.owner != NEUTRAL or fid in rr.occs:
+            return []
+        out, seen = [], set()
+        for n in sorted(self.world.land_adj[target], key=lambda n: (-self.regions[n].pop, n)):
+            r = self.regions[n]
+            if r.owner != fid or r.project or r.occ or self.resisting(r):
+                continue
+            key = M.center_of(self, n)
+            if key in seen:
+                continue
+            o = next((o for o in self.options(fid, n) if o["kind"] == "annex" and o["key"] == target), None)
+            if o and o["ok"]:
+                seen.add(key)
+                out.append(n)
+        return out
+
+    def annex_from(self, fid, target, every=False) -> tuple:
+        """중립 지역 행동 탭 [편입]/[최대 편입](v1.3.0): 슬롯이 빈 이웃 내 지역 한 곳(인구 많은 곳) 또는 모두에서 착수."""
+        srcs = self.annex_sources(fid, target)
+        if not srcs:
+            return 0, "편입을 착수할 수 있는 이웃 지역이 없습니다(슬롯이 비어 있어야 합니다)."
+        n = 0
+        for s in (srcs if every else srcs[:1]):
+            ok, _ = self.start_project(fid, s, "annex", target)
+            n += ok
+        names = ", ".join(self.info(s).short for s in (srcs if every else srcs[:1]))
+        return n, f"{self.info(target).name} 편입 착수: {names}" + (f" (공동 {self.joint_count(fid, target)}곳)" if n > 1 else "")
+
+    def annex_weight(self, p) -> int:
+        """공동 편입에서 이 작업이 차지하는 지역 수: 광역시면 구성 지역 수(v1.3.0), 아니면 1."""
+        m = M.get(self, getattr(p, "metro", None))
+        return len(m["members"]) if m else 1
+
+    def joint_annex_reduction(self, n, metro=False) -> float:
+        """공동 편입 기간 감소율. 광역시가 끼면 최대 50%."""
+        red = R.joint_reduction(n)
+        return min(red, C.METRO_ANNEX_MAX_REDUCTION) if metro else red
+
     def annex_targets(self, fid, rid):
         w = self.world
         cands = set(v for v in w.land_adj[rid] if self.regions[v].owner == NEUTRAL)   # 육상 인접만(해로 편입 없음)
-        joint = {}
-        for r in self.regions.values():
-            if r.owner == fid and r.project and r.project.kind == "annex":
-                joint[r.project.key] = joint.get(r.project.key, 0) + 1
+        joint, jm = {}, set()
+        for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid]):
+            if p.kind == "annex":
+                joint[p.key] = joint.get(p.key, 0) + self.annex_weight(p)
+                if p.metro is not None:
+                    jm.add(p.key)
+        me = M.of(self, rid)                      # 광역시는 구성 지역 수만큼의 공동 편입
+        w_self = len(me["members"]) if me else 1
         out = []
         for v in sorted(cands):
             rr = self.regions[v]
@@ -1285,16 +1778,19 @@ class Game:
                 continue                          # 내 군대가 이미 점령 중
             base = self.neutral_turns(fid, v)
             n = joint.get(v, 0)
+            red = self.joint_annex_reduction(n + w_self, bool(me) or v in jm)
             out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
-                        "value": self.region_value(v)[0], "joint": n, "sea": False,
-                        "eff_turns": R.joint_turns(base, n + 1),
+                        "value": self.region_value(v)[0], "joint": n, "sea": False, "self_weight": w_self,
+                        "reduction": red, "eff_turns": max(1, math.ceil(base * (1 - red) - 1e-9)),
                         # 다른 세력의 점령·편입이 끝나기까지 남은 턴(가장 빠른 것). 경쟁 판단용
                         "rival_left": self.rival_left(fid, v)})
         return out
 
-    def options(self, fid, rid):
-        """이 지역 슬롯에 넣을 수 있는 선택지 목록."""
+    def options(self, fid, rid, raw=False):
+        """이 지역 슬롯에 넣을 수 있는 선택지 목록. 광역시 구성 지역이면 광역시 선택지(raw=True 면 그 지역만)."""
         rr = self.regions[rid]
+        if not raw and getattr(rr, "metro", None) is not None:
+            return M.options(self, fid, rr.metro)
         info = self.info(rid)
         m = self.mods(fid)
         opts = []
@@ -1356,19 +1852,19 @@ class Game:
                 continue                      # 내륙 지역: 해군은 아예 표시하지 않는다(항구도 지을 수 없음)
             if u["kind"] == "naval" and not rr.b["port"]:
                 ok, why = False, "항구 필요"
-            if u["kind"] == "air" and not rr.b["airport"]:
-                ok, why = False, "공항 필요"
             if ok and not self.can_pay_oil(fid, u["oil"]):
                 ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
             per = self.unit_cost(fid, rid, key)
             add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
         for t in self.annex_targets(fid, rid):
             name = f"편입: {self.info(t['target']).name} [{t['value']}]"
-            if t["joint"]:
-                n = t["joint"] + 1
-                name += f" · 공동 {n}곳 −{R.joint_reduction(n):.0%} (약 {t['eff_turns']}턴)"
+            n = t["joint"] + t["self_weight"]
+            if n > 1:
+                name += f" · 공동 {n}곳 −{t['reduction']:.0%}"
             add("annex", t["target"], name, t["cost"], t["turns"])
-        for step in self.science_available(fid):
+            # 공동 편입(광역시는 구성 지역 수만큼)으로 줄어든 실제 소요 턴(v1.3.0: 행동 탭·착수 알림에 표시)
+            opts[-1]["eff_turns"] = t["eff_turns"]
+        for step in (self.science_available(fid) if "science" in self.settings.victories else ()):
             if not self.science_site_ok(fid, rid, step):
                 continue
             busy = self.science_busy(fid, step)
@@ -1389,7 +1885,11 @@ class Game:
                 busy is None, "" if busy is None else f"{self.info(busy).name}에서 진행 중", level=k)
         if self.factions[fid].capital != rid:
             y = max(rr.output, self.region_output_estimate(rid))
-            add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS)
+            # 천도는 한 번에 한 곳만: 다른 지역에서 진행 중이면 고를 수 없다
+            busy = next((r.id for r in self.regions_of(fid)
+                         if r.id != rid and r.project and r.project.kind == "capital"), None)
+            add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS,
+                busy is None, "" if busy is None else f"{self.info(busy).name}(으)로 천도 진행 중")
         return opts
 
     # ---- 과학승리
@@ -1509,9 +2009,9 @@ class Game:
             n = len(self.finance_cluster(fid))
             return n >= C.ECON_CLUSTER, f"금융 권역 {n}/{C.ECON_CLUSTER}곳"
         if step == "sez":
-            ex = self.econ_buildings(fid, "exchange")
-            ok = cap in ex and len(ex) >= C.ECON_EXCHANGES
-            return ok, f"증권거래소 {len(ex)}/{C.ECON_EXCHANGES}곳" + ("" if cap in ex else "(수도 포함)")
+            n, cap_ok = M.exchange_weight(self, fid)       # 광역시의 증권거래소는 그 광역시 지역 수만큼(v1.3.0)
+            ok = cap_ok and n >= C.ECON_EXCHANGES
+            return ok, f"증권거래소 {n}/{C.ECON_EXCHANGES}곳" + ("" if cap_ok else "(수도 포함)")
         n, al = D.econ_partners(self, fid)
         if step == "ifc":
             if not self.econ_buildings(fid, "sez"):
@@ -1532,6 +2032,8 @@ class Game:
         if rr.owner != fid or step in rr.econ:
             return False
         if step == "exchange":
+            if any("exchange" in self.regions[r].econ for r in M.members(self, rid)):
+                return False                     # 광역시에는 하나
             return rid in self.finance_cluster(fid)
         if step in ("sez", "currency"):
             return rid == self.factions[fid].capital
@@ -1595,13 +2097,38 @@ class Game:
             cache[key] = max(0.0, (p - C.VICTORY_THREAT_FROM) / (1 - C.VICTORY_THREAT_FROM))
         return cache[key]
 
+    # ---- 광역시(v1.3.0)
+    def create_metro(self, fid, center, members, name=None):
+        """center 를 중심으로 members(중심 포함 가능)를 광역시로 지정. (성공, 메시지)."""
+        return M.create(self, fid, center, members, name)
+
+    def dissolve_metro(self, fid, rid):
+        """rid 가 속한 광역시 지정 해제(언제든). (성공, 메시지)."""
+        m = M.of(self, rid)
+        if m is None:
+            return False, "광역시가 아닙니다."
+        if self.regions[m["center"]].owner != fid:
+            return False, "내 광역시가 아닙니다."
+        name = m["name"]
+        M.dissolve(self, m["id"], "직접 해제")
+        return True, f"{name} 지정 해제"
+
+    def _clear_project(self, rr):
+        """rr 의 작업을 비운다. 여러 지역이 함께 가리키는 작업(광역시·묶음 공사)이면 모두에서."""
+        p = rr.project
+        if p is not None and (p.metro is not None or p.group is not None):
+            for r in self.regions.values():
+                if r.project is p:
+                    r.project = None
+        rr.project = None
+
     def _pause_econ(self, rr, why):
         """건설 중 조건이 깨짐: 중단하고 낸 돈의 50% 환급. 진행도는 사라져 조건이 돌아오면 처음부터 다시 짓는다."""
         p = rr.project
         f = self.factions[rr.owner]
         refund = p.paid * C.ECON_PAUSE_REFUND
         f.money += refund
-        rr.project = None
+        self._clear_project(rr)
         spec = C.ECON[p.key]
         self.event("info", f"{self.info(rr.id).name} {spec['name']} 건설 중단: {why} — {refund:,.0f} 환급 "
                    f"(다시 지으려면 처음부터)", region=rr.id, fids=(f.id,))
@@ -1611,6 +2138,8 @@ class Game:
             p = rr.project
             if not p or p.kind != "econ":
                 continue
+            if p.metro is not None and p.site != rr.id:
+                continue                         # 광역시 작업은 짓는 지역(site)에서만 확인
             ok, why = self.econ_ready(f.id, p.key)
             if ok and not self.econ_site_ok(f.id, rr.id, p.key):
                 ok, why = False, "위치 조건"
@@ -1634,7 +2163,8 @@ class Game:
         if key == "extract":
             return "정유공장 증설" if self.info(rid).is_oil else "탄광 증설"
         if level and key in C.PROD_LEVEL_NAMES:
-            return C.PROD_LEVEL_NAMES[key][min(level, 5) - 1]
+            names = C.PROD_LEVEL_NAMES[key]
+            return names[min(level, len(names)) - 1]
         return BUILDING_NAMES.get(key, key)
 
     def build_label(self, rid, key, level) -> str:
@@ -1645,20 +2175,35 @@ class Game:
 
     def building_effect(self, fid, rid, opt) -> str:
         """행동 메뉴용: 다음 단계 건물의 턴당 생산량/효과."""
+        if opt.get("pool") and M.of(self, rid):
+            el = M.pool_members(self, M.of(self, rid), opt["pool"])
+            if el and opt["key"] == "specialty":
+                # 구성 지역마다 특산물이 달라 지역별로(같은 특산물은 개수를 합쳐)
+                made = {}
+                for r in el:
+                    for sp in self.info(r).specialties:
+                        made[sp] = made.get(sp, 0) + 1
+                return (f"지역 {len(el)}곳 각각 턴당 {opt['level']}개: "
+                        + "·".join(f"「{sp}」" + (f"×{n}" if n > 1 else "") for sp, n in made.items()))
+            if el:
+                return f"지역 {len(el)}곳 각각 " + self.building_effect(fid, el[0], dict(opt, pool=None))
         rr = self.regions[rid]
         info = self.info(rid)
         key, lv = opt["key"], opt["level"]
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
         if key == "farm":
-            return f"턴당 식량 +{C.FOOD_PER_G:.0f}, 산출 +{C.FARM_OUTPUT * m.mult('output_prod'):.0f}"
+            fm = self.farm_mult(fid, rid)
+            return (("하천 농장: " if self.river_farm(rid) else "")
+                    + f"턴당 식량 +{round(C.FARM_FOOD * fm * m.mult('food_prod'), 1):g}, "
+                    f"산출 +{C.FARM_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
             kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{round(C.FOOD_PER_G * fm, 1):g}, "
+            return (f"{kind} 어장: 턴당 식량 +{round(C.FISH_FOOD * self.fish_food_mult(fid, rid), 1):g}, "
                     f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
-            per = C.FACTORY_UNIT_OUTPUT[lv - 1] * m.mult('output_factory') * m.mult('output_prod')
+            per = R.factory_unit(lv) * m.mult('output_factory') * m.mult('output_prod')
             return f"연료 최대 {lv}개/턴, 1개당 산출 {per:,.0f}"
         if key == "bank":
             return f"턴당 산출 +{C.BANK_OUTPUT * dg * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
@@ -1683,7 +2228,7 @@ class Game:
         if key == "academy":
             return "이 지역 유닛 생산비 −25%, 인접 −10%"
         if key == "airport":
-            return f"공군 {C.AIRPORT_CAPACITY}대 주둔·출격"
+            return "공군 출격(폭격·요격) · 다른 공항으로 한 번에 이동"
         if key == "port":
             return "해군 생산·정박"
         return ""
@@ -1696,12 +2241,12 @@ class Game:
         m = self.mods(fid)
         pm = m.mult("output_prod")
         if key == "farm":
-            fm = m.mult("output_farm")
-            return (f"턴당 식량 {C.FOOD_PER_G * lv * fm * m.mult('food_prod'):.0f}, "
+            fm = self.farm_mult(fid, rid)
+            return (f"턴당 식량 {C.FARM_FOOD * lv * fm * m.mult('food_prod'):.0f}, "
                     f"산출 {C.FARM_OUTPUT * lv * fm * pm:,.0f}")
         if key == "fishery":
             fm = self.fish_mult(fid, rid)
-            return (f"턴당 식량 {round(C.FOOD_PER_G * lv * fm * m.mult('food_prod'), 1):g}, "
+            return (f"턴당 식량 {round(C.FISH_FOOD * lv * self.fish_food_mult(fid, rid) * m.mult('food_prod'), 1):g}, "
                     f"산출 {C.FISH_OUTPUT * lv * fm * pm:,.0f}")
         if key == "factory":
             u = max(0, min(lv, getattr(rr, "fuel_used", 0)))
@@ -1720,10 +2265,13 @@ class Game:
             return f"석유 {info.oil + lv}/턴" if info.is_oil else f"석탄 {lv}/턴"
         return ""
 
-    def start_project(self, fid, rid, kind, key, border=None, name=None):
+    def start_project(self, fid, rid, kind, key, border=None, name=None, site=None, pool=None):
         rr = self.regions.get(rid)
         if not rr or rr.owner != fid:
             return False, "내 지역이 아닙니다."
+        if getattr(rr, "metro", None) is not None:
+            # 광역시: 슬롯 하나. 특산물·방어선처럼 지역마다 따로인 것은 이 지역(또는 site)에서
+            return M.start(self, fid, rr.metro, kind, key, border=border, site=site or rid, pool=pool)
         if rr.project:
             return False, "이 지역 슬롯은 이미 사용 중입니다."
         if rr.occ:
@@ -1759,56 +2307,152 @@ class Game:
             if key == "currency":
                 self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
                                      f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
+        if kind == "annex":
+            label = f"편입: {self.info(key).name}"
+            return True, f"{label} 착수 ({self.project_left(rid)}턴, 턴당 {opt['per_turn']:,.0f})"
         return True, f"{label} 착수 ({opt['turns']}턴, 턴당 {opt['per_turn']:,.0f})"
 
     def cancel_project(self, fid, rid):
         rr = self.regions.get(rid)
         if not rr or rr.owner != fid or not rr.project:
             return False, "취소할 작업이 없습니다."
-        refund = rr.project.paid * C.PROJECT_REFUND
+        p = rr.project
+        refund = p.paid * C.PROJECT_REFUND
         self.factions[fid].money += refund
+        msg = f"취소: {refund:,.0f} 환급"
+        if p.group is not None or p.metro is not None:
+            # 묶음 공사(국경 방어선)·광역시 작업은 한 건: 모든 지역에서 함께 취소
+            for r in self.regions.values():
+                if r.project is p:
+                    r.project = None
+            if p.kind == "unit" and p.key in C.UNITS:
+                back = -C.UNIT_START_HAPPY[C.UNITS[p.key]["weight"]]
+                self.regions[M.center_of(self, rid)].h_delta += back
+            return True, f"{p.name} 취소: {refund:,.0f} 환급"
+        if p.kind == "unit" and p.key in C.UNITS:
+            # 착수 때 깎인 행복도는 돌려준다(석유는 턴마다 들어오는 흐름이라 돌려주지 않는다)
+            back = -C.UNIT_START_HAPPY[C.UNITS[p.key]["weight"]]
+            rr.h_delta += back
+            msg += f" · 행복도 +{back:g} 회복"
         rr.project = None
-        return True, f"취소: {refund:,.0f} 환급"
+        return True, msg
 
     def review_order(self, fid):
         """수도부터 영토를 얻은 순서대로."""
         cap = self.factions[fid].capital
-        regs = self.regions_of(fid)
+        regs = [r for r in self.regions_of(fid) if M.center_of(self, r.id) == r.id]   # 광역시는 중심 하나로
         return [r.id for r in sorted(regs, key=lambda r: (r.id != cap, getattr(r, "acquired_seq", 0), r.id))]
 
     def idle_slots(self, fid) -> int:
         return sum(1 for r in self.regions.values() if r.owner == fid and not r.project and not r.occ
-                   and not self.resisting(r) and not getattr(r, "focus", False))
+                   and not self.resisting(r) and not getattr(r, "focus", False)
+                   and M.center_of(self, r.id) == r.id)
 
     def projects_by_priority(self, fid):
-        """자금 지출 우선순위 순서의 (지역, 작업) 목록."""
+        """자금 지출 우선순위 순서의 (지역, 작업) 목록. 묶음 공사는 한 번만(대표 지역 하나로).
+        자동 정렬 규칙(f.prio_mode)이 켜져 있으면 부를 때마다 그 규칙대로 다시 정렬한다(v1.3.0)."""
         regs = [r for r in self.regions.values() if r.owner == fid and r.project]
-        return sorted(regs, key=lambda r: (not getattr(r.project, "pinned", False), r.project.priority, r.id))
+        regs.sort(key=lambda r: (not getattr(r.project, "pinned", False), r.project.priority, r.id))
+        seen, out = set(), []
+        for r in regs:
+            if id(r.project) not in seen:
+                seen.add(id(r.project))
+                out.append(r)
+        mode = getattr(self.factions[fid], "prio_mode", None) if 0 <= fid < len(self.factions) else None
+        if mode in self.PRIORITY_SORTS:
+            self._apply_sort(out, mode)
+        # 같은 중립 지역을 함께 편입하는 작업은 한 덩어리(v1.3.0): 맨 앞 작업 자리에 나란히
+        grouped = self._group_annex(out)
+        if mode in self.PRIORITY_SORTS or any(x is not y for x, y in zip(grouped, out)):
+            for i, r in enumerate(grouped):
+                r.project.priority = i + 1
+            self.proj_counter = max(getattr(self, "proj_counter", 0), len(grouped) + 1)
+        return grouped
+
+    @staticmethod
+    def _row_key(r):
+        p = r.project
+        return ("annex", p.key) if p.kind == "annex" else ("p", id(p))
+
+    def _group_annex(self, regs) -> list:
+        order, rows = [], {}
+        for r in regs:
+            k = self._row_key(r)
+            if k not in rows:
+                rows[k] = []
+                order.append(k)
+            rows[k].append(r)
+        return [r for k in order for r in rows[k]]
+
+    def priority_rows(self, fid) -> list:
+        """지출 우선순위 표시용 줄 목록: 같은 대상을 함께 편입하는 지역들은 한 줄([지역1], [지역2] · 편입: 대상)."""
+        rows, keys = [], {}
+        for r in self.projects_by_priority(fid):
+            k = self._row_key(r)
+            if k in keys:
+                rows[keys[k]].append(r)
+            else:
+                keys[k] = len(rows)
+                rows.append([r])
+        return rows
+
+    @staticmethod
+    def unique_projects(regs) -> list:
+        """지역 목록의 작업들(여러 지역이 함께 가리키는 묶음 공사는 한 번만)."""
+        seen, out = set(), []
+        for r in regs:
+            p = r.project
+            if p is not None and id(p) not in seen:
+                seen.add(id(p))
+                out.append(p)
+        return out
+
+    def group_regions(self, p) -> list:
+        """묶음 공사 p 를 함께 짓는 지역 ID(지역 순서)."""
+        return [rid for rid in p.group["lines"] if self.regions[rid].project is p] if p.group else []
 
     def toggle_pin(self, fid, rid) -> bool:
         """지출 우선순위 맨 위 고정(고정한 작업끼리는 기존 순서). 바뀐 고정 상태를 돌려준다."""
         r = self.regions.get(rid)
         if not r or r.owner != fid or not r.project:
             return False
-        r.project.pinned = not getattr(r.project, "pinned", False)
+        on = not getattr(r.project, "pinned", False)
+        row = next((row for row in self.priority_rows(fid) if any(x.id == rid for x in row)), [r])
+        for x in row:                                # 함께 편입하는 줄은 함께 고정
+            x.project.pinned = on
         self.set_priority_order(fid, [x.id for x in self.projects_by_priority(fid)])
-        return r.project.pinned
+        return on
 
     PRIORITY_SORTS = {"annex": "중립 지역 편입 우선", "build": "건설 우선", "unit": "유닛 생산 우선",
                       "short": "적은 턴 수 우선"}
 
-    def sort_priority(self, fid, mode):
-        """지출 우선순위 자동 정렬. 고른 종류를 앞으로(그 안에서는 기존 순서), short 는 남은 턴이 적은 순."""
-        regs = self.projects_by_priority(fid)
+    def _apply_sort(self, regs, mode):
+        """고른 종류를 앞으로(그 안에서는 기존 순서), short 는 남은 턴이 적은 순. 고정한 작업은 맨 위 그대로."""
         if mode == "short":
             regs.sort(key=lambda r: self.project_left(r.id))
         else:
             kinds = {"annex": ("annex",), "build": ("build", "science", "econ", "capital"), "unit": ("unit",)}[mode]
             regs.sort(key=lambda r: r.project.kind not in kinds)
-        regs.sort(key=lambda r: not getattr(r.project, "pinned", False))     # 고정한 작업은 맨 위 그대로
+        regs.sort(key=lambda r: not getattr(r.project, "pinned", False))
+
+    def sort_priority(self, fid, mode):
+        """지출 우선순위를 지금 한 번 정렬한다(자동 정렬 규칙은 set_priority_mode)."""
+        regs = self.projects_by_priority(fid)
+        self._apply_sort(regs, mode)
         self.set_priority_order(fid, [r.id for r in regs])
 
-    def set_priority_order(self, fid, rids):
+    def set_priority_mode(self, fid, mode):
+        """지출 우선순위 자동 정렬 규칙 켜기/끄기(v1.3.0): 같은 규칙을 다시 고르거나 None 이면 해제.
+        켜 두면 새 작업이 생기거나 남은 턴이 바뀌어도 계속 그 규칙대로 정렬된다. 바뀐 규칙을 돌려준다."""
+        f = self.factions[fid]
+        f.prio_mode = None if mode is None or getattr(f, "prio_mode", None) == mode else mode
+        self.projects_by_priority(fid)
+        return f.prio_mode
+
+    def set_priority_order(self, fid, rids, manual=False):
+        """우선순위를 rids 순서로. manual(끌기·↑↓)이면 자동 정렬 규칙을 해제한다(직접 정한 순서를 지키도록)."""
+        if manual and 0 <= fid < len(self.factions):
+            self.factions[fid].prio_mode = None
         for i, rid in enumerate(rids):
             r = self.regions.get(rid)
             if r and r.owner == fid and r.project:
@@ -1920,9 +2564,14 @@ class Game:
     def pay_oil(self, fid, n):
         """석유 n 을 낸다. 모자라면 부족분 × 2 만큼 석탄으로."""
         f = self.factions[fid]
-        use = min(n, f.res.get("oil", 0))
+        use = max(0.0, min(n, f.res.get("oil", 0)))     # 판매 계약으로 석유가 음수여도 석탄을 엉뚱하게 쓰지 않게
         f.res["oil"] = f.res.get("oil", 0) - use
         f.res["coal"] = f.res.get("coal", 0) - (n - use) * C.OIL_AS_COAL
+        uf = f.__dict__.setdefault("unit_fuel", {})        # 이번 턴 병력 생산에 쓴 석유·석탄(자원 배정 화면 표시용)
+        if use > 0:
+            uf["oil"] = uf.get("oil", 0) + use
+        if n - use > 0:
+            uf["coal"] = uf.get("coal", 0) + (n - use) * C.OIL_AS_COAL
 
     def power_elec(self, fid, fuel, level=1) -> float:
         """발전소 연료 1개당 전기: 석탄은 발전소 단계별 2·2.2·2.4·2.6·3, 석유는 그 두 배
@@ -2007,6 +2656,9 @@ class Game:
             mined = self.energy_mined(f.id)
             for k in C.ENERGY:
                 f.res[k] = float(mined[k])
+            f.sent = {}                                   # 이번 턴 판매 계약으로 먼저 보낸 양
+            f.recv = {}                                   # 이번 턴 계약으로 받은 양
+            f.unit_fuel = {}                              # 이번 턴 병력 생산에 쓴 석유·석탄
             f.specialty = self.specialty_made(f)
         D.run_contracts(self)
 
@@ -2024,7 +2676,8 @@ class Game:
         반환 {"p": {rid: {coal, oil}}, "f": {rid: {coal, oil, elec}}}"""
         plants, facts = self.energy_sites(fid)
         reserve = 0 if oil_reserve is None else oil_reserve
-        left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": int(stock["coal"]), "elec": int(stock["elec"])}
+        left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": max(0, int(stock["coal"])),
+                "elec": max(0, int(stock["elec"]))}
         plan = {r.id: {"coal": 0, "oil": 0} for r in plants}
         room = {r.id: r.b["power"] for r in plants}
         for key in ("oil", "coal"):                       # ①② 발전소: 석유 먼저, 그다음 석탄
@@ -2062,6 +2715,26 @@ class Game:
         units = sum(a["units"] for a in plan["factories"].values())
         cap = sum(self.regions[rid].b["factory"] for rid in plan["factories"])
         return units, cap
+
+    def _auto_assign_energy(self):
+        """턴 시작: [매 턴 자동 배정]을 켠 플레이어는 [자동 배정]을 누른 것처럼 연료를 다시 배정한다
+        (새로 지은 공장·발전소, 바뀐 확보량이 바로 반영된다. 끄면 지난 수동 배정을 그대로 쓴다)."""
+        for f in self.factions:
+            if not f.alive or f.is_ai or f.auto_energy:
+                continue
+            plants, facts = self.energy_sites(f.id)
+            sites = {("p", r.id): r.b["power"] for r in plants}
+            sites.update({("f", r.id): r.b["factory"] for r in facts})
+            seen = getattr(f, "energy_seen", None)
+            f.energy_seen = sites
+            if getattr(f, "energy_each_turn", True):
+                self.assign_energy(f.id)
+            elif seen is not None:
+                grown = [rid for (site, rid), lv in sites.items() if lv > seen.get((site, rid), 0)]
+                if grown:
+                    names = "·".join(dict.fromkeys(self.info(rid).name for rid in grown))
+                    self.event("info", f"새 공장·발전소({names}): [자원 배정]에서 연료를 배정하세요 "
+                                       f"([매 턴 자동 배정]이 꺼져 있습니다).", region=grown[0], fids=(f.id,))
 
     def energy_plan(self, fid) -> dict:
         """이번 턴 에너지 흐름(실제 처리와 같은 순서): 채굴 → 발전소 투입 → 전기 생산 → 공장 투입.
@@ -2151,7 +2824,30 @@ class Game:
         info = self.info(rid)
         return info.coastal or info.fishery > 0 or rid in self.world.river_regions
 
+    def river_farm(self, rid) -> bool:
+        """하천(도하 경계·국경 하천)에 맞닿은 지역: 농장 식량·산출 ×1.25."""
+        return rid in self.world.river_regions
+
+    def farm_mult(self, fid, rid) -> float:
+        """농장 식량·산출 배수(지도자 효과 × 하천 농장). 광역시는 하나라도 하천 농장이면 전체가 하천 농장."""
+        river = M.river_farm(self, rid) if getattr(self.regions[rid], "metro", None) is not None else self.river_farm(rid)
+        return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if river else 1.0)
+
+    def fish_food_mult(self, fid, rid):
+        """어장 식량 배수(식량·산출 같은 배수: 하천 어장 ×0.8, 해안선 점유 ×1.2)."""
+        return self.fish_mult(fid, rid)
+
+    def sea_fishery(self, rid) -> bool:
+        info = self.info(rid)
+        return not (not info.coastal and rid in self.world.river_regions)
+
     def fish_mult(self, fid, rid):
+        """어장 배수. 광역시는 구성 지역 가운데 가장 좋은 어장(하나라도 바다 어장이면 바다 어장) 기준."""
+        if getattr(self.regions[rid], "metro", None) is not None:
+            return M.fish_mult(self, fid, rid)
+        return self._fish_mult_one(fid, rid)
+
+    def _fish_mult_one(self, fid, rid):
         info = self.info(rid)
         if not info.coastal and rid in self.world.river_regions:
             return C.RIVER_FISH_MULT          # 하천 어장
@@ -2171,7 +2867,7 @@ class Game:
                             m.mult("output_bank") * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0),
                             m.mult("output_factory"),
                             1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0,
-                            m.mult("output_prod"), m.mult("output_farm"))
+                            m.mult("output_prod"), self.farm_mult(owner, rid))
         pb = m.value("port_bank", 0)
         if pb and rr.b["port"] and owner != NEUTRAL:
             # 근초고왕 '해상 왕국': 항구가 있는 지역은 은행 3단계만큼 산출이 더 난다
@@ -2278,6 +2974,15 @@ class Game:
         old = rr.owner
         if old == new_owner:
             return
+        if getattr(rr, "metro", None) is not None and not getattr(self, "_metro_capture", False):
+            M.dissolve(self, rr.metro, "구성 지역이 넘어감")     # 점령이 아닌 이전(할양·거래·독립 등): 먼저 해제
+        # 해방 반환용 기록(v1.3.0): 전쟁으로 넘어가면 직전 주인과 그 턴을 남긴다(그 나라의 동맹·연합국이
+        # LIBERATION_TURNS 안에 되찾으면 돌려준다). 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
+        if reason == "점령" and old != NEUTRAL and new_owner != NEUTRAL:
+            rr.war_from, rr.war_turn = old, self.turn
+        else:
+            rr.war_from, rr.war_turn = None, None
+        rr.rally = None                              # 생산 집결지는 주인이 바뀌면 지운다(v1.3.0)
         # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
         # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
         lp = getattr(rr, "lost_project", None)
@@ -2300,12 +3005,15 @@ class Game:
                 rr.lost_bld = None
             else:
                 self._demolish_lost_bld(rr)
+        self._transfer_defenses(rr, old, new_owner, reason, retaking)
         if old != NEUTRAL and (rr.sci or rr.econ):
             rr.lost_bld = {"fid": old, "sci": set(rr.sci), "econ": set(rr.econ)}
             if new_owner == NEUTRAL or reason != "점령":
                 self._demolish_lost_bld(rr)
         rr.sci = set()
         p = rr.project
+        if p is not None and p.metro is not None and p.site != rid:
+            p = None                              # 광역시 작업은 짓는 지역(site)에서만 한 번 처리
         if p is not None and p.kind in ("science", "econ") and old != NEUTRAL:
             if new_owner != NEUTRAL and reason == "점령":
                 p.stalled, p.funded = True, False
@@ -2314,6 +3022,8 @@ class Game:
                 rr.lost_project = {"fid": old, "project": p}
                 self._refund_lost_project(rr)
                 rr.lost_project = None
+        if p is not None and p.group is not None:
+            self._line_group_drop(p, rid)
         rr.owner = new_owner
         rr.project = resume
         rr.econ = set()
@@ -2379,6 +3089,55 @@ class Game:
         if new_owner != NEUTRAL:
             f = self.factions[new_owner]
             f.explored.add(rid)
+
+    # ---- 점령된 방어 건물(v1.3.0): 빼앗은 나라가 바로 쓰지 못한다
+    def _transfer_defenses(self, rr, old, new_owner, reason, retaking):
+        """방어선·방공호·대공포: 적에게 점령되면 저항·회복 기간 동안 꺼진다(lost_def). 그동안 옛 주인이 되찾으면
+        그대로 되살아나고, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다(_settle_defenses)."""
+        ld = getattr(rr, "lost_def", None)
+        if ld is not None:
+            if ld["fid"] == new_owner and retaking:
+                self._restore_defenses(rr, ld, 0)            # 기간 안에 되찾음: 그대로
+                rr.lost_def = None
+                return
+            if new_owner == NEUTRAL or reason != "점령":
+                self._restore_defenses(rr, ld, 1)            # 독립·거래 등: 1단계 깎여 되살아난다
+                rr.lost_def = None
+                ld = None
+        if old == NEUTRAL or new_owner == NEUTRAL or reason != "점령":
+            return
+        cur = {"lines": {b: lv for b, lv in rr.lines.items() if lv > 0}, "shelter": rr.b["shelter"], "aa": rr.b["aa"]}
+        if ld is not None:                                   # 꺼진 채로 또 빼앗김: 방금 잃은 나라가 되찾을 권리를 갖는다
+            for b, lv in ld["lines"].items():
+                cur["lines"][b] = max(cur["lines"].get(b, 0), lv)
+            cur["shelter"] = max(cur["shelter"], ld["shelter"])
+            cur["aa"] = max(cur["aa"], ld["aa"])
+        if not cur["lines"] and not cur["shelter"] and not cur["aa"]:
+            rr.lost_def = None
+            return
+        rr.lost_def = dict(cur, fid=old)
+        rr.lines = {}
+        rr.b["shelter"] = rr.b["aa"] = 0
+
+    def _restore_defenses(self, rr, ld, cut):
+        """꺼진 방어 건물을 cut 단계 깎아 되살린다(그사이 새로 지은 것과 큰 쪽)."""
+        for b, lv in ld["lines"].items():
+            v = max(0, lv - cut)
+            if v > rr.lines.get(b, 0):
+                rr.lines[b] = v
+        for k in ("shelter", "aa"):
+            rr.b[k] = max(rr.b[k], max(0, ld[k] - cut))
+
+    def _settle_defenses(self, rr):
+        """탈환 기간(저항 + 회복)이 지났다: 꺼진 방어 건물이 1단계씩 깎여 지금 주인 것이 된다."""
+        ld = getattr(rr, "lost_def", None)
+        if ld is None:
+            return
+        rr.lost_def = None
+        self._restore_defenses(rr, ld, 1)
+        if rr.owner == self.player_id and not self.player.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 점령으로 꺼졌던 방어 건물이 1단계씩 깎인 채 다시 쓰입니다.",
+                       region=rr.id, fids=(rr.owner,))
 
     def _demolish_lost_bld(self, rr):
         """점령으로 꺼진 과학·경제 시설을 되찾지 못함: 철거. 과학 단계는 완료에서 빠져 다시 지을 수 있게 된다."""
@@ -2518,11 +3277,57 @@ class Game:
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
+    def liberation_left(self, rid) -> int:
+        """해방 반환이 가능한 남은 턴(지금 주인이 전쟁으로 빼앗은 지 LIBERATION_TURNS 턴까지, 아니면 0)."""
+        rr = self.regions[rid]
+        t0 = getattr(rr, "war_turn", None)
+        if getattr(rr, "war_from", None) is None or t0 is None:
+            return 0                            # 기록이 없거나 예전 세이브의 기록(턴 모름)
+        return max(0, C.LIBERATION_TURNS - (self.turn - t0) + 1)
+
+    def liberation_owner(self, fid, rid):
+        """fid 가 rid 를 점령하면 돌려줄 나라(없으면 None, v1.3.0): 지금 주인이 최근 24턴 안에
+        전쟁으로 빼앗은 땅이고, 그 직전 주인이 살아 있으며 fid 와 동맹·연합 관계일 때만."""
+        rr = self.regions[rid]
+        o = getattr(rr, "war_from", None)
+        if o is None or rr.owner == NEUTRAL or o in (fid, rr.owner, NEUTRAL):
+            return None
+        if self.liberation_left(rid) <= 0:
+            return None
+        if not (0 <= o < len(self.factions)) or not self.factions[o].alive:
+            return None
+        return o if D.allied(self, fid, o) else None
+
     def complete_occupation(self, fid, rid):
+        """점령 완료. 광역시 구성 지역이면 광역시 전체를 함께 차지한다(v1.3.0)."""
+        m = M.of(self, rid)
+        if m is None or self.regions[rid].owner == NEUTRAL:
+            return self._complete_occupation_one(fid, rid)
+        self._metro_capture = True
+        try:
+            for r in [rid] + [x for x in m["members"] if x != rid]:
+                if self.regions[r].owner != fid:
+                    self._complete_occupation_one(fid, r)
+        finally:
+            self._metro_capture = False
+        M.after_capture(self, m["id"], self.regions[rid].owner)
+        # 되찾아 이어 짓는 광역시 공사(과학·경제)는 다시 구성 지역 모두가 가리킨다
+        p = next((self.regions[x].project for x in m["members"] if self.regions[x].project is not None
+                  and self.regions[x].project.metro == m["id"]), None)
+        if p is not None:
+            for x in m["members"]:
+                self.regions[x].project = p
+
+    def _complete_occupation_one(self, fid, rid):
         """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(4턴 산출·생산 없음·행복도 −100,
-        이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음)."""
+        이후 24턴 동안 점령 직전 행복도로 회복, 36턴 동안 반란 없음).
+        동맹·연합국이 전쟁으로 빼앗긴 땅을 되찾으면 원 주인에게 돌아간다(v1.3.0: 원 주인이 직접 되찾은 것과 같다)."""
         rr = self.regions[rid]
         old = rr.owner
+        liberator = None
+        back = self.liberation_owner(fid, rid)
+        if back is not None:
+            liberator, fid = fid, back
         m = self.mods(fid)
         # 원래 주인이 저항·회복 중인 옛 땅을 되찾으면: 새 저항 없이 빼앗기기 전 행복도로 복구
         phase = self.resist_phase(rr)[0]
@@ -2530,12 +3335,16 @@ class Game:
         h_before = rr.resist.get("h0", rr.happy) if retake else rr.happy
         new_h = 0.0 if old == NEUTRAL else rr.happy + m.add("occupied_happy_extra")
         if old != NEUTRAL:
-            D.add_war_score(self, fid, old, rr.pop)
+            D.add_war_score(self, liberator if liberator is not None else fid, old, rr.pop)
         self.transfer_region(rid, fid)
+        lib = (f"{self.fname(liberator)}이(가) {self.fname(old)}에게서 {self.info(rid).name}을(를) 되찾아 "
+               f"원 주인 {self.fname(fid)}에게 돌려주었습니다") if liberator is not None else None
+        fids = (fid, old) if liberator is None else (liberator, fid, old)
         if retake:
             rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, h_before))
-            self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
-                       f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=(fid, old))
+            self.event("captured", (lib + " (저항 없이 복구).") if lib else
+                       f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
+                       f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=fids)
             return
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
         if old != NEUTRAL:
@@ -2545,6 +3354,9 @@ class Game:
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": n_res,
                          "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
+        if lib:
+            self.event("captured", lib + f" (저항 {rr.resist['resist']}턴).", region=rid, fids=fids)
+            return
         self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
                    + (f" ({self.fname(old)}에게서, 저항 {rr.resist['resist']}턴)." if old != NEUTRAL else "."),
                    region=rid, fids=(fid, old))
@@ -2576,11 +3388,13 @@ class Game:
         # 2~5. 이동 → 해전 → 폭격 → 지상 공격 (명령을 받은 부대는 이번 턴 회복하지 않는다)
         self._acted.update(a.id for a in self.armies.values() if a.order)
         self._acted.update(self.fought_armies())         # 이번 턴 바로 싸운 플레이어 부대도 회복하지 않는다
+        self._acted.update(self.moved_armies())          # 바로 움직인·폭격한 플레이어 부대도
         self._phase_move()
         self._phase_naval()
         self._phase_bombard()
         self._phase_attack()
         self._phase_guerrilla()
+        self.evict_trespassers()             # 전쟁이 끝난 나라 땅에 남은 부대는 자국으로
         # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
         self._fund_projects()
         self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
@@ -2595,6 +3409,7 @@ class Game:
         # 10~11. 인구, 행복도
         self._phase_population()
         self._phase_happiness()
+        M.phase(self)                        # 광역시: 점령 뒤 저항이 끝났거나 주인이 갈라진 곳은 해제
         D.update_turn(self)
         self._update_power()
         self._record_stats()
@@ -2608,8 +3423,10 @@ class Game:
         # 전투·폭격·상륙으로 유닛이 줄어든 부대 정리(0대 항목, 없어진 유닛의 피해 기록, 빈 부대)
         for a in list(self.armies.values()):
             self._prune_army(a)
+        self.enforce_solo()                  # 안전장치: 포병·폭격기는 같은 병종끼리만 한 부대
         self._phase_heal()
         self.fought = set()                  # 플레이어 즉시 전투 기록은 턴이 끝나면 지운다
+        self.moved = set()
         self.fought_targets = {}
         for a in self.armies.values():
             if a.order and a.order.get("type") in ("move", "attack", "land", "bombard"):
@@ -2620,7 +3437,9 @@ class Game:
             self._half_ranking()
         # 12. 다음 턴 시작: 반란 판정
         self._phase_rebellion()
+        self._check_victory(time=False)      # 반란으로 마지막 상대가 사라졌으면 그 자리에서 판정(시간 종료는 턴 끝에만)
         self._refresh_pools()                # 석유·석탄·전기·특산물: 이번 턴 생산량 + 자원 계약
+        self._auto_assign_energy()
         self._update_fog()
         self._advance_gotos()
         if self.player.alive and self.player.is_ai is False:
@@ -2677,8 +3496,8 @@ class Game:
                     self._unload(a, a.order["target"])
 
     def _encounter(self, a, b):
-        pa = sum(C.UNITS[k]["atk"] * n for k, n in a.units.items())
-        pb = sum(C.UNITS[k]["atk"] * n for k, n in b.units.items())
+        pa = sum(C.UNITS[k]["atk"] * self.eff(a, k) for k in a.units)
+        pb = sum(C.UNITS[k]["atk"] * self.eff(b, k) for k in b.units)
         r = self.rng.uniform(C.RAND_LO, C.RAND_HI)
         db, da = R.battle_damage(pa, pb, r)
         la = self.apply_damage([a], da)
@@ -2712,6 +3531,9 @@ class Game:
     def _exec_move(self, a, path):
         w = self.world
         for i, node in enumerate(path):
+            if not w.is_sea(node) and a.domain() == "land" and not self.may_enter(a.owner, node):
+                a.order, a.goto = None, None        # 그사이 강화 등으로 들어갈 수 없게 된 땅: 그 앞에서 멈춘다
+                return
             if not w.is_sea(node) and self.hostile_units_at(a.owner, node):
                 if node in w.land_adj.get(a.loc, ()) and a.domain() == "land":
                     a.order = {"type": "attack", "target": node, "mode": "assault", "path": [node]}
@@ -2729,10 +3551,10 @@ class Game:
         cargo = {k: n for k, n in a.units.items() if C.UNITS[k]["kind"] == "land"}
         if not cargo:
             return
+        dmg = {k: a.dmg.pop(k) for k in cargo if k in a.dmg}
         for k in cargo:
             a.units.pop(k)
-            a.dmg.pop(k, None)
-        self.new_army(a.owner, target, cargo)
+        self.new_armies_split(a.owner, target, cargo, dmg)
         a.order = None
 
     # ---- 3. 해전
@@ -2750,7 +3572,7 @@ class Game:
                         self._naval_battle(sid, x, fx, y, fy)
 
     def _naval_power(self, fid, fleets, sid):
-        p = sum(C.NAVAL_DD_POWER * a.units.get("dd", 0) + C.NAVAL_BMB_POWER * a.units.get("bmb", 0) for a in fleets)
+        p = sum(C.NAVAL_DD_POWER * self.eff(a, "dd") + C.NAVAL_BMB_POWER * self.eff(a, "bmb") for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
         return p * self.morale(fid) * self.lead_mult(fid, "naval_power")   # 이순신: 해전 +30%
@@ -2779,6 +3601,8 @@ class Game:
                 self.factions[loser].naval_off_until = self.turn + off
                 self.event("info", f"{self.fname(loser)}: 해전 패배로 {off}턴 동안 "
                            f"{self.fx_source(loser, 'naval_loss_off')} — 해군 버프 비활성", fids=(loser,))
+        for a in list(fx) + list(fy):
+            a.last_combat = self.turn
         lx = self._ship_damage(fx, dx, y, sid)
         ly = self._ship_damage(fy, dy, x, sid)
         self._score_units(x, y, ly)
@@ -2836,16 +3660,21 @@ class Game:
                 self._bombard(a, tgt, units)
 
     def air_defense(self, fid_att, tgt):
-        """폭격기를 요격하는 힘: 대상 지역 대공포(단계당 10, 최대 5단계) + 대상·인접 지역의 적 전투기(대당 30)."""
+        """폭격기를 요격하는 힘: 대상 지역 대공포(단계당 10, 최대 5단계) + 대상에서 항공 거리 3칸 안(육지↔바다는
+        2칸, v1.3.0) 공항이 있는 지역의 적 전투기(대당 30, 남은 체력 비례). 공군은 공항이 있는 지역에서만 싸운다."""
         rr = self.regions[tgt]
         aa = min(C.AA_MAX_LEVEL, rr.b["aa"]) if rr.owner != NEUTRAL else 0
-        ftr = sum(x.units.get("ftr", 0) for loc in [tgt] + list(self.world.land_adj[tgt])
-                  for x in self.hostile_units_at(fid_att, loc))
-        return aa * C.AA_PER_LEVEL + ftr * C.UNITS["ftr"]["intercept"], aa, ftr
+        near = self.world.air_distances(tgt, C.FTR_DEFENSE_RANGE)
+        arms = list({x.id: x for loc in near if loc in self.regions and self.regions[loc].b["airport"]
+                     for x in self.hostile_units_at(fid_att, loc)}.values())     # 광역시는 같은 부대가 겹친다
+        ftr = sum(x.units.get("ftr", 0) for x in arms)
+        power = sum(self.eff(x, "ftr") for x in arms) * C.UNITS["ftr"]["intercept"]
+        return aa * C.AA_PER_LEVEL + power, aa, ftr
 
     def _bombard(self, a, tgt, units):
         rr = self.regions[tgt]
         m = self.mods(a.owner)
+        a.last_combat = self.turn            # 폭격도 전투: 2턴 동안 회복하지 않는다
         notes = []
         n_bmb = units.get("bmb", 0)
         if n_bmb:
@@ -2857,9 +3686,12 @@ class Game:
                 if shot:
                     notes.append(f"폭격기 {shot}대 격추(대공포 {aa}단계·전투기 {ftr}대)")
             n_bmb = a.units.get("bmb", 0) if a.id in self.armies else 0
-        dmg = units.get("art", 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
-        dmg += units.get("dd", 0) * C.UNITS["dd"]["bomb"] * self.lead_mult(a.owner, "naval_bomb")
-        dmg += n_bmb * C.UNITS["bmb"]["bomb"]
+        # 남은 체력 비례(v1.3.0): 다친 포병·구축함·폭격기는 그만큼 약하게 쏜다
+        live = a.id in self.armies
+        dmg = (self.eff(a, "art") if units.get("art") and live else 0) * C.UNITS["art"]["bomb"] * m.mult("bomb_art")
+        dmg += (self.eff(a, "dd") if units.get("dd") and live else 0) * C.UNITS["dd"]["bomb"] \
+            * self.lead_mult(a.owner, "naval_bomb")
+        dmg += (self.eff(a, "bmb") if n_bmb and live else 0) * C.UNITS["bmb"]["bomb"]
         bombers = {"bmb": n_bmb}
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
         dmg *= self.morale(a.owner)
@@ -2870,9 +3702,7 @@ class Game:
         guns = units.get("art", 0) + units.get("dd", 0) > 0
         p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
-            hit = self.bomb_targets(tgt)
-            if units.get("dd", 0) and rr.b.get("port"):
-                hit = ["port"]                    # 함포 사격은 항구를 먼저 노린다(상륙·해군 기지 무력화)
+            hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 따로(아래 10% 파괴) — v1.3.0: 함포의 항구 우선 파괴 삭제
             if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
                 hit = []                          # 천체관측소: 맞으면 파괴(과학승리는 다시 지을 때까지 불가)
                 self._destroy_observatory(rr, a.owner)
@@ -2887,9 +3717,15 @@ class Game:
                 else:
                     rr.b[k] -= 1
                     notes.append(f"{BUILDING_NAMES.get(k, k)} 1단계 파괴")
-        if not rr.bombed:
-            rr.h_delta += C.BOMBED_HAPPY
-            rr.bombed = True
+        # 1단계가 최대인 건물(항구·공항·사관학교, v1.3.0): 폭격당할 때마다 각각 10% 확률로 파괴
+        for k in C.SINGLE_BUILDINGS:
+            if rr.b.get(k, 0) > 0 and self.rng.random() < C.SINGLE_BOMB_DESTROY:
+                rr.b[k] = 0
+                notes.append(f"{BUILDING_NAMES.get(k, k)} 파괴")
+        hr = self.regions[M.center_of(self, tgt)]           # 광역시는 중심(행복도 하나)
+        if not hr.bombed:
+            hr.h_delta += C.BOMBED_HAPPY
+            hr.bombed = True
         if a.id in self.armies and a.empty():
             self.remove_army(a)
         self.battle_regions.append(tgt)
@@ -2934,9 +3770,96 @@ class Game:
     def fought_armies(self) -> set:
         return getattr(self, "fought", set())
 
-    def army_acted(self, army_id) -> bool:
-        """이번 턴 이미 전투한 부대(합치기·분리·이동·공격·탑승 불가)."""
+    def moved_armies(self) -> set:
+        """이번 턴 바로 이동·폭격·상륙한 플레이어 부대(v1.3.0): 더 움직이거나 공격할 수 없고, 합치기·분리는 된다."""
+        return self.__dict__.setdefault("moved", set())
+
+    def army_fought(self, army_id) -> bool:
+        """이번 턴 이미 전투한 부대(합치기·분리·이동·공격·승선 불가)."""
         return army_id in self.fought_armies()
+
+    def army_acted(self, army_id) -> bool:
+        """이번 턴 이미 행동(전투·이동·폭격·상륙)한 부대: 더 움직이거나 공격·폭격할 수 없다."""
+        return army_id in self.fought_armies() or army_id in self.moved_armies()
+
+    def air_can_stay(self, fid, rid) -> bool:
+        """공군이 들어가 머물 수 있는 땅: 내·연합 영토와 군사 통행권(동맹 포함)이 있는 나라의 땅."""
+        o = self.regions[rid].owner
+        return self.friendly_territory(fid, rid) or (o != NEUTRAL and not self.hostile(fid, o)
+                                                     and D.has_passage(self, fid, o))
+
+    # ---- 플레이어 명령 즉시 실행(v1.3.0): 이동·상륙·폭격·빈 땅 점령은 턴 종료를 기다리지 않는다
+    def act_now(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
+        """플레이어 부대에 명령해 바로 실행한다. 병력이 있는 곳 공격은 전투 확인 창(attack_now)으로.
+        한 부대는 한 턴에 한 번 행동한다. 한 턴에 못 가는 곳은 자동 이동: 이번 턴 첫 구간을 바로 가고,
+        다음 턴부터는 턴이 시작될 때 이어서 간다. 반환 (성공, 메시지)."""
+        a = self.armies.get(army_id)
+        if not a or a.owner == NEUTRAL:
+            return False, "부대가 없습니다."
+        if self.army_acted(a.id):
+            return False, "이번 턴에 이미 행동한 부대입니다(다음 턴에 다시 명령)."
+        if target is None:
+            a.order, a.goto = None, None
+            return True, "명령 취소"
+        ok, msg = self.order_army(a.id, target, mode, force_bombard, move_only)
+        if not ok or not a.order:
+            return ok, msg
+        o = a.order
+        if o["type"] == "attack" and self.hostile_units_at(a.owner, o["target"]):
+            a.order, a.goto = None, None        # 적 병력이 있는 곳은 전투 확인 창에서 직접 공격
+            return False, f"{self.info(o['target']).name}에 적 병력이 있습니다 — 공격은 직접 지정하세요."
+        res = self._run_order_now(a)
+        if a.id in self.armies and a.goto and a.loc != a.goto:
+            return True, (res + " · " if res else "") + f"자동 이동 중: {self.world.node_name(a.goto)}(다음 턴에 이어서)"
+        return True, res or msg
+
+    def _run_order_now(self, a):
+        """a.order 를 지금 실행하고 이번 턴 행동 완료로 표시한다. 결과 문장을 돌려준다."""
+        w = self.world
+        o, fid = a.order, a.owner
+        mv = self.moved_armies()
+        t = o["type"]
+        a.order = None
+        if t == "bombard":
+            tgt = o["target"]
+            units = self._bombard_units(a, tgt)
+            mv.add(a.id)
+            if not units or w.is_sea(tgt) or not self.hostile(fid, self.regions[tgt].owner):
+                return "폭격할 수 없습니다."
+            n_ev = len(self.events)
+            self._bombard(a, tgt, units)
+            self._update_fog()
+            return next((e["text"] for e in self.events[n_ev:] if e["kind"] == "bomb"), "폭격")
+        if t == "land" or (t == "attack" and (w.is_sea(a.loc) or a.domain() == "naval")):
+            for node in o.get("path", []):          # 함대는 해역 경로를 따라 간 뒤 내린다
+                a.loc = node
+            tgt = o["target"]
+            made, msg = self.unload_cargo(a.id, None, tgt)
+            mv.add(a.id)
+            return msg
+        tgt = o.get("target") or (o.get("path") or [a.loc])[-1]
+        owner0 = self.regions[tgt].owner if tgt in self.regions else None
+        if t == "attack":                           # 병력이 없는 적 땅: 들어가 점령
+            owner = self.regions[tgt].owner
+            self.__dict__.setdefault("fought_targets", {}).setdefault((fid, owner), set()).add(tgt)
+            self._exec_move(a, [tgt])
+        else:
+            self._exec_move(a, o.get("path", []))
+        if a.order and a.order.get("type") == "attack":
+            a.order, a.goto = None, None            # 가는 길에 적 병력을 만나면 그 앞에서 멈춘다
+        a.order = None
+        if a.id not in self.armies:
+            return None
+        mv.add(a.id)
+        self._update_fog()
+        name = w.node_name(a.loc)
+        if not w.is_sea(a.loc) and a.domain() == "land":
+            rr = self.regions[a.loc]
+            if a.loc == tgt and owner0 not in (None, fid) and rr.owner == fid:
+                return f"{name}을(를) 차지했습니다."
+            if fid in rr.occs:
+                return f"{name} 점령을 시작했습니다."
+        return f"{name}(으)로 이동했습니다."
 
     def capture_now(self, army_id, target):
         """플레이어: 병력이 없는 맞닿은 적국 땅으로 들어가 바로 점령한다(공격처럼 그 턴 행동 끝)."""
@@ -2963,8 +3886,22 @@ class Game:
             return True, f"{self.info(target).name}을(를) {self.fname(old)}에게서 차지했습니다."
         return True, f"{self.info(target).name}에 진입해 점령을 시작했습니다."
 
-    def attack_now(self, army_id, target, mode="assault"):
+    def attack_candidates(self, fid, target, exclude=()) -> list:
+        """지금 target 을 바로 공격할 수 있는 fid 의 부대(이번 턴 행동하지 않음). 함께 공격할 부대 고르기용."""
+        if target not in self.regions or not self.hostile_units_at(fid, target):
+            return []
+        out = []
+        for a in self.armies.values():
+            if a.owner != fid or a.id in exclude or self.army_acted(a.id) or a.empty() or self.is_science_army(a):
+                continue
+            opt = self.reachable(a).get(target)
+            if opt and opt["action"] == "attack":
+                out.append(a)
+        return sorted(out, key=self.army_sort_key)
+
+    def attack_now(self, army_id, target, mode="assault", extra=()):
         """플레이어 부대가 target 을 바로 공격한다(함대 상륙 공격은 해역 경로를 먼저 따라간다).
+        extra: 함께 공격할 부대들(v1.3.0) — 한 전투로 합쳐 공격력을 더하고, 여러 방향이면 협공 보너스.
         반환 (성공 여부, 결과 문장)."""
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
@@ -2975,13 +3912,28 @@ class Game:
         if not opt or opt["action"] != "attack" or not self.hostile_units_at(a.owner, target):
             return False, "지금 바로 공격할 수 없는 곳입니다."
         fid = a.owner
-        if a.domain() == "naval":
-            for node in opt["path"]:
-                a.loc = node
-        a.goto = None
-        a.order = {"type": "attack", "target": target, "mode": mode}
-        if not self._attack_valid(a, target):
-            a.order = None
+        group = [(a, opt)]
+        for xid in dict.fromkeys(extra):
+            x = self.armies.get(xid)
+            if not x or x.id == a.id or x.owner != fid or self.army_acted(x.id):
+                continue
+            xo = self.reachable(x).get(target)
+            if xo and xo["action"] == "attack":
+                group.append((x, xo))
+        attackers = []
+        for x, xo in group:
+            if x.domain() == "naval":
+                for node in xo["path"]:
+                    x.loc = node
+            x.goto = None
+            x.order = {"type": "attack", "target": target, "mode": mode}
+            if self._attack_valid(x, target):
+                attackers.append(x)
+            else:
+                x.order = None
+        if a not in attackers:
+            for x in attackers:
+                x.order = None
             return False, "지금 바로 공격할 수 없는 곳입니다."
         owner = self.regions[target].owner
         if not hasattr(self, "fought"):
@@ -2991,11 +3943,12 @@ class Game:
         before = set(self.armies)
         n_ev = len(self.events)
         self.fought_targets.setdefault((fid, owner), set()).add(target)
-        self._ground_battle(fid, [a], target, mode, [a])
-        self.fought.add(a.id)
+        self._ground_battle(fid, attackers, target, mode, attackers)
+        self.fought.update(x.id for x in attackers)
         self.fought.update(x for x in set(self.armies) - before if self.armies[x].owner == fid)
-        if a.id in self.armies:
-            a.order = None
+        for x in attackers:
+            if x.id in self.armies:
+                x.order = None
         self._update_fog()
         msg = next((e["text"] for e in self.events[n_ev:] if e["kind"] == "battle"), "전투")
         if self.regions[target].owner == fid:
@@ -3065,12 +4018,12 @@ class Game:
             if w.is_sea(a.loc):
                 cargo = {k: n for k, n in a.units.items() if C.UNITS[k]["kind"] == "land"}
                 lst = a.units.get("lst", 0)
+                dmg = {k: a.dmg.pop(k) for k in cargo if k in a.dmg}      # 다친 병력은 다친 채로 내린다
                 for k in cargo:
                     a.units.pop(k)
-                    a.dmg.pop(k, None)
-                land = self.new_army(fid, a.loc, cargo)
-                land.order = {"type": "attack", "target": tgt, "mode": mode}
-                attackers.append(land)
+                for land in self.new_armies_split(fid, a.loc, cargo, dmg):
+                    land.order = {"type": "attack", "target": tgt, "mode": mode}
+                    attackers.append(land)
                 if lst and mode == "assault":
                     attackers.append(a)
             else:
@@ -3151,11 +4104,27 @@ class Game:
             for x in survivors:
                 x.order = None
                 if w.is_sea(x.loc) and x.domain() == "land":
-                    fleet = next((f for f in self.armies_at(x.loc, fid) if f.domain() == "naval"), None)
-                    if fleet:
-                        self.merge_armies(fleet.id, x.id)
-                    else:
-                        self.remove_army(x)
+                    self._reboard(x)
+
+    def _reboard(self, x):
+        """바다 위에 남은 상륙 병력을 그 해역의 내 함대로 돌려보낸다. 빈 칸이 넉넉한 상륙함 함대부터 싣고,
+        상륙함을 잃어 칸이 모자라면 실을 수 있는 만큼만 남는다(나머지는 수송선과 함께 잃는다). 함대가 없으면 잃는다."""
+        fleets = sorted((f for f in self.armies_at(x.loc, x.owner) if f.domain() == "naval"),
+                        key=lambda f: (-(f.cargo_cap() - f.cargo_used()), f.id))
+        for f in fleets:
+            if self.merge_armies(f.id, x.id)[0]:
+                return
+        if not fleets or fleets[0].cargo_cap() <= 0:
+            self.remove_army(x)
+            return
+        f = fleets[0]
+        for k, v in x.units.items():
+            f.units[k] = f.units.get(k, 0) + v
+        for k, d in x.dmg.items():
+            f.dmg[k] = f.dmg.get(k, 0.0) + d
+        self.remove_army(x)
+        self._validate_capacity(f)
+        self._prune_army(f)
 
     def _leader_battle_mods(self, fid, def_owner, attackers, defenders, main, tgt, dd, ad):
         """지도자 전투 효과로 (방어측 피해, 공격측 피해) 보정."""
@@ -3181,8 +4150,9 @@ class Game:
         return dd, ad
 
     def _sabotage(self, rr) -> str:
-        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다."""
-        keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS) + list(C.SINGLE_BUILDINGS)
+        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다. 한 단계뿐인 항구·공항·사관학교는
+        폭격과 같이 대상이 아니다(v1.3.0 — 한 번에 통째로 사라지지 않게)."""
+        keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS)
                 if k in rr.b and k != "line" and rr.b[k] > 0]
         if not keys:
             return ""
@@ -3191,16 +4161,14 @@ class Game:
         return f", 의열단 파괴: {BUILDING_NAMES.get(k, k)} {rr.b[k] + 1} → {rr.b[k]}단계"
 
     def _phase_heal(self):
-        """이번 턴에 이동·공격·폭격·점령을 하지 않고 전투에도 휘말리지 않은 부대는 체력 10% 회복."""
-        acted = self.__dict__.get("_acted", set())
+        """회복(v1.3.0): 마지막 전투 뒤 2턴 이상 지난 부대는 매 턴 유닛 1개당 체력 1씩 회복(이동·점령은 상관없음)."""
         for a in self.armies.values():
-            if not a.dmg or a.id in acted or a.order or a.owner == NEUTRAL:
+            if not a.dmg or a.owner == NEUTRAL:
                 continue
-            rr = self.regions.get(a.loc)
-            if rr is not None and a.owner in rr.occs:
-                continue                     # 점령 중
+            if self.turn - getattr(a, "last_combat", -999) < C.HEAL_AFTER_TURNS:
+                continue
             for k in list(a.dmg):
-                d = a.dmg[k] - C.HEAL_RATE * a.hp_max(k)
+                d = a.dmg[k] - C.HEAL_PER_UNIT * a.units.get(k, 0)
                 if d > 1e-9:
                     a.dmg[k] = d
                 else:
@@ -3219,7 +4187,7 @@ class Game:
                 if not arms:
                     continue
                 A = C.UNITS["inf"]["atk"] * n
-                Dv = sum(C.UNITS[k]["df"] * c for a in arms for k, c in a.units.items())
+                Dv = sum(C.UNITS[k]["df"] * self.eff(a, k) for a in arms for k in a.units)
                 dmg = R.battle_damage(A, Dv, self.rng.uniform(C.RAND_LO, C.RAND_HI))[0]
                 lost = self.apply_damage(arms, dmg)
                 if lost:
@@ -3300,12 +4268,12 @@ class Game:
         return theirs > mine
 
     def occ_force(self, fid, rid) -> float:
-        """무력 점령 병력 규모: rid 에 있는 fid 육군 유닛의 최대 체력 합."""
-        return float(sum(C.UNITS[k]["hp"] * n for a in self.armies_at(rid, fid) if a.domain() == "land"
-                         for k, n in a.units.items() if C.UNITS[k]["kind"] == "land"))
+        """무력 점령 병력 규모(v1.3.0): rid 에 주둔한 fid 육군 유닛의 남은 체력 합."""
+        return float(sum(a.hp_left(k) for a in self.armies_at(rid, fid) if a.domain() == "land"
+                         for k in a.units if C.UNITS[k]["kind"] == "land"))
 
     def _claim_key(self, claim, rid):
-        """같은 턴에 둘 이상이 다 채웠을 때 순서: 무력 점령(병력 규모 = 최대 체력 합이 큰 순)이 편입보다 먼저,
+        """같은 턴에 둘 이상이 다 채웠을 때 순서: 무력 점령(주둔 병력의 남은 체력 합이 큰 순)이 편입보다 먼저,
         편입끼리는 대상과 맞닿은 지역 인구 합이 많은 순."""
         kind, fid, _ = claim
         if kind == "occ":
@@ -3321,7 +4289,7 @@ class Game:
 
     def _phase_claims(self):
         """6. 점령·편입: 무력 점령과 편입 게이지가 함께 차고, 먼저 다 채운 쪽이 그 지역을 차지한다.
-        같은 턴에 둘 이상이 다 채우면: 무력 점령끼리는 그 자리 병력 규모(최대 체력 합)가 큰 쪽, 편입끼리는 대상과
+        같은 턴에 둘 이상이 다 채우면: 무력 점령끼리는 그 자리 주둔 병력의 남은 체력 합이 큰 쪽, 편입끼리는 대상과
         맞닿은 지역 인구 합이 많은 쪽, 점령과 편입이 겹치면 병력이 있는 무력 점령이 먼저."""
         claims = {}
         for rid, fid in self._advance_occupations():
@@ -3331,8 +4299,10 @@ class Game:
         for rid, cl in claims.items():
             if len(cl) > 1:
                 cl.sort(key=lambda c: self._claim_key(c, rid))
-                names = ", ".join(self.fname(c[1]) for c in cl)
-                why = ("병력 규모(최대 체력 합)가 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
+            rivals = list(dict.fromkeys(c[1] for c in cl))   # 같은 나라의 점령·편입은 서로 경쟁하지 않는다
+            if len(rivals) > 1:
+                names = ", ".join(self.fname(f) for f in rivals)
+                why = ("주둔 병력의 체력 합이 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
                        else "무력 점령 중인" if cl[0][0] == "occ" else "맞닿은 지역 인구 합이 가장 많은")
                 self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
                            f"{why} {self.fname(cl[0][1])}이(가) 차지합니다.",
@@ -3347,7 +4317,7 @@ class Game:
                 if p is None or p.key != rid:
                     continue
                 for r in members:
-                    r.project = None
+                    self._clear_project(r)
                 self._complete_project(self.factions[fid], lead, p)
                 if len(members) > 1:
                     self.event("complete", f"{self.info(rid).name}: {len(members)}개 지역 공동 편입 완료",
@@ -3369,7 +4339,7 @@ class Game:
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
                 p.funded = False
-                if rr.occ:
+                if rr.occ and p.group is None:
                     p.stalled = True
                     continue
                 if p.kind == "annex":
@@ -3389,8 +4359,8 @@ class Game:
     def food_prod(self, fid, r) -> float:
         """한 지역의 식량 생산(스탈린 '집단농장' 농장 +15%, 마오쩌둥 '해로운 새' −15%)."""
         m = self.mods(fid)
-        return R.food_output(r.b["farm"] * m.mult("output_farm"), r.b["fishery"],
-                             self.fish_mult(fid, r.id)) * m.mult("food_prod")
+        return R.food_output(r.b["farm"] * self.farm_mult(fid, r.id), r.b["fishery"],
+                             self.fish_food_mult(fid, r.id)) * m.mult("food_prod")
 
     def expected_food_balance(self, f) -> float:
         """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
@@ -3412,7 +4382,7 @@ class Game:
         f = self.factions[rr.owner]
         f.money += p.paid
         f.refund += p.paid
-        rr.project = None
+        self._clear_project(rr)
         if taker not in (NEUTRAL, f.id):
             if f.is_ai:
                 D.add_opinion(self, f.id, taker, C.OP_HIJACK)
@@ -3429,28 +4399,94 @@ class Game:
                     or not getattr(p, "funded", False):
                 continue
             f = self.factions[rr.owner]
-            p.funded = False
+            p.funded = False                 # 묶음 공사는 여러 지역이 같은 작업이라 여기서 한 번만 진행된다
             p.progress += 1
             if p.kind == "unit":
-                drafted.add(rr.id)
+                drafted.update(M.members(self, rr.id))
+            if p.progress >= p.turns and p.group is not None:
+                self._complete_line_group(f, p)
+                continue
+            if p.progress >= p.turns and p.metro is not None:
+                M.complete(self, f, p)
+                continue
             if p.progress >= p.turns:
                 rr.project = None
                 self._complete_project(f, rr, p)
                 if getattr(p, "chain", False):
                     self._chain_next(f, rr, p)
+                elif getattr(p, "line_plan", None):
+                    self._line_plan_next(f, rr, p)
+                elif p.kind == "unit" and getattr(p, "repeat", 0) > 0:
+                    self._repeat_unit(f, rr, p)
         return drafted
 
     def can_chain(self, kind, key) -> bool:
         """최대 건설 대상: 생산 건물(농업·어업·공업·금융·채굴·발전소·특산물)."""
         return kind == "build" and key in C.CHAIN_BUILDINGS
 
-    def start_project_max(self, fid, rid, kind, key):
-        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다."""
-        ok, msg = self.start_project(fid, rid, kind, key)
+    def start_project_max(self, fid, rid, kind, key, site=None, pool=None):
+        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다.
+        광역시는 통합 건물 종류(pool)를 넘겨야 탄광·정유처럼 같은 건물 키를 쓰는 것을 구분한다."""
+        ok, msg = self.start_project(fid, rid, kind, key, site=site, pool=pool)
         if ok and self.can_chain(kind, key):
             self.regions[rid].project.chain = True
             msg += " · 최대 단계까지 이어서 건설"
         return ok, msg
+
+    def start_units(self, fid, rid, key, count):
+        """군 유닛 count 개 연속 생산: 하나씩 차례로 만든다(완성되면 다음 것을 바로 착수)."""
+        count = max(1, int(count))
+        ok, msg = self.start_project(fid, rid, "unit", key)
+        if ok and count > 1:
+            self.regions[rid].project.repeat = count - 1
+            msg += f" · {count}개 연속 생산"
+        return ok, msg
+
+    def _repeat_unit(self, f, rr, p):
+        """연속 생산: 방금 만든 유닛을 하나 더 착수(못 하면 알리고 멈춘다)."""
+        if rr.owner != f.id or rr.project:
+            return
+        ok, msg = self.start_project(f.id, rr.id, "unit", p.key)
+        if ok:
+            rr.project.repeat = p.repeat - 1
+            rr.project.priority = p.priority          # 자금 우선순위는 그대로
+            rr.project.pinned = getattr(p, "pinned", False)
+        elif not f.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 연속 생산 중단(남은 {p.repeat}개) — {msg}",
+                       region=rr.id, fids=(f.id,))
+
+    def rally_candidates(self, fid, node, n) -> list:
+        """node 로부터 육상 n칸 안에 있는 내 육군 가운데 불러올 수 있는 부대(이번 턴 전투했거나 공격·폭격·상륙
+        명령을 받은 부대, 과학 유닛, 바다 위 부대는 뺀다)."""
+        near = self.land_within(node, n)
+        out = []
+        for a in self.armies.values():
+            if a.owner != fid or a.loc not in near or a.domain() != "land" or self.world.is_sea(a.loc):
+                continue
+            if self.is_science_army(a) or self.army_acted(a.id):
+                continue
+            if a.order and a.order.get("type") != "move":
+                continue
+            rr = self.regions.get(a.loc)
+            if rr is not None and rr.owner == NEUTRAL and fid in rr.occs:
+                continue                          # 중립 지역을 점령 중인 병력은 남겨 둔다(v1.3.0)
+            out.append(a)
+        return out
+
+    def rally(self, fid, node, n):
+        """node 로부터 육상 n칸 안의 내 육군을 node 로 모은다(한 턴에 못 오면 여러 턴 자동 이동).
+        (명령을 받은 부대 수, 유닛 수)를 돌려준다."""
+        rr = self.regions.get(node)
+        if rr is None or not self.friendly_territory(fid, node):
+            return 0, 0
+        k = units = 0
+        cmd = self.order_army if self.factions[fid].is_ai else self.act_now   # 플레이어 부대는 바로 움직인다
+        for a in self.rally_candidates(fid, node, n):
+            ok, _ = cmd(a.id, node)
+            if ok:
+                k += 1
+                units += a.count()
+        return k, units
 
     def _chain_next(self, f, rr, p):
         """최대 건설: 방금 완공한 건물의 다음 단계를 바로 착수(못 하면 알리고 멈춘다)."""
@@ -3463,6 +4499,190 @@ class Game:
         elif not f.is_ai:
             self.event("info", f"{self.info(rr.id).name}: 최대 건설 중단 — {msg}", region=rr.id, fids=(f.id,))
 
+    # ---- 국경 방어선 일괄 건설(v1.3.0): 맞닿은 나라 쪽 경계를 목표 단계까지
+    def border_nations(self, fid) -> list:
+        """내 땅과 맞닿은 나라: [(나라, 경계 수, 최저 단계, 평균 단계)]."""
+        lv = {}
+        for r in self.regions_of(fid):
+            for n in self.world.land_adj[r.id]:
+                o = self.regions[n].owner
+                if o not in (NEUTRAL, fid):
+                    lv.setdefault(o, []).append(r.lines.get(n, 0))
+        return sorted(((o, len(v), min(v), sum(v) / len(v)) for o, v in lv.items()), key=lambda x: (-x[1], x[0]))
+
+    def _next_border_line(self, rid, nation, target):
+        """rid 의 경계 가운데 nation 땅과 맞닿고 목표 단계 미만인 것 중 가장 낮은 경계(없으면 None)."""
+        rr = self.regions[rid]
+        top = min(C.DEF_BUILDINGS["line"]["max"], int(target))
+        cands = [(rr.lines.get(n, 0), n) for n in sorted(self.world.land_adj[rid])
+                 if self.regions[n].owner == nation and rr.lines.get(n, 0) < top]
+        return min(cands)[1] if cands else None
+
+    def border_line_plan(self, fid, nation, target):
+        """국경 방어선 일괄 건설 계획(v1.3.0). nation 땅과 맞닿은 내 지역 가운데 목표 단계 미만 경계가 있는 곳을
+        모두 대상으로 한 '나라 방어선' 묶음 공사 한 건:
+        - 턴 수 = 대상 경계마다 단계별 건설 턴을 모두 더해 대상 지역 수로 나눈 값(올림)
+        - 비용 = 모든 단계 비용의 합, 매 턴 (비용 ÷ 턴 수)를 한꺼번에 낸다
+        - 대상 지역에서 진행 중이던 건설·생산·편입은 중단(낸 비용 50% 환급)
+        점령당하는 중·저항 중인 지역은 지을 수 없어 뺀다."""
+        top = min(C.DEF_BUILDINGS["line"]["max"], max(1, int(target)))
+        m = self.mods(fid)
+        plan = {"nation": nation, "target": top, "lines": {}, "cost": {}, "steps": 0, "turns_sum": 0,
+                "turns": 0, "total": 0.0, "per_turn": 0.0, "interrupt": [], "skipped": 0, "done": 0,
+                "why": self.order_frozen(fid) or ""}
+        for r in self.regions_of(fid):
+            borders = [n for n in sorted(self.world.land_adj[r.id]) if self.regions[n].owner == nation]
+            if not borders:
+                continue
+            need = [n for n in borders if r.lines.get(n, 0) < top]
+            if not need:
+                plan["done"] += 1
+                continue
+            if r.occ or self.resisting(r):
+                plan["skipped"] += 1
+                continue
+            cost = 0.0
+            for n in need:
+                for lv in range(r.lines.get(n, 0) + 1, top + 1):
+                    plan["turns_sum"] += self.build_time(fid, "line", R.def_building_turns(lv))
+                    cost += R.def_building_cost("line", lv) * m.mult("cost_line")
+                    plan["steps"] += 1
+            plan["lines"][r.id] = need
+            plan["cost"][r.id] = cost
+        # 광역시(v1.3.0)는 슬롯이 하나: 구성 지역 하나라도 대상이면 모두 함께 묶음 공사에 넣고(경계 없는 지역은 빈 몫),
+        # 점령당하는 중·저항 중인 구성 지역이 있으면 광역시 전체를 뺀다. 턴 수는 슬롯(광역시는 한 번) 수로 나눈다
+        for rid in list(plan["lines"]):
+            mem = M.members(self, rid)
+            if len(mem) < 2:
+                continue
+            if any(self.regions[x].owner != fid or self.regions[x].occ or self.resisting(self.regions[x]) for x in mem):
+                for x in mem:
+                    if x in plan["lines"]:
+                        plan["lines"].pop(x)
+                        plan["cost"].pop(x)
+                        plan["skipped"] += 1
+                continue
+            for x in mem:
+                plan["lines"].setdefault(x, [])
+                plan["cost"].setdefault(x, 0.0)
+        if plan["lines"]:
+            plan["steps"] = sum(top - self.regions[rid].lines.get(b, 0) for rid, bs in plan["lines"].items() for b in bs)
+            plan["turns_sum"] = sum(self.build_time(fid, "line", R.def_building_turns(lv))
+                                    for rid, bs in plan["lines"].items() for b in bs
+                                    for lv in range(self.regions[rid].lines.get(b, 0) + 1, top + 1))
+        plan["interrupt"] = [rid for rid in plan["lines"] if self.regions[rid].project]
+        plan["slots"] = len({M.center_of(self, rid) for rid in plan["lines"]})
+        n = plan["slots"]
+        if n:
+            plan["turns"] = max(1, math.ceil(plan["turns_sum"] / n - 1e-9))
+            plan["total"] = sum(plan["cost"].values())
+            plan["per_turn"] = plan["total"] / plan["turns"]
+        return plan
+
+    def build_border_lines(self, fid, nation, target):
+        """국경 방어선 일괄 건설(v1.3.0): '○○국 방어선' 묶음 공사 한 건을 대상 지역 모두에 착수한다.
+        지출 우선순위에서는 건설 한 건, 다 지으면 대상 경계가 모두 목표 단계가 된다. 반환 (성공, 메시지)."""
+        plan = self.border_line_plan(fid, nation, target)
+        if plan["why"]:
+            return False, plan["why"]
+        if not plan["lines"]:
+            return False, "목표 단계보다 낮은 국경 방어선이 없습니다."
+        f = self.factions[fid]
+        stopped = []
+        for rid in plan["interrupt"]:
+            rr = self.regions[rid]
+            p = rr.project
+            if p is None:
+                continue
+            if p.group is not None:       # 다른 묶음 공사의 대상이던 지역: 그 묶음에서만 빠진다
+                share = self._line_group_drop(p, rid) * C.PROJECT_REFUND
+                f.money += share
+                rr.project = None
+                stopped.append(p.name)
+            else:
+                stopped.append(self.project_label(p))
+                self.cancel_project(fid, rid)
+        name = f"{self.fname(nation)} 방어선"
+        p = Project(kind="build", key="line_group", level=plan["target"], turns=plan["turns"],
+                    per_turn=plan["per_turn"], name=name,
+                    group={"nation": nation, "target": plan["target"], "lines": dict(plan["lines"]),
+                           "cost": dict(plan["cost"])})
+        self.proj_counter = getattr(self, "proj_counter", 0) + 1
+        p.priority = self.proj_counter
+        for rid in plan["lines"]:
+            rr = self.regions[rid]
+            rr.project = p
+            if not f.is_ai:
+                rr.focus = rr.pop_focus = False
+        msg = (f"{name} {plan['target']}단계 착수: 지역 {len(plan['lines'])}곳 · 방어선 {plan['steps']}단계분 · "
+               f"{plan['turns']}턴, 턴당 {plan['per_turn']:,.0f}")
+        if stopped:
+            msg += f" · 진행 중이던 작업 {len(stopped)}건 중단(50% 환급)"
+        return True, msg
+
+    def project_label(self, p) -> str:
+        """알림용 작업 이름."""
+        if p.name:
+            return p.name
+        if p.kind == "build":
+            if p.key == "line":
+                return f"방어선 {p.level}단계"
+            return f"{BUILDING_NAMES.get(p.key, p.key)} {p.level}단계"
+        if p.kind == "unit":
+            return f"{C.UNITS[p.key]['name']} 생산" if p.key in C.UNITS else "생산"
+        if p.kind == "annex":
+            return f"{self.info(p.key).name} 편입"
+        return {"science": "과학 공사", "econ": "경제 공사", "capital": "천도"}.get(p.kind, p.kind)
+
+    def _line_group_drop(self, p, rid) -> float:
+        """묶음 공사에서 rid 를 뺀다(점령·다른 묶음 착수). 남은 지역 몫만큼 턴당 비용을 줄이고, 뺀 지역 몫으로
+        이미 낸 돈(환급 계산용)을 돌려준다. 지역 슬롯은 부르는 쪽이 비운다."""
+        g = p.group
+        total = sum(g["cost"].values())
+        c = g["cost"].pop(rid, 0.0)
+        g["lines"].pop(rid, None)
+        if total <= 0:
+            return 0.0
+        share = p.paid * c / total
+        p.paid -= share
+        p.per_turn *= (total - c) / total
+        return share
+
+    def _complete_line_group(self, f, p):
+        """묶음 공사 완공: 대상 지역들의 대상 경계를 모두 목표 단계로."""
+        g = p.group
+        regs = [rid for rid in g["lines"] if self.regions[rid].project is p and self.regions[rid].owner == f.id]
+        n = 0
+        for rid in regs:
+            rr = self.regions[rid]
+            rr.project = None
+            for b in g["lines"][rid]:
+                if rr.lines.get(b, 0) < g["target"]:
+                    rr.lines[b] = g["target"]
+                    n += 1
+        for r in self.regions.values():          # 혹시 남은 연결도 끊는다
+            if r.project is p:
+                r.project = None
+        if regs:
+            self.event("complete", f"{p.name} {g['target']}단계 완공: 지역 {len(regs)}곳 · 경계 {n}곳",
+                       region=regs[0], fids=(f.id,))
+
+    def _line_plan_next(self, f, rr, p):
+        """국경 방어선 일괄 건설: 같은 나라 쪽 다음 경계(또는 다음 단계)를 이어서 착수."""
+        plan = p.line_plan
+        if rr.owner != f.id or rr.project:
+            return
+        b = self._next_border_line(rr.id, plan["nation"], plan["target"])
+        if b is None:
+            return
+        ok, msg = self.start_project(f.id, rr.id, "build", "line", border=b)
+        if ok:
+            rr.project.line_plan = dict(plan)
+            rr.project.priority = p.priority
+            rr.project.pinned = getattr(p, "pinned", False)
+        elif not f.is_ai:
+            self.event("info", f"{self.info(rr.id).name}: 국경 방어선 이어 짓기 중단 — {msg}", region=rr.id, fids=(f.id,))
+
     def project_left(self, rid) -> int:
         """남은 턴. 공동 편입은 함께하는 지역 수에 따른 속도로 계산."""
         rr = self.regions[rid]
@@ -3472,31 +4692,41 @@ class Game:
         rest = max(0.0, p.turns - p.progress)
         if p.kind == "annex":
             # 공동 편입: 함께하는 지역들의 진행도는 공유된다(막 합류한 지역도 가장 앞선 진행도 기준)
-            members = [r.project for r in self.regions.values() if r.owner == rr.owner and r.project
-                       and r.project.kind == "annex" and r.project.key == p.key]
-            n = len(members)
+            members = [q for q in self.unique_projects([r for r in self.regions.values() if r.owner == rr.owner])
+                       if q.kind == "annex" and q.key == p.key]          # 광역시 편입은 한 건(구성 지역 수만큼)
+            n = sum(self.annex_weight(q) for q in members)
             rest = max(0.0, max(m.turns for m in members) - max(m.progress for m in members))
-            rest *= 1 - R.joint_reduction(n)
+            rest *= 1 - self.joint_annex_reduction(n, any(q.metro is not None for q in members))
         return max(1, math.ceil(rest - 1e-9)) if rest > 0 else 0
 
     def joint_count(self, fid, target) -> int:
-        return sum(1 for r in self.regions.values()
-                   if r.owner == fid and r.project and r.project.kind == "annex" and r.project.key == target)
+        """같은 대상을 함께 편입하는 지역 수(광역시는 구성 지역 수만큼)."""
+        return sum(self.annex_weight(p) for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid])
+                   if p.kind == "annex" and p.key == target)
+
+    def joint_reduction_of(self, fid, target) -> float:
+        ps = [p for p in self.unique_projects([r for r in self.regions.values() if r.owner == fid])
+              if p.kind == "annex" and p.key == target]
+        return self.joint_annex_reduction(sum(self.annex_weight(p) for p in ps), any(p.metro is not None for p in ps))
 
     def _advance_annexes(self):
         """편입 게이지를 올린다(같은 세력이 같은 대상을 여러 지역에서 편입하면 진행도를 함께 쌓는다).
         이번 턴에 다 찬 것을 {(세력, 대상): (대표 지역, 참여 지역들)} 로 돌려준다."""
         groups = {}
+        seen = set()
         for rr in self.regions.values():
             p = rr.project
-            if p and p.kind == "annex" and rr.owner != NEUTRAL:
+            if p and p.kind == "annex" and rr.owner != NEUTRAL and id(p) not in seen:
+                seen.add(id(p))                  # 광역시 편입은 구성 지역이 같은 작업: 한 번만
                 groups.setdefault((rr.owner, p.key), []).append(rr)
         done = {}
         for (fid, tgt), members in groups.items():
             funded = [rr for rr in members if getattr(rr.project, "funded", False)]
             if not funded:
                 continue
-            step = 1 / (1 - R.joint_reduction(len(funded)))
+            # 광역시 편입은 구성 지역 수만큼의 공동 편입(광역시가 끼면 기간 감소 최대 50%)
+            n = sum(self.annex_weight(rr.project) for rr in funded)
+            step = 1 / (1 - self.joint_annex_reduction(n, any(rr.project.metro is not None for rr in funded)))
             prog = max(rr.project.progress for rr in members) + step
             for rr in members:
                 rr.project.progress = prog
@@ -3518,15 +4748,27 @@ class Game:
                 text = (f"{name} {self.building_name(rr.id, p.key, p.level)} 완공" if p.key in C.PROD_LEVEL_NAMES
                         else f"{name} {self.building_name(rr.id, p.key)} {p.level}단계 완공")
         elif p.kind == "unit":
-            self.add_units(f.id, rr.id, p.key, 1)
+            self.deliver_units(f.id, rr.id, p.key, 1)
             text = f"{name}에서 {C.UNITS[p.key]['name']} 생산 완료"
         elif p.kind == "annex":
             tgt = self.regions[p.key]
             garrison = [a for a in self.armies_at(tgt.id) if a.owner == NEUTRAL]
             self.transfer_region(tgt.id, f.id, reason="편입")
             tgt.happy = 0.0
-            for a in garrison:
-                a.owner = f.id
+            disband = tgt.id in getattr(f, "annex_disband", set())
+            for ff in self.factions:
+                getattr(ff, "annex_disband", set()).discard(tgt.id)
+            if disband:                              # 자동 해산(v1.3.0): 보병을 받지 않고 그 지역 행복도 +0.5
+                for a in garrison:
+                    if a.id in self.armies:
+                        self.remove_army(a)
+                tgt.happy += C.UNIT_DISBAND_HAPPY["light"]
+            else:
+                self._take_garrison(tgt.id, f.id, garrison)
+                dest = self.rally_of(f.id, tgt.id)   # 일괄 집결지가 있으면 넘겨받은 보병도 그리로(v1.3.0)
+                if dest:
+                    for a in self.armies_at(tgt.id, f.id):
+                        self._send_to_rally(a, dest)
             text = f"{self.info(tgt.id).name} 편입 완료"
             self.event("captured", f"{f.name}이(가) {self.info(tgt.id).name}을(를) 편입했습니다.",
                        region=tgt.id, fids=(f.id,))
@@ -3557,7 +4799,10 @@ class Game:
             f.capital = rr.id
             for r in self.regions_of(f.id):
                 r.h_delta += C.CAPITAL_MOVE_HAPPY
-            text = f"{name}(으)로 천도 완료"
+            # 직접 천도한 새 수도는 시작 수도처럼 모든 경계(육지 경계·해안선)에 방어선 1단계(v1.3.0)
+            for n in list(self.world.land_adj[rr.id]) + (["coast"] if self.world.regions[rr.id].coastal else []):
+                rr.lines[n] = max(rr.lines.get(n, 0), C.START_LINE_LEVEL)
+            text = f"{name}(으)로 천도 완료(새 수도 모든 경계에 방어선 {C.START_LINE_LEVEL}단계)"
         else:
             text = "완료"
         self.event("complete", text, region=rr.id, fids=(f.id,))
@@ -3572,6 +4817,20 @@ class Game:
         for r in regs:
             r.fuel_used = plan["factories"].get(r.id, {}).get("units", 0)
         left = {k: int(math.floor(plan["after"][k] + 1e-9)) for k in C.ENERGY}
+        # 판매 계약으로 먼저 보낸 몫이 이번 턴 확보·발전량보다 많았으면(유닛에 석유를 썼거나 배정을 바꿔 발전이 줄면)
+        # 부족분을 시장가로 사서 메운다(v1.3.0)
+        short = {k: -left[k] for k in C.ENERGY if left[k] < 0}
+        if short:
+            cost = sum(n * C.MARKET_BUY[k] * C.MONEY_SCALE for k, n in short.items())
+            f.money -= cost
+            f.trade_buy += cost
+            plan["covered"] = short
+            plan["covered_money"] = cost
+            if not f.is_ai:
+                self.event("info", "자원 계약 부족분을 시장에서 사서 보냈습니다: "
+                           + ", ".join(f"{C.RESOURCE_NAMES[k]} {n}" for k, n in short.items()) + f" (−{cost:,.0f})",
+                           fids=(f.id,))
+            left = {k: max(0, v) for k, v in left.items()}
         gain = sum(left[k] * self.sell_price(f.id, k) for k in C.ENERGY)
         if gain > 0:
             f.money += gain
@@ -3620,6 +4879,8 @@ class Game:
     def _distribute_specialties(self, f, regs):
         """① 수동 고정 → ② 기존 공급 유지 → ③ 자동: 행복도 낮은 지역부터. 제외 지정은 건너뛴다."""
         stock = f.specialty
+        whole = regs
+        regs = [r for r in regs if M.center_of(self, r.id) == r.id]     # 광역시는 중심 하나가 받는다
         old = {r.id: set(r.supplied) for r in regs}
         new = {r.id: set() for r in regs}
 
@@ -3645,6 +4906,9 @@ class Game:
                     give(r, kind)
         for r in regs:
             r.supplied = new[r.id]          # 행복도는 공급받는 동안 턴당 +0.1/종 (_phase_happiness)
+        for r in whole:
+            if r.id not in new:
+                r.supplied = set(self.regions[M.center_of(self, r.id)].supplied)
 
     def specialty_kinds(self, fid):
         """이 세력이 가진(재고 또는 생산) 특산물 종류."""
@@ -3658,11 +4922,11 @@ class Game:
         r = self.regions[rid]
         if r.owner != fid:
             return False, "내 지역이 아닙니다."
+        if state == "pin" and kind not in r.spec_pin and len(r.spec_pin) >= C.SPECIALTY_MAX_TYPES:
+            return False, f"한 지역에는 최대 {C.SPECIALTY_MAX_TYPES}종까지 공급합니다."   # 기존 상태는 그대로
         r.spec_pin.discard(kind)
         r.spec_block.discard(kind)
         if state == "pin":
-            if len(r.spec_pin) >= C.SPECIALTY_MAX_TYPES:
-                return False, f"한 지역에는 최대 {C.SPECIALTY_MAX_TYPES}종까지 공급합니다."
             r.spec_pin.add(kind)
         elif state == "block":
             r.spec_block.add(kind)
@@ -3766,15 +5030,21 @@ class Game:
                 continue
             t, cap, floor = per_fac[r.owner]
             spec = C.SPECIALTY_HAPPY_TURN * len(r.supplied)      # 특산물: 공급받는 종류마다 턴당
+            if getattr(r, "metro", None) is not None:
+                spec *= C.METRO_SPEC_HAPPY                       # 광역시: 1종의 효과는 절반(대신 광역시 전체에)
             h = (r.happy + r.h_delta + t + spec) * C.HAPPY_DECAY
             r.happy = max(floor, min(cap, h))
             r.h_delta = 0.0
-            if (getattr(r, "lost_project", None) is not None or getattr(r, "lost_bld", None) is not None) \
+            if (getattr(r, "lost_project", None) is not None or getattr(r, "lost_bld", None) is not None
+                    or getattr(r, "lost_def", None) is not None) \
                     and self.resist_phase(r)[0] not in ("resist", "recover"):
                 self._refund_lost_project(r)        # 탈환 기간(저항 + 회복)이 지났다: 공사 50% 환급, 시설 철거
                 self._demolish_lost_bld(r)
+                self._settle_defenses(r)            # 방어 건물은 1단계씩 깎여 새 주인 것으로
             if r.resist and self.turn - r.resist["turn"] >= C.RESIST_NO_REBEL_TURNS - 1:
                 r.resist = None
+        for m in M.metros(self).values():
+            M.sync(self, m)                     # 광역시: 구성 지역 모두 중심의 행복도(하나의 지역)
         self._morale = {}
 
     def _phase_conscription(self, drafted):
@@ -3920,6 +5190,8 @@ class Game:
             if not f.alive:
                 continue
             for r in list(self.regions_of(f.id)):
+                if M.center_of(self, r.id) != r.id:
+                    continue                      # 광역시는 중심에서 한 번만
                 if self.rebel_happy(r) > C.REBEL_THRESHOLD:
                     continue
                 if self.rng.random() < self.rebellion_chance(f.id, r.id):
@@ -3932,16 +5204,19 @@ class Game:
 
     def suppress_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
-        S = sum(C.UNITS[k]["df"] * n for a in self.armies_at(rid, fid) for k, n in a.units.items())
+        S = sum(C.UNITS[k]["df"] * n for r in M.members(self, rid) for a in self.armies_at(r, fid)
+                for k, n in a.units.items())
         Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         p = S / (S + Rv) if S + Rv > 0 else 0.0
         return max(0.0, min(1.0, p + self.mods(fid).add("suppress")))
 
     def rebellion_accept_cost(self, fid, rid) -> float:
-        return self.region_output_estimate(rid) * C.REBEL_ACCEPT_TURNS
+        """요구 수용 비용: 나라 턴당 GDP × (−반란 판정 행복도) × 0.001(행복도 −50이면 GDP의 5%)."""
+        h = max(0.0, -self.rebel_happy(self.regions[rid]))
+        return max(0.0, self.gdp(fid)) * h * C.REBEL_PAY_GDP
 
     def resolve_rebellion(self, fid, rid, choice):
-        """choice: pay / tax / suppress. 결과 메시지 반환."""
+        """choice: pay / suppress. 결과 메시지 반환. 요구 수용은 돈 지급뿐이다(예전 'tax' 는 pay 로 본다)."""
         rr = self.regions[rid]
         f = self.factions[fid]
         if rid in self.pending_rebellions:
@@ -3949,31 +5224,34 @@ class Game:
         if rr.owner != fid:
             return "이미 내 지역이 아닙니다."
         name = self.info(rid).name
-        if choice == "pay":
+        if choice in ("pay", "tax"):
             cost = self.rebellion_accept_cost(fid, rid)
-            if f.money < cost:
-                choice = "tax"
-            else:
+            if f.money >= cost:
                 f.money -= cost
                 rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_ACCEPT_HAPPY)
-                msg = f"{name}: 요구 수용(산출 4턴분 {cost:,.0f} 지불), 행복도 +20"
+                if M.of(self, rid):
+                    M.sync(self, M.of(self, rid))
+                msg = f"{name}: 요구 수용({cost:,.0f} 지불), 행복도 +{C.REBEL_ACCEPT_HAPPY}"
                 self.event("rebel", msg, region=rid, fids=(fid,))
                 return msg
-        if choice == "tax":
-            f.tax = max(0.0, round(f.tax - C.REBEL_ACCEPT_TAX_CUT, 2))
-            rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_ACCEPT_HAPPY)
-            msg = f"{name}: 요구 수용(세율 5%p 인하 → {f.tax*100:.0f}%), 행복도 +20"
-            self.event("rebel", msg, region=rid, fids=(fid,))
-            return msg
+            if not f.is_ai:
+                self.pending_rebellions.insert(0, rid)        # 돈이 모자라면 아직 대응하지 않은 것으로 남긴다
+                return f"{name}: 요구를 들어줄 돈({cost:,.0f})이 부족합니다."
+            choice = "suppress"
         p = self.suppress_chance(fid, rid)
         Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         if self.rng.random() < p:
             rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_SUPPRESS_HAPPY)
-            for a in self.armies_at(rid, fid):
+            if M.of(self, rid):
+                M.sync(self, M.of(self, rid))
+            for a in [a for r in M.members(self, rid) for a in self.armies_at(r, fid)]:
                 for k, n in list(a.units.items()):
-                    loss = int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random())
-                    a.units[k] = max(0, n - loss)
+                    loss = min(n, int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random()))
+                    if loss:
+                        self._split_dmg(a, k, loss)      # 잃은 유닛 몫의 피해 기록도 함께 덜어 낸다(해산과 같게)
+                        a.units[k] = n - loss
                 a.units = {k: v for k, v in a.units.items() if v > 0}
+                a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
                 if a.empty():
                     self.remove_army(a)
             msg = f"{name}: 반란 진압 성공 (행복도 +5, 진압 병력 10% 손실)"
@@ -3998,7 +5276,10 @@ class Game:
         """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
         rr = self.regions[rid]
         n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
-        keep_project = rr.project if rr.project and rr.project.kind in ("build", "unit") else None
+        if getattr(rr, "metro", None) is not None:
+            M.dissolve(self, rr.metro, "반란")
+        keep_project = (rr.project if rr.project and rr.project.kind in ("build", "unit")
+                        and rr.project.group is None and rr.project.metro is None else None)   # 묶음 공사는 계승하지 않는다
         siblings = self.rebel_children(fid)
         if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
             if siblings:
@@ -4104,7 +5385,7 @@ class Game:
         return out
 
     # ------------------------------------------------------------------ 승리
-    def _check_victory(self):
+    def _check_victory(self, time=True):
         if self.game_over:
             return                          # 이번 턴 기축통화 완공 등으로 이미 끝났다
         st = self.settings
@@ -4114,12 +5395,13 @@ class Game:
             self.game_over = True
             self.event("gameover", "패배: 모든 영토를 잃었습니다.", fids=(self.player_id,))
             return
+        if len(alive) == 1 and len(self.factions) > 1:
+            # 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리(정복승리를 꺼도 판이 끝난다)
+            self._win((alive[0],), "conquest")
+            return
         if "conquest" in st.victories and len(self.factions) > 1:
-            if len(alive) == 1:
-                self._win((alive[0],), "conquest")
-                return
             for fid in alive:
-                if self.conquest_status(fid)["ok"]:
+                if self.conquest_status(fid)["ok"]:          # 전쟁 중이면 불발(v1.3.0)
                     self._win((fid,), "conquest")
                     return
         if "science" in st.victories:
@@ -4132,7 +5414,7 @@ class Game:
             if cid is not None and set(alive) <= self.dip.coalitions[cid]["members"]:
                 self._win(tuple(alive), "diplomatic")
                 return
-        if "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
+        if time and "time" in st.victories and self.turn >= getattr(st, "max_turns", C.TIME_VICTORY_TURNS) and alive:
             sc = self.time_scores()
             best = max(alive, key=lambda f: (sc[f], self.gdp(f)))
             self._win((best,), "time")
@@ -4164,11 +5446,14 @@ class Game:
                 and self.rebellion_chance(rr.owner, rr.id) > 0)
 
     def conquest_status(self, fid) -> dict:
-        """정복승리 진행: 지역 수, 필요 지역 수, 반란 가능 지역 수."""
+        """정복승리 진행: 지역 수, 필요 지역 수, 반란 가능 지역 수, 전쟁 상대 수.
+        met: 지역·반란 조건 충족, ok: 거기에 전쟁 중이 아님(v1.3.0 — 강화해 전쟁이 끝나는 순간 승리)."""
         regs = self.regions_of(fid)
         need = math.ceil(len(self.regions) * C.CONQUEST_SHARE - 1e-9)
         risky = sum(1 for r in regs if self.can_rebel(r)) if len(regs) >= need else None
-        return {"have": len(regs), "need": need, "risky": risky, "ok": len(regs) >= need and risky == 0}
+        met = len(regs) >= need and risky == 0
+        wars = len(D.enemies(self, fid))
+        return {"have": len(regs), "need": need, "risky": risky, "wars": wars, "met": met, "ok": met and not wars}
 
     def time_scores(self) -> dict:
         """시간 종료 승리 점수: (지역 비율 + GDP 비율 + 인구 비율) / 3 × 100."""
@@ -4209,7 +5494,7 @@ class Game:
 
     # ------------------------------------------------------------------ 전장의 안개
     def visible(self, fid) -> set:
-        if self.settings.fog == 0:
+        if self.fog_lifted():
             return set(self.regions) | set(self.world.seas)
         v = self._visible.get(fid)
         if v is None:
@@ -4268,6 +5553,8 @@ class Game:
 
     def _update_fog_inner(self, initial=False):
         self._visible = {}
+        if getattr(self, "game_over", False):
+            return                             # 끝난 판: 안개를 걷어 보여 줄 뿐 탐색·조우 기록은 그대로 둔다
         for f in self.factions:
             if not f.alive:
                 continue
@@ -4309,9 +5596,9 @@ class Game:
                         f.met.add(o.id)
 
     def is_visible(self, fid, node) -> bool:
-        return self.settings.fog == 0 or node in self.visible(fid)
+        return self.fog_lifted() or node in self.visible(fid)
 
     def is_explored(self, fid, node) -> bool:
-        if self.settings.fog == 0 or node in self.world.seas:
+        if self.fog_lifted() or node in self.world.seas:
             return True
         return node in self.factions[fid].explored
