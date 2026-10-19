@@ -941,7 +941,7 @@ def test_diplomacy_modal_war_needs_confirm(app):
         click("선전포고")
         assert not D.at_war(g, pid, other)
         frame(app)
-        click("정말 선전포고?")
+        click("선전포고 확정")
         assert D.at_war(g, pid, other)
     finally:
         app.gui.button = real_button

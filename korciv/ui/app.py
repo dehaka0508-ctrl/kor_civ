@@ -48,7 +48,7 @@ def save_prefs(p: dict):
     except Exception:
         pass
 TOP_H = 56
-LEFT_W = 360
+LEFT_W = 390               # 왼쪽 패널 폭(v1.3.1: 360 → 390, 글자가 '…'로 덜 잘리게)
 RIGHT_W = 320
 MAP_MODES = [("political", "정치"), ("happy", "행복도"), ("pop", "인구"), ("resource", "자원"),
              ("building", "건물"), ("military", "군사"), ("opinion", "우호도")]
@@ -422,8 +422,7 @@ class App:
             cell = (pr.x + 10, pr.y + 34 + i * (rowh + 4), pr.w - 20, rowh)
             if g.button(cell, "", selected=i == s.ai_place, tooltip=self.world.regions[rid].name if rid else "무작위 지역"):
                 s.ai_place = i
-            g.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (cell[0] + 8, cell[1] + rowh // 2 - 7, 14, 14),
-                   radius=3)
+            g.rect(self.setup_colors()[i + 1], (cell[0] + 8, cell[1] + rowh // 2 - 7, 14, 14), radius=3)
             on = i == s.ai_place                      # 고른 칸은 쪽빛 바탕이라 글자를 밝게
             g.text((cell[0] + 30, cell[1] + rowh // 2), lab, 12, (255, 255, 255) if on else None, weight="semibold",
                    anchor="midleft", max_w=150)
@@ -527,8 +526,7 @@ class App:
                 if pick_mode and rid in (self.pick_popup, self.setup.start):
                     fill = t.accent
                 elif pick_mode and rid in ai_starts:
-                    fill = mix(hex2rgb(C.FACTION_COLORS[(ai_starts.index(rid) + 1) % len(C.FACTION_COLORS)]),
-                               (255, 255, 255), 0.25)
+                    fill = mix(self.setup_colors()[ai_starts.index(rid) + 1], (255, 255, 255), 0.25)
                 out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
                 continue
             r = g.regions[rid]
@@ -544,18 +542,9 @@ class App:
                 continue
             if not visible:
                 owner = g.player.last_seen.get(rid, owner)
-            if self.mode in SUB_MODES and not visible and owner != pid:
-                # 세부 모드: 안개 지역은 바탕만 어둡게, 단계 색은 그대로(보이는 곳과 같은 단계면 같은 색)
-                base = mix(desaturate(mix(self.owner_fill(owner), t.neutral, 0.75), 0.7), (0, 0, 0), 0.1)
-                fill = self.overlay_color(rid, r, owner, info, False, base=base)
-                out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
-                continue
             fill = self.mode_color(rid, r, owner, info, visible or owner == pid)
-            if self.mode == "political" and visible and owner == pid and r.project:
-                # 생산·행동이 진행 중인 내 지역은 더 진한 색
-                fill = mix(self.owner_fill(owner), mix(self.faction_rgb(owner), (0, 0, 0), 0.15), 0.55)
-            if not visible:
-                # 시야 밖: 바랜 한지처럼(채도를 빼고 먹빛을 살짝)
+            if self.mode == "political" and not visible:
+                # 시야 밖(정치 지도만): 바랜 한지처럼(채도를 빼고 먹빛을 살짝). 데이터 지도는 값의 색 그대로(v1.3.1)
                 fill = mix(desaturate(fill, 0.65), (120, 110, 92) if not t.dark else (0, 0, 0), 0.28)
             out[rid] = (fill, mix(fill, (255, 255, 255), 0.7))
         mp = getattr(self, "metro_pick", None)
@@ -594,10 +583,17 @@ class App:
         deep = {f.id + 2: mix(self.faction_rgb(f.id), (20, 16, 12), 0.25) for f in g.factions}
         met = getattr(g.player, "met", set()) | {pid}
         alive = [f.id for f in g.factions if f.alive]
+        political = self.mode == "political"
+        # 국경 안쪽 번짐·전쟁 국경 그림자는 정치 지도에만(v1.3.1: 데이터 지도는 고른 항목의 색만 또렷하게)
         wars = {(a + 2, b + 2) for i, a in enumerate(alive) for b in alive[i + 1:]
-                if (a in met and b in met or self.fog_reveal or g.fog_lifted()) and D.at_war(g, a, b)}
-        return {"owners": owners, "deep": deep, "wars": wars, "glow": self.mode == "political",
-                "metro": {r: mid for mid, m in self.shown_metros() for r in m["members"]}}
+                if (a in met and b in met or self.fog_reveal or g.fog_lifted()) and D.at_war(g, a, b)} if political else set()
+        # 작업 중인 내 지역(정치 지도만, v1.3.1): 면 색을 어둡게 하는 대신 사선 빗금(안개 낀 지역과 헷갈리지 않게)
+        busy = {r.id: mix(self.faction_rgb(pid), (20, 16, 12), 0.35) for r in g.regions_of(pid)
+                if r.project} if political else {}
+        shown = self.shown_metros()
+        return {"owners": owners, "deep": deep, "wars": wars, "glow": political, "busy": busy,
+                "metro": {r: mid for mid, m in shown for r in m["members"]},
+                "metro_centers": {m["center"] for _, m in shown}}
 
     def shown_metros(self):
         """지도에 하나로 그릴 광역시 [(번호, 광역시)]: 중심이 보이거나 내 것(안개 공개면 모두)."""
@@ -608,6 +604,12 @@ class App:
         pid = g.player_id
         return [(mid, m) for mid, m in M.metros(g).items()
                 if self.fog_reveal or g.is_visible(pid, m["center"]) or g.regions[m["center"]].owner == pid]
+
+    def metro_hidden(self, rid) -> bool:
+        """축소 화면(3배 미만)에서 지도 표시를 빼는 광역시 구성 지역(중심 제외, v1.3.1: 광역시 표찰만 또렷하게)."""
+        if self.map.z >= 3.0:
+            return False
+        return any(rid in m["members"] and rid != m["center"] for _, m in self.shown_metros())
 
     def map_group(self, rid):
         """지도에서 rid 와 함께 하나로 보이는 지역들(광역시면 구성 지역 모두)."""
@@ -623,6 +625,14 @@ class App:
             cols["move"] = mix(self.faction_rgb(self.game.player_id), (0, 0, 0), 0.15)
         return cols
 
+    def setup_colors(self):
+        """시작 설정 화면의 국가 색 [플레이어, AI 1, …]: 게임이 실제로 배정할 색과 같다(v1.3.1)."""
+        from .. import colors as K
+        from ..game import player_color
+        s = self.setup
+        return [hex2rgb(c) for c in K.nation_colors(max(1, min(C.MAX_ENEMIES, s.n_enemies)),
+                                                     player_color(getattr(s, "flag", None)))]
+
     def faction_rgb(self, fid):
         if fid == NEUTRAL:
             return self.theme.neutral
@@ -632,9 +642,10 @@ class App:
         """영토 바탕: 세력 색을 조금 누그러뜨려 한지에 번진 수채화처럼."""
         if owner == NEUTRAL:
             return self.theme.neutral
-        if self.theme.dark:
-            return mix(self.faction_rgb(owner), (255, 255, 255), 0.3)
-        return mix(desaturate(self.faction_rgb(owner), 0.2), self.theme.paper, 0.45)
+        from .. import colors as K
+        # 색 배정(korciv/colors.py)이 색차를 재는 것과 같은 변환(v1.3.1: 덜 바래게 — 나라끼리 헷갈리지 않게)
+        c = K.map_fill_dark(self.faction_rgb(owner)) if self.theme.dark else K.map_fill_light(self.faction_rgb(owner))
+        return tuple(int(round(v)) for v in c)
 
     def sub_mode(self, mode=None):
         mode = mode or self.mode
@@ -668,11 +679,11 @@ class App:
         t = self.theme
         key, _, col, top = self.sub_mode()
         if base is None:
-            base = mix(self.owner_fill(owner), t.neutral, 0.75)
+            base = t.neutral                  # 그 항목이 없는 지역: 주인과 상관없이 한 가지 바탕색(v1.3.1)
         lv = self.overlay_level(key, r, info, visible)
         if lv <= 0:
             return base
-        # 단계 색은 바탕(세력 색·안개)과 상관없이 같은 단계면 같은 색: 1단계가 가장 연하고 오를수록 진하게
+        # 단계 색은 바탕(세력·안개)과 상관없이 같은 단계면 같은 색: 1단계가 가장 연하고 오를수록 진하게
         x = 0.85 if top is None else 0.2 + 0.75 * min(1.0, lv / top)
         light = (241, 243, 245)
         if key == "oil":                      # 석유: 채도 0의 회색 계열, 1단계부터 바탕보다 확실히 진하게
@@ -697,10 +708,8 @@ class App:
         if m in SUB_MODES:
             return self.overlay_color(rid, r, owner, info, visible)
         if m == "opinion":
-            if owner == NEUTRAL:
-                return t.neutral
-            if owner == g.player_id:
-                return mix(self.faction_rgb(owner), (255, 255, 255), 0.3)
+            if owner in (NEUTRAL, g.player_id):
+                return t.neutral                   # 우호도 대상이 아닌 곳(중립·내 땅): 한 가지 바탕색(v1.3.1)
             if D.at_war(g, owner, g.player_id):
                 return hex2rgb("#C92A2A")
             op = D.opinion(g, owner, g.player_id)
@@ -754,8 +763,7 @@ class App:
                 x, y = mv.label_screen(rid)
                 lab = render_text(f"AI {i + 1}", 11, (255, 255, 255), "bold")
                 box = lab.get_rect(center=(x, y - int(14 * u))).inflate(int(8 * u), int(4 * u))
-                pygame.draw.rect(self.screen, hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), box,
-                                 border_radius=4)
+                pygame.draw.rect(self.screen, self.setup_colors()[i + 1], box, border_radius=4)
                 self.screen.blit(lab, lab.get_rect(center=box.center))
             self.screen.set_clip(None)
             return
@@ -1072,6 +1080,8 @@ class App:
                 continue
             if not (r.owner == pid or g.is_explored(pid, r.id) or self.fog_reveal):
                 continue
+            if self.metro_hidden(r.id):
+                continue
             x, y = mv.label_screen(r.id)
             if not mv.view.collidepoint(x, y):
                 continue
@@ -1098,6 +1108,8 @@ class App:
             pf = getattr(r, "pop_focus", False)
             if not r.focus and not pf:
                 continue
+            if self.metro_hidden(r.id):
+                continue
             x, y = mv.label_screen(r.id)
             if not mv.view.collidepoint(x, y):
                 continue
@@ -1112,6 +1124,8 @@ class App:
         g = self.game
         for r in g.regions.values():
             if not r.occ or not (g.is_visible(g.player_id, r.id) or self.fog_reveal):
+                continue
+            if self.metro_hidden(r.id):
                 continue
             x, y = self.map.label_screen(r.id)
             col = self.faction_rgb(r.occ["by"])
@@ -1189,6 +1203,14 @@ class App:
         mv = self.map
         pid = g.player_id
         by_loc = {}
+        # 축소 화면(3배 미만, v1.3.1): 한 지역의 부대는 나라마다 깃발 하나(총 유닛 수 + 부대 수 배지)로 합치고,
+        # 광역시 구성 지역의 부대는 중심 지역 자리에 모아 그린다(이웃 지역을 가리지 않게)
+        merge = mv.z < 3.0
+        at = {}
+        if merge:
+            for _, m in self.shown_metros():
+                for r in m["members"]:
+                    at[r] = m["center"]
         for a in g.armies.values():
             if a.empty():
                 continue
@@ -1199,7 +1221,7 @@ class App:
                 continue
             if not (a.owner == pid or g.is_visible(pid, a.loc) or self.fog_reveal):
                 continue
-            by_loc.setdefault(a.loc, []).append(a)
+            by_loc.setdefault(at.get(a.loc, a.loc), []).append(a)
         u = ui_scale()
         ink = (30, 25, 20)
         self._flag_hits = []
@@ -1210,20 +1232,28 @@ class App:
             arms.sort(key=lambda a: (a.owner != pid, a.owner, g.army_sort_key(a)))   # 같은 병종 순서(v1.3.0)
             # 군기: 장대 + 깃발(육군 제비꼬리·해군 뾰족한 삼각기·공군 날개깃) + 대표 병종 아이콘 + 총수
             fh = max(10, int(14 * u))
+            if merge:
+                groups = {}
+                for a in arms:
+                    groups.setdefault(a.owner, []).append(a)
+                entries = [(next((a for a in lst if a.id == self.sel_army), lst[0]), lst) for lst in groups.values()]
+            else:
+                entries = [(a, [a]) for a in arms]
             flags = []
-            for a in arms:
-                num = render_text(str(a.count()), 10, (255, 255, 255), "bold")
+            for a, lst in entries:
+                num = render_text(str(sum(x.count() for x in lst)), 10, (255, 255, 255), "bold")
                 fw = int(14 * u) + num.get_width() + int(6 * u)
-                flags.append((a, num, fw))
-            total = sum(fw + int(4 * u) for _, _, fw in flags)
+                flags.append((a, num, fw, lst))
+            total = sum(fw + int(4 * u) for _, _, fw, _ in flags)
             fx = x - total / 2
             fy = y + (8 if mv.z >= 2 else 3) * u
             if mv.z >= 4 and not self.world.is_sea(loc):
                 fy += 14 * u
-            for a, num, fw in flags:
+            for a, num, fw, lst in flags:
                 col = (120, 120, 120) if a.owner == NEUTRAL else self.faction_rgb(a.owner)
-                if g.army_acted(a.id):
+                if all(g.army_acted(x.id) for x in lst):
                     col = mix(col, (150, 150, 150), 0.6)     # 이번 턴 행동한 부대: 흐리게
+                sel = any(x.id == self.sel_army for x in lst)
                 icon_key = g.army_icon_unit(a)
                 kind = C.UNITS[icon_key]["kind"]
                 x0, y0 = int(fx), int(fy)
@@ -1238,15 +1268,22 @@ class App:
                 base_y = y0 + fh + 6 * u
                 self.screen.blit(self._ellipse_shadow(int(fw * 0.9), max(3, int(5 * u))), (x0 - int(3 * u), base_y - int(2 * u)))
                 pygame.draw.line(self.screen, ink, (x0, y0 - 3 * u), (x0, base_y), max(1, int(1.5 * u)))
-                if a.id == self.sel_army:
+                if sel:
                     pygame.draw.polygon(self.screen, (247, 241, 227), pts, max(3, int(4 * u)))
                 pygame.draw.polygon(self.screen, col, pts)
-                pygame.draw.polygon(self.screen, ink, pts, max(1, int((2 if a.id == self.sel_army else 1) * u)))
+                pygame.draw.polygon(self.screen, ink, pts, max(1, int((2 if sel else 1) * u)))
                 panels.unit_icon(self.screen, icon_key, (x0 + int(7 * u), int(y0 + fh / 2 + u)), (255, 255, 255), 0.95 * u)
                 self.screen.blit(num, num.get_rect(midleft=(x0 + int(13 * u), int(y0 + fh / 2 + 1))))
-                if a.order and a.owner == pid:
+                if any(x.order for x in lst) and a.owner == pid:
                     pygame.draw.circle(self.screen, (247, 241, 227), (int(x0 + fw), y0), max(3, int(3.5 * u)))
                     pygame.draw.circle(self.screen, ink, (int(x0 + fw), y0), max(3, int(3.5 * u)), 1)
+                if len(lst) > 1:
+                    # 합친 부대 수 배지(깃발 위)
+                    bt = render_text(f"+{len(lst) - 1}", 9, ink, "bold")
+                    br = bt.get_rect(midbottom=(int(x0 + fw / 2), y0 - int(1 * u))).inflate(int(6 * u), int(2 * u))
+                    pygame.draw.rect(self.screen, (247, 241, 227), br, border_radius=br.h // 2)
+                    pygame.draw.rect(self.screen, ink, br, 1, border_radius=br.h // 2)
+                    self.screen.blit(bt, bt.get_rect(center=br.center))
                 if a.owner == pid:
                     self._flag_hits.append((pygame.Rect(x0 - int(2 * u), y0 - int(3 * u), int(fw + 6 * u),
                                                         int(fh + 9 * u)), a.id))

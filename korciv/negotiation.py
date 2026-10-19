@@ -19,6 +19,7 @@ from . import config as C
 from . import diplomacy as D
 from . import rules as RL
 from .state import NEUTRAL
+from .text import josa
 
 RES = ("oil", "coal", "elec", "specialty")
 RES_NAMES = {"oil": "석유", "coal": "석탄", "elec": "전기", "specialty": "특산물"}
@@ -166,7 +167,7 @@ def reserve(g, ai, other, res, n, ai_sells, noise=1.0):
     if ai_sells:
         tot = supply_total(g, ai, res)
         if tot < 1:
-            return None, 0, f"내줄 {RES_NAMES[res]}이 없습니다"
+            return None, 0, f"내줄 {josa(RES_NAMES[res], '이/가')} 없습니다"
         n_ok = min(n, tot)
         base = g.sell_price(ai, res) or C.MARKET_SELL[res] * C.MONEY_SCALE
         # 남는 몫: 어차피 시장에 팔릴 양이라 시장 판매가 근처. 돈이 급하거나 우호도가 높을수록 싸게
@@ -246,7 +247,7 @@ def _line(st, kind, p=None) -> str:
     if kind == "open":
         return f"턴당 {st['n']}개를 개당 {x:,.0f}에 {'팔겠습니다' if sell else '사겠습니다'}."
     if kind == "counter":
-        return f"그 값으로는 어렵습니다. 개당 {x:,.0f}은(는) 어떻습니까?"
+        return f"그 값으로는 어렵습니다. 개당 {josa(f'{x:,.0f}', '은/는')} 어떻습니까?"
     if kind == "final":
         return f"개당 {x:,.0f}. 이것이 마지막 제안입니다."
     if kind == "accept":

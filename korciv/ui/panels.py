@@ -14,6 +14,7 @@ from ..state import BUILDING_NAMES, NEUTRAL
 from ..flags import faction_flag
 from .art import draw_flag, draw_portrait
 from .theme import fmt_money, hex2rgb, measure, mix
+from ..text import josa
 
 
 # ------------------------------------------------------------------ 유닛 아이콘 (단색 실루엣)
@@ -228,7 +229,7 @@ def draw_region_info(app, rect):
         ww = g.factions[owner].war_weary
         if ww >= 0.05:
             wd = getattr(g.factions[owner], "war_weary_def", 0.0)
-            parts.append(f"전쟁 피로 −{ww:.1f}" + (f"(당한 전쟁 {wd:.1f}은 반란 판정 제외)" if wd >= 0.05 else ""))
+            parts.append(f"전쟁 피로 −{ww:.1f}" + (f"(당한 전쟁 {josa(f'{wd:.1f}', '은/는')} 반란 판정 제외)" if wd >= 0.05 else ""))
         if r.conscript > 0:
             parts.append(f"징집 피로 −{r.conscript:.0f} (최근 {g.drafted_turns(node)}/{C.CONSCRIPT_WINDOW}턴 징집)")
         elif full and g.drafted_turns(node) >= min(C.CONSCRIPT_PENALTY) - 2:
@@ -310,7 +311,7 @@ def draw_region_info(app, rect):
             if ld[k]:
                 parts.append(f"{nm} {ld[k]}단계")
         who = g.seen_name(ld["fid"]) if ld["fid"] != pid else "우리"
-        y = gui.wrap((x, y + 2), f"점령으로 꺼진 방어 건물: {', '.join(parts)} — 저항·회복 동안 {who}이(가) 되찾으면 그대로, "
+        y = gui.wrap((x, y + 2), f"점령으로 꺼진 방어 건물: {', '.join(parts)} — 저항·회복 동안 {josa(who, '이/가')} 되찾으면 그대로, "
                                  f"기간이 지나면 1단계씩 깎여 지금 주인 것이 됩니다.", w, 11, t.warn) + 4
     # 자원
     y = section(gui, x, y + 6, w, "자원·특산물")
@@ -770,7 +771,7 @@ def _metro_header(app, x, y, w, mt):
     y = gui.wrap((x, y), "통합 단계: " + " · ".join(lv) + f" · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,
                  t.text) + 4
     armed = getattr(app, "metro_dissolve", None) == mt["id"]
-    if gui.button((x, y, w, 26), "한 번 더 누르면 해제" if armed else "광역시 지정 해제", "danger" if armed else "default",
+    if gui.button((x, y, w, 26), "광역시 해제 확정" if armed else "광역시 지정 해제", "danger" if armed else "default",
                   size=12, tooltip="해제하면 건물 단계 = 묶기 전 단계 + 묶은 뒤 올린 단계, 유일 건물은 중심(항구는 해안 지역), "
                                    "부대는 중심으로. 통합 건물 공사 중이면 50% 환급하고 취소."):
         if armed:
@@ -940,10 +941,13 @@ def _border_lines_section(app, x, y, w):
     plan = g.border_line_plan(pid, sel, tgt)
     regs = plan["lines"]
     if regs:
-        txt = (f"{g.seen_name(sel)} 방어선: 지역 {len(regs)}곳 · 방어선 {plan['steps']}단계분 · "
-               f"건설 턴 합 {plan['turns_sum']} ÷ {plan.get('slots', len(regs))}곳 = {plan['turns']}턴 · "
-               f"총 {plan['total']:,.0f} (턴당 {plan['per_turn']:,.0f})")
+        txt = (f"{g.seen_name(sel)} 방어선: 대상 {len(regs)}곳 (방어선 {plan['steps']}단계분) · "
+               f"{plan['turns']}턴 소요 · 총 {plan['total']:,.0f} (턴당 {plan['per_turn']:,.0f})")
+        y0 = y
         y = gui.wrap((x, y), txt, w, 11, t.text) + 4
+        if gui.hover((x, y0, w, y - y0)):
+            gui.tooltip = (f"소요 턴 = 모든 방어선 단계의 건설 턴 합({plan['turns_sum']}) ÷ "
+                           f"작업 슬롯 수({plan.get('slots', len(regs))}곳), 올림")
     stop, seen = [], set()
     for r in plan["interrupt"]:                  # 광역시처럼 한 작업을 함께 하는 지역은 한 건
         if id(g.regions[r].project) not in seen:
@@ -955,11 +959,14 @@ def _border_lines_section(app, x, y, w):
                      + (f" 외 {len(stop) - 4}건" if len(stop) > 4 else ""), w, 11, t.warn) + 4
     key = (sel, tgt, tuple(stop))
     armed = stop and getattr(app, "border_confirm", None) == key
-    label = (f"한 번 더 누르면 {len(stop)}건 중단하고 착수" if armed
-             else f"착수: 지역 {len(regs)}곳 · {plan['turns']}턴 (턴당 {plan['per_turn']:,.0f})")
+    label = (f"작업 {len(stop)}건 중단 후 착수" if armed
+             else f"착수: 대상 {len(regs)}곳 · {plan['turns']}턴 (턴당 {plan['per_turn']:,.0f})")
     if gui.button((x, y, w, 30), label, "danger" if armed else "primary", enabled=bool(regs) and not plan["why"],
-                  size=12, tooltip=plan["why"] or "대상 지역 모두에 '나라 방어선' 묶음 공사 한 건을 착수합니다. 지출 우선순위에서 "
-                                   "한 건으로 다루고, 비용은 묶음 전체로 매 턴 한꺼번에 냅니다. 다 지으면 대상 경계가 모두 목표 단계가 됩니다."):
+                  size=12, tooltip=plan["why"] or (
+                      ("한 번 더 누르면 진행 중인 작업을 중단하고 착수합니다.\n" if armed else "")
+                      + "대상 지역 모두에 '나라 방어선' 묶음 공사 한 건을 착수합니다. 지출 우선순위에서 한 건으로 다루고, "
+                        "비용은 묶음 전체로 매 턴 한꺼번에 냅니다. 다 지으면 대상 경계가 모두 목표 단계가 됩니다.\n"
+                      + f"소요 턴 = 건설 턴 합({plan['turns_sum']}) ÷ 작업 슬롯 수({plan.get('slots', len(regs))}곳)")):
         if stop and not armed:
             app.border_confirm = key
         else:
@@ -1138,10 +1145,14 @@ def _army_tab_body(app, x, y, w, pid):
     elif acted:
         y = gui.wrap((x, y), "다음 턴에 다시 명령할 수 있습니다. 해산은 가능합니다.", w, 12, t.muted)
     else:
-        y = gui.wrap((x, y), "지도에서 우클릭하면 바로 이동·폭격·점령합니다(한 부대는 한 턴에 한 번). 적 병력이 있는 곳은 "
-                             "확인 창에서 싸웁니다. 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다. "
-                             "범위 밖을 우클릭하면 첫 구간을 바로 가고, 다음 턴부터 턴 시작마다 이어서 자동 이동합니다.",
-                     w, 12, t.muted)
+        y0 = y
+        y = gui.wrap((x, y), "우클릭: 이동·공격·폭격 · Shift+우클릭: 건물 폭격 (멀면 자동 이동)", w, 12, t.muted)
+        if gui.hover((x, y0, w, y - y0)):
+            gui.tooltip = ("지도에서 우클릭하면 바로 이동·폭격·점령합니다(한 부대는 한 턴에 한 번).\n"
+                           "적 병력이 있는 곳은 확인 창에서 싸웁니다.\n"
+                           "이동 범위: 진한 색은 자국 영토 2칸, 옅은 색은 1칸, 점선은 연륙교입니다.\n"
+                           "범위 밖을 우클릭하면 첫 구간을 바로 가고, 다음 턴부터 턴 시작마다 이어서 자동 이동합니다.\n"
+                           "Shift+우클릭: 병력이 없는 곳의 건물 폭격(포병·폭격기·구축함).")
     return draw_rally(app, x, y + 6, w, node)
 
 
@@ -1408,7 +1419,7 @@ def draw_rally(app, x, y, w, node):
                   tooltip="육상 n칸 안의 내 육군을 이 지역으로 부릅니다. 한 턴에 못 오는 부대는 여러 턴에 걸쳐 자동 이동합니다.\n"
                           "이번 턴 이미 행동한 부대(이동·전투·폭격·상륙)와 과학 유닛은 빠집니다. 부른 부대는 바로 움직입니다."):
         k, u = g.rally(pid, node, n)
-        app.toast(f"{app.world.node_name(node)}(으)로 부대 {k}개(유닛 {u}) 집결")
+        app.toast(f"{josa(app.world.node_name(node), '으로/로')} 부대 {k}개(유닛 {u}) 집결")
         app.changed()
     y += 38
     if g.regions[node].owner == pid:
@@ -1502,7 +1513,7 @@ def draw_nation_tab(app, body):
     amt = int(min(amt, stock_f))
     app.food_sell_amt = amt
     if gui.button((x + w - 72, y - 2, 72, 26), "판매", "primary" if amt else "default", size=12, enabled=amt > 0,
-                  tooltip=f"비축 식량 {amt:,}을 개당 {price:,.0f}에 팝니다"):
+                  tooltip=f"비축 식량 {josa(f'{amt:,}', '을/를')} 개당 {price:,.0f}에 팝니다"):
         q, gain = g.market_sell(pid, "food", amt)
         app.food_sell_amt = 0
         app.toast(f"비축 식량 {q:,} 판매: +{gain:,.0f}")
@@ -1716,7 +1727,7 @@ def draw_diplo_detail(app, body, fid):
                f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}\n"
                "한 번 더 눌러야 선포됩니다.")
     confirm = getattr(app, "war_confirm", None) == fid and can_war
-    if gui.button((x + bw + 8, y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger", size=14,
+    if gui.button((x + bw + 8, y, bw, 40), "선전포고 확정" if confirm else "선전포고", "danger", size=14,
                   enabled=can_war, tooltip=tip):
         if confirm:
             app.war_confirm = None
@@ -2050,13 +2061,19 @@ def draw_nation_status(app, body):
     lead = LEADER_BY_KEY[f.leader]
     gov = GOV_BY_KEY.get(f.gov, {})
     y = section(gui, x, y + 6, w, "지도자·체제")
-    y = gui.wrap((x, y), f"지도자 {lead['name']}: {lead['buff'][0]}({lead['buff'][1]}) / "
-                 f"{lead['debuff'][0]}({lead['debuff'][1]})", w, 11, t.muted)
+    from .modals import no_effect
+
+    def eff(nm, desc, none):
+        if no_effect(nm, desc):
+            return none
+        return f"{nm}({desc})" if nm else desc
+    y = gui.wrap((x, y), f"지도자 {lead['name']}: {eff(*lead['buff'], '버프 없음')} / "
+                 f"{eff(*lead['debuff'], '디버프 없음')}", w, 11, t.muted)
     if gov:
-        buff = gov['buff'][1]
+        buff = eff(*gov['buff'], '버프 없음')
         if gov_buff_scale(f.leader) != 1.0 and gov.get("buff_keys"):
             buff = f"{buff} ({lead['debuff'][0]}: 효과 {gov_buff_scale(f.leader):.0%})"
-        y = gui.wrap((x, y), f"체제 {gov['name']}: {buff} / {gov['debuff'][1]}", w, 11, t.muted)
+        y = gui.wrap((x, y), f"체제 {gov['name']}: {buff} / {eff(*gov['debuff'], '디버프 없음')}", w, 11, t.muted)
     app._nation_h = y - y0 + 20
     gui.end_scroll("nation_status", area, app._nation_h)
 

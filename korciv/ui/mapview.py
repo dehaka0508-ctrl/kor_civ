@@ -665,6 +665,22 @@ class MapView:
                         ds.fill((0, 0, 0))
                         ds.blit(scaled, (round(tx), round(ty)))
                         self._fx_compose(surf, ds, idsurf, lut, war_on)
+        # 작업 중인 내 지역(정치 지도, v1.3.1): 면 색은 그대로 두고 역사선 빗금으로(주변국 땅 빗금과 방향이 반대)
+        busy = extra.get("busy") or {}
+        if busy:
+            items = []
+            for (rid, arr, bbox), span in zip(self.polys, self.poly_span):
+                col = busy.get(rid)
+                if col is None:
+                    continue
+                x0, y0, x1, y1 = bbox
+                if x1 * s + ox < 0 or x0 * s + ox > view.w or y1 * s + oy < 0 or y0 * s + oy > view.h:
+                    continue
+                if (x1 - x0) * s < 3 and (y1 - y0) * s < 3:
+                    continue
+                items.append((sp(span), col))
+            if items:
+                self._busy_hatch(surf, items, u)
         # 한지 결
         if not theme.dark:
             tex = paper_texture()
@@ -778,6 +794,9 @@ class MapView:
             nhalo = (247, 241, 227) if not theme.dark else (20, 24, 30)
             order = sorted(self.rbbox, key=lambda r: -self.area[r])
             skipped = []
+            # 광역시(v1.3.1): 축소 화면(3배 미만)에서는 구성 지역 이름을 빼고 중심의 광역시 표찰만
+            m_of = extra.get("metro") or {}
+            m_ctr = extra.get("metro_centers") or set()
             for rid in order:
                 x, y = self.label[rid]
                 px, py = x * s + ox, y * s + oy
@@ -785,6 +804,8 @@ class MapView:
                     continue
                 name = labels.get(rid)
                 if not name:
+                    continue
+                if self.z < 3 and rid in m_of and rid not in m_ctr:
                     continue
                 t = halo_text(name, size, color, nhalo)
                 r = t.get_rect(center=(px, py - (6 if self.z >= 4 else 0)))
@@ -826,6 +847,30 @@ class MapView:
             for x in range(-h, w, gap):
                 pygame.draw.line(p, (c, c, c, 255), (x, h), (x + h, 0), 1)
             pat = self._hatch_pat = (key, p)
+        layer.blit(pat[1], r.topleft, area=r, special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(layer, r.topleft, area=r)
+
+    def _busy_hatch(self, surf, items, u):
+        """작업 중인 지역: 다각형 안에만 역사선(＼) 빗금을 반투명 세력 색으로 긋는다(면 색·명도는 그대로)."""
+        w, h = surf.get_size()
+        layer = self.__dict__.get("_blayer")
+        if layer is None or layer.get_size() != (w, h):
+            layer = self._blayer = pygame.Surface((w, h), pygame.SRCALPHA)
+        layer.fill((0, 0, 0, 0))
+        rects = [pygame.draw.polygon(layer, (*col, 255), pts) for pts, col in items]
+        r = rects[0].unionall(rects[1:]).clip(layer.get_rect())
+        if r.w <= 0 or r.h <= 0:
+            return
+        gap = max(5, int(7 * u))
+        lw = max(1, int(1.6 * u))
+        key = (w, h, gap, lw)
+        pat = self.__dict__.get("_busy_pat")
+        if pat is None or pat[0] != key:
+            p = pygame.Surface((w, h), pygame.SRCALPHA)
+            p.fill((255, 255, 255, 0))
+            for x in range(-h, w, gap):
+                pygame.draw.line(p, (255, 255, 255, 120), (x, 0), (x + h, h), lw)
+            pat = self._busy_pat = (key, p)
         layer.blit(pat[1], r.topleft, area=r, special_flags=pygame.BLEND_RGBA_MULT)
         surf.blit(layer, r.topleft, area=r)
 

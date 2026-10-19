@@ -16,6 +16,7 @@ from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, go
 from ..state import NEUTRAL, Settings
 from .art import draw_flag, draw_portrait, render_flag
 from .theme import hex2rgb, measure, mix
+from ..text import josa, particle
 
 
 class SetupState:
@@ -473,6 +474,12 @@ def draw_setup(app):
     gui.text((dx, y + 36), cat, 11, t.muted, "semibold")
     for j, (kind, (nm, desc), col) in enumerate((("버프", lead["buff"], t.good), ("디버프", lead["debuff"], t.bad))):
         tg = pygame.Rect(dx, y + 56 + j * 46, w - (dx - x), 40)
+        if no_effect(nm, desc):
+            # 효과가 없으면(김구 디버프·직접 입력 등) 회색 상자에 한 줄로(v1.3.1)
+            gui.rect(mix(t.panel, t.muted, 0.08), tg, radius=3)
+            gui.rect(t.muted, (tg.x, tg.y, 4, tg.h))
+            gui.text((tg.x + 12, tg.centery), f"{kind} 없음", 12, t.muted, "bold", anchor="midleft")
+            continue
         gui.rect(mix(t.panel, col, 0.08), tg, radius=3)
         gui.rect(col, (tg.x, tg.y, 4, tg.h))
         kr = gui.text((tg.x + 12, tg.y + 4), kind, 11, col, "bold")
@@ -578,7 +585,7 @@ def draw_setup(app):
         rid = s.ai_starts[i]
         if rid:
             px, py = at(rid)
-            col = hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)])
+            col = app.setup_colors()[i + 1]
             pygame.draw.circle(gui.screen, col, (int(px), int(py)), max(3, int(4 * u)))
             pygame.draw.circle(gui.screen, (247, 241, 227), (int(px), int(py)), max(3, int(4 * u)), 1)
     if s.start:
@@ -601,7 +608,7 @@ def draw_setup(app):
         place = app.world.regions[rid].name if rid else "무작위 지역"
         hov = gui.hover(rr)
         gui.rect(mix(t.panel, t.panel_alt, 0.8 if hov else 0.4), rr, radius=3)
-        gui.rect(hex2rgb(C.FACTION_COLORS[(i + 1) % len(C.FACTION_COLORS)]), (rr.x + 5, rr.y + 5, 14, 10))
+        gui.rect(app.setup_colors()[i + 1], (rr.x + 5, rr.y + 5, 14, 10))
         gui.text((rr.x + 24, rr.centery), f"AI {i + 1}", 10, t.muted, "bold", anchor="midleft")
         nr_ = gui.text((rr.x + 56, rr.centery), lab, 12, t.text, "serif", anchor="midleft", max_w=colw - 60 if two else 100)
         if not two:
@@ -863,13 +870,14 @@ def start_from_setup(app):
     app.start_game(settings)
 
 
+def no_effect(name, desc) -> bool:
+    """버프·디버프가 없는 칸('없음' / '효과 없음')."""
+    return (name or "").strip() in ("", "없음") and (desc or "").strip() in ("", "없음", "효과 없음")
+
+
 def josa_euro(word: str) -> str:
     """받침이 있으면(ㄹ 제외) '으로', 없으면 '로'."""
-    ch = word[-1]
-    if "가" <= ch <= "힣":
-        jong = (ord(ch) - 0xAC00) % 28
-        return "로" if jong in (0, 8) else "으로"
-    return "(으)로"
+    return particle(word, "으로/로")
 
 
 def draw_start_popup(app, rid):
@@ -1002,19 +1010,22 @@ def draw_government(app):
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        if gov_buff_scale(app.game.player.leader) != 1.0 and gdef.get("buff_keys"):
+        if no_effect(*gdef["buff"]) and no_effect(*gdef["debuff"]):
+            gui.text((row.x + 16, row.y + 36), "버프·디버프 없음", 12, t.muted)      # 철인통치
+        elif gov_buff_scale(app.game.player.leader) != 1.0 and gdef.get("buff_keys"):
             lead = LEADER_BY_KEY[app.game.player.leader]
             k = gov_buff_scale(app.game.player.leader)
             gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]} ({lead['debuff'][0]}: {k:.0%})", 12, t.good)
         else:
             gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
-        gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
+        if not no_effect(*gdef["debuff"]):
+            gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
         if hov and gui.clicked:
             gui.clicked = False
             app.game.set_player_government(gdef["key"])
             app.scene = "main"
             app.changed()
-            app.toast(f"{gdef['name']}을(를) 채택했습니다. 첫 턴입니다 — 지역을 눌러 [행동]에서 슬롯을 지정하세요.")
+            app.toast(f"{josa(gdef['name'], '을/를')} 채택했습니다. 첫 턴입니다 — 지역을 눌러 [행동]에서 슬롯을 지정하세요.")
         y += 70
 
 
@@ -1585,7 +1596,7 @@ def draw_proposal(app):
         if not g.factions[tgt].alive or D.at_war(g, fid, tgt) or not D.same_coalition(g, fid, g.player_id):
             g.pending_proposals.pop(0)
             return
-        gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {g.seen_name(tgt)}에 "
+        gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)}){particle(g.seen_leader(fid), '이/가')} {g.seen_name(tgt)}에 "
                  "연합 공동 선전포고를 제안합니다.", 15, weight="semibold")
         gui.text((r.x + 24, r.y + 96), "수락하면 연합 전원이 함께 선포합니다(전쟁 피로·전쟁광 평판은 각자).", 13, t.muted)
         if gui.button((r.x + 24, r.bottom - 64, 220, 44), "동의", "primary"):
@@ -1608,15 +1619,15 @@ def draw_proposal(app):
             g.pending_proposals.pop(0)
             return
         what = f"{D.RES_NAMES[res]} 턴당 {n}개를 {C.CONTRACT_TURNS}턴 동안 개당 {price:,.0f}에"
-        gui.wrap((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {what} "
+        gui.wrap((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)}){particle(g.seen_leader(fid), '이/가')} {what} "
                  + ("팔겠다고" if sell else "사겠다고") + " 제안합니다.", r.w - 70, 15, weight="semibold")
         if sell:
             mine = (f"내 공장에 넣으면 턴당 약 {max(0.0, D.energy_value(g, pid, res, n)[1]):,.0f}"
                     if res in C.ENERGY else f"내 특산물 값 개당 {D.spec_price(g, pid):,.0f}")
-            note = f"매 턴 {price * n:,.0f}을 냅니다(받은 만큼만). {mine}"
+            note = f"매 턴 {josa(f'{price * n:,.0f}', '을/를')} 냅니다(받은 만큼만). {mine}"
         else:
             have = D.spec_supply(g, pid) if res == "specialty" else int(g.energy_supply(pid)[res])
-            note = f"매 턴 {price * n:,.0f}을 받습니다(보낸 만큼만). 지금 턴당 확보량 {have}개"
+            note = f"매 턴 {josa(f'{price * n:,.0f}', '을/를')} 받습니다(보낸 만큼만). 지금 턴당 확보량 {have}개"
         gui.wrap((r.x + 24, r.y + 118), note + f" · 수락하면 서로 우호도 +{C.TRADE_OP_PER_UNIT * n:g}, 거절은 변화 없음",
                  r.w - 48, 12, t.muted)
         if gui.button((r.x + 24, r.bottom - 64, 220, 44), "수락", "primary"):
@@ -1631,7 +1642,7 @@ def draw_proposal(app):
     if kind == "peace" and not D.at_war(g, fid, g.player_id):
         g.pending_proposals.pop(0)                 # 이미 전쟁이 끝났으면 강화 제안은 의미가 없다
         return
-    gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)})이(가) {D.TREATY_NAMES[kind]}을(를) 제안합니다.", 15,
+    gui.text((r.x + 44, r.y + 60), f"{g.seen_name(fid)}({g.seen_leader(fid)}){particle(g.seen_leader(fid), '이/가')} {josa(D.TREATY_NAMES[kind], '을/를')} 제안합니다.", 15,
              weight="semibold")
     gui.text((r.x + 24, r.y + 96), f"상대 우호도 {D.opinion(g, fid, g.player_id):+.0f} · 현재 관계 "
              f"{D.STAGE_NAMES[D.stage(g, fid, g.player_id)]}", 13, t.muted)
@@ -1769,14 +1780,21 @@ def _draw_nego_window(app, ui, from_ai):
         if i_buy:
             room = NG.factory_room(g, pid)
             v = NG.buy_unit_value(g, pid, res, max(1, min(n, room))) if room else 0
-            info.append(f"내 빈 공장 칸 {room} · 넣으면 개당 약 {v:,.0f}(산출×세율)")
-            info.append(f"상대가 남기는 양 약 {NG.surplus(g, fid, res)}개/턴 (넘으면 상대 공장 산출×세율 "
-                        f"{NG.avg_factory_unit(g, fid):,.0f}보다 비싸야)")
+            info.append((f"내 빈 공장 {room}곳 · 들여오면 개당 수익 약 {v:,.0f}",
+                         "빈 공장 칸에 넣어 늘어나는 산출에 세율을 곱한 값입니다."))
+            info.append((f"상대 여유분: 약 {NG.surplus(g, fid, res)}개/턴 (초과 구매 시 단가 상승)",
+                         f"상대가 남기는 양을 넘겨 사려면, 상대가 자기 공장에 넣어 얻는 값(개당 약 "
+                         f"{NG.avg_factory_unit(g, fid):,.0f}: 산출×세율)보다 비싸게 불러야 합니다."))
         else:
-            info.append(f"내가 남기는 양 {NG.surplus(g, pid, res)}개/턴 · 팔 수 있는 양 {NG.supply_total(g, pid, res)}개/턴")
-            info.append(f"상대 빈 공장 칸 약 {NG.factory_room(g, fid)} (상대 산출×세율보다 비싸면 안 삼)")
+            info.append(f"내 여유분: {NG.surplus(g, pid, res)}개/턴 · 최대 판매량 {NG.supply_total(g, pid, res)}개/턴")
+            info.append((f"상대 여유 공장: 약 {NG.factory_room(g, fid)}곳 (수요 한계를 넘으면 매입 거절)",
+                         "상대는 빈 공장 칸만큼만 사고, 공장에 넣어 얻는 값(산출×세율)보다 비싸면 사지 않습니다."))
     for line in info:
+        line, tip = line if isinstance(line, tuple) else (line, None)
+        y0 = y
         y = gui.wrap((lx, y), line, lw, 12, t.muted) + 2
+        if tip and gui.hover((lx, y0, lw, y - y0)):
+            gui.tooltip = tip
     # ---- 협상 기록
     hx, hw = lx + lw + 24, r.right - 24 - (lx + lw + 24)
     gui.text((hx, r.y + 92), "협상", 14, weight="bold")
@@ -1965,7 +1983,10 @@ def draw_diplomacy(app):
     gui.text((mx, r.y + 124), label, 18, col, "bold")
     gui.wrap((mx, r.y + 154), info, mw, 12, t.muted)
     m = D.trade_m(g, fid, pid)
-    gui.wrap((mx, r.y + 214), f"요구 배수 m = {m:.2f}\n(받는 가치 ≥ 주는 가치 × m 이면 수락)", mw, 12, t.muted)
+    yb = gui.wrap((mx, r.y + 214), f"상대 요구 기준: ×{m:.2f} (우호도·외교 보정 반영)", mw, 12, t.muted)
+    if gui.hover((mx, r.y + 214, mw, yb - (r.y + 214))):
+        gui.tooltip = (f"상대는 받는 가치가 주는 가치의 {m:.2f}배 이상이면 수락합니다.\n"
+                       "우호도가 높거나 우호 선언 관계면 낮아지고, 패권국에는 높아집니다.")
     if gui.button((mx, r.y + 270, mw, 38), "제안하기", "primary"):
         op0 = D.opinion(g, fid, pid)
         res2, counter2, info2 = D.respond_offer(g, fid, pid, ds.offer)
@@ -1981,7 +2002,8 @@ def draw_diplomacy(app):
         else:
             app.toast("거절당했습니다: " + info2, t.bad)
     if ds.counter:
-        gui.wrap((mx, r.y + 316), f"수정안: 돈 {ds.counter['give']['money']:,}을 달라고 합니다.", mw, 12, t.warn)
+        money = f"{ds.counter['give']['money']:,}"
+        gui.wrap((mx, r.y + 316), f"수정안: 돈 {josa(money, '을/를')} 달라고 합니다.", mw, 12, t.warn)
         still = (D.evaluate_offer(g, fid, pid, ds.counter)[0] == "accept"
                  and ds.counter["give"].get("money", 0) <= g.player.money)
         if gui.button((mx, r.y + 356, mw, 32), "수정안 수락", "primary", enabled=still,
@@ -2069,7 +2091,7 @@ def draw_diplomacy(app):
                f"상대 우호도 -100,\n전쟁광 평판: {D.warmonger_text(g, pid)}"
                if can_war else "불가침·동맹 중에는 먼저 파기")
         confirm = getattr(app, "war_confirm", None) == fid and can_war
-        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "정말 선전포고?" if confirm else "선전포고", "danger",
+        if gui.button((r.x + 24 + i * (bw + 8), y, bw, 40), "선전포고 확정" if confirm else "선전포고", "danger",
                       enabled=can_war, tooltip=tip + ("\n한 번 더 눌러야 선포됩니다." if can_war else "")):
             if confirm:                              # 측면 패널과 같이 두 번 눌러야 선포(오클릭 방지)
                 app.war_confirm = None
@@ -2415,7 +2437,7 @@ P 일시정지 / F5 저장 / F9 불러오기   Ctrl+D: 다크 모드   Esc: 선�
 Space: 지역 메뉴 다음 탭   Q [행동] · W [부대] · E [지역 정보]   지도 위 군기를 누르면 그 부대의 [부대] 탭
 
 · 빈 슬롯 지역이 남아 있으면 우하단 버튼이 [다음 지역]이 되어 수도부터 획득 순서대로 행동 메뉴를 엽니다.
-· 정치 지도에서 진한 색 내 영토는 생산·행동이 진행 중인 지역입니다.
+· 정치 지도에서 사선 빗금이 그어진 내 영토는 생산·행동이 진행 중인 지역입니다(색은 그대로, 시야 밖은 바랜 색).
 · 생산 집중: 건설·병력 생산을 하지 않는 지역의 인구 산출 +15%.
 · 좌측 [내정]: 세율·잉여 식량·특산물·지출 우선순위. [국가 현황]: 통계·재정·승리 조건 진행.
 · [자원 배정]의 [자동 배정]: 발전소에 석유 → 석탄 → 공장에 전기 → 석탄 → 석유 순으로 배정. [매 턴 자동 배정](기본 켜짐)이면 턴마다 다시 배정.

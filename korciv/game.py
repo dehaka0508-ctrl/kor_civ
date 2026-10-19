@@ -5,6 +5,7 @@ import math
 import random
 from collections import deque
 
+from . import colors as K
 from . import config as C
 from . import diplomacy as D
 from . import metro as M
@@ -12,6 +13,7 @@ from . import rules as R
 from .data import DO8, load_world
 from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
 from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES
+from .text import josa, particle
 
 SUFFIXES = ("구역", "지구", "시", "군", "구")
 
@@ -226,6 +228,8 @@ class Game:
         ai_starts = (list(st.ai_starts or []) + [None] * n_ai)[:n_ai]
         starts = self._pick_starts(1 + n_ai, [st.player_start] + ai_starts)
         diff = C.DIFFICULTIES[st.difficulty]
+        # 국가 색(v1.3.1): 플레이어 색(국기 배경 색 또는 기본 파랑)과 이미 고른 색들에서 가장 먼 색부터
+        colors = K.nation_colors(n_ai, player_color(st.player_flag))
         for i in range(1 + n_ai):
             is_player = i == 0
             lk = st.player_leader if is_player else ai_leaders[i - 1]
@@ -233,9 +237,7 @@ class Game:
             rid = starts[i]
             name = st.player_name if is_player else faction_name_from(self.world.regions[rid].short)
             lname = (st.player_leader_name or leader["name"]) if is_player else leader["name"]
-            color = C.FACTION_COLORS[i % len(C.FACTION_COLORS)]
-            if is_player:
-                color = player_color(st.player_flag) or color
+            color = colors[i]
             f = Faction(id=i, name=name, color=color, leader=lk,
                         leader_name=lname, gov=None, is_ai=(not is_player) or st.all_ai, capital=rid,
                         aggression=leader["aggr"])
@@ -513,7 +515,7 @@ class Game:
             a.goto = None
             self.teleport_home(a)
             if a.owner == self.player_id and a.id in self.armies:
-                self.event("info", f"{where}의 부대가 전쟁 중이 아닌 나라 땅이라 {self.info(a.loc).name}(으)로 돌아왔습니다.",
+                self.event("info", f"{where}의 부대가 전쟁 중이 아닌 나라 땅이라 {josa(self.info(a.loc).name, '으로/로')} 돌아왔습니다.",
                            region=a.loc, fids=(a.owner,))
 
     @staticmethod
@@ -877,7 +879,7 @@ class Game:
                 self.begin_occupation(fl.owner, target)
                 self._update_fog()
                 if self.regions[target].owner == fl.owner:
-                    return made, f"상륙: {what} → {name}을(를) 차지했습니다."
+                    return made, f"상륙: {what} → {josa(name, '을/를')} 차지했습니다."
                 return made, f"상륙: {what} → {name} 점령을 시작했습니다."
             self._update_fog()
             return made, f"상륙: {what} → {name}"
@@ -1889,7 +1891,7 @@ class Game:
             busy = next((r.id for r in self.regions_of(fid)
                          if r.id != rid and r.project and r.project.kind == "capital"), None)
             add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS,
-                busy is None, "" if busy is None else f"{self.info(busy).name}(으)로 천도 진행 중")
+                busy is None, "" if busy is None else f"{josa(self.info(busy).name, '으로/로')} 천도 진행 중")
         return opts
 
     # ---- 과학승리
@@ -2305,7 +2307,7 @@ class Game:
                 label = self.build_label(rid, key, opt["level"])      # 예: '공업 단지 건설', '발전소 2단계'
         if kind == "econ":
             if key == "currency":
-                self.econ_alert(fid, f"{self.fname(fid)}이(가) 기축통화 지정을 시작했습니다. "
+                self.econ_alert(fid, f"{josa(self.fname(fid), '이/가')} 기축통화 지정을 시작했습니다. "
                                      f"{opt['turns']}턴 뒤 완료되면 경제승리입니다!")
         if kind == "annex":
             label = f"편입: {self.info(key).name}"
@@ -3055,7 +3057,7 @@ class Game:
                 victim = self.factions[by]
                 if victim.is_ai:
                     D.add_opinion(self, victim.id, new_owner, C.OP_HIJACK)
-                self.event("info", f"{self.info(rid).name}을(를) {self.fname(new_owner)}이(가) 먼저 차지해 "
+                self.event("info", f"{josa(self.info(rid).name, '을/를')} {josa(self.fname(new_owner), '이/가')} 먼저 차지해 "
                            f"{victim.name}의 점령이 취소되었습니다.", region=rid, fids=(victim.id,))
         # 경쟁에서 진 세력의 병력은 (전쟁 중이 아니면) 자국 영토로 돌아간다
         if new_owner != NEUTRAL:
@@ -3082,7 +3084,7 @@ class Game:
                     f_old.capital_fall_turn = self.turn
                     for r in rest:
                         r.h_delta += C.CAPITAL_LOST_HAPPY
-                    self.event("capital", f"{f_old.name}의 수도가 함락되어 {self.info(newcap.id).name}(으)로 천도했습니다.",
+                    self.event("capital", f"{f_old.name}의 수도가 함락되어 {josa(self.info(newcap.id).name, '으로/로')} 천도했습니다.",
                                region=newcap.id, fids=(old,))
             if self.region_count(old) == 0:
                 self.eliminate(old, by=new_owner)
@@ -3152,7 +3154,7 @@ class Game:
         names = [C.SCIENCE[k]["name"] for k in sorted(lb["sci"]) if k in C.SCIENCE] + \
                 [C.ECON[k]["name"] for k in sorted(lb["econ"]) if k in C.ECON]
         if f.alive and names:
-            self.event("info", f"{self.info(rr.id).name}의 {', '.join(names)}을(를) 되찾지 못해 철거되었습니다(다시 지어야 합니다).",
+            self.event("info", f"{self.info(rr.id).name}의 {josa(', '.join(names), '을/를')} 되찾지 못해 철거되었습니다(다시 지어야 합니다).",
                        region=rr.id, fids=(f.id,))
 
     def lost_buildings(self, fid, key) -> list:
@@ -3216,7 +3218,7 @@ class Game:
         for r in self.regions.values():
             r.occs.pop(fid, None)
         who = f" ({self.fname(by)}에 의해)" if by not in (None, NEUTRAL) else ""
-        self.event("eliminated", f"{f.name}이(가) 멸망했습니다{who}.", fids=(fid,))
+        self.event("eliminated", f"{josa(f.name, '이/가')} 멸망했습니다{who}.", fids=(fid,))
         if by == self.player_id and fid != self.player_id:
             self.queue_dialogue("defeated", fid)          # 플레이어에게 멸망하는 지도자의 마지막 말
         elif fid == self.player_id and by not in (None, NEUTRAL):
@@ -3254,8 +3256,8 @@ class Game:
             for a, b in ((fid, host), (host, fid)):
                 self.dip.op[(a, b)] = max(D.opinion(self, a, b), C.ALLIANCE_MIN)
             self._mods.pop(fid, None)
-            self.event("capital", f"임시정부: {f.name}이(가) {self.fname(host)}의 {self.info(rid).name}에서 "
-                                  f"다시 일어나 {self.fname(host)}와(과) 동맹을 맺었습니다.", region=rid, fids=(fid, host))
+            self.event("capital", f"임시정부: {josa(f.name, '이/가')} {self.fname(host)}의 {self.info(rid).name}에서 "
+                                  f"다시 일어나 {josa(self.fname(host), '와/과')} 동맹을 맺었습니다.", region=rid, fids=(fid, host))
             return True
         return False
 
@@ -3274,7 +3276,7 @@ class Game:
         need = self.neutral_turns(fid, rid)
         self.occ_seq = getattr(self, "occ_seq", 0) + 1
         rr.occs[fid] = {"by": fid, "progress": 0, "need": need, "seq": self.occ_seq}
-        self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
+        self.event("occupy", f"{josa(self.fname(fid), '이/가')} {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
     def liberation_left(self, rid) -> int:
@@ -3337,13 +3339,13 @@ class Game:
         if old != NEUTRAL:
             D.add_war_score(self, liberator if liberator is not None else fid, old, rr.pop)
         self.transfer_region(rid, fid)
-        lib = (f"{self.fname(liberator)}이(가) {self.fname(old)}에게서 {self.info(rid).name}을(를) 되찾아 "
+        lib = (f"{josa(self.fname(liberator), '이/가')} {self.fname(old)}에게서 {josa(self.info(rid).name, '을/를')} 되찾아 "
                f"원 주인 {self.fname(fid)}에게 돌려주었습니다") if liberator is not None else None
         fids = (fid, old) if liberator is None else (liberator, fid, old)
         if retake:
             rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, h_before))
             self.event("captured", (lib + " (저항 없이 복구).") if lib else
-                       f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 되찾았습니다 "
+                       f"{josa(self.fname(fid), '이/가')} {josa(self.info(rid).name, '을/를')} 되찾았습니다 "
                        f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=fids)
             return
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
@@ -3357,7 +3359,7 @@ class Game:
         if lib:
             self.event("captured", lib + f" (저항 {rr.resist['resist']}턴).", region=rid, fids=fids)
             return
-        self.event("captured", f"{self.fname(fid)}이(가) {self.info(rid).name}을(를) 차지했습니다"
+        self.event("captured", f"{josa(self.fname(fid), '이/가')} {josa(self.info(rid).name, '을/를')} 차지했습니다"
                    + (f" ({self.fname(old)}에게서, 저항 {rr.resist['resist']}턴)." if old != NEUTRAL else "."),
                    region=rid, fids=(fid, old))
 
@@ -3856,10 +3858,10 @@ class Game:
         if not w.is_sea(a.loc) and a.domain() == "land":
             rr = self.regions[a.loc]
             if a.loc == tgt and owner0 not in (None, fid) and rr.owner == fid:
-                return f"{name}을(를) 차지했습니다."
+                return f"{josa(name, '을/를')} 차지했습니다."
             if fid in rr.occs:
                 return f"{name} 점령을 시작했습니다."
-        return f"{name}(으)로 이동했습니다."
+        return f"{josa(name, '으로/로')} 이동했습니다."
 
     def capture_now(self, army_id, target):
         """플레이어: 병력이 없는 맞닿은 적국 땅으로 들어가 바로 점령한다(공격처럼 그 턴 행동 끝)."""
@@ -3883,7 +3885,7 @@ class Game:
         self.fought.add(a.id)
         self._update_fog()
         if rr.owner == a.owner:
-            return True, f"{self.info(target).name}을(를) {self.fname(old)}에게서 차지했습니다."
+            return True, f"{josa(self.info(target).name, '을/를')} {self.fname(old)}에게서 차지했습니다."
         return True, f"{self.info(target).name}에 진입해 점령을 시작했습니다."
 
     def attack_candidates(self, fid, target, exclude=()) -> list:
@@ -4304,8 +4306,8 @@ class Game:
                 names = ", ".join(self.fname(f) for f in rivals)
                 why = ("주둔 병력의 체력 합이 가장 큰" if cl[0][0] == "occ" and sum(c[0] == "occ" for c in cl) > 1
                        else "무력 점령 중인" if cl[0][0] == "occ" else "맞닿은 지역 인구 합이 가장 많은")
-                self.event("info", f"{self.info(rid).name}: {names}이(가) 같은 턴에 점령·편입을 마쳐 "
-                           f"{why} {self.fname(cl[0][1])}이(가) 차지합니다.",
+                self.event("info", f"{self.info(rid).name}: {josa(names, '이/가')} 같은 턴에 점령·편입을 마쳐 "
+                           f"{why} {josa(self.fname(cl[0][1]), '이/가')} 차지합니다.",
                            region=rid, fids=tuple(c[1] for c in cl))
             kind, fid, extra = cl[0]
             if kind == "occ":
@@ -4386,7 +4388,7 @@ class Game:
         if taker not in (NEUTRAL, f.id):
             if f.is_ai:
                 D.add_opinion(self, f.id, taker, C.OP_HIJACK)
-            self.event("info", f"{self.info(p.key).name}을(를) {self.fname(taker)}이(가) 먼저 차지해 "
+            self.event("info", f"{josa(self.info(p.key).name, '을/를')} {josa(self.fname(taker), '이/가')} 먼저 차지해 "
                        f"{self.info(rr.id).name}의 편입이 취소되었습니다 (환급 {p.paid:,.0f}).",
                        region=p.key, fids=(f.id, taker))
 
@@ -4770,7 +4772,7 @@ class Game:
                     for a in self.armies_at(tgt.id, f.id):
                         self._send_to_rally(a, dest)
             text = f"{self.info(tgt.id).name} 편입 완료"
-            self.event("captured", f"{f.name}이(가) {self.info(tgt.id).name}을(를) 편입했습니다.",
+            self.event("captured", f"{josa(f.name, '이/가')} {josa(self.info(tgt.id).name, '을/를')} 편입했습니다.",
                        region=tgt.id, fids=(f.id,))
         elif p.kind == "science":
             spec = C.SCIENCE[p.key]
@@ -4784,15 +4786,15 @@ class Game:
             text = f"{name} 과학 {k}단계 「{spec['name']}」 완료!"
             if k == len(C.SCIENCE_STEPS):
                 text += " 세 유닛을 발사대 지역에 모으고 턴을 마치면 발사합니다."
-            self.event("science", f"{f.name}이(가) 과학 {k}단계 「{spec['name']}」을(를) 완료했습니다.",
+            self.event("science", f"{josa(f.name, '이/가')} 과학 {k}단계 「{spec['name']}」{particle(spec['name'], '을/를')} 완료했습니다.",
                        region=rr.id, fids=(f.id,))
         elif p.kind == "econ":
             spec = C.ECON[p.key]
             rr.econ.add(p.key)
             text = f"{name} {spec['name']} 완공!"
-            self.event("econ", f"{f.name}이(가) {name}에 {spec['name']}을(를) 세웠습니다.", region=rr.id, fids=(f.id,))
+            self.event("econ", f"{josa(f.name, '이/가')} {name}에 {josa(spec['name'], '을/를')} 세웠습니다.", region=rr.id, fids=(f.id,))
             if p.key == "ifc":
-                self.econ_alert(f.id, f"{f.name}이(가) 국제금융센터를 완공했습니다. 기축통화 지정만 남았습니다!")
+                self.econ_alert(f.id, f"{josa(f.name, '이/가')} 국제금융센터를 완공했습니다. 기축통화 지정만 남았습니다!")
             if p.key == "currency":
                 self._win((f.id,), "economic")
         elif p.kind == "capital":
@@ -4802,7 +4804,7 @@ class Game:
             # 직접 천도한 새 수도는 시작 수도처럼 모든 경계(육지 경계·해안선)에 방어선 1단계(v1.3.0)
             for n in list(self.world.land_adj[rr.id]) + (["coast"] if self.world.regions[rr.id].coastal else []):
                 rr.lines[n] = max(rr.lines.get(n, 0), C.START_LINE_LEVEL)
-            text = f"{name}(으)로 천도 완료(새 수도 모든 경계에 방어선 {C.START_LINE_LEVEL}단계)"
+            text = f"{josa(name, '으로/로')} 천도 완료(새 수도 모든 경계에 방어선 {C.START_LINE_LEVEL}단계)"
         else:
             text = "완료"
         self.event("complete", text, region=rr.id, fids=(f.id,))
@@ -5261,11 +5263,11 @@ class Game:
         last = len(self.regions_of(fid)) <= 1
         nf, joined = self._spawn_rebel(fid, rid, Rv)
         if last:
-            msg = f"{name}: 진압 실패. 마지막 영토가 {nf.name}(으)로 독립해 멸망했습니다."
+            msg = f"{name}: 진압 실패. 마지막 영토가 {josa(nf.name, '으로/로')} 독립해 멸망했습니다."
         elif joined:
             msg = f"{name}: 진압 실패! 기존 반란 세력 {nf.name}에 합류했습니다."
         else:
-            msg = f"{name}: 진압 실패! {nf.name}(으)로 분리독립했습니다."
+            msg = f"{name}: 진압 실패! {josa(nf.name, '으로/로')} 분리독립했습니다."
         self.event("rebel", msg, region=rid, fids=(fid, nf.id))
         return msg
 
@@ -5297,9 +5299,8 @@ class Game:
             return type("Neutral", (), {"name": "중립 지역", "id": NEUTRAL})(), True
         nid = len(self.factions)
         info = self.info(rid)
-        used = {f.color for f in self.factions if f.alive}
-        palette = C.FACTION_COLORS + C.REBEL_COLORS
-        color = next((c for c in palette if c not in used), palette[nid % len(palette)])
+        # 살아 있는 나라 색과 지도에서 가장 멀리 떨어진 색(v1.3.1: 같은·비슷한 색을 쓰지 않는다)
+        color = K.pick([f.color for f in self.factions if f.alive], C.FACTION_COLORS + C.REBEL_COLORS)
         taken = {f.leader for f in self.factions if f.alive}
         pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus" and l["key"] not in taken]
         lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "cus"])
@@ -5342,7 +5343,7 @@ class Game:
             if foes:
                 e = max(foes, key=lambda x: self.power.get(x, 0))
                 self.dip.alliance[D.pair(nid, e)] = self.turn
-                self.event("diplo", f"{f.name}이(가) {self.fname(e)}와(과) 동맹을 맺었습니다 "
+                self.event("diplo", f"{josa(f.name, '이/가')} {josa(self.fname(e), '와/과')} 동맹을 맺었습니다 "
                            f"({self.fx_source(fid, 'rebel_ally_enemy')}).", fids=(nid, e, fid))
         return f, False
 

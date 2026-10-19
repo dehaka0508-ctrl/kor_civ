@@ -7,6 +7,7 @@ from . import config as C
 from . import rules as R
 from .leaders import gov_opinion_bias
 from .state import NEUTRAL
+from .text import josa
 
 STAGE_NAMES = {-1: "전쟁", 0: "관계 없음", 1: "우호관계", 2: "통행권·불가침", 3: "동맹", 4: "연합"}
 TREATY_NAMES = {"nonaggr": "불가침조약", "passage": "군사통행권", "alliance": "동맹",
@@ -215,7 +216,7 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
             if c not in (a, b) and pen:
                 add_opinion(g, c, a, pen)
         note = f" (전쟁광 평판: 다른 세력 우호도 {pen:+.0f})" if pen else ""
-    g.event("war", f"{g.fname(a)}이(가) {g.fname(b)}에 {reason}했습니다.{note}", fids=(a, b))
+    g.event("war", f"{josa(g.fname(a), '이/가')} {g.fname(b)}에 {reason}했습니다.{note}", fids=(a, b))
     joined.add((a, b))
     # 수비측 동맹·연합 자동 참전
     for c in list(g.alive_ids()):
@@ -337,7 +338,7 @@ def _peace_cede(g, side, other):
         return
     rid = g.rng.choice(cands)
     g.transfer_region(rid, other, reason="강화 할양")
-    g.event("captured", f"강동 6주: {g.fname(side)}이(가) 강화 조건으로 {g.info(rid).name}을(를) "
+    g.event("captured", f"강동 6주: {josa(g.fname(side), '이/가')} 강화 조건으로 {josa(g.info(rid).name, '을/를')} "
                         f"{g.fname(other)}에 넘겼습니다.", region=rid, fids=(side, other))
 
 
@@ -361,7 +362,7 @@ def _peace_weary_relief(g, w, a, b):
         before = f.war_weary
         add_war_weary(g, side, -v)
         if not f.is_ai:
-            g.event("info", f"{g.fname(other)}와(과)의 전쟁 성과로 전쟁 피로가 {before - f.war_weary:.0f} 줄었습니다.",
+            g.event("info", f"{josa(g.fname(other), '와/과')}의 전쟁 성과로 전쟁 피로가 {before - f.war_weary:.0f} 줄었습니다.",
                     fids=(side,))
 
 
@@ -408,7 +409,7 @@ def make_peace(g, a, b, _done=None):
             army.order, army.goto = None, None
         if not g.world.is_sea(army.loc) and g.regions[army.loc].owner == other:
             g.teleport_home(army)
-    g.event("peace", f"{g.fname(a)}와(과) {g.fname(b)}이(가) 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
+    g.event("peace", f"{josa(g.fname(a), '와/과')} {josa(g.fname(b), '이/가')} 강화했습니다. (불가침 {C.PEACE_TREATY_TURNS}턴)", fids=(a, b))
     _player_dialogue(g, "peace", a, b)
     for side, other in ((a, b), (b, a)):
         _peace_cede(g, side, other)
@@ -470,7 +471,7 @@ def break_nonaggr(g, a, b):
     for c in g.alive_ids():
         if c != a:
             add_opinion(g, c, a, C.OP_NONAGGR_BROKEN)
-    g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}과(와)의 불가침조약을 파기했습니다.", fids=(a, b))
+    g.event("diplo", f"{josa(g.fname(a), '이/가')} {josa(g.fname(b), '과/와')}의 불가침조약을 파기했습니다.", fids=(a, b))
     return True, ""
 
 
@@ -479,7 +480,7 @@ def leave_alliance(g, a, b):
     if p in g.dip.alliance:
         del g.dip.alliance[p]
         g.dip.nonaggr[p] = g.turn + C.TREATY_TURNS
-        g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}과(와)의 동맹에서 탈퇴했습니다.", fids=(a, b))
+        g.event("diplo", f"{josa(g.fname(a), '이/가')} {josa(g.fname(b), '과/와')}의 동맹에서 탈퇴했습니다.", fids=(a, b))
 
 
 def leave_coalition(g, a):
@@ -492,7 +493,7 @@ def leave_coalition(g, a):
         add_opinion(g, m, a, C.OP_COALITION_LEAVE)
     if len(c["members"]) < 2:
         del g.dip.coalitions[cid]
-    g.event("diplo", f"{g.fname(a)}이(가) 연합에서 탈퇴했습니다.", fids=(a,))
+    g.event("diplo", f"{josa(g.fname(a), '이/가')} 연합에서 탈퇴했습니다.", fids=(a,))
 
 
 # ------------------------------------------------------------------ 우호 선언·비난
@@ -563,7 +564,7 @@ def declare_friendship(g, a, b, force=False):
             add_opinion(g, x, y, v)
     _dip_attr(g, "decl_cd")[("friend", a, b)] = g.turn
     _dip_attr(g, "declared")[pair(a, b)] = g.turn
-    g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
+    g.event("diplo", f"{josa(g.fname(a), '이/가')} {g.fname(b)}에 우호를 선언했습니다.", fids=(a, b))
     _player_dialogue(g, "friend", a, b)
     return True, (f"우호 선언 성립: 우호도 +{C.DECL_FRIEND_BONUS}, "
                   f"{C.DECL_FRIEND_COOLDOWN}턴 동안 매 턴 +{C.DECL_FRIEND_TURN:g}")
@@ -651,7 +652,7 @@ def denounce(g, a, b):
     log = _dip_attr(g, "denounce_log").setdefault(a, [])
     log.append(g.turn)
     del log[:-8]
-    g.event("diplo", f"{g.fname(a)}이(가) {g.fname(b)}을(를) 공개적으로 비난했습니다.", fids=(a, b))
+    g.event("diplo", f"{josa(g.fname(a), '이/가')} {josa(g.fname(b), '을/를')} 공개적으로 비난했습니다.", fids=(a, b))
     return True, "비난했습니다."
 
 
@@ -756,7 +757,7 @@ def sign_treaty(g, a, b, kind):
             del g.dip.coalitions[cb]
         cid = coalition_of(g, a)
         g.dip.coalitions[cid]["since"] = g.turn
-    g.event("diplo", f"{g.fname(a)}와(과) {g.fname(b)}이(가) {TREATY_NAMES[kind]}을(를) 맺었습니다.", fids=(a, b))
+    g.event("diplo", f"{josa(g.fname(a), '와/과')} {josa(g.fname(b), '이/가')} {josa(TREATY_NAMES[kind], '을/를')} 맺었습니다.", fids=(a, b))
 
 
 def propose_treaty(g, proposer, target, kind):
@@ -1038,7 +1039,7 @@ def evaluate_offer(g, ai, proposer, offer):
         counter = {"give": dict(give), "take": dict(take)}
         counter["give"]["money"] = give.get("money", 0) + need
         if counter["give"]["money"] <= g.factions[proposer].money:
-            return "counter", counter, info + f" → 돈 {need:,}을 더 요구"
+            return "counter", counter, info + f" → 돈 {josa(f'{need:,}', '을/를')} 더 요구"
     return "reject", None, info
 
 
