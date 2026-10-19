@@ -1,4 +1,4 @@
-"""v1.2.21 편의성 개선: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입], 공동 편입 한 줄 표시,
+"""v1.3.0 편의성 개선: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입], 공동 편입 한 줄 표시,
 자동 해산, 부대 정렬, 거래 제의 거절, 생산 집결지."""
 import pickle
 
@@ -271,7 +271,7 @@ def test_save_roundtrip_and_old_save_migration():
     g.player.annex_disband.add("S999")
     g2 = pickle.loads(pickle.dumps(g))
     assert g2.regions["S002"].rally == dest and "S999" in g2.player.annex_disband
-    for f in g.factions:                          # v1.2.21 전 세이브: 새 필드가 없다
+    for f in g.factions:                          # v1.3.0 전 세이브: 새 필드가 없다
         f.__dict__.pop("annex_disband", None)
         f.__dict__.pop("rally", None)
     for r in g.regions.values():

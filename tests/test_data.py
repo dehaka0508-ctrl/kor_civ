@@ -47,7 +47,7 @@ def test_every_mainland_region_has_neighbor_and_is_connected():
 def test_sea_coasts():
     w = load_world()
     counts = {s.name: len(s.coast) for s in w.seas.values()}
-    # v1.2.26: 지도와 맞춤 — 서한만 +은천·동림 −대안·룡강·안주·송화, 경기만 +판문·파주·검단 −미추홀,
+    # v1.3.0: 지도와 맞춤 — 서한만 +은천·동림 −대안·룡강·안주·송화, 경기만 +판문·파주·검단 −미추홀,
     # 서해 남부 +서산(천수만), 동한만 +락원, 북동해 +명간
     assert counts == {"서한만": 23, "경기만": 27, "서해 남부": 17, "남해 서부": 11, "남해 동부": 17,
                       "남동해": 8, "영동 해역": 7, "동한만": 15, "북동해": 9, "독도 해역": 1, "제주도 연안": 2}

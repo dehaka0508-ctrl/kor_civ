@@ -171,7 +171,7 @@ class App:
         self.war_confirm = None      # 선전포고 확인 대기 중인 세력
         self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
         self.rally_pick = None       # 생산 집결지 고르는 중: 지역 ID, 일괄이면 "*"
-        self.metro_pick = None       # 광역시 지정 중(v1.2.23): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
+        self.metro_pick = None       # 광역시 지정 중(v1.3.0): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
         self.tab = "action"
@@ -272,7 +272,7 @@ class App:
         if any(not hasattr(f, "met") for f in g.factions):
             g._update_fog()                      # v0.0.0 세이브: 조우 기록을 지금 시야로 채운다
         from .. import metro as M
-        M.migrate(g)                             # v1.2.26 이전 세이브: 광역시 특산물 시설을 통합 건물로
+        M.migrate(g)                             # 예전 세이브: 광역시 특산물 시설을 통합 건물로
         self.game = g
         self.modal = None
         self.reset_ui()
@@ -465,7 +465,7 @@ class App:
         modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
         # 우클릭 메뉴 위에 마우스가 있으면 그 아래 버튼(턴 종료 등)은 반응하지 않는다(메뉴가 나중에 그려져도 먼저 눌리지 않게)
         under_ctx = bool(self.ctx_menu) and pygame.Rect(self.ctx_menu[0], (170, 84)).collidepoint(self.gui.mouse)
-        # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.2.16)
+        # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.3.0)
         pop = self.mode_popup_rect()
         under_pop = pop is not None and pop.collidepoint(self.gui.mouse)
         self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
@@ -890,7 +890,7 @@ class App:
             ui_icon(self.screen, "swords", c, (247, 241, 227), 0.55 * u)
 
     def draw_rallies(self):
-        """생산 집결지(v1.2.21): 집결지 지역에 작은 깃대 표시(일괄 지정은 금색)."""
+        """생산 집결지(v1.3.0): 집결지 지역에 작은 깃대 표시(일괄 지정은 금색)."""
         g = self.game
         mv = self.map
         u = ui_scale()
@@ -931,7 +931,7 @@ class App:
             self.rally_pick = None
             self.toast("집결지 지정을 취소했습니다.")
 
-    # ---- 광역시 지정(v1.2.23): 지도에서 지역을 눌러 고른다
+    # ---- 광역시 지정(v1.3.0): 지도에서 지역을 눌러 고른다
     def start_metro_pick(self, center):
         from .. import metro as M
         self.metro_pick = {"center": center, "sel": set(), "name": ""}
@@ -1029,8 +1029,8 @@ class App:
             self.changed()
 
     def draw_metros(self):
-        """광역시(v1.2.19): 구성 지역 전체의 바깥 윤곽만 세력 색으로 굵게(안쪽 경계는 바탕 지도에서도 빼서
-        하나의 지역처럼, v1.2.27), 중심에 이름 표찰."""
+        """광역시(v1.3.0): 구성 지역 전체의 바깥 윤곽만 세력 색으로 굵게(안쪽 경계는 바탕 지도에서도 빼서
+        하나의 지역처럼, v1.3.0), 중심에 이름 표찰."""
         g = self.game
         mv = self.map
         u = ui_scale()
@@ -1132,7 +1132,7 @@ class App:
             if a.owner != g.player_id:
                 continue
             if not a.order:
-                # 자동 이동 중(v1.2.10: 이번 구간은 이미 갔다): 지금 위치에서 최종 목적지까지 남은 경로를 점선으로
+                # 자동 이동 중(v1.3.0: 이번 구간은 이미 갔다): 지금 위치에서 최종 목적지까지 남은 경로를 점선으로
                 if getattr(a, "goto", None) and a.goto != a.loc:
                     route = g.plan_route(a, a.goto) or [a.goto]
                     pts = [mv.label_screen(a.loc)] + [mv.label_screen(n) for n in route]
@@ -1207,7 +1207,7 @@ class App:
             x, y = mv.label_screen(loc)
             if not mv.view.collidepoint(x, y):
                 continue
-            arms.sort(key=lambda a: (a.owner != pid, a.owner, g.army_sort_key(a)))   # 같은 병종 순서(v1.2.21)
+            arms.sort(key=lambda a: (a.owner != pid, a.owner, g.army_sort_key(a)))   # 같은 병종 순서(v1.3.0)
             # 군기: 장대 + 깃발(육군 제비꼬리·해군 뾰족한 삼각기·공군 날개깃) + 대표 병종 아이콘 + 총수
             fh = max(10, int(14 * u))
             flags = []
@@ -1314,7 +1314,7 @@ class App:
                 return
             hit = next((h for h in reversed(getattr(self, "_flag_hits", [])) if h[0].collidepoint(pos)), None)
             if hit is not None and hit[1] in self.game.armies:
-                # 군기를 직접 누르면 그 부대를 고르고 [부대] 탭(v1.2.21)
+                # 군기를 직접 누르면 그 부대를 고르고 [부대] 탭(v1.3.0)
                 a = self.game.armies[hit[1]]
                 if self.sel != a.loc or not (self.left_open and self.left_tab == "region"):
                     self.select(a.loc)
@@ -1358,7 +1358,7 @@ class App:
             # 지역을 누르면 [행동](내 지역이 아니면 할 행동이 없으니 [지역 정보]). 보던 탭이 있으면 그대로
             own = g.regions[node].owner == g.player_id
             near = g.regions[node].owner == NEUTRAL and any(
-                g.regions[n].owner == g.player_id for n in self.world.land_adj[node])   # 편입 버튼(v1.2.21)
+                g.regions[n].owner == g.player_id for n in self.world.land_adj[node])   # 편입 버튼(v1.3.0)
             self.left_tab, self.tab = "region", (keep or ("action" if own or near else "info"))
 
     def hidden_owner(self, node):
@@ -1393,7 +1393,7 @@ class App:
                 opt = g.reachable(army).get(node)
                 hostile = g.hostile_units_at(army.owner, node)
                 shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-                # 폭격 확인 창(v1.2.11): 포병·폭격기 부대는 적 병력이 있는 곳, 구축함·항모 함대는 폭격 대상,
+                # 폭격 확인 창(v1.3.0): 포병·폭격기 부대는 적 병력이 있는 곳, 구축함·항모 함대는 폭격 대상,
                 # Shift+우클릭은 병력이 없어도(건물 폭격)
                 if g._can_bombard(army, node) and ((solo and hostile) or shift
                                                    or (not solo and opt and opt["action"] == "bombard")):
@@ -1403,7 +1403,7 @@ class App:
                 if not solo and opt and opt["action"] == "attack" and hostile:
                     self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
                     return
-            # 이동·상륙·빈 땅 점령은 바로 실행한다(v1.2.10). 포병·폭격기 부대는 병력이 없는 곳이면 이동
+            # 이동·상륙·빈 땅 점령은 바로 실행한다(v1.3.0). 포병·폭격기 부대는 병력이 없는 곳이면 이동
             ok, msg = g.act_now(army.id, node, self.attack_mode, move_only=solo)
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             if ok:
@@ -1583,7 +1583,7 @@ class App:
             elif k.key in (pygame.K_SPACE, pygame.K_q, pygame.K_w, pygame.K_e) and self.sel \
                     and self.hidden_owner(self.sel) is None \
                     and not pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
-                # 지역 메뉴 탭 바로 가기(v1.2.21): Space 다음 탭, Q 행동 · W 부대 · E 지역 정보
+                # 지역 메뉴 탭 바로 가기(v1.3.0): Space 다음 탭, Q 행동 · W 부대 · E 지역 정보
                 tabs = ("action", "army", "info")
                 if k.key == pygame.K_SPACE:
                     cur = self.tab if (self.left_open and self.left_tab == "region") else None

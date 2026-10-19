@@ -1000,7 +1000,7 @@ def test_counter_offer_blocked_when_money_short(app):
 
 
 def test_rebellion_accept_refreshes_map(app):
-    """리뷰 M-01: 반란 '요구 수용'(v1.2.11부터 돈 지급만) 뒤 행복도 지도를 다시 그린다(진압과 같게)."""
+    """리뷰 M-01: 반란 '요구 수용'(v1.3.0부터 돈 지급만) 뒤 행복도 지도를 다시 그린다(진압과 같게)."""
     g = _main_game(app, n_enemies=1)
     cap = g.player.capital
     g.player.money = 10 ** 6
@@ -1142,7 +1142,7 @@ def test_help_scroll_reaches_last_line(app):
 
 
 def test_cargo_panel_board_and_unload_buttons(app):
-    """v1.2.10 화물칸: 함대 [부대] 탭에서 같은 항구 부대를 [승선]하고, 고른 수량만 [하선]한다(합치기와 따로)."""
+    """v1.3.0 화물칸: 함대 [부대] 탭에서 같은 항구 부대를 [승선]하고, 고른 수량만 [하선]한다(합치기와 따로)."""
     g = _main_game(app, n_enemies=1)
     pid = g.player_id
     port = next(r for r in g.world.order if g.world.regions[r].coastal and g.regions[r].owner == NEUTRAL)
@@ -1165,7 +1165,7 @@ def test_cargo_panel_board_and_unload_buttons(app):
 
 
 def test_right_click_moves_immediately(app):
-    """v1.2.10: 우클릭 이동은 턴 종료를 기다리지 않고 바로 실행되고, 한 부대는 한 턴에 한 번만 움직인다."""
+    """v1.3.0: 우클릭 이동은 턴 종료를 기다리지 않고 바로 실행되고, 한 부대는 한 턴에 한 번만 움직인다."""
     g = _main_game(app, n_enemies=1)
     pid = g.player_id
     cap = g.player.capital
@@ -1185,7 +1185,7 @@ def test_right_click_moves_immediately(app):
 
 
 def test_artillery_right_click_opens_bombard_confirm(app):
-    """v1.2.11: 포병 부대 우클릭 — 적 병력이 있으면 폭격 확인 창([폭격]으로 바로 폭격), 없으면 이동."""
+    """v1.3.0: 포병 부대 우클릭 — 적 병력이 있으면 폭격 확인 창([폭격]으로 바로 폭격), 없으면 이동."""
     from korciv import diplomacy as D
     g = _main_game(app, n_enemies=1)
     pid = g.player_id
@@ -1219,7 +1219,7 @@ def test_artillery_right_click_opens_bombard_confirm(app):
 
 
 def test_trade_negotiation_windows(app):
-    """v1.2.12: AI 의 거래 제의는 협상 창 — 값을 불러 역제의를 받거나 상대 값을 수락한다. 외교 창에서 먼저 협상도 연다."""
+    """v1.3.0: AI 의 거래 제의는 협상 창 — 값을 불러 역제의를 받거나 상대 값을 수락한다. 외교 창에서 먼저 협상도 연다."""
     from korciv import diplomacy as D
     from korciv import negotiation as NG
     g = _main_game(app, n_enemies=1)
@@ -1255,7 +1255,7 @@ def test_trade_negotiation_windows(app):
 
 
 def test_map_mode_popup_click_not_stolen_by_panel_below(app):
-    """v1.2.16: 하단 지도 메뉴 [자원] 세부 메뉴가 내정 탭 지출 우선순위의 [고정] 단추 위에 겹쳐 있어도
+    """v1.3.0: 하단 지도 메뉴 [자원] 세부 메뉴가 내정 탭 지출 우선순위의 [고정] 단추 위에 겹쳐 있어도
     세부 메뉴를 누르면 [고정]이 아니라 그 메뉴가 눌린다(먼저 그려지는 아래 패널이 클릭을 가로채지 않게)."""
     from korciv.ui.app import SUB_MODES
     app.start_game(Settings(seed=12, n_enemies=3, fog=1, player_start="S002"))
@@ -1300,7 +1300,7 @@ def test_map_mode_popup_click_not_stolen_by_panel_below(app):
         g.toggle_pin = orig_pin
 
 
-# ------------------------------------------------------------------ v1.2.21 편의성 개선
+# ------------------------------------------------------------------ v1.3.0 편의성 개선
 class _Spy:
     """gui.button·checkbox 를 감싸 그린 위치를 기억하고, 그 자리를 눌러 본다. draw() 는 기록을 비우고 한 프레임 그린다."""
 
@@ -1546,7 +1546,7 @@ def _click_map(app, rid):
 
 
 def test_metro_designation_by_clicking_map(app):
-    """v1.2.23: [광역자치단체 지정] → 지도에서 육상 3칸 안의 내 지역을 눌러 넣고 빼고, Enter 로 지정(Esc 취소).
+    """v1.3.0: [광역자치단체 지정] → 지도에서 육상 3칸 안의 내 지역을 눌러 넣고 빼고, Enter 로 지정(Esc 취소).
     광역시 행동 탭의 편입 선택지는 줄어든 턴 수를 보여 준다."""
     from korciv import metro as M
     g = _main_game(app, seed=7, n_enemies=1, player_start="S002")
@@ -1599,7 +1599,7 @@ def test_metro_designation_by_clicking_map(app):
 
 
 def test_metro_pick_limit_25_and_drawn_as_one_region(app):
-    """v1.2.27: [모두]는 가까운 25곳까지, 지도에서 더 누르면 거절. 지정한 광역시는 바깥 윤곽만 긋고
+    """v1.3.0: [모두]는 가까운 25곳까지, 지도에서 더 누르면 거절. 지정한 광역시는 바깥 윤곽만 긋고
     구성 지역 사이 경계는 바탕 지도에서도 긋지 않는다(하나의 지역처럼)."""
     from korciv import metro as M
     from korciv.ui import mapview as MV

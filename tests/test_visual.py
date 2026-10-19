@@ -1,4 +1,4 @@
-"""v1.2.22 시인성: 북중·북러 국경(주변국 땅이 우리 지역 경계에 맞붙음), 산 모양 3종, 지도자 시대순."""
+"""v1.3.0 시인성: 북중·북러 국경(주변국 땅이 우리 지역 경계에 맞붙음), 산 모양 3종, 지도자 시대순."""
 import math
 import os
 
@@ -117,7 +117,7 @@ def test_clip_poly_keeps_inside_part():
 
 
 def test_region_polygons_have_no_gaps_or_slivers():
-    """v1.2.25: 지역 다각형은 겹침·틈 없는 묶음 — 이웃이 함께 쓰는 경계는 같은 꼭짓점(따로 단순화해 어긋나지 않게)."""
+    """v1.3.0: 지역 다각형은 겹침·틈 없는 묶음 — 이웃이 함께 쓰는 경계는 같은 꼭짓점(따로 단순화해 어긋나지 않게)."""
     shp = pytest.importorskip("shapely")
     from shapely.geometry import Polygon
     from shapely.ops import unary_union
@@ -169,7 +169,7 @@ def _shapes():
 
 
 def test_sea_polygons_reach_the_coast():
-    """v1.2.26: 해역 다각형이 해안에 닿는다(북한 동해안 등에서 해안과 바다 다각형 사이에 띠 모양 틈이 있었다)."""
+    """v1.3.0: 해역 다각형이 해안에 닿는다(북한 동해안 등에서 해안과 바다 다각형 사이에 띠 모양 틈이 있었다)."""
     pytest.importorskip("shapely")
     from shapely.ops import unary_union
     w, regs, seas, fl = _shapes()
@@ -180,7 +180,7 @@ def test_sea_polygons_reach_the_coast():
 
 
 def test_coastal_flags_match_the_map():
-    """v1.2.26: 지도에서 바다와 3km(0.03도) 넘게 맞닿은 지역은 해안, 바다에 닿지 않는 지역은 내륙이다.
+    """v1.3.0: 지도에서 바다와 3km(0.03도) 넘게 맞닿은 지역은 해안, 바다에 닿지 않는 지역은 내륙이다.
     해안 지역의 인접 해역에는 지도에서 맞닿은 해역이 들어 있다(명간에 어장을 지을 수 없던 문제)."""
     shp = pytest.importorskip("shapely")
     from shapely.ops import unary_union

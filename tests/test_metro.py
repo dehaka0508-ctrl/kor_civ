@@ -1,4 +1,4 @@
-"""광역시(v1.2.19) 시스템 테스트."""
+"""광역시(v1.3.0) 시스템 테스트."""
 import math
 
 import pytest
@@ -260,7 +260,7 @@ def test_metro_annex_counts_as_joint_annex_capped_at_half():
         p = g.regions["S002"].project
         assert g.joint_count(0, tgt["key"]) == len(sel)
         assert g.project_left("S002") == math.ceil(p.turns * (1 - red) - 1e-9)
-        # v1.2.23: 행동 탭 선택지·착수 알림의 턴 수도 줄어든 값, 작업 이름에는 바뀌는 '공동 n곳'을 넣지 않는다
+        # v1.3.0: 행동 탭 선택지·착수 알림의 턴 수도 줄어든 값, 작업 이름에는 바뀌는 '공동 n곳'을 넣지 않는다
         assert tgt["eff_turns"] == g.project_left("S002") < tgt["turns"]
         assert f"({g.project_left('S002')}턴" in msg and p.name == f"편입: {g.info(tgt['key']).name}"
         g._fund_projects()
@@ -271,7 +271,7 @@ def test_metro_annex_counts_as_joint_annex_capped_at_half():
 
 
 def test_border_line_group_takes_whole_metro_slot():
-    """v1.2.21 QA: 국경 방어선 일괄 건설이 광역시 구성 지역 일부에만 작업을 넣어 슬롯이 갈라지던 문제.
+    """v1.3.0 QA: 국경 방어선 일괄 건설이 광역시 구성 지역 일부에만 작업을 넣어 슬롯이 갈라지던 문제.
     구성 지역 하나라도 대상이면 광역시 모두가 함께 묶음 공사를 하고, 턴 수는 광역시를 한 슬롯으로 나눈다."""
     g, sel = _setup()
     ok, msg = g.create_metro(0, "S002", sel, "")
@@ -302,7 +302,7 @@ def test_border_line_group_takes_whole_metro_slot():
 
 
 def test_feasible_reports_why_designation_is_impossible():
-    """v1.2.24: 행동 탭 [광역자치단체 지정]은 조건을 채울 길이 없으면 비활성(이유를 툴팁으로)."""
+    """v1.3.0: 행동 탭 [광역자치단체 지정]은 조건을 채울 길이 없으면 비활성(이유를 툴팁으로)."""
     g, sel = _setup()
     ok, why = M.feasible(g, 0, "S002")
     assert ok and not why
@@ -335,7 +335,7 @@ def _own_ring(g, k):
 
 
 def test_metro_range_three_and_at_most_25_regions():
-    """v1.2.27: 중심에서 육상 3칸(3차 인접)까지, 구성 지역은 중심 포함 25곳까지(서울 25개 구)."""
+    """v1.3.0: 중심에서 육상 3칸(3차 인접)까지, 구성 지역은 중심 포함 25곳까지(서울 25개 구)."""
     assert C.METRO_RANGE == 3 and C.METRO_MAX_REGIONS == 25
     g, _ = _setup()
     d = _own_ring(g, 4)
@@ -379,7 +379,7 @@ def test_feasible_population_counts_only_top_25():
 
 
 def test_metro_specialty_is_one_pooled_building():
-    """v1.2.27: 특산물 시설도 탄광·정유처럼 하나로 — 특산물이 있는 구성 지역들의 평균 단계, 한 번에 함께 오른다."""
+    """v1.3.0: 특산물 시설도 탄광·정유처럼 하나로 — 특산물이 있는 구성 지역들의 평균 단계, 한 번에 함께 오른다."""
     g, _ = _setup()
     d = _own_ring(g, 3)
     spec = sorted(r for r in d if g.info(r).specialty and r != "S002")[:3]
@@ -436,7 +436,7 @@ def test_metro_specialty_is_one_pooled_building():
 
 
 def test_migrate_old_save_pools_specialty():
-    """v1.2.26 이전 세이브: 특산물 시설이 지역별이던 광역시는 불러올 때 통합 건물로 맞춘다."""
+    """예전 세이브: 특산물 시설이 지역별이던 광역시는 불러올 때 통합 건물로 맞춘다."""
     g, _ = _setup()
     d = _own_ring(g, 3)
     sel = M.auto_pick(g, 0, "S002")

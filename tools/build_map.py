@@ -234,7 +234,7 @@ SMALL_GAP = 2e-5         # 이보다 작은 틈은 가장 길게 맞닿은 이�
 
 
 def make_coverage(geom):
-    """원자료 경계를 겹침·틈 없는 도형 묶음(coverage)으로 정리한다(v1.2.25).
+    """원자료 경계를 겹침·틈 없는 도형 묶음(coverage)으로 정리한다(v1.3.0).
     남북 자료·행정동 합치기·보로노이 근사에서 생긴 이웃 지역 사이의 겹침은 한쪽(넓은 지역 먼저)만 남기고,
     지역 사이에 갇힌 틈(어느 지역에도 속하지 않는 육지 구멍)은 맞닿은 이웃이 고르게 나눠 갖는다."""
     import shapely
@@ -408,7 +408,7 @@ def load_geometry():
     nk_geom["평북 운산군"], nk_geom["평남 은산군"] = unsan  # 북쪽이 운산(평북)
     reconcile_dmz(sk_geom, nk_geom)
 
-    # ---- 병합: 남북 고성·철원 (황남 옹진·인천 옹진은 v1.2.1부터 따로)
+    # ---- 병합: 남북 고성·철원 (황남 옹진·인천 옹진은 v1.3.0부터 따로)
     geom = {}
     adj_geom = {}  # 인접 계산용
     for name, r in by_name.items():
@@ -471,7 +471,7 @@ def build():
             if shared.length >= min_len:
                 adjacency.add(tuple(sorted((by_name[a]["ID"], by_name[b]["ID"]))))
 
-    # ---- 렌더링용 단순화(v1.2.25): 겹침·틈 없는 도형 묶음으로 정리한 뒤, 이웃과 함께 쓰는 경계를 똑같이 단순화한다
+    # ---- 렌더링용 단순화(v1.3.0): 겹침·틈 없는 도형 묶음으로 정리한 뒤, 이웃과 함께 쓰는 경계를 똑같이 단순화한다
     #      (예전에는 지역마다 따로 단순화해 이웃 경계가 서로 어긋나 겹치거나 틈이 보였다)
     import shapely
     cover = make_coverage(geom)

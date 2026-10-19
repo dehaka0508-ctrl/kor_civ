@@ -250,7 +250,7 @@ def draw_region_info(app, rect):
         wf = getattr(r, "war_from", None)
         left = g.liberation_left(node)
         if wf is not None and 0 <= wf < len(g.factions) and g.factions[wf].alive and wf != owner and left > 0:
-            # 해방 반환(v1.2.28): 직전 주인의 동맹·연합국이 빼앗긴 지 24턴 안에 되찾으면 직전 주인에게 돌아간다
+            # 해방 반환(v1.3.0): 직전 주인의 동맹·연합국이 빼앗긴 지 24턴 안에 되찾으면 직전 주인에게 돌아간다
             back = g.liberation_owner(pid, node) if owner != pid else None
             txt = (f"직전 주인: {g.seen_name(wf)} (전쟁으로 넘어감 — {left}턴 안에 그 동맹·연합국이 되찾으면 "
                    f"{g.seen_name(wf)}에게 돌아감)")
@@ -558,7 +558,7 @@ def draw_action_tab(app, body):
     if mt:
         y = _metro_header(app, x, y, w, mt)
     else:
-        # 광역시를 만들 길이 없는 지역(조건을 못 채움·점령당하는 중)은 비활성으로 보이고 이유를 알려 준다(v1.2.24)
+        # 광역시를 만들 길이 없는 지역(조건을 못 채움·점령당하는 중)은 비활성으로 보이고 이유를 알려 준다(v1.3.0)
         ok_m, why_m = M.feasible(g, pid, rid)
         tip = (f"이 지역을 중심으로, 지도에서 육상 {C.METRO_RANGE}칸 안의 내 지역을 눌러 골라 하나의 지역(광역시)으로 묶습니다."
                if ok_m else "지정할 수 없습니다:\n" + "\n".join("· " + s_ for s_ in why_m))
@@ -709,7 +709,7 @@ def draw_action_tab(app, body):
 
 
 def _neutral_annex_panel(app, x, y, w, rid):
-    """내 영토와 맞닿은 중립 지역의 행동 탭(v1.2.21): [편입]·[최대 편입], 편입 중이면 자동 해산."""
+    """내 영토와 맞닿은 중립 지역의 행동 탭(v1.3.0): [편입]·[최대 편입], 편입 중이면 자동 해산."""
     gui, g, t = app.gui, app.game, app.theme
     pid = g.player_id
     f = g.player
@@ -885,7 +885,7 @@ def draw_military_tab(app, body):
 
 
 def _national_rally_section(app, x, y, w):
-    """[군사] 탭: 생산 집결지 일괄 지정(v1.2.21). 모든 지역의 생산 육군과 편입으로 받는 보병이 그리로."""
+    """[군사] 탭: 생산 집결지 일괄 지정(v1.3.0). 모든 지역의 생산 육군과 편입으로 받는 보병이 그리로."""
     gui, g, t = app.gui, app.game, app.theme
     pid = g.player_id
     y = section(gui, x, y + 8, w, "생산 집결지 일괄 지정")
@@ -905,7 +905,7 @@ def _national_rally_section(app, x, y, w):
 
 
 def _border_lines_section(app, x, y, w):
-    """[군사] 탭: 맞닿은 나라를 고르면 그 나라 쪽 국경 방어선을 목표 단계까지 한꺼번에 짓는다(v1.2.12)."""
+    """[군사] 탭: 맞닿은 나라를 고르면 그 나라 쪽 국경 방어선을 목표 단계까지 한꺼번에 짓는다(v1.3.0)."""
     gui = app.gui
     g = app.game
     t = app.theme
@@ -1051,7 +1051,7 @@ def _army_tab_body(app, x, y, w, pid):
     g = app.game
     t = app.theme
     node = app.sel
-    here = sorted([a for a in g.armies_at(node, pid)], key=g.army_sort_key) if node else []   # 병종 순서(v1.2.21)
+    here = sorted([a for a in g.armies_at(node, pid)], key=g.army_sort_key) if node else []   # 병종 순서(v1.3.0)
     if here and (app.sel_army not in {a.id for a in here}):
         app.sel_army = min(here, key=g.army_pick_key).id
     # 합치기 고르기 모드: 같은 지역에서만 유지
@@ -1108,7 +1108,7 @@ def _army_tab_body(app, x, y, w, pid):
     elif army.domain() in ("land", "air"):
         y = _boarding_buttons(app, x, y, w, army, acted)
     if g.solo_army(army):
-        # 포병·폭격기 부대(v1.2.11): 우클릭한 곳에 적 병력이 있으면 폭격 확인 창, 없으면 이동
+        # 포병·폭격기 부대(v1.3.0): 우클릭한 곳에 적 병력이 있으면 폭격 확인 창, 없으면 이동
         what = "포병" if army.units.get("art") else "폭격기"
         rng = (f"육상 {C.ART_RANGE}칸" if army.units.get("art")
                else f"공항이 있는 지역에서 {C.BOMB_RANGE}칸, 육지↔바다는 2칸으로 셈")
@@ -1282,7 +1282,7 @@ def _cargo_slots(gui, t, x, y, w, cap, items, per_key, label):
 
 
 def _qty_stepper(gui, x, y, w, value, n):
-    """유닛 한 줄의 수량 조절(v1.2.21). 5개 이하면 같은 줄 오른쪽에 [−] 값 [+],
+    """유닛 한 줄의 수량 조절(v1.3.0). 5개 이하면 같은 줄 오른쪽에 [−] 값 [+],
     더 많으면 아랫줄에 [−10][−5][−] 값 [+][+5][+10](10개 이하면 ±10 은 뺀다). (새 값, 다음 y)."""
     if n <= 5:
         return gui.stepper_multi((x + w - 116, y + 6, 116, 26), value, 0, n, steps=(1,)), y + 40
@@ -1417,7 +1417,7 @@ def draw_rally(app, x, y, w, node):
 
 
 def draw_prod_rally(app, x, y, w, node):
-    """생산 집결지(v1.2.21): 이 지역(광역시면 광역시)에서 만든 육군이 자동으로 가는 곳."""
+    """생산 집결지(v1.3.0): 이 지역(광역시면 광역시)에서 만든 육군이 자동으로 가는 곳."""
     gui, g, t = app.gui, app.game, app.theme
     pid = g.player_id
     y = section(gui, x, y, w, "생산 집결지")
@@ -1593,7 +1593,7 @@ TRADE_REJECT_H = 132
 
 
 def _trade_reject_section(app, x, y, w):
-    """외교 탭 하단: AI 의 거래 제의를 통째로 거절하는 설정(v1.2.21)."""
+    """외교 탭 하단: AI 의 거래 제의를 통째로 거절하는 설정(v1.3.0)."""
     gui, t = app.gui, app.theme
     ai = app.game.player.ai
     gui.line(t.border, (x, y), (x + w, y))
@@ -2071,7 +2071,7 @@ def draw_priority_list(app, x, y, w, items):
     g = app.game
     t = app.theme
     row_h = 44
-    # 같은 중립 지역을 함께 편입하는 작업은 한 줄(v1.2.21): 줄 = 맨 앞 지역 ID
+    # 같은 중립 지역을 함께 편입하는 작업은 한 줄(v1.3.0): 줄 = 맨 앞 지역 ID
     rows, first_of = {}, {}
     for rr in items:
         k = g._row_key(rr)
@@ -2238,7 +2238,7 @@ def draw_energy_tab(app, body):
     y += 30
     plan = g.energy_plan(pid)
     plants, facts = g.energy_sites(pid)
-    # 에너지 흐름 표의 앞부분(어디서 들어오고 나갔는가): 채굴 · 타국 계약 구매·판매 · 병력 생산 · 시장 등(v1.2.13)
+    # 에너지 흐름 표의 앞부분(어디서 들어오고 나갔는가): 채굴 · 타국 계약 구매·판매 · 병력 생산 · 시장 등(v1.3.0)
     pl0 = g.energy_plan(pid)
     st0, mi0 = pl0["stock"], pl0["mined"]
     recv = getattr(f, "recv", {}) or {}

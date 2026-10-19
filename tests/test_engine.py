@@ -902,7 +902,7 @@ def test_assault_can_break_line():
     g.rng.random = lambda: 0.1                      # 25% 판정 통과
     g._ground_battle(0, [att], tgt, "assault", [att])
     rr = g.regions[tgt]
-    lines = rr.lost_def["lines"] if rr.lost_def else rr.lines   # 점령되면 방어선은 꺼진 채로 보관(v1.2.12)
+    lines = rr.lost_def["lines"] if rr.lost_def else rr.lines   # 점령되면 방어선은 꺼진 채로 보관(v1.3.0)
     assert lines["S002"] == 1
 
 
@@ -1222,8 +1222,8 @@ def _single_bld_target():
 
 
 def test_single_level_buildings_destroyed_10pct_by_bombard():
-    """v1.2.17: 항구·공항·사관학교(1단계가 최대)는 일반 건물 피해(−1단계) 대상이 아니고, 폭격당할 때마다 각각
-    10% 확률로 파괴된다(v1.2.16 전에는 함포가 항구를 먼저 골라 30% 확률로 없앴다). 의열단은 여전히 대상 아님."""
+    """v1.3.0: 항구·공항·사관학교(1단계가 최대)는 일반 건물 피해(−1단계) 대상이 아니고, 폭격당할 때마다 각각
+    10% 확률로 파괴된다(v1.3.0 전에는 함포가 항구를 먼저 골라 30% 확률로 없앴다). 의열단은 여전히 대상 아님."""
     g, tgt, rr, fl = _single_bld_target()
     singles = ("port", "airport", "academy")
     rr.b.update(port=1, airport=1, academy=1, factory=3)
@@ -1448,7 +1448,7 @@ def test_hp_pool_split_merge_heal():
     assert b.hp_left("inf") == 5 and a.hp_left("inf") == 11      # 5/10, 11/20
     ok, _ = g.merge_armies(a.id, b.id)
     assert ok and a.units["inf"] == 3 and a.hp_left("inf") == 16
-    # 싸운 적 없는 부대는 매 턴 유닛 1개당 체력 1 회복(v1.2.14)
+    # 싸운 적 없는 부대는 매 턴 유닛 1개당 체력 1 회복(v1.3.0)
     g.end_turn()
     assert a.hp_left("inf") == pytest.approx(16 + C.HEAL_PER_UNIT * 3)
     # 이동한 턴에도 회복한다
@@ -1744,7 +1744,7 @@ def test_unit_table_v14():
     lst = Army(1, 0, "x", {"lst": 1, "inf": 2, "art": 1, "tank": 1}, {})
     assert lst.cargo_used() == 8 and lst.cargo_cap() == 8
     cv = Army(2, 0, "x", {"cv": 1, "ftr": 2, "bmb": 2}, {})
-    assert cv.air_used() == 4 and cv.air_cap() == 6        # 항모 1척에 함재기 6대(v1.2.14)
+    assert cv.air_used() == 4 and cv.air_cap() == 6        # 항모 1척에 함재기 6대(v1.3.0)
 
 
 def test_assault_damage_order_and_random_bombard():
@@ -1776,7 +1776,7 @@ def test_bombard_ranges_and_interception():
     g.regions[two].b["aa"] = 3
     g.new_army(1, two, {"ftr": 1})
     ad, aa, ftr = g.air_defense(0, two)
-    assert (ad, aa, ftr) == (30, 3, 0)                    # v1.2.10: 공항이 없는 곳의 전투기는 요격하지 않는다
+    assert (ad, aa, ftr) == (30, 3, 0)                    # v1.3.0: 공항이 없는 곳의 전투기는 요격하지 않는다
     g.regions[two].b["airport"] = 1
     ad, aa, ftr = g.air_defense(0, two)
     assert (ad, aa, ftr) == (60, 3, 1)
@@ -3358,7 +3358,7 @@ def test_unhappy_ai_offers_to_buy_specialty_from_neighbor():
     AI._trade_offers(g, g.factions[1])
     prop = [p for p in g.pending_proposals if p["kind"] == "trade" and p["res"] == "specialty"]
     assert prop and not prop[0]["sell"]
-    st = prop[0]["nego"]                                  # v1.2.12: 협상으로 — 처음 부르는 값은 유보 가격(최고가)보다 낮다
+    st = prop[0]["nego"]                                  # v1.3.0: 협상으로 — 처음 부르는 값은 유보 가격(최고가)보다 낮다
     assert st["status"] == "open" and prop[0]["price"] == st["price"] <= st["R"]
     assert st["R"] > D.spec_price(g, 1)                   # 반란 문턱이 가까우면 특산물 값보다 비싸게라도 산다
 
@@ -3676,7 +3676,7 @@ def test_sea_fishery_food_bonus_and_river_nerf():
 
 def test_neutral_garrison_by_population_and_annex_gives_one():
     from korciv.game import neutral_garrison
-    # 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(v1.2.14, 올림)
+    # 인구 20만 이하 1, 40만 이하 2, 60만 이하 3 …(v1.3.0, 올림)
     assert [neutral_garrison(p) for p in (0, 3, 15, 20, 20.1, 29, 31, 40, 40.5, 60, 120)] == \
         [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 6]
     g = new_game(player_start="S002", n_enemies=1)
@@ -3740,7 +3740,7 @@ def test_rally_within_n_cells():
     assert {a.id for a in g.rally_candidates(0, "S002", 1)} == {a1.id, a2.id}
     k, u = g.rally(0, "S002", 2)
     assert k == 3 and u == 4
-    # v1.2.10: 플레이어 집결은 바로 움직인다(자국 영토 2칸 안이라 모두 이번 턴에 도착)
+    # v1.3.0: 플레이어 집결은 바로 움직인다(자국 영토 2칸 안이라 모두 이번 턴에 도착)
     assert all(a.loc == "S002" and not a.order and g.army_acted(a.id) for a in (a1, a2, a3))
 
 
@@ -3864,7 +3864,7 @@ def _conquest_ready(n_enemies=2):
 
 
 def test_conquest_victory_waits_for_peace():
-    """v1.2.28: 정복승리 조건을 채워도 전쟁 중이면 불발, 강화로 전쟁이 끝나는 순간 승리."""
+    """v1.3.0: 정복승리 조건을 채워도 전쟁 중이면 불발, 강화로 전쟁이 끝나는 순간 승리."""
     g = _conquest_ready()
     for b in (1, 2):
         g.dip.wars.pop(D.pair(0, b), None)
@@ -3953,7 +3953,7 @@ def test_time_victory_turn_unchanged():
     assert g.game_over and g.winner[1] == "time" and g.turn == 6
 
 
-# ---------------------------------------------------------------- v1.2.10: 수송·공군·체력 비례·즉시 실행
+# ---------------------------------------------------------------- v1.3.0: 수송·공군·체력 비례·즉시 실행
 def _clear(g, *rids):
     for r in rids:
         for a in list(g.armies_at(r)):
@@ -4090,7 +4090,7 @@ def test_act_now_moves_immediately_and_once_per_turn():
     b, _ = g.split_army(a.id, {"inf": 2})                       # 움직인 부대도 나눌 수 있고, 나눈 쪽도 더 못 움직인다
     assert b and g.army_acted(b.id)
     c = g.new_army(0, near[0], {"inf": 1})
-    ok, msg = g.merge_player(c.id, a.id)                        # v1.2.13: 움직인 부대는 이번 턴 합칠 수 없다
+    ok, msg = g.merge_player(c.id, a.id)                        # v1.3.0: 움직인 부대는 이번 턴 합칠 수 없다
     assert not ok and "행동" in msg and not g.mergeable(c, a)
     # 병력 없는 적 땅: 바로 들어가 점령
     enemy = near[1]
@@ -4148,7 +4148,7 @@ def test_player_goto_continues_at_turn_start():
     assert a.loc != loc1 and g.army_acted(a.id)                # 턴 시작에 바로 다음 구간
 
 
-# ---- v1.2.11: QA 후속 수정
+# ---- v1.3.0: QA 후속 수정
 def test_energy_reassigned_every_turn_start():
     """[매 턴 자동 배정](기본 켜짐): 턴이 시작될 때 [자동 배정]을 다시 해 새 공장에도 연료가 들어간다."""
     g, r, f = _energy_setup()
@@ -4213,7 +4213,7 @@ def test_last_survivor_wins_even_without_conquest_victory():
 
 
 def test_artillery_and_bombers_form_their_own_armies():
-    """v1.2.11: 포병·폭격기는 같은 병종끼리만 한 부대 — 합치기·생산·하선·예전 세이브 모두."""
+    """v1.3.0: 포병·폭격기는 같은 병종끼리만 한 부대 — 합치기·생산·하선·예전 세이브 모두."""
     g = new_game(player_start="S002", n_enemies=1)
     _clear(g, "S002")
     inf = g.new_army(0, "S002", {"inf": 2})
@@ -4295,7 +4295,7 @@ def test_amphibious_survivors_never_stranded_at_sea():
 
 
 def test_captured_defenses_go_dark_and_return():
-    """v1.2.12: 점령된 방어선·방공호·대공포는 저항·회복 동안 꺼지고, 옛 주인이 그 안에 되찾으면 그대로,
+    """v1.3.0: 점령된 방어선·방공호·대공포는 저항·회복 동안 꺼지고, 옛 주인이 그 안에 되찾으면 그대로,
     기간이 지나면 1단계씩 깎여 새 주인 것이 된다."""
     g = new_game(player_start="S002", n_enemies=1)
     rid = sorted(g.world.land_adj["S002"])[0]
@@ -4343,7 +4343,7 @@ def _line_group_setup():
 
 
 def test_build_border_lines_one_group_project():
-    """v1.2.15: 국경 방어선 일괄 건설은 '○○국 방어선' 묶음 공사 한 건 — 턴 = 모든 단계 건설 턴 합 ÷ 지역 수(올림),
+    """v1.3.0: 국경 방어선 일괄 건설은 '○○국 방어선' 묶음 공사 한 건 — 턴 = 모든 단계 건설 턴 합 ÷ 지역 수(올림),
     비용은 묶음 전체로 매 턴 한꺼번에, 진행 중이던 작업은 중단(50% 환급), 지출 우선순위에서 한 줄."""
     g, mine, theirs = _line_group_setup()
     assert any(o == 1 for o, *_ in g.border_nations(0))
@@ -4470,7 +4470,7 @@ def test_border_line_turns_example_from_request():
 
 
 def test_sold_electricity_is_delivered_in_full_before_allocation():
-    """v1.2.12: 판매 계약은 배정보다 먼저 — 발전소에서 나올 전기를 판 경우에도 '1/3만 오갔다'처럼 덜 가지 않고,
+    """v1.3.0: 판매 계약은 배정보다 먼저 — 발전소에서 나올 전기를 판 경우에도 '1/3만 오갔다'처럼 덜 가지 않고,
     그만큼 공장에 덜 들어간다. 확보량이 모자라면 부족분은 턴 끝에 시장가로 사서 메운다."""
     g = new_game(player_start="S002", n_enemies=1)
     r = g.regions["S002"]
@@ -4502,7 +4502,7 @@ def test_sold_electricity_is_delivered_in_full_before_allocation():
     assert g.player.money <= m0 - 2 * C.MARKET_BUY["oil"] * C.MONEY_SCALE + 1e-6
 
 
-# ---- v1.2.12 거래 협상
+# ---- v1.3.0 거래 협상
 def _nego_game():
     g = _meet_all(new_game(player_start="S002", n_enemies=1))
     _neutral_ai(g, 1)
@@ -4620,7 +4620,7 @@ def test_ai_to_ai_trade_deals_when_reserves_overlap():
     assert c is not None and c["from"] == a and c["to"] == b and c["price"] > 0
 
 
-# ---- v1.2.13 편의·시인성
+# ---- v1.3.0 편의·시인성
 def test_same_faction_annex_and_occupation_do_not_compete():
     """편입 중인 중립 지역에 병력을 넣어도 자기 자신과 경쟁하지 않는다(같은 턴에 끝나도 '경쟁' 알림 없음)."""
     g = new_game(player_start="S002", n_enemies=1)
@@ -4690,7 +4690,7 @@ def test_foreign_land_is_loaded_for_the_map():
 
 
 def test_v1214_air_distance_bomber_and_fighter_ranges():
-    """v1.2.14: 폭격기 4칸·전투기 요격 3칸. 육지↔바다는 2칸으로 센다(태안-경기만-옹진 = 4칸)."""
+    """v1.3.0: 폭격기 4칸·전투기 요격 3칸. 육지↔바다는 2칸으로 센다(태안-경기만-옹진 = 4칸)."""
     g = new_game(player_start="S002", n_enemies=1)
     w = g.world
     assert w.air_distances("S146", 6)["N111"] == 4 and w.distances_from("S146", 6)["N111"] == 2
@@ -4809,21 +4809,21 @@ def _liberation_setup():
 
 
 def test_ally_retaking_lost_region_returns_it_to_original_owner():
-    """v1.2.17: 동맹·연합국이 전쟁으로 빼앗긴 땅을 되찾으면 원 주인에게 돌아간다(원 주인이 직접 되찾은 것과 같이
+    """v1.3.0: 동맹·연합국이 전쟁으로 빼앗긴 땅을 되찾으면 원 주인에게 돌아간다(원 주인이 직접 되찾은 것과 같이
     저항·회복 기간 안이면 저항 없이 빼앗기기 전 행복도로)."""
     g, x, rr = _liberation_setup()
     assert g.liberation_owner(2, x) == 0 and g.liberation_owner(3, x) is None
     _clear(g, x)
     a2 = g.new_army(2, x, {"inf": 1})
     g.complete_occupation(2, x)
-    assert rr.owner == 0 and rr.war_from == 1 and not g.resisting(rr)     # 이제 직전 주인은 1(v1.2.28)
+    assert rr.owner == 0 and rr.war_from == 1 and not g.resisting(rr)     # 이제 직전 주인은 1(v1.3.0)
     assert rr.happy == pytest.approx(40.0)
     assert any("원 주인" in e["text"] for e in g.events)
     assert a2.id in g.armies and a2.loc == x                     # 되찾은 부대는 동맹 땅에 그대로
 
 
 def test_liberation_chain_and_non_ally_and_dead_owner():
-    """v1.2.28: 반환은 직전 주인이 그 동맹국일 때만 — 1 → 3 으로 넘어간 땅은 0의 동맹이 되찾아도 자기 땅."""
+    """v1.3.0: 반환은 직전 주인이 그 동맹국일 때만 — 1 → 3 으로 넘어간 땅은 0의 동맹이 되찾아도 자기 땅."""
     g, x, rr = _liberation_setup()
     # 동맹이 아닌 제3국이 빼앗으면 자기 땅(직전 주인 기록은 1로 바뀜)
     _clear(g, x)
@@ -4853,7 +4853,7 @@ def test_liberation_chain_and_non_ally_and_dead_owner():
 
 
 def test_liberation_only_within_24_turns():
-    """v1.2.28: 지금 주인이 빼앗은 지 24턴 안에만 반환(25턴째부터는 되찾은 나라가 갖는다)."""
+    """v1.3.0: 지금 주인이 빼앗은 지 24턴 안에만 반환(25턴째부터는 되찾은 나라가 갖는다)."""
     g, x, rr = _liberation_setup()
     t0 = rr.war_turn
     assert C.LIBERATION_TURNS == 24
@@ -4880,7 +4880,7 @@ def test_coalition_member_also_liberates():
 
 
 def test_priority_mode_stays_until_turned_off():
-    """v1.2.17: 지출 우선순위 정렬 버튼은 해제할 때까지 그 규칙을 유지한다(새 작업도 규칙대로)."""
+    """v1.3.0: 지출 우선순위 정렬 버튼은 해제할 때까지 그 규칙을 유지한다(새 작업도 규칙대로)."""
     g = new_game(player_start="S002", n_enemies=1)
     near = sorted(g.world.land_adj["S002"])[:4]
     _own(g, 0, near)
@@ -4913,7 +4913,7 @@ def test_priority_mode_stays_until_turned_off():
 
 
 def test_fog_lifted_after_game_over():
-    """v1.2.18: 게임이 끝나면(승리 뒤 [지도 계속 보기]) 전장의 안개를 걷는다 — 모든 지역·국명이 보이고,
+    """v1.3.0: 게임이 끝나면(승리 뒤 [지도 계속 보기]) 전장의 안개를 걷는다 — 모든 지역·국명이 보이고,
     탐색·조우 기록 자체는 바뀌지 않는다."""
     g = new_game(meet=False, player_start="S002", n_enemies=3, fog=2)
     far = next(r for r in g.world.order if not g.is_explored(0, r))

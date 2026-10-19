@@ -1059,7 +1059,7 @@ METRO_PANEL_W = 400
 
 
 def draw_metro_pick(app):
-    """광역자치단체 지정(v1.2.19, v1.2.23 지도 클릭 방식): 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러
+    """광역자치단체 지정(v1.3.0, 지도 클릭 방식): 지도에서 중심 둘레 육상 3칸 안의 내 지역(최대 25곳)을 눌러
     넣고 뺀다. 오른쪽 패널에 고른 지역·지정 조건·묶은 모습 미리보기·이름과 [지정]/[취소]."""
     g, gui, t = app.game, app.gui, app.theme
     st = app.metro_pick
@@ -1156,7 +1156,7 @@ def draw_battle(app):
     can_surprise = any(army.units.get(k) for k in C.SURPRISE_UNITS) and not g.mods(army.owner).value("no_surprise")
     if not can_surprise:
         st["mode"] = "assault"
-    # 함께 공격할 부대(v1.2.21): 이번 턴 이 지역을 바로 공격할 수 있는 다른 내 부대
+    # 함께 공격할 부대(v1.3.0): 이번 턴 이 지역을 바로 공격할 수 있는 다른 내 부대
     ck = (g.turn, army.id, node, len(g.armies))
     if st.get("cands_key") != ck:
         st["cands"] = [a.id for a in g.attack_candidates(army.owner, node, exclude={army.id})]
@@ -1286,7 +1286,7 @@ def draw_battle(app):
 
 
 def draw_bombard(app):
-    """폭격 확인(v1.2.11): 쏘는 유닛·보정, 대상 병력, 예상 피해(요격 포함), 건물 피해 확률 → [폭격] / [취소]."""
+    """폭격 확인(v1.3.0): 쏘는 유닛·보정, 대상 병력, 예상 피해(요격 포함), 건물 피해 확률 → [폭격] / [취소]."""
     g = app.game
     gui = app.gui
     t = app.theme
@@ -1645,7 +1645,7 @@ def draw_proposal(app):
         D.add_opinion(g, fid, g.player_id, -3)
 
 
-# ------------------------------------------------------------------ 자원·특산물 협상(v1.2.12)
+# ------------------------------------------------------------------ 자원·특산물 협상(v1.3.0)
 NEGO_RES = ("oil", "coal", "elec", "specialty")
 
 

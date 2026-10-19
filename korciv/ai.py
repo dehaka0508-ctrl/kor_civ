@@ -314,12 +314,12 @@ def mil_oil_want(g, f) -> int:
 
 
 def _offer_to_player(g, fid, pid, res, n, sell) -> bool:
-    """플레이어에게 거래를 제의한다(v1.2.12): 협상을 열어 AI 의 첫 값을 부르고, 다음 턴 시작에 제안 창으로 묻는다.
+    """플레이어에게 거래를 제의한다(v1.3.0): 협상을 열어 AI 의 첫 값을 부르고, 다음 턴 시작에 제안 창으로 묻는다.
     플레이어는 수락·거절하거나 값을 불러 협상할 수 있다."""
     key = f"trade_{res}_{'s' if sell else 'b'}"
     f = g.factions[fid]
     pf = g.factions[pid]
-    # 플레이어의 거래 제의 거절 설정(v1.2.21): 구매(상대가 사겠다)·판매(상대가 팔겠다)·이 나라
+    # 플레이어의 거래 제의 거절 설정(v1.3.0): 구매(상대가 사겠다)·판매(상대가 팔겠다)·이 나라
     if (pf.ai.get("reject_sell") if sell else pf.ai.get("reject_buy")) or fid in pf.ai.get("reject_from", ()):
         return False
     if g.turn - f.ai.get(key, -99) < C.AI_TRADE_EVERY * 2:
@@ -344,7 +344,7 @@ def _trade_with(g, fid, other, res, n, sell) -> bool:
 
 
 def _trade_offers(g, f):
-    """4턴마다 자원·특산물 거래를 제의한다(v1.2.12 협상).
+    """4턴마다 자원·특산물 거래를 제의한다(v1.3.0 협상).
     ① 지하자원 판매: 자기 발전소·공장에 다 넣고 남는 몫을, 빈 공장이 있어 가장 값을 쳐 줄 나라에.
     ② 지하자원 구매: 빈 공장이 있고, 그걸 넣어 늘어나는 턴당 세수가 있으며 재정이 버틸 때(군 생산 석유도).
     ③ 특산물 판매: 행복도가 높거나 돈이 급하면, 남는 특산물을 행복도가 낮은 나라에.
@@ -671,7 +671,7 @@ def war_assessment(g, fid, e):
         if EG.sprint(f) == "conquest" and ST.posture_of(f) != "crisis":
             d -= C.AI_P3_SPRINT_PEACE      # 3페이즈 정복 질주: 이기고 있는 전쟁은 끝까지
             con.append("정복 질주")
-    # 정복승리(v1.2.28)는 전쟁 중에는 불발: 조건을 채운 나라는 강화를 서두르고, 그 상대는 강화를 꺼린다
+    # 정복승리(v1.3.0)는 전쟁 중에는 불발: 조건을 채운 나라는 강화를 서두르고, 그 상대는 강화를 꺼린다
     if "conquest" in g.settings.victories:
         if g.conquest_status(fid)["met"]:
             d += C.AI_CONQ_READY_PEACE
@@ -2179,7 +2179,7 @@ def _air_orders(g, f, threat):
     for a in [a for a in g.armies.values() if a.owner == fid and a.domain() == "air" and not a.order
               and a.units.get("ftr") and not a.units.get("bmb")]:
         reach = g.reachable(a)
-        # 전투기는 공항이 있는 지역에서만 싸운다(v1.2.10): 공항으로만 옮긴다
+        # 전투기는 공항이 있는 지역에서만 싸운다(v1.3.0): 공항으로만 옮긴다
         bases = [v for v, o in reach.items() if o["action"] == "move" and g.regions[v].b["airport"]]
         if not bases:
             continue

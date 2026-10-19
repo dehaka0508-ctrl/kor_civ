@@ -178,7 +178,7 @@ _CAT_OF = {k: cid for cid, _, keys in LEADER_CATEGORIES for k in keys}
 _ORDER = [k for _, _, keys in LEADER_CATEGORIES for k in keys] + ["cus"]
 LEADERS.sort(key=lambda l: _ORDER.index(l["key"]))
 
-# 시대(즉위·활동을 시작한 해, 기원전은 음수): 선택 화면은 분류마다 시대순으로 보여 준다(v1.2.22)
+# 시대(즉위·활동을 시작한 해, 기원전은 음수): 선택 화면은 분류마다 시대순으로 보여 준다(v1.3.0)
 LEADER_ERA = {
     "dan": -2333, "egg": -57, "jum": -37, "onz": -18, "sur": 42, "dae": 698, "dog": 892, "gun": 901,
     "wan": 918, "tae": 1392, "lee": 1948.6, "kim": 1948.7,

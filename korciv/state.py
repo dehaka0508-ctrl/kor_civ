@@ -32,10 +32,10 @@ class Project:
     pinned: bool = False           # 지출 우선순위 맨 위 고정
     chain: bool = False            # 최대 건설: 완공되면 바로 다음 단계를 이어서 건설
     repeat: int = 0                # 군 유닛 연속 생산: 이번 것 뒤에 더 만들 개수
-    # 국경 방어선 묶음 공사(v1.2.15): 대상 지역들이 이 Project 하나를 함께 가리킨다.
+    # 국경 방어선 묶음 공사(v1.3.0): 대상 지역들이 이 Project 하나를 함께 가리킨다.
     # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
     group: Optional[dict] = None
-    # 광역시 작업(v1.2.19): 구성 지역 모두가 이 Project 하나를 가리킨다. site = 실제로 짓는 지역(특산물·방어선·
+    # 광역시 작업(v1.3.0): 구성 지역 모두가 이 Project 하나를 가리킨다. site = 실제로 짓는 지역(특산물·방어선·
     # 과학·경제·편입 등), pool = 통합 건물 종류(farm·fishery·factory·bank·power·coal·oil·shelter·aa)
     metro: Optional[int] = None
     site: Optional[str] = None
@@ -77,11 +77,11 @@ class Region:
     conscript: float = 0.0          # 징집 피로(실질 행복도에서 빠지는 양)
     lost_project: Optional[dict] = None   # 점령으로 멈춘 과학·경제 공사 {"fid", "project"}: 저항·회복 중 탈환하면 이어서
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
-    metro: Optional[int] = None           # 속한 광역시 ID(v1.2.19)
-    rally: Optional[str] = None           # 생산 집결지(v1.2.21): 여기서 만든 육군은 이 지역으로 자동 이동
-    war_from: Optional[int] = None        # 전쟁으로 빼앗길 때의 직전 주인(v1.2.28): 그 동맹·연합국이 되찾으면 돌려준다
-    war_turn: Optional[int] = None        # 그때의 턴(v1.2.28): LIBERATION_TURNS 안에서만 돌려준다
-    lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
+    metro: Optional[int] = None           # 속한 광역시 ID(v1.3.0)
+    rally: Optional[str] = None           # 생산 집결지(v1.3.0): 여기서 만든 육군은 이 지역으로 자동 이동
+    war_from: Optional[int] = None        # 전쟁으로 빼앗길 때의 직전 주인(v1.3.0): 그 동맹·연합국이 되찾으면 돌려준다
+    war_turn: Optional[int] = None        # 그때의 턴(v1.3.0): LIBERATION_TURNS 안에서만 돌려준다
+    lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.3.0): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
 
     @property
@@ -109,7 +109,7 @@ class Army:
     dmg: dict = field(default_factory=dict)
     order: Optional[dict] = None
     goto: Optional[str] = None      # 여러 턴 자동 이동의 최종 목적지
-    last_combat: int = -999         # 마지막으로 전투(공격·방어·폭격·해전)에 휘말린 턴(v1.2.14 회복)
+    last_combat: int = -999         # 마지막으로 전투(공격·방어·폭격·해전)에 휘말린 턴(v1.3.0 회복)
 
     def count(self, kinds=None) -> int:
         if kinds is None:
@@ -203,9 +203,9 @@ class Faction:
     naval_off_until: int = 0        # 이순신 '백의종군': 이 턴까지 해군 버프 비활성
     met: set = field(default_factory=set)   # 조우한 세력(시야 안에 그 세력의 영토·군대가 들어온 적이 있음)
     flag: Optional[dict] = None     # 직접 만든 국기(없으면 세력 색으로 만든 기본 국기, flags.faction_flag)
-    prio_mode: Optional[str] = None  # 지출 우선순위 자동 정렬 규칙(v1.2.17): 해제할 때까지 계속 그 규칙대로
-    rally: Optional[str] = None      # 일괄 생산 집결지(v1.2.21): 지역 집결지가 없으면 여기로(편입으로 받은 보병 포함)
-    annex_disband: set = field(default_factory=set)   # 편입이 끝나면 넘겨받는 보병을 바로 해산할 대상 지역(v1.2.21)
+    prio_mode: Optional[str] = None  # 지출 우선순위 자동 정렬 규칙(v1.3.0): 해제할 때까지 계속 그 규칙대로
+    rally: Optional[str] = None      # 일괄 생산 집결지(v1.3.0): 지역 집결지가 없으면 여기로(편입으로 받은 보병 포함)
+    annex_disband: set = field(default_factory=set)   # 편입이 끝나면 넘겨받는 보병을 바로 해산할 대상 지역(v1.3.0)
 
 
 @dataclass

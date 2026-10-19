@@ -45,7 +45,7 @@ def check(g, where):
     nf = len(g.factions)
     if g.winner and g.winner[1] == "conquest" and len(g.alive_ids()) > 1:
         w = g.winner[0][0]
-        if D.enemies(g, w):                              # v1.2.28: 전쟁 중에는 정복승리 불발
+        if D.enemies(g, w):                              # v1.3.0: 전쟁 중에는 정복승리 불발
             report("전쟁 중 정복승리", f"{where} f{w} 전쟁 {D.enemies(g, w)}")
     for rid, r in g.regions.items():
         if not (r.owner == NEUTRAL or 0 <= r.owner < nf):
@@ -91,7 +91,7 @@ def check(g, where):
         if not finite(f.money):
             report("돈 NaN", f"{where} f{f.id}")
         for k, v in f.res.items():
-            # v1.2.12: 판매 계약분은 배정보다 먼저 보내므로 석유·석탄·전기는 '보낸 계약량'까지 음수일 수 있다
+            # v1.3.0: 판매 계약분은 배정보다 먼저 보내므로 석유·석탄·전기는 '보낸 계약량'까지 음수일 수 있다
             # (전기는 턴 끝 발전으로, 나머지는 시장 구매로 메운다)
             floor = -getattr(f, "sent", {}).get(k, 0) if k in C.ENERGY else 0
             if not finite(v) or v < floor - 1e-6:
@@ -178,7 +178,7 @@ def player_turn(g, rng):
         g.resolve_rebellion(pid, rid, rng.choice(["pay", "tax", "suppress"]))
     for prop in list(g.pending_proposals):
         if rng.random() < 0.5 and g.factions[prop["from"]].alive:
-            if prop["kind"] == "trade":                    # AI 자원 거래 제의: 협상(v1.2.12)
+            if prop["kind"] == "trade":                    # AI 자원 거래 제의: 협상(v1.3.0)
                 st = prop.get("nego")
                 if st and st["status"] == "open":
                     for _ in range(rng.randint(0, 5)):
@@ -218,9 +218,9 @@ def player_turn(g, rng):
             reach = list(g.reachable(a)) if a.id in g.armies else []
             near = list(g.world.node_neighbors(a.loc)) + reach
             if near:
-                cmd = g.act_now if rng.random() < 0.6 else g.order_army     # 플레이어 명령은 바로 실행(v1.2.10)
+                cmd = g.act_now if rng.random() < 0.6 else g.order_army     # 플레이어 명령은 바로 실행(v1.3.0)
                 cmd(a.id, rng.choice(near), rng.choice(["assault", "surprise"]), force_bombard=rng.random() < 0.2,
-                    move_only=g.solo_army(a) and rng.random() < 0.5)         # 포병·폭격기 부대 우클릭(v1.2.11)
+                    move_only=g.solo_army(a) and rng.random() < 0.5)         # 포병·폭격기 부대 우클릭(v1.3.0)
         elif r < 0.6 and a.count() > 1:
             k = rng.choice(list(a.units))
             g.split_army(a.id, {k: max(1, a.units[k] // 2)})
@@ -262,7 +262,7 @@ def player_turn(g, rng):
         kinds = list(g.specialty_kinds(pid)) if hasattr(g, "specialty_kinds") else []
         if kinds:
             g.set_specialty(pid, rid, rng.choice(kinds), rng.choice(["pin", "block", "auto"]))
-    if rng.random() < 0.05:                              # 국경 방어선 일괄 건설(v1.2.12, v1.2.15 묶음 공사)
+    if rng.random() < 0.05:                              # 국경 방어선 일괄 건설(v1.3.0, 묶음 공사)
         nbs = g.border_nations(pid)
         if nbs:
             g.build_border_lines(pid, rng.choice(nbs)[0], rng.randint(1, 5))
@@ -275,7 +275,7 @@ def player_turn(g, rng):
         rng.shuffle(ids)
         if ids:
             g.set_priority_order(pid, ids, manual=rng.random() < 0.5)
-    if rng.random() < 0.04 and mine:                    # 광역시 지정·해제(v1.2.19): 조건을 맞춰 가끔 지정
+    if rng.random() < 0.04 and mine:                    # 광역시 지정·해제(v1.3.0): 조건을 맞춰 가끔 지정
         from korciv import metro as MT
         inm = [r for r in mine if MT.of(g, r) is not None]
         free = [r for r in mine if MT.can_center(g, pid, r)[0]
@@ -287,7 +287,7 @@ def player_turn(g, rng):
             cands = MT.candidates(g, pid, c)
             sel = [c] + [r for r in cands[1:] if c in g.world.land_adj[r]][:rng.randint(1, 4)]
             if rng.random() < 0.3:
-                sel = MT.auto_pick(g, pid, c)            # [모두]: 3칸 안 가까운 25곳까지(v1.2.27)
+                sel = MT.auto_pick(g, pid, c)            # [모두]: 3칸 안 가까운 25곳까지(v1.3.0)
                 if rng.random() < 0.3:
                     sel = sel + [r for r in cands if r not in sel][:1]   # 26곳: 거절되어야 한다
             if len(sel) >= 2 and rng.random() < 0.5:
@@ -300,9 +300,9 @@ def player_turn(g, rng):
                 g.regions[c].b["factory"] = 5
                 g.regions[c].b["bank"] = 5
             g.create_metro(pid, c, sel, rng.choice(["", "시험"]))
-    if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.2.17)
+    if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.3.0)
         g.set_priority_mode(pid, rng.choice(list(g.PRIORITY_SORTS) + [None]))
-    # v1.2.21 편의 기능: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입]·자동 해산, 우선순위 고정, 생산 집결지
+    # v1.3.0 편의 기능: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입]·자동 해산, 우선순위 고정, 생산 집결지
     if rng.random() < 0.3:
         tgts = {n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner != pid}
         hot = [t for t in sorted(tgts) if g.attack_candidates(pid, t)]
@@ -361,7 +361,7 @@ def player_turn(g, rng):
                 offer["take"]["regions"] = [rng.choice(border)]
             res, counter, info = D.evaluate_offer(g, o, pid, offer)
             D.respond_offer(g, o, pid, offer)
-            # 플레이어가 먼저 여는 자원·특산물 협상(v1.2.12)
+            # 플레이어가 먼저 여는 자원·특산물 협상(v1.3.0)
             k = rng.choice(NG.RES)
             st = NG.start(g, o, pid, k, rng.randint(1, 6), ai_sells=rng.random() < 0.5)
             for _ in range(rng.randint(1, 6)):

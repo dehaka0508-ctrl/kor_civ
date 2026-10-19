@@ -423,7 +423,7 @@ def make_peace(g, a, b, _done=None):
                         continue
                     make_peace(g, c, other, done)
     if _done is None:
-        g._check_victory(time=False)     # 정복승리(v1.2.28): 강화로 전쟁이 끝나는 순간 조건이 맞으면 승리
+        g._check_victory(time=False)     # 정복승리(v1.3.0): 강화로 전쟁이 끝나는 순간 조건이 맞으면 승리
 
 
 def op_baseline(g, a, b) -> float:
@@ -857,7 +857,7 @@ def _deliver(g, c):
 
 
 def contract_capacity(g, c) -> int:
-    """계약 c 로 이번 턴 보낼 수 있는 양(v1.2.12): 주는 쪽 턴당 확보량(채굴·자체 발전 + 받는 계약 − 다른 주는 계약)과
+    """계약 c 로 이번 턴 보낼 수 있는 양(v1.3.0): 주는 쪽 턴당 확보량(채굴·자체 발전 + 받는 계약 − 다른 주는 계약)과
     전기는 이번 턴 발전소 발전량까지. 판매는 배정보다 먼저라, 지금 재고가 모자라도(유닛에 석유를 썼거나 전기가
     아직 발전 전이어도) 이만큼은 보내고 부족분은 턴 끝 자원 단계에서 시장가로 사서 메운다."""
     fid, res = c["from"], c["res"]

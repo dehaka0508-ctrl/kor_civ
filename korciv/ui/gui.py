@@ -456,7 +456,7 @@ class Gui:
         return value
 
     def stepper_multi(self, rect, value, lo, hi, steps=(10, 5, 1), size=11):
-        """[−10][−5][−] 값 [+][+5][+10] (v1.2.21: 병력이 많을 때 분리·해산·하선 수량 조절)."""
+        """[−10][−5][−] 값 [+][+5][+10] (v1.3.0: 병력이 많을 때 분리·해산·하선 수량 조절)."""
         r = pygame.Rect(rect)
         n = len(steps)
         bw = max(18, min(40, (r.w - 44) // (2 * n)))

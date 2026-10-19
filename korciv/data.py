@@ -89,7 +89,7 @@ def display_short(s: str) -> str:
     return s
 
 
-# 큰 강이 지역 경계가 아니라 지역 한가운데를 지나는 곳(v1.2.26): 경계 하천과 같이 하천 지역(하천 농장·하천 어장)
+# 큰 강이 지역 경계가 아니라 지역 한가운데를 지나는 곳(v1.3.0): 경계 하천과 같이 하천 지역(하천 농장·하천 어장)
 INLAND_RIVERS = {"S121": "남한강(동강·조양강)", "S136": "남한강"}
 
 # 같은 섬 안에서 육로로 이어지는 지역(경계 자료에 인접이 빠진 쌍): 제주시–서귀포시
@@ -129,7 +129,7 @@ class RegionInfo:
     scenic: str = ""     # 자연경관(지역과 같은 나라의 인접 지역 행복도 +5)
     full: str = ""       # 원래 표기명(시·군·구 포함). 자료 파일의 지명 대조용
     coal_field: str = ""  # 탄전 구분 ①/② (탄광 열은 시작 탄광 단계)
-    start_airport: bool = False   # 시작 때 공항(v1.2.14, 자료의 '시작공항' 열)
+    start_airport: bool = False   # 시작 때 공항(v1.3.0, 자료의 '시작공항' 열)
 
     @property
     def is_oil(self):
@@ -174,7 +174,7 @@ class World:
         self.province_outlines = geo.get("provinces", {})
         self.do8_outlines = geo.get("do8", {})
         self.outlines_open = bool(geo.get("outline_open", False))   # 열린 선(새 형식)인가
-        # 지도 배경의 주변국 땅(플레이할 수 없음, v1.2.13): tools/build_foreign.py 가 만든다
+        # 지도 배경의 주변국 땅(플레이할 수 없음, v1.3.0): tools/build_foreign.py 가 만든다
         fpath = os.path.join(data_dir, "foreign_land.json")
         self.foreign = {"lands": [], "labels": {}}
         if os.path.exists(fpath):
@@ -310,7 +310,7 @@ class World:
         return _bfs(self, start, max_d)
 
     def air_distances(self, start: str, max_d: int) -> dict:
-        """항공 거리(폭격·요격 범위, v1.2.14): 육지↔육지·바다↔바다는 1칸, 육지↔바다는 2칸.
+        """항공 거리(폭격·요격 범위, v1.3.0): 육지↔육지·바다↔바다는 1칸, 육지↔바다는 2칸.
         예) 태안 → 경기만 → 옹진 = 2 + 2 = 4칸. 결과는 (출발, 최대 거리)마다 기억해 둔다."""
         cache = self.__dict__.setdefault("_air_cache", {})
         key = (start, max_d)

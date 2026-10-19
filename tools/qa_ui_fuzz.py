@@ -215,7 +215,7 @@ def force_state(app, rng):
         app.mil_open = set(rng.sample(C.UNIT_ORDER, 3))
         app.changed()
     if rng.random() < 0.06:
-        # 광역시(v1.2.19): 조건을 맞춰 지정하고 그 지역 행동 탭, 또는 지정 창을 연다
+        # 광역시(v1.3.0): 조건을 맞춰 지정하고 그 지역 행동 탭, 또는 지정 창을 연다
         from korciv import metro as MT
         mine = [r.id for r in g.regions_of(pid) if MT.can_center(g, pid, r.id)[0]]
         if mine:
@@ -233,10 +233,10 @@ def force_state(app, rng):
                 app.select(rng.choice(sel))
                 app.left_open, app.left_tab, app.tab = True, "region", "action"
             else:
-                app.start_metro_pick(c)                    # 광역시 지정(지도 클릭 방식, v1.2.23)
+                app.start_metro_pick(c)                    # 광역시 지정(지도 클릭 방식, v1.3.0)
                 app.metro_pick["sel"] = set(sel[1:])
     if rng.random() < 0.06:
-        # v1.2.21: 생산 집결지 고르기, 여러 부대로 함께 공격하는 확인 창, 중립 지역 [행동] 탭
+        # v1.3.0: 생산 집결지 고르기, 여러 부대로 함께 공격하는 확인 창, 중립 지역 [행동] 탭
         mine = [r.id for r in g.regions_of(pid)]
         r2 = rng.random()
         if mine and r2 < 0.35:

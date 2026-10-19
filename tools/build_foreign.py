@@ -1,4 +1,4 @@
-"""지도 배경용 주변국 땅(중국·러시아·일본)을 만든다(v1.2.13). 게임 실행에는 필요 없고,
+"""지도 배경용 주변국 땅(중국·러시아·일본)을 만든다(v1.3.0). 게임 실행에는 필요 없고,
 korciv/data/foreign_land.json 을 다시 만들 때만 쓴다.
 
 원자료: Natural Earth 1:10m Admin 0 – Countries (public domain)
@@ -7,7 +7,7 @@ https://github.com/nvkelso/natural-earth-vector (geojson/ne_10m_admin_0_countrie
 한반도 가까이(NEAR)는 곱게, 그 바깥은 거칠게 따로 단순화해 둔다. 두 조각은 NEAR 사각형 가장자리에서 만나므로
 조금 겹치게 자르고, 지도는 테두리 없이 칠하기만 한다(테두리를 그으면 이음매가 보인다).
 
-v1.2.22: 북한과 맞닿은 중국·러시아 땅은 Natural Earth 국경과 게임 지역 경계(map_geometry.json)가 어긋나
+v1.3.0: 북한과 맞닿은 중국·러시아 땅은 Natural Earth 국경과 게임 지역 경계(map_geometry.json)가 어긋나
 사이로 바다색 틈이 보였다. 두 나라 땅을 Natural Earth 북한 땅 쪽으로 GROW 만큼 넓힌 뒤 게임의 한반도 땅과
 해역을 빼서(넓힌 조각만), 우리 지역 경계에 꼭 맞붙게 한다. 맞붙은 경계선(국경)은 "borders" 로 따로 저장해 지도에 국경 기호로 긋는다.
 """
@@ -102,7 +102,7 @@ def main():
         lands.append({"name": NAMES[a3], "polys": polys})
         print(NAMES[a3], len(polys), "다각형", sum(len(r) for r in polys), "꼭짓점")
     # 국경: 한반도 땅 테두리 가운데 중국·러시아 땅과 맞붙은 부분(한 줄로 이어 둔다)
-    # (바다와 맞닿은 해안은 국경이 아니다: 하구 근처에서 원자료 땅이 해안에 걸친 곳은 뺀다, v1.2.26)
+    # (바다와 맞닿은 해안은 국경이 아니다: 하구 근처에서 원자료 땅이 해안에 걸친 곳은 뺀다, v1.3.0)
     borders = lines_of(korea.boundary.intersection(unary_union(touching).buffer(0.0005)).difference(sea.buffer(0.003)))
     print("국경", len(borders), "줄", round(sum(LineString(l).length for l in borders), 2), "도")
     out = {"source": "Natural Earth 1:10m Admin 0 Countries (public domain)", "bbox": BBOX,

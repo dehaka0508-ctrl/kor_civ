@@ -127,7 +127,7 @@ def halo_text(text, size, color, halo, weight="semibold", rad=1):
     return s
 
 
-# 산 모양 3가지(v1.2.22, 대동여지도식): 기준 높이 h·폭 w 에 곱하는 꼭짓점(x, y). 바닥은 열어 둔다.
+# 산 모양 3가지(v1.3.0, 대동여지도식): 기준 높이 h·폭 w 에 곱하는 꼭짓점(x, y). 바닥은 열어 둔다.
 RIDGE_SHAPES = (
     # 홑봉우리
     ((-1.0, 0.45), (-0.15, -0.55), (0.0, -0.65), (0.15, -0.55), (1.0, 0.45)),
@@ -294,7 +294,7 @@ class MapView:
                           for sid, parts in world.sea_shapes.items()}
         self.label.update({sid: proj(*p) for sid, p in world.sea_labels.items()})
         self.world_outlines_open = getattr(world, "outlines_open", False)
-        # 주변국 땅(중국·러시아·일본, 플레이 불가, v1.2.13): 지도 배경으로만 그린다
+        # 주변국 땅(중국·러시아·일본, 플레이 불가, v1.3.0): 지도 배경으로만 그린다
         fl = getattr(world, "foreign", None) or {}
         self.foreign_polys = []
         for land in fl.get("lands", []):
@@ -309,7 +309,7 @@ class MapView:
                                t["connector"]) for t in world.terrain_lines]
         # 국경 하천(압록강·두만강: 한쪽만 우리 지역인 바깥 경계 강)인지
         self.terrain_outer = [bool(t.get("a")) and not t.get("b") for t in world.terrain_lines]
-        # 중국·러시아와 맞닿은 국경선(v1.2.22): tools/build_foreign.py 가 우리 지역 경계에 맞춰 만든다
+        # 중국·러시아와 맞닿은 국경선(v1.3.0): tools/build_foreign.py 가 우리 지역 경계에 맞춰 만든다
         self.border_lines = [proj_arr(l) for l in fl.get("borders", []) if len(l) >= 2]
         # 지역 경계 선분: 두 지역이 함께 쓰는 선분(국경 후보)과 한 지역만 쓰는 선분(해안·바깥 경계)
         seg = {}
@@ -611,7 +611,7 @@ class MapView:
                 pts = sp_clip(span)
                 if len(pts) >= 3:                   # 테두리 없이(가까운·먼 조각의 이음매가 보이지 않게)
                     fpts.append(pts)
-            # 빗금(v1.2.22): 안개 낀 우리 땅과 헷갈리지 않게 주변국 땅에만 옅은 사선
+            # 빗금(v1.3.0): 안개 낀 우리 땅과 헷갈리지 않게 주변국 땅에만 옅은 사선
             if fpts:
                 self._foreign_fill(surf, fpts, fland, 0.84 if not theme.dark else 0.7, u)
         # 땅 칠하기(번짐 층이 있으면 같은 다각형으로 화면 해상도의 '주인 번호' 지도도 그린다)
@@ -638,7 +638,7 @@ class MapView:
             if idsurf is not None:
                 pygame.draw.polygon(idsurf, code, pts)
         # 국경 안쪽 번짐 + 전선 그림자: 세기는 지도 전체 층(저해상도)에서, 색과 칠할 곳은 화면 해상도의 주인 번호로
-        # (v1.2.25: 저해상도 층의 색을 그대로 늘리면 확대할수록 색이 이웃 지역으로 번져 경계와 어긋났다)
+        # (v1.3.0: 저해상도 층의 색을 그대로 늘리면 확대할수록 색이 이웃 지역으로 번져 경계와 어긋났다)
         if fx is not None:
             layer, (bx0, by0), lut, war_on, rgba = fx
             fine = s / self.FX_RES > 1.5               # 층 한 칸이 화면에서 1.5픽셀보다 크면 화면 해상도로 색을 입힌다
@@ -673,7 +673,7 @@ class MapView:
                 for xx in range(0, W_, tw_):
                     surf.blit(tex, (xx, yy), special_flags=pygame.BLEND_RGB_MULT)
         # 시군구 경계(가는 선)·광역 경계(조금 짙고 굵게): 이웃한 두 지역의 경계 사슬을 한 번만 긋는다
-        # (같은 광역시의 구성 지역 사이 경계는 긋지 않는다 — 하나의 지역처럼, v1.2.27)
+        # (같은 광역시의 구성 지역 사이 경계는 긋지 않는다 — 하나의 지역처럼, v1.3.0)
         metro = extra.get("metro") or {}
         thin = s < 1.2
         pw = max(1, int((2 if self.z >= 2.5 else 1) * u))
@@ -705,7 +705,7 @@ class MapView:
             pts = sp(span)
             if len(pts) >= 2:
                 pygame.draw.lines(surf, border_ink, False, pts, bw)
-        # 나라 국경(중국·러시아, v1.2.22): 옅은 자줏빛 띠 + 일점쇄선. 국경 하천은 그 위에 그린다
+        # 나라 국경(중국·러시아, v1.3.0): 옅은 자줏빛 띠 + 일점쇄선. 국경 하천은 그 위에 그린다
         if self.border_span:
             self._national_border(surf, [sp(span) for span in self.border_span], theme, u)
 
@@ -1006,7 +1006,7 @@ class MapView:
         return hit
 
     def group_outline(self, surf, rids, color, width=2, origin=None):
-        """광역시처럼 여러 지역을 하나로: 바깥 윤곽만 긋고 안쪽 경계는 긋지 않는다(v1.2.27).
+        """광역시처럼 여러 지역을 하나로: 바깥 윤곽만 긋고 안쪽 경계는 긋지 않는다(v1.3.0).
         origin: surf 왼쪽 위의 화면 좌표(반투명 덮개에 그릴 때). 기본은 화면에 바로."""
         if len(rids) == 1:                  # 한 지역은 다각형 테두리 그대로
             rid = next(iter(rids))
