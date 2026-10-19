@@ -102,7 +102,8 @@ def main():
         lands.append({"name": NAMES[a3], "polys": polys})
         print(NAMES[a3], len(polys), "다각형", sum(len(r) for r in polys), "꼭짓점")
     # 국경: 한반도 땅 테두리 가운데 중국·러시아 땅과 맞붙은 부분(한 줄로 이어 둔다)
-    borders = lines_of(korea.boundary.intersection(unary_union(touching).buffer(0.0005)))
+    # (바다와 맞닿은 해안은 국경이 아니다: 하구 근처에서 원자료 땅이 해안에 걸친 곳은 뺀다, v1.2.26)
+    borders = lines_of(korea.boundary.intersection(unary_union(touching).buffer(0.0005)).difference(sea.buffer(0.003)))
     print("국경", len(borders), "줄", round(sum(LineString(l).length for l in borders), 2), "도")
     out = {"source": "Natural Earth 1:10m Admin 0 Countries (public domain)", "bbox": BBOX,
            "lands": lands, "borders": borders,

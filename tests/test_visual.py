@@ -154,3 +154,69 @@ def test_glow_is_colored_by_screen_owner_map():
     assert surf.get_at((0, 0))[:3] == (100, 100, 100) and surf.get_at((1, 0))[:3] == (100, 100, 100)
     r2, b3 = surf.get_at((2, 0)), surf.get_at((3, 0))
     assert r2[0] > 180 and r2[2] < 60 and b3[2] > 180 and b3[0] < 60
+
+
+def _shapes():
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    w = load_world()
+    regs = {rid: unary_union([Polygon(r).buffer(0) for r in geo["polys"] if len(r) >= 3])
+            for rid, geo in w.geometry.items()}
+    seas = {sid: unary_union([Polygon(p["ext"], p["holes"]).buffer(0) for p in parts])
+            for sid, parts in w.sea_shapes.items()}
+    fl = unary_union([Polygon(r).buffer(0) for land in w.foreign["lands"] for r in land["polys"]])
+    return w, regs, seas, fl
+
+
+def test_sea_polygons_reach_the_coast():
+    """v1.2.26: 해역 다각형이 해안에 닿는다(북한 동해안 등에서 해안과 바다 다각형 사이에 띠 모양 틈이 있었다)."""
+    pytest.importorskip("shapely")
+    from shapely.ops import unary_union
+    w, regs, seas, fl = _shapes()
+    land = unary_union(list(regs.values()))
+    S = unary_union(list(seas.values()))
+    gap = land.buffer(0.06).difference(land.buffer(0.002)).difference(fl).difference(S)
+    assert gap.area < 0.002, gap.area
+
+
+def test_coastal_flags_match_the_map():
+    """v1.2.26: 지도에서 바다와 3km(0.03도) 넘게 맞닿은 지역은 해안, 바다에 닿지 않는 지역은 내륙이다.
+    해안 지역의 인접 해역에는 지도에서 맞닿은 해역이 들어 있다(명간에 어장을 지을 수 없던 문제)."""
+    shp = pytest.importorskip("shapely")
+    from shapely.ops import unary_union
+    from shapely.geometry import box
+    w, regs, seas, fl = _shapes()
+    ids = list(regs)
+    tree = shp.STRtree([regs[r] for r in ids])
+    sea_buf = {sid: sg.buffer(0.01) for sid, sg in seas.items()}
+    bad = []
+    for rid in ids:
+        gm = regs[rid]
+        win = box(*gm.buffer(0.02).bounds)                 # 이 지역 둘레만 잘라서 계산(빠르게)
+        nb = [regs[ids[j]] for j in tree.query(gm.buffer(1e-6)) if ids[j] != rid]
+        coast = gm.boundary.difference(unary_union(nb + [fl.intersection(win)]).buffer(2e-4))
+        if coast.length < 1e-6:
+            touch = {}
+        else:
+            touch = {sid: coast.intersection(sb.intersection(win)).length for sid, sb in sea_buf.items()
+                     if sb.intersects(win)}
+        L = sum(touch.values()) if touch else 0.0
+        info = w.regions[rid]
+        if info.coastal and L < 0.005:
+            bad.append((rid, "해안인데 바다에 안 닿음", round(L, 3)))
+        elif not info.coastal and L > 0.03:
+            bad.append((rid, "바다에 닿는데 내륙", round(L, 3)))
+        elif info.coastal and touch:
+            main = max(touch, key=touch.get)
+            if touch[main] > 0.03 and main not in info.seas:
+                bad.append((rid, "맞닿은 해역 빠짐", main))
+    assert not bad, bad
+
+
+def test_myonggan_can_build_fishery_and_inland_rivers():
+    from korciv.game import Game
+    from korciv.state import Settings
+    g = Game(Settings(n_enemies=1, seed=7, player_start="N159"))
+    assert g.info("N159").coastal and g.can_fish("N159")
+    assert any(o["key"] == "fishery" for o in g.options(0, "N159"))
+    assert {"S121", "S136"} <= g.world.river_regions        # 남한강이 가운데를 지나는 정선·단양

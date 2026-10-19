@@ -27,9 +27,33 @@ CSV = os.path.join(ROOT, "korciv", "data", "regions.csv")
 LAND_PAD = 0.0003
 SIMPLIFY = 0.0005
 STEP = 0.01            # 해안선 표본 간격(도)
+# v1.2.26: 해역 원형·묶음 다각형의 육지 쪽 변이 해안보다 바다 쪽에 그어진 곳(북한 동해안·압록강 하구 등)은 해안과
+# 다각형 사이에 바다색 틈이 남았다. 해안 지역 둘레 COAST_BAND(약 15km) 안의 바다를 그 지역 해역 쪽 다각형에 더하고,
+# 중국·러시아 땅(Natural Earth)은 뺀다. 작은 만·포구 조각도 버리지 않는다(MIN_PART).
+COAST_BAND = 0.15
+MIN_PART = 1e-6
+NE_COUNTRIES = os.path.join(ROOT, "tools", "_cache", "ne_10m_admin_0_countries.geojson")
+RIVER_MOUTHS = [(124.0, 39.7, 124.45, 40.07), (130.6, 42.25, 130.8, 42.36)]   # 압록강·두만강 하구(lon0, lat0, lon1, lat1)
 
 
-def rings(geom, min_part=0.004, min_hole=0.0015):
+def foreign_land():
+    """한반도 둘레의 중국·러시아 땅(바다에서 뺀다). 원자료가 없으면 None."""
+    if not os.path.exists(NE_COUNTRIES):
+        return None
+    from shapely.geometry import shape
+    with open(NE_COUNTRIES, encoding="utf-8") as f:
+        feats = json.load(f)["features"]
+    clip = box(120.0, 36.0, 134.0, 46.0)
+    return unary_union([shape(ft["geometry"]).intersection(clip) for ft in feats
+                        if ft["properties"].get("ADM0_A3") in ("CHN", "RUS")])
+
+
+def coast_band(geo, rids):
+    return unary_union([Polygon(r).buffer(0) for rid in rids for r in geo["regions"][rid]["polys"]
+                        if len(r) >= 3]).buffer(COAST_BAND)
+
+
+def rings(geom, min_part=MIN_PART, min_hole=0.0015):
     parts = [geom] if geom.geom_type == "Polygon" else list(getattr(geom, "geoms", []))
     out = []
     for p in sorted(parts, key=lambda p: -p.area):
@@ -65,9 +89,14 @@ def coast_points(geo, rid, area, label_of):
     return out
 
 
-def split_group(geo, land, cut, group, seas_of):
-    area = Polygon(group["poly"]).buffer(0).difference(cut).difference(land)
+def split_group(geo, land, cut, group, seas_of, extra=None, block=None):
     sids = set(group["seas"])
+    poly = Polygon(group["poly"]).buffer(0)
+    if extra is not None:
+        poly = poly.union(extra)
+    area = poly.difference(cut).difference(land)
+    if block is not None:
+        area = area.difference(block)
     pts = []
     for rid, ss in seas_of.items():
         mine = [s for s in ss if s in sids]
@@ -123,8 +152,22 @@ def main():
         shapes[keep] = shapes[keep].union(near)
         shapes[other] = shapes[other].difference(near)
     seas_of = region_seas()
+    foreign = foreign_land()
+    # 원형 해역(남해 서부·동부·섬 해역)은 원형 그대로 — 해안 둘레 띠는 묶음 해역(서해·동해)에만 더하고,
+    # 원형 해역이 이미 덮은 바다는 건드리지 않는다
+    taken = unary_union(list(shapes.values()))
     for group in SEA_GROUPS.values():
-        shapes.update(split_group(geo, land, cut, group, seas_of))
+        mine = [rid for rid, ss in seas_of.items() if set(ss) & set(group["seas"])]
+        block = taken if foreign is None else taken.union(foreign)
+        extra = coast_band(geo, mine) if mine else None
+        if extra is not None and foreign is not None:
+            # 압록강·두만강 물길은 바다로 메우지 않는다(하구 RIVER_MOUTHS 안은 바다)
+            extra = extra.difference(foreign.buffer(0.03).difference(unary_union([box(*b) for b in RIVER_MOUTHS])))
+        parts = split_group(geo, land, cut, group, seas_of, extra=extra, block=block)
+        shapes.update(parts)
+        taken = taken.union(unary_union(list(parts.values())))
+    if foreign is not None:
+        shapes = {sid: shp.difference(foreign) for sid, shp in shapes.items()}
     seas, labels = {}, {}
     for sid in sorted(shapes, key=lambda s: int(s[3:])):
         seas[sid] = rings(shapes[sid])
