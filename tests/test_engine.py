@@ -3853,6 +3853,62 @@ def test_specialty_pin_over_limit_keeps_previous_state():
     assert not ok and "x" in g.regions[rid].spec_block
 
 
+def _conquest_ready(n_enemies=2):
+    g = new_game(player_start="S002", n_enemies=n_enemies)
+    need = math.ceil(len(g.regions) * C.CONQUEST_SHARE)
+    free = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:need]
+    _own(g, 0, free)
+    for r in g.regions_of(0):
+        r.happy, r.resist = 0.0, None
+    return g
+
+
+def test_conquest_victory_waits_for_peace():
+    """v1.2.28: 정복승리 조건을 채워도 전쟁 중이면 불발, 강화로 전쟁이 끝나는 순간 승리."""
+    g = _conquest_ready()
+    for b in (1, 2):
+        g.dip.wars.pop(D.pair(0, b), None)
+    D.declare_war(g, 1, 0)
+    D.declare_war(g, 2, 0)
+    st = g.conquest_status(0)
+    assert st["met"] and st["wars"] == 2 and not st["ok"]
+    g._check_victory()
+    assert not g.game_over
+    D.make_peace(g, 0, 1)
+    assert not g.game_over                          # 아직 2와 전쟁 중
+    D.make_peace(g, 0, 2)
+    assert g.game_over and g.winner == ((0,), "conquest")
+    # 다른 나라끼리의 전쟁은 상관없다
+    g = _conquest_ready()
+    for a, b in ((0, 1), (0, 2), (1, 2)):
+        g.dip.wars.pop(D.pair(a, b), None)
+    D.declare_war(g, 1, 2)
+    assert g.conquest_status(0)["ok"]
+    g._check_victory()
+    assert g.winner == ((0,), "conquest")
+
+
+def test_ai_peace_desire_around_conquest_ready():
+    """조건을 채운 AI는 강화를 서두르고(강화하면 승리), 그 상대 AI는 강화를 꺼린다(강화해 주면 상대가 승리)."""
+    from korciv import ai as AI
+    g = _conquest_ready(n_enemies=2)
+    for b in (1, 2):
+        g.dip.wars.pop(D.pair(0, b), None)
+    D.declare_war(g, 1, 0)
+    a1 = AI.war_assessment(g, 1, 0)
+    assert "강화하면 상대가 정복승리" in a1["con"]
+    g.settings.victories = tuple(v for v in g.settings.victories if v != "conquest")
+    a1_off = AI.war_assessment(g, 1, 0)
+    assert a1_off["desire"] == pytest.approx(a1["desire"] + C.AI_CONQ_DENY_PEACE)
+    g.settings.victories = tuple(g.settings.victories) + ("conquest",)
+    # 0 을 AI 로 보면 강화 욕구가 크게 오른다
+    g.factions[0].is_ai = True
+    a0 = AI.war_assessment(g, 0, 1)
+    assert a0["pro"][0] == "강화하면 정복승리"
+    g.settings.victories = tuple(v for v in g.settings.victories if v != "conquest")
+    assert AI.war_assessment(g, 0, 1)["desire"] == pytest.approx(a0["desire"] - C.AI_CONQ_READY_PEACE)
+
+
 def test_science_steps_hidden_when_science_victory_off():
     """QA: 과학승리를 끈 판에서는 과학 단계를 지을 수 없다(경제승리를 끄면 경제 단계가 숨는 것과 같게)."""
     g = Game(Settings(seed=5, n_enemies=1, player_start="S002", victories=("conquest", "time")))
@@ -4760,30 +4816,32 @@ def test_ally_retaking_lost_region_returns_it_to_original_owner():
     _clear(g, x)
     a2 = g.new_army(2, x, {"inf": 1})
     g.complete_occupation(2, x)
-    assert rr.owner == 0 and rr.war_from is None and not g.resisting(rr)
+    assert rr.owner == 0 and rr.war_from == 1 and not g.resisting(rr)     # 이제 직전 주인은 1(v1.2.28)
     assert rr.happy == pytest.approx(40.0)
     assert any("원 주인" in e["text"] for e in g.events)
     assert a2.id in g.armies and a2.loc == x                     # 되찾은 부대는 동맹 땅에 그대로
 
 
 def test_liberation_chain_and_non_ally_and_dead_owner():
+    """v1.2.28: 반환은 직전 주인이 그 동맹국일 때만 — 1 → 3 으로 넘어간 땅은 0의 동맹이 되찾아도 자기 땅."""
     g, x, rr = _liberation_setup()
-    # 동맹이 아닌 제3국이 빼앗으면 자기 땅(원 주인 기록은 처음 주인 0 그대로)
+    # 동맹이 아닌 제3국이 빼앗으면 자기 땅(직전 주인 기록은 1로 바뀜)
     _clear(g, x)
     g.new_army(3, x, {"inf": 1})
     g.complete_occupation(3, x)
-    assert rr.owner == 3 and rr.war_from == 0
-    # 그 뒤 0의 동맹이 되찾아도 0에게(원 주인이 직접 빼앗긴 게 아니라 저항은 새로 시작)
+    assert rr.owner == 3 and rr.war_from == 1 and rr.war_turn == g.turn
+    # 그 뒤 0의 동맹 2가 되찾으면: 직전 주인(3)은 2의 동맹이 아니므로 2가 갖는다
+    assert g.liberation_owner(2, x) is None
     _clear(g, x)
     g.new_army(2, x, {"inf": 1})
     g.complete_occupation(2, x)
-    assert rr.owner == 0 and rr.war_from is None
-    # 원 주인이 직접 되찾아도 기록이 지워진다
+    assert rr.owner == 2 and rr.war_from == 3
+    # 원 주인이 직접 되찾으면 직전 주인은 1(1의 동맹이 24턴 안에 되찾으면 1에게)
     g2, x2, rr2 = _liberation_setup()
     _clear(g2, x2)
     g2.new_army(0, x2, {"inf": 1})
     g2.complete_occupation(0, x2)
-    assert rr2.owner == 0 and rr2.war_from is None
+    assert rr2.owner == 0 and rr2.war_from == 1
     # 원 주인이 멸망했으면 동맹이 차지한다
     g3, x3, rr3 = _liberation_setup()
     g3.factions[0].alive = False
@@ -4792,6 +4850,25 @@ def test_liberation_chain_and_non_ally_and_dead_owner():
     g4, x4, rr4 = _liberation_setup()
     g4.transfer_region(x4, 3, reason="거래")
     assert rr4.war_from is None
+
+
+def test_liberation_only_within_24_turns():
+    """v1.2.28: 지금 주인이 빼앗은 지 24턴 안에만 반환(25턴째부터는 되찾은 나라가 갖는다)."""
+    g, x, rr = _liberation_setup()
+    t0 = rr.war_turn
+    assert C.LIBERATION_TURNS == 24
+    g.turn = t0 + 24
+    assert g.liberation_left(x) == 1 and g.liberation_owner(2, x) == 0
+    g.turn = t0 + 25
+    assert g.liberation_left(x) == 0 and g.liberation_owner(2, x) is None
+    _clear(g, x)
+    g.new_army(2, x, {"inf": 1})
+    g.complete_occupation(2, x)
+    assert rr.owner == 2 and rr.war_from == 1
+    # 예전 세이브(턴 기록 없음)의 기록은 반환하지 않는다
+    g2, x2, rr2 = _liberation_setup()
+    rr2.war_turn = None
+    assert g2.liberation_owner(2, x2) is None
 
 
 def test_coalition_member_also_liberates():

@@ -43,6 +43,10 @@ def finite(x):
 def check(g, where):
     """불변식."""
     nf = len(g.factions)
+    if g.winner and g.winner[1] == "conquest" and len(g.alive_ids()) > 1:
+        w = g.winner[0][0]
+        if D.enemies(g, w):                              # v1.2.28: 전쟁 중에는 정복승리 불발
+            report("전쟁 중 정복승리", f"{where} f{w} 전쟁 {D.enemies(g, w)}")
     for rid, r in g.regions.items():
         if not (r.owner == NEUTRAL or 0 <= r.owner < nf):
             report("소유자 범위", f"{where} {rid} owner={r.owner}")

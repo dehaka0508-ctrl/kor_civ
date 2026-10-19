@@ -671,6 +671,14 @@ def war_assessment(g, fid, e):
         if EG.sprint(f) == "conquest" and ST.posture_of(f) != "crisis":
             d -= C.AI_P3_SPRINT_PEACE      # 3페이즈 정복 질주: 이기고 있는 전쟁은 끝까지
             con.append("정복 질주")
+    # 정복승리(v1.2.28)는 전쟁 중에는 불발: 조건을 채운 나라는 강화를 서두르고, 그 상대는 강화를 꺼린다
+    if "conquest" in g.settings.victories:
+        if g.conquest_status(fid)["met"]:
+            d += C.AI_CONQ_READY_PEACE
+            pro.insert(0, "강화하면 정복승리")
+        elif g.conquest_status(e)["met"] and not (f.is_ai and ST.posture_of(f) == "crisis"):
+            d -= C.AI_CONQ_DENY_PEACE
+            con.insert(0, "강화하면 상대가 정복승리")
     return {"desire": d, "ratio": ratio, "front": fr, "info": info, "pro": pro, "con": con}
 
 

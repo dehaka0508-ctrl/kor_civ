@@ -79,7 +79,8 @@ class Region:
     lost_bld: Optional[dict] = None       # 점령으로 꺼진 과학·경제 시설 {"fid", "sci", "econ"}: 저항·회복 중 탈환하면 되살리고, 못 되찾으면 철거
     metro: Optional[int] = None           # 속한 광역시 ID(v1.2.19)
     rally: Optional[str] = None           # 생산 집결지(v1.2.21): 여기서 만든 육군은 이 지역으로 자동 이동
-    war_from: Optional[int] = None        # 전쟁으로 빼앗긴 원 주인(v1.2.17): 동맹·연합국이 되찾으면 이 나라에 돌려준다
+    war_from: Optional[int] = None        # 전쟁으로 빼앗길 때의 직전 주인(v1.2.28): 그 동맹·연합국이 되찾으면 돌려준다
+    war_turn: Optional[int] = None        # 그때의 턴(v1.2.28): LIBERATION_TURNS 안에서만 돌려준다
     lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.2.12): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
 

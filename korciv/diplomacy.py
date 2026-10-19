@@ -422,6 +422,8 @@ def make_peace(g, a, b, _done=None):
                         _offer_peace_to_player(g, other if c == g.player_id else c)
                         continue
                     make_peace(g, c, other, done)
+    if _done is None:
+        g._check_victory(time=False)     # 정복승리(v1.2.28): 강화로 전쟁이 끝나는 순간 조건이 맞으면 승리
 
 
 def op_baseline(g, a, b) -> float:

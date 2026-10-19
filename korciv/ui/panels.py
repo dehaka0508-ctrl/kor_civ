@@ -248,12 +248,15 @@ def draw_region_info(app, rect):
         if g.rebel_happy(r) <= C.REBEL_THRESHOLD and full and not phase:
             y = kv(gui, x, y, w, "반란 확률", f"{g.rebellion_chance(owner, node)*100:.1f}%/턴", t.bad)
         wf = getattr(r, "war_from", None)
-        if wf is not None and 0 <= wf < len(g.factions) and g.factions[wf].alive and wf != owner:
-            # 원 주인(v1.2.17): 원 주인의 동맹·연합국이 되찾으면 원 주인에게 돌아간다
+        left = g.liberation_left(node)
+        if wf is not None and 0 <= wf < len(g.factions) and g.factions[wf].alive and wf != owner and left > 0:
+            # 해방 반환(v1.2.28): 직전 주인의 동맹·연합국이 빼앗긴 지 24턴 안에 되찾으면 직전 주인에게 돌아간다
             back = g.liberation_owner(pid, node) if owner != pid else None
-            txt = f"원 주인: {g.seen_name(wf)} (전쟁으로 빼앗긴 땅 — 원 주인이나 그 동맹·연합국이 되찾으면 원 주인에게)"
+            txt = (f"직전 주인: {g.seen_name(wf)} (전쟁으로 넘어감 — {left}턴 안에 그 동맹·연합국이 되찾으면 "
+                   f"{g.seen_name(wf)}에게 돌아감)")
             if back is not None:
-                txt = f"원 주인: {g.seen_name(wf)} — 우리가 되찾으면 동맹·연합국인 {g.seen_name(wf)}에게 돌려줍니다"
+                txt = (f"직전 주인: {g.seen_name(wf)} — {left}턴 안에 우리가 되찾으면 동맹·연합국인 "
+                       f"{g.seen_name(wf)}에게 돌려줍니다")
             y = gui.wrap((x, y), txt, w, 11, t.accent if back is not None else t.muted) + 4
     if full and r.focus:
         y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
@@ -1788,7 +1791,10 @@ def draw_victory_progress(app, x, y, w, pid):
         txt = f"{cs['have']} / {cs['need']}곳"
         if cs["risky"] is not None:
             txt += f" · 반란 가능 지역 {cs['risky']}곳"
-        y = kv(gui, x, y, w, "정복승리(2/3 + 반란 없음)", txt, t.good if cs["ok"] else None)
+        if cs["met"] and cs["wars"]:
+            txt += f" · 전쟁 {cs['wars']}곳 — 모두 강화하면 승리"
+        y = kv(gui, x, y, w, "정복승리(2/3 + 반란 없음 + 전쟁 없음)", txt,
+               t.good if cs["ok"] else (t.warn if cs["met"] else None))
     if "science" in vs:
         y = kv(gui, x, y, w, "과학승리", science_progress_text(g, pid))
     if "economic" in vs:
@@ -1861,7 +1867,9 @@ def draw_victory_bars(app, x, y, w, pid):
     rows = []
     if "conquest" in vs:
         cs = g.conquest_status(pid)
-        desc = "2/3 영토 · 반란 없음" + (f" · 반란 가능 {cs['risky']}곳" if cs["risky"] is not None else "")
+        desc = "2/3 영토 · 반란 없음 · 전쟁 없음" + (f" · 반란 가능 {cs['risky']}곳" if cs["risky"] is not None else "")
+        if cs["met"] and cs["wars"]:
+            desc = f"조건 충족 — 전쟁 {cs['wars']}곳을 모두 강화하면 승리"
         rows.append(("정복", desc, f"{cs['have']} / {cs['need']}곳", cs["have"] / max(1, cs["need"]), t.vermilion))
     if "science" in vs:
         txt = science_progress_text(g, pid)

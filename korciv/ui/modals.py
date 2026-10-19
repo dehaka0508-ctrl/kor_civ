@@ -141,7 +141,8 @@ def _num_input(gui, owner, rect, tid, value):
 
 VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
-                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
+                f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 단 어느 나라와든 전쟁 중이면 불발 —\n"
+                f"강화해 전쟁이 끝나는 순간 조건이 맞으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
     "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 은행 5단계(금융 단지) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 정유공장 5단계 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
@@ -1242,7 +1243,7 @@ def draw_battle(app):
         gui.rect(t.panel_alt, row, radius=8)
         gui.text((row.x + 12, row.y + 8), oc["label"], 13, weight="semibold")
         back = g.liberation_owner(army.owner, node) if oc["capture"] else None
-        res = ("적 전멸 → 진입·점령" + (f"(원 주인 {g.fname(back)}에게 반환)" if back is not None else "")
+        res = ("적 전멸 → 진입·점령" + (f"(직전 주인 {g.fname(back)}에게 반환)" if back is not None else "")
                if oc["capture"] else "적이 남음 → 진입 못 함")
         gui.text((row.right - 12, row.y + 8), res, 13, t.good if oc["capture"] else t.warn, "bold", anchor="topright")
         for j, (who, hp, mx, dmg, lost, col) in enumerate((

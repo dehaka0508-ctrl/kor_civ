@@ -2976,16 +2976,12 @@ class Game:
             return
         if getattr(rr, "metro", None) is not None and not getattr(self, "_metro_capture", False):
             M.dissolve(self, rr.metro, "구성 지역이 넘어감")     # 점령이 아닌 이전(할양·거래·독립 등): 먼저 해제
-        # 원 주인(v1.2.17): 전쟁으로 처음 빼앗길 때의 주인을 기억하고, 그 나라가 되찾으면(동맹·연합이 되찾아
-        # 돌려준 경우 포함) 지운다. 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
+        # 해방 반환용 기록(v1.2.28): 전쟁으로 넘어가면 직전 주인과 그 턴을 남긴다(그 나라의 동맹·연합국이
+        # LIBERATION_TURNS 안에 되찾으면 돌려준다). 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
         if reason == "점령" and old != NEUTRAL and new_owner != NEUTRAL:
-            wf = getattr(rr, "war_from", None)
-            if wf is None:
-                rr.war_from = old
-            elif wf == new_owner:
-                rr.war_from = None
+            rr.war_from, rr.war_turn = old, self.turn
         else:
-            rr.war_from = None
+            rr.war_from, rr.war_turn = None, None
         rr.rally = None                              # 생산 집결지는 주인이 바뀌면 지운다(v1.2.21)
         # 과학·경제 공사(과학 유닛 생산 포함): 적에게 점령당하면 멈춘다. 저항·회복 기간 안에 원래 주인이 되찾으면
         # 이어서 짓고, 그 밖(기간이 지남·다른 나라에 넘어감)이면 낸 돈의 50%를 돌려받는다
@@ -3281,12 +3277,22 @@ class Game:
         self.event("occupy", f"{self.fname(fid)}이(가) {self.info(rid).name} 점령을 시작했습니다 ({need}턴).",
                    region=rid, fids=(fid, rr.owner))
 
+    def liberation_left(self, rid) -> int:
+        """해방 반환이 가능한 남은 턴(지금 주인이 전쟁으로 빼앗은 지 LIBERATION_TURNS 턴까지, 아니면 0)."""
+        rr = self.regions[rid]
+        t0 = getattr(rr, "war_turn", None)
+        if getattr(rr, "war_from", None) is None or t0 is None:
+            return 0                            # 기록이 없거나 v1.2.27 이전 세이브의 기록(턴 모름)
+        return max(0, C.LIBERATION_TURNS - (self.turn - t0) + 1)
+
     def liberation_owner(self, fid, rid):
-        """fid 가 rid 를 점령하면 돌려줄 원 주인(없으면 None, v1.2.17): 지금 주인이 전쟁으로 빼앗은 땅이고
-        원 주인이 살아 있으며 fid 와 동맹·연합 관계일 때."""
+        """fid 가 rid 를 점령하면 돌려줄 나라(없으면 None, v1.2.17 → v1.2.28): 지금 주인이 최근 24턴 안에
+        전쟁으로 빼앗은 땅이고, 그 직전 주인이 살아 있으며 fid 와 동맹·연합 관계일 때만."""
         rr = self.regions[rid]
         o = getattr(rr, "war_from", None)
         if o is None or rr.owner == NEUTRAL or o in (fid, rr.owner, NEUTRAL):
+            return None
+        if self.liberation_left(rid) <= 0:
             return None
         if not (0 <= o < len(self.factions)) or not self.factions[o].alive:
             return None
@@ -5395,7 +5401,7 @@ class Game:
             return
         if "conquest" in st.victories and len(self.factions) > 1:
             for fid in alive:
-                if self.conquest_status(fid)["ok"]:
+                if self.conquest_status(fid)["ok"]:          # 전쟁 중이면 불발(v1.2.28)
                     self._win((fid,), "conquest")
                     return
         if "science" in st.victories:
@@ -5440,11 +5446,14 @@ class Game:
                 and self.rebellion_chance(rr.owner, rr.id) > 0)
 
     def conquest_status(self, fid) -> dict:
-        """정복승리 진행: 지역 수, 필요 지역 수, 반란 가능 지역 수."""
+        """정복승리 진행: 지역 수, 필요 지역 수, 반란 가능 지역 수, 전쟁 상대 수.
+        met: 지역·반란 조건 충족, ok: 거기에 전쟁 중이 아님(v1.2.28 — 강화해 전쟁이 끝나는 순간 승리)."""
         regs = self.regions_of(fid)
         need = math.ceil(len(self.regions) * C.CONQUEST_SHARE - 1e-9)
         risky = sum(1 for r in regs if self.can_rebel(r)) if len(regs) >= need else None
-        return {"have": len(regs), "need": need, "risky": risky, "ok": len(regs) >= need and risky == 0}
+        met = len(regs) >= need and risky == 0
+        wars = len(D.enemies(self, fid))
+        return {"have": len(regs), "need": need, "risky": risky, "wars": wars, "met": met, "ok": met and not wars}
 
     def time_scores(self) -> dict:
         """시간 종료 승리 점수: (지역 비율 + GDP 비율 + 인구 비율) / 3 × 100."""
