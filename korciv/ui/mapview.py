@@ -378,6 +378,7 @@ class MapView:
         self.cache = None
         self.cache_meta = None
         self.version = 0              # 내용(색·지명·경계) 버전. 시점 이동은 버전을 올리지 않는다
+        self.defer_until = 0          # 이 시각(ms)까지는 다시 그리지 않고 지난 그림을 늘려 보여 준다
         self.last_interact = -10 ** 9
 
     # ------------------------------------------------------------ 좌표
@@ -412,6 +413,11 @@ class MapView:
     def invalidate(self):
         """지도 내용이 바뀌었다(색·소유·모드 등): 다음 프레임에 다시 그린다."""
         self.version += 1
+
+    def defer(self, ms=400):
+        """ms 동안은 지도를 다시 그리지 않고 지난 그림을 늘려 보여 준다(v1.3.3: 전체화면 전환 직후 창이
+        Windows 메시지에 먼저 응답하게 — 무거운 첫 화면 때문에 전환 중 포커스를 잃어 최소화되던 문제)."""
+        self.defer_until = pygame.time.get_ticks() + ms
 
     def _touch(self):
         self.last_interact = pygame.time.get_ticks()
@@ -502,6 +508,10 @@ class MapView:
         need = self.cache is None or meta["key"] != full_key
         if not need and (meta["s"], meta["cx"], meta["cy"]) != (self.scale, self.cx, self.cy):
             need = not self.interacting() or not self._cache_covers()
+        if need and self.cache is not None and pygame.time.get_ticks() < self.defer_until:
+            # 창 모드가 막 바뀌었다(전체화면 전환 등): 잠깐은 지난 그림을 늘려 보여 주고 나중에 다시 그린다
+            self._blit_cache(screen, theme)
+            return
         if need:
             self._render(full_key, theme, colors_fn(), sea_colors_fn(), mode, labels_fn(), show_terrain,
                          extra_fn() if extra_fn else None)

@@ -88,6 +88,9 @@ ORDER_COLORS = {"move": (47, 111, 222), "attack": (201, 42, 42), "land": (12, 16
 class App:
     def __init__(self, width=None, height=None, screenshot=None):
         _dpi_aware()
+        # 전체화면 창이 포커스를 잠깐 잃어도 SDL 이 창을 최소화하지 않게(v1.3.3: 창 모드에서 Alt+Enter 로 전환하면
+        # 전환 직후의 무거운 첫 화면 동안 생긴 포커스 이탈로 최소화되던 문제). Alt+Tab 으로 나가도 그대로 둔다
+        os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
         pygame.init()
         pygame.display.set_caption("한반도의 문명")
         flags = pygame.RESIZABLE
@@ -146,10 +149,52 @@ class App:
         except pygame.error:
             return
         self.prefs["fullscreen"] = on
+        self.mode_switch_t = pygame.time.get_ticks()
+        try:
+            pygame.event.pump()             # 창 전환 메시지를 먼저 처리한다(무거운 첫 화면을 그리기 전에)
+        except pygame.error:
+            pass
         if hasattr(self, "gui"):
             self._update_scale()
+        if hasattr(self, "map"):
+            self.map.defer(400)             # 전환 직후 잠깐은 지난 지도 그림을 늘려 보여 준다(창이 먼저 응답하게)
         if save:
             save_prefs(self.prefs)
+
+    def system_event(self, e) -> bool:
+        """창·전체화면 관련 이벤트를 처리한다. 처리해서 다른 곳에 넘기지 않을 이벤트면 True."""
+        if e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and e.mod & pygame.KMOD_ALT:
+            self.set_fullscreen(not self.is_fullscreen())   # Alt+Enter: 전체화면 전환(턴 종료로 넘어가지 않게)
+            return True
+        if e.type == pygame.VIDEORESIZE and self.is_fullscreen():
+            self._update_scale()
+        elif e.type == pygame.VIDEORESIZE:
+            w, h = max(800, e.w), max(500, e.h)
+            if (w, h) != self.window.get_size():
+                self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+            self._update_scale()
+        elif e.type == getattr(pygame, "WINDOWSIZECHANGED", -1):
+            self.window = pygame.display.get_surface()
+            self._update_scale()
+        elif e.type == getattr(pygame, "WINDOWMINIMIZED", -1):
+            # 안전장치: 전체화면으로 바꾼 직후(1.5초 안)에 최소화되면 바로 되살린다
+            if self.is_fullscreen() and pygame.time.get_ticks() - getattr(self, "mode_switch_t", -10 ** 9) < 1500:
+                self.restore_window()
+        elif e.type == getattr(pygame, "WINDOWRESTORED", -1):
+            self.window = pygame.display.get_surface() or self.window
+            self._update_scale()
+        return False
+
+    def restore_window(self):
+        """최소화된 게임 창을 되살리고 앞으로 가져온다(SDL 창 함수, 없으면 아무것도 하지 않음)."""
+        try:
+            from pygame._sdl2.video import Window
+            w = Window.from_display_module()
+            w.restore()
+            w.focus()
+        except Exception:
+            return False
+        return True
 
     def is_fullscreen(self) -> bool:
         return bool(self.window.get_flags() & pygame.FULLSCREEN)
@@ -300,20 +345,8 @@ class App:
             for e in list(events):
                 if e.type == pygame.QUIT:
                     self.running = False
-                elif (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_KP_ENTER)
-                      and e.mod & pygame.KMOD_ALT):
-                    events.remove(e)            # Alt+Enter: 전체화면 전환(턴 종료로 넘어가지 않게)
-                    self.set_fullscreen(not self.is_fullscreen())
-                elif e.type == pygame.VIDEORESIZE and self.is_fullscreen():
-                    self._update_scale()
-                elif e.type == pygame.VIDEORESIZE:
-                    w, h = max(800, e.w), max(500, e.h)
-                    if (w, h) != self.window.get_size():
-                        self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
-                    self._update_scale()
-                elif e.type == getattr(pygame, "WINDOWSIZECHANGED", -1):
-                    self.window = pygame.display.get_surface()
-                    self._update_scale()
+                elif self.system_event(e):
+                    events.remove(e)
             self.gui.begin(events)
             self.frame()
             pygame.display.flip()

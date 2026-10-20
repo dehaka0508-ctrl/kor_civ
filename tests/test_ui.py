@@ -1693,3 +1693,46 @@ def test_metro_button_disabled_when_impossible(app):
     finally:
         spy.close()
     assert app.metro_pick is None
+
+
+def test_fullscreen_toggle_does_not_minimize(app, monkeypatch):
+    """v1.3.3: 창 모드에서 Alt+Enter 로 전체화면 전환 시 최소화되던 문제.
+    ① 포커스를 잠깐 잃어도 SDL 이 전체화면 창을 최소화하지 않게 하고, ② 전환 직후 잠깐은 지도를 다시 그리지 않고
+    지난 그림을 늘려 보여 주며(창이 먼저 응답), ③ 그래도 전환 직후 최소화되면 바로 되살린다."""
+    import os
+    assert os.environ.get("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS") == "0"
+    _main_game(app, seed=3, n_enemies=1, player_start="S002")
+    frame(app)
+    # Alt+Enter 는 전체화면 전환으로만 쓰이고 턴 종료 등으로 넘어가지 않는다
+    calls = []
+    monkeypatch.setattr(app, "set_fullscreen", lambda on, save=True: calls.append(on))
+    monkeypatch.setattr(app, "is_fullscreen", lambda: False)
+    ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=pygame.KMOD_LALT, unicode="\r", scancode=0)
+    assert app.system_event(ev) and calls == [True]
+    assert not app.system_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r",
+                                                   scancode=0))
+    # 지도 다시 그리기 미루기: 미루는 동안은 지난 그림, 시간이 지나면 다시 그린다
+    mv = app.map
+    renders = []
+    real = mv._render
+    monkeypatch.setattr(mv, "_render", lambda *a, **k: (renders.append(1), real(*a, **k)))
+    now = [pygame.time.get_ticks()]
+    monkeypatch.setattr(pygame.time, "get_ticks", lambda: now[0])
+    mv.defer(400)
+    mv.invalidate()
+    frame(app)
+    assert renders == []
+    now[0] += 500
+    frame(app)
+    assert renders == [1]
+    # 전환 직후(1.5초 안) 최소화되면 되살리고, 한참 뒤 사용자가 최소화한 것은 그대로 둔다
+    restored = []
+    monkeypatch.setattr(app, "restore_window", lambda: restored.append(1))
+    monkeypatch.setattr(app, "is_fullscreen", lambda: True)
+    app.mode_switch_t = now[0]
+    now[0] += 300
+    app.system_event(pygame.event.Event(pygame.WINDOWMINIMIZED))
+    assert restored == [1]
+    now[0] += 5000
+    app.system_event(pygame.event.Event(pygame.WINDOWMINIMIZED))
+    assert restored == [1]
