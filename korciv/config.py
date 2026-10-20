@@ -105,6 +105,8 @@ DEBT_HAPPY = -1.0          # 보완안: 자금이 음수인 턴에는 전 지역
 BUILD_COST_MULT = 0.5
 # 생산 건물: 단계 L 비용 = base * L^1.5 * BUILD_COST_MULT, 소요 2L턴
 PROD_BUILDINGS = {
+    "admin":     {"name": "행정 건물", "base": 800, "max": 5},
+    "edu":       {"name": "연구 건물", "base": 1000, "max": 5},
     "farm":      {"name": "농장", "base": 400, "max": 5},
     "fishery":   {"name": "어장", "base": 400, "max": 5},
     "factory":   {"name": "공장", "base": 1500, "max": 5},
@@ -115,9 +117,11 @@ PROD_BUILDINGS = {
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
 PROD_TURNS_PER_LEVEL = 2
-CHAIN_BUILDINGS = ("housing", "farm", "fishery", "factory", "bank", "extract", "power", "specialty")   # [최대] 이어서 건설
+CHAIN_BUILDINGS = ("admin", "edu", "housing", "farm", "fishery", "factory", "bank", "extract", "power", "specialty")
 # 생산 건물 단계별 이름(행동 탭 '○○ 건설', 완공 알림, 지역 정보)
 PROD_LEVEL_NAMES = {
+    "admin": ("주민센터", "구청", "시청", "도청", "정부청사"),
+    "edu": ("초등교육기관", "중등교육기관", "단과대학", "종합대학", "국립연구원"),
     "housing": ("저밀도 주택가", "밀집 주택가", "저층 아파트 단지", "고층 아파트 단지", "초고층 아파트 단지", "초고층 주상복합 타운"),
     "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장", "스마트팜 단지"),
     "fishery": ("낚시터", "나루터", "소형 포구", "어항", "대형 어항", "대규모 양식장"),
@@ -130,7 +134,7 @@ METRO_MAX_REGIONS = 25       # 구성 지역 수 상한(서울 25개 구)
 METRO_MIN_POP = 100          # 묶는 지역들의 인구 합(만 명)
 METRO_DEF_PER_REGION = 0.02  # 지역 n곳을 묶으면 방어력 ×(1 − 0.02(n − 1))
 METRO_SPEC_HAPPY = 0.5       # 광역시에 공급한 특산물 1종의 행복도 효과(지역 하나일 때의 절반, 대신 광역시 전체에)
-METRO_L6_KEYS = ("housing", "farm", "fishery", "factory", "bank")   # 광역시에서만 6단계
+METRO_L6_KEYS = ("housing", "farm", "fishery", "factory", "bank", "power", "extract")
 METRO_ANNEX_MAX_REDUCTION = 0.5   # 광역시 편입: 구성 지역 수만큼의 공동 편입으로 치되 기간 감소는 최대 50%
 PROD_L6_MULT = 1.2           # 농장·어장·시장 6단계: 5단계 산출 × 1.2
 FACTORY_L6_MULT = 1.1        # 첨단산업단지: 연료 1개당 5단계 산출 × 1.1(연료는 6개까지)
@@ -159,6 +163,13 @@ POP_AREA_PER_10K = (2.0, 1.2, 0.6, 0.25, 0.10, 0.04, 0.02)
 BUILDING_AREA_PER_LEVEL = {"farm": 10.0, "fishery": 3.0, "bank": 4.0,
                            "factory": 2.0, "power": 1.0, "extract": 1.0,
                            "specialty": 1.0, "hydro": 1.0, "nuclear": 1.0, "housing": 0.0}
+BUILDING_AREA_LEVELS = {"admin": (0, 0, 0, 1, 1, 3), "edu": (0, 0, 0, 1, 2, 4)}
+ADMIN_OUTPUT = (0, 5, 15, 30, 50, 100)
+EDU_SCIENCE = (0, 1, 2, 4, 6, 10)
+INITIAL_EDU = ("S006", "S033", "S044", "S061", "S067", "S109", "S126",
+               "S152", "S213", "S228", "N001", "N076", "N150")
+LAWLESS_HAPPY = -5
+LAWLESS_TURNS = 4
 AREA_SHORTAGE = "부지 면적 부족 (주거 지구를 증축하거나 건물을 정리하세요)"
 DENSITY_BONUS_SCALE_MAX = 10.0
 GAME_MODES = {"standard": "기본모드", "frontier": "개척시대", "chaos": "혼돈의 강산"}
@@ -236,14 +247,14 @@ UNIT_STAT_SCALE = 10
 UNITS = {
     #        이름      턴당비용 턴 석유 유지 공격 방어 폭격 체력 종류      수송칸
     "inf":  dict(name="보병", cost=250, turns=1, oil=0, upkeep=5, atk=10, df=10, bomb=0, hp=10, kind="land", cargo=1, weight="light"),
-    "art":  dict(name="포병", cost=500, turns=2, oil=0, upkeep=20, atk=15, df=15, bomb=15, hp=10, kind="land", cargo=2, weight="light"),
-    "tank": dict(name="전차", cost=750, turns=3, oil=1, upkeep=45, atk=20, df=20, bomb=0, hp=50, kind="land", cargo=4, weight="heavy"),
+    "art":  dict(name="박격포", cost=400, turns=2, oil=0, upkeep=20, atk=12, df=12, bomb=12, hp=10, kind="land", cargo=2, weight="light"),
+    "tank": dict(name="장갑차", cost=600, turns=3, oil=1, upkeep=45, atk=16, df=16, bomb=0, hp=35, kind="land", cargo=4, weight="heavy"),
     "lst":  dict(name="상륙함", cost=500, turns=2, oil=1, upkeep=20, atk=0, df=0, bomb=0, hp=20, kind="naval", capacity=8, weight="heavy"),
     "dd":   dict(name="구축함", cost=1000, turns=3, oil=1, upkeep=60, atk=20, df=20, bomb=20, hp=50, kind="naval", weight="heavy"),
     "cv":   dict(name="항공모함", cost=1500, turns=4, oil=2, upkeep=120, atk=0, df=0, bomb=0, hp=100, kind="naval", air_capacity=6, weight="heavy"),
     # 전투기: 공격 불가. 돌격 방어와 폭격기 요격에만 쓰인다(방어 30)
-    "ftr":  dict(name="전투기", cost=750, turns=3, oil=1, upkeep=45, atk=0, df=30, bomb=0, hp=30, kind="air", weight="heavy", intercept=30),
-    "bmb":  dict(name="폭격기", cost=1000, turns=3, oil=1, upkeep=60, atk=0, df=0, bomb=40, hp=20, kind="air", weight="heavy"),
+    "ftr":  dict(name="공격기", cost=650, turns=3, oil=1, upkeep=45, atk=0, df=22, bomb=0, hp=25, kind="air", weight="heavy", intercept=22),
+    "bmb":  dict(name="폭격기", cost=900, turns=3, oil=1, upkeep=60, atk=0, df=0, bomb=35, hp=20, kind="air", weight="heavy"),
     # 과학승리 유닛: 전투력 없음, 자국(연합) 영토 안에서만 이동. 생산은 과학 단계(행동 탭 '특수')로만
     "booster":    dict(name="로켓 추진체", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),
     "module":     dict(name="탑승 모듈", cost=0, turns=15, oil=0, upkeep=0, atk=0, df=1, bomb=0, hp=5, kind="land", cargo=4, weight="heavy", science=True),

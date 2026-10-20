@@ -145,8 +145,15 @@ def enemies(g, a):
     return [b for b in g.alive_ids() if b != a and at_war(g, a, b)]
 
 
-def threshold(g, a, b, base):
+def threshold(g, a, b, base, policy=True):
     t = base + g.mods(a).add("treaty_threshold") + g.mods(b).add("treaty_threshold")
+    # 연립 내각은 우호 선언·불가침·동맹에만 적용한다. 지도자 외교 효과는 기존대로 유지한다.
+    if not policy or base == C.COALITION_MIN:
+        from .leaders import gov_buff_scale
+        for fid in (a, b):
+            f = g.factions[fid]
+            if f.gov == "parliamentary" and getattr(f, "policy_level", 0) >= 3:
+                t += 10 * gov_buff_scale(f.leader)
     if g.hegemon is not None and g.hegemon not in (a, b):
         t -= C.HEGEMON_TREATY_DISCOUNT   # 공동 견제 대상이 있으면 뭉치기 쉽다
     return t
@@ -532,9 +539,10 @@ def friendship_check(g, a, b):
         return False, f"휴전 불가침 중({peace_left(g, a, b)}턴)"
     if g.factions[b].is_ai:
         op = opinion(g, b, a)
-        if op < C.DECL_FRIEND_MIN:
-            return False, f"상대 우호도 {op:.0f} / 필요 {C.DECL_FRIEND_MIN}"
-        return True, f"상대 우호도 {op:.0f} ≥ {C.DECL_FRIEND_MIN}"
+        need = C.DECL_FRIEND_MIN + g.mods(a).add("friend_threshold") + g.mods(b).add("friend_threshold")
+        if op < need:
+            return False, f"상대 우호도 {op:.0f} / 필요 {need:.0f}"
+        return True, f"상대 우호도 {op:.0f} ≥ {need:.0f}"
     return True, "상대가 결정"
 
 
@@ -689,7 +697,7 @@ def treaty_check(g, ai, proposer, kind):
             if g.mods(x).value("no_alliance"):          # 장보고 '골품의 벽'
                 return False, f"{g.fx_source(x, 'no_alliance')}: 동맹·연합을 맺을 수 없습니다."
     if kind in ("nonaggr", "passage"):
-        need = threshold(g, ai, proposer, C.TREATY_MIN)
+        need = threshold(g, ai, proposer, C.TREATY_MIN, policy=kind == "nonaggr")
         if kind == "nonaggr" and g.factions[ai].is_ai:
             # 훨씬 강해 보이는 상대와는 더 낮은 우호도에서도 불가침을 받아들인다(안보)
             from . import ai as AI
@@ -718,8 +726,10 @@ def treaty_check(g, ai, proposer, kind):
             return False, "이미 같은 연합입니다."
         if p not in g.dip.alliance:
             return False, "한 단계를 건너뛴 제안입니다(먼저 동맹)."
-        if g.turn - g.dip.alliance[p] < C.COALITION_ALLIANCE_TURNS:
-            return False, f"동맹 {C.COALITION_ALLIANCE_TURNS}턴 이상이 필요합니다."
+        required = min(g.mods(x).value("coalition_alliance_turns", C.COALITION_ALLIANCE_TURNS)
+                       for x in (ai, proposer))
+        if g.turn - g.dip.alliance[p] < required:
+            return False, f"동맹 {required:.0f}턴 이상이 필요합니다."
         need = threshold(g, ai, proposer, C.COALITION_MIN)
         if op < need:
             return False, f"우호도 {op:.0f} / 필요 {need:.0f}"
@@ -1064,8 +1074,9 @@ def trade_done_opinion(g, a, b, offer=None, n=None):
     if n is None:
         n = res_count(offer["give"]) + res_count(offer["take"])
     if n > 0:
-        add_opinion(g, a, b, C.TRADE_OP_PER_UNIT * n)
-        add_opinion(g, b, a, C.TRADE_OP_PER_UNIT * n)
+        bonus = max(g.mods(a).mult("trade_opinion"), g.mods(b).mult("trade_opinion"))
+        add_opinion(g, a, b, C.TRADE_OP_PER_UNIT * n * bonus)
+        add_opinion(g, b, a, C.TRADE_OP_PER_UNIT * n * bonus)
     else:
         add_opinion(g, a, b, C.OP_TRADE_DONE)        # a(수락한 쪽)가 b(제의한 쪽)를 보는 우호도
 
@@ -1125,6 +1136,8 @@ def gift_opinion(g, ai, value, giver=None) -> float:
     """선물 가치 → 받는 쪽 우호도 상승: 세수 1턴분마다 gift_rate, 소수 둘째 자리 아래 절사(가치가 있으면 최소 +0.01), 1회 최대 +25.
     주는 쪽이 국제금융센터를 가졌으면 +10%."""
     raw = gift_rate(g, ai) * value / gift_income(g, ai)
+    if giver is not None:
+        raw *= g.mods(giver).mult("gift_opinion")
     if giver is not None and g.econ_buildings(giver, "ifc"):
         raw *= 1 + C.IFC_GIFT_BONUS
     if value > 0:
@@ -1148,6 +1161,8 @@ def gift_needed(g, receiver, delta, giver=None) -> float:
     """받는 쪽 우호도를 delta 만큼 올리는 데 드는 돈(1회 최대 OP_GIFT_MAX 기준)."""
     delta = min(delta, C.OP_GIFT_MAX)
     rate = gift_rate(g, receiver)
+    if giver is not None:
+        rate *= g.mods(giver).mult("gift_opinion")
     if giver is not None and g.econ_buildings(giver, "ifc"):
         rate *= 1 + C.IFC_GIFT_BONUS
     return delta / max(1e-6, rate) * gift_income(g, receiver) + 1.0
@@ -1234,7 +1249,12 @@ def update_turn(g):
                 if t > 0 and stage(g, a, b) < 2 and not declared_friends(g, a, b):
                     delta -= C.VICTORY_THREAT_OP * t
             base = op_baseline(g, a, b)
-            v = base + (d.op.get((a, b), base) + delta - base) * C.OPINION_DECAY
+            current = d.op.get((a, b), base) + delta
+            decay = C.OPINION_DECAY
+            if current > 0 and current > base:
+                relief = min(g.mods(a).mult("positive_op_decay"), g.mods(b).mult("positive_op_decay"))
+                decay = 1 - (1 - decay) * relief
+            v = base + (current - base) * decay
             d.op[(a, b)] = max(-100.0, min(100.0, v))
     # 우호관계 자동
     for i, a in enumerate(alive):

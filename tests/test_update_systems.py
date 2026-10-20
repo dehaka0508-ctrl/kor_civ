@@ -50,7 +50,8 @@ def test_blank_starts(mode):
     g = game(mode)
     for rid, r in g.regions.items():
         assert r.pop == 1.0
-        assert all(not v for k, v in r.b.items() if k != 'port')
+        assert all(not v for k, v in r.b.items() if k not in ('port', 'admin'))
+        assert r.b['admin'] == (1 if r.id in {f.capital for f in g.factions} else 0)
         assert not r.lines
         if r.owner == NEUTRAL:
             assert sum(a.units.get('inf', 0) for a in g.armies_at(rid)) == 1
@@ -187,6 +188,8 @@ def test_forecast_activation_season_weather_production_and_terrain():
 def test_fire_scar_recovers_exactly_and_cycle_immunity(monkeypatch):
     g = game()
     rid = 'S002'
+    g.regions[rid].b = dict.fromkeys(g.regions[rid].b, 0)
+    g.regions[rid].lines = {}
     g.regions[rid].b['farm'] = 2
     monkeypatch.setattr(C, 'FIRE_OUT_CHANCE', 1)
     monkeypatch.setattr(C, 'FIRE_SPREAD_CHANCE', 0)

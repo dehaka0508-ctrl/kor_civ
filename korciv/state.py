@@ -8,7 +8,7 @@ from . import config as C
 
 NEUTRAL = -1
 
-ALL_BUILDINGS = ["farm", "fishery", "factory", "bank", "power", "specialty", "extract", "housing", "hydro", "nuclear",
+ALL_BUILDINGS = ["admin", "edu", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "housing", "hydro", "nuclear",
                  "shelter", "aa", "academy", "airport", "port"]
 BUILDING_NAMES = {**{k: v[0] for k, v in C.SITE_POWER.items()}, **{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.DEF_BUILDINGS.items()},
@@ -34,6 +34,7 @@ class Project:
     repeat: int = 0                # 군 유닛 연속 생산: 이번 것 뒤에 더 만들 개수
     started: bool = True          # 대기 중인 유닛의 연료·행복도 비용은 최초 실행 때만
     blocked_reason: str = ""
+    happy_cost: Optional[float] = None
     # 국경 방어선 묶음 공사(v1.3.0): 대상 지역들이 이 Project 하나를 함께 가리킨다.
     # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
     group: Optional[dict] = None
@@ -94,6 +95,8 @@ class Region:
     war_turn: Optional[int] = None        # 그때의 턴(v1.3.0): LIBERATION_TURNS 안에서만 돌려준다
     lost_def: Optional[dict] = None       # 점령으로 꺼진 방어 건물 {"fid", "lines", "shelter", "aa"}(v1.3.0): 저항·회복 중
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
+    lost_gov_complex: Optional[dict] = None
+    occupied_admin: Optional[dict] = None
 
     @property
     def occ(self) -> Optional[dict]:
@@ -121,6 +124,11 @@ class Army:
     order: Optional[dict] = None
     goto: Optional[str] = None      # 여러 턴 자동 이동의 최종 목적지
     last_combat: int = -999         # 마지막으로 전투(공격·방어·폭격·해전)에 휘말린 턴(v1.3.0 회복)
+    techs: set = field(default_factory=set)
+
+    def spec(self, key):
+        from .progression import unit_spec_for
+        return unit_spec_for(self.techs, key)
 
     def count(self, kinds=None) -> int:
         if kinds is None:
@@ -131,7 +139,7 @@ class Army:
         return sum(self.units.values()) <= 0
 
     def hp_max(self, k) -> int:
-        return C.UNITS[k]["hp"] * self.units.get(k, 0)
+        return self.spec(k)["hp"] * self.units.get(k, 0)
 
     def hp_left(self, k) -> float:
         """같은 유닛끼리 합산한 남은 체력."""
@@ -153,16 +161,16 @@ class Army:
                    if C.UNITS[k]["kind"] == "land")
 
     def cargo_cap(self) -> int:
-        return sum(C.UNITS[k].get("capacity", 0) * n for k, n in self.units.items())
+        return sum(self.spec(k).get("capacity", 0) * n for k, n in self.units.items())
 
     def air_used(self) -> int:
         return sum(n for k, n in self.units.items() if C.UNITS[k]["kind"] == "air")
 
     def air_cap(self) -> int:
-        return sum(C.UNITS[k].get("air_capacity", 0) * n for k, n in self.units.items())
+        return sum(self.spec(k).get("air_capacity", 0) * n for k, n in self.units.items())
 
     def label(self) -> str:
-        return " ".join(f"{C.UNITS[k]['name']}{n}" for k in C.UNIT_ORDER
+        return " ".join(f"{self.spec(k)['name']}{n}" for k in C.UNIT_ORDER
                         for n in [self.units.get(k, 0)] if n > 0) or "(빈 부대)"
 
 
@@ -217,6 +225,13 @@ class Faction:
     prio_mode: Optional[str] = None  # 지출 우선순위 자동 정렬 규칙(v1.3.0): 해제할 때까지 계속 그 규칙대로
     rally: Optional[str] = None      # 일괄 생산 집결지(v1.3.0): 지역 집결지가 없으면 여기로(편입으로 받은 보병 포함)
     annex_disband: set = field(default_factory=set)   # 편입이 끝나면 넘겨받는 보병을 바로 해산할 대상 지역(v1.3.0)
+    admin: float = 0.0
+    sci_points: float = 0.0
+    policy_level: int = 0
+    techs: set = field(default_factory=set)
+    admin_deficit_turns: int = 0
+    lawless: bool = False
+    lost_capital: Optional[dict] = None
 
 
 @dataclass

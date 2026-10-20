@@ -28,7 +28,12 @@ def eta_science(g, fid) -> float:
     if not rem:
         return 4.0                                        # 유닛을 발사대로 모으기만 하면 된다
     cost = sum(g.science_step_cost(fid, st) for st in rem) - _paid(g, fid, "science") - max(0.0, f.money)
-    return min(ETA_NONE, max(g.science_turns(fid) * len(rem) + 4, max(0.0, cost) / income_est(g, fid)))
+    science_cost = sum(round(200 * 1.15 ** C.SCIENCE[st]["tier"]) * g.science_turns(fid) for st in rem)
+    if "aerospace" not in f.techs:
+        science_cost += 3500
+    science_wait = max(0.0, science_cost - f.sci_points) / max(1.0, g.science_production(fid))
+    return min(ETA_NONE, max(g.science_turns(fid) * len(rem) + 4,
+                            max(0.0, cost) / income_est(g, fid), science_wait))
 
 
 def _paid(g, fid, kind) -> float:

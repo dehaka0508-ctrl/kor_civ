@@ -9,6 +9,7 @@ import math
 from . import ai_endgame as EG
 from . import ai_phase as PH
 from . import ai_strategy as ST
+from . import ai_progression as AP
 from . import config as C
 from . import diplomacy as D
 from . import negotiation as NG
@@ -217,6 +218,8 @@ def plan_turn(g, fid):
     _diplomacy(g, f)
     _trade_offers(g, f)
     threat = threat_map(g, fid)
+    _disaster_response(g, f)
+    AP.progression_orders(g, f, threat, crisis=ST.posture_of(f) == "crisis" or _war_crisis(g, fid, threat))
     _merge_idle(g, fid)
     _austerity(g, f, threat)
     _army_orders(g, f, threat)
@@ -224,8 +227,8 @@ def plan_turn(g, fid):
     _patrol_orders(g, f)
     _naval_orders(g, f, threat)
     _air_orders(g, f, threat)
-    _disaster_response(g, f)
     _slots(g, f, threat)
+    _great_people_orders(g, f, threat)
     # 슬롯이 비는 지역: 인구가 상한에 한참 못 미치고 민심·식량에 여유가 있으면 인구 성장 집중,
     # 아니면 생산 집중(둘 다 건설·생산 중엔 효과 없음)
     food_ok = f.last.get("food_prod", 0) >= f.last.get("food_cons", 0) * 1.05 or f.res.get("food", 0) > \
@@ -240,16 +243,16 @@ def plan_turn(g, fid):
 def visible_hostile_power(g, fid, loc):
     if not g.is_visible(fid, loc):
         return 0.0
-    return sum(C.UNITS[k]["atk"] * n for a in g.hostile_units_at(fid, loc)
+    return sum(a.spec(k)["atk"] * n for a in g.hostile_units_at(fid, loc)
                for k, n in a.units.items() if a.owner != NEUTRAL)
 
 
 def region_defense(g, fid, rid):
     rr = g.regions[rid]
-    d = sum(C.UNITS[k]["df"] * n for a in g.armies_at(rid, fid) for k, n in a.units.items()
+    d = sum(a.spec(k)["df"] * n for a in g.armies_at(rid, fid) for k, n in a.units.items()
             if k not in C.NO_GROUND_COMBAT)                 # 포병·공군은 지상 방어력 0
     best_line = max(rr.lines.values(), default=0)
-    return d * (1 + C.LINE_BONUS * best_line)
+    return d * (1 + C.LINE_BONUS * best_line) * g.great_person_bonus(rid, "defense_mult", fid)
 
 
 def threat_map(g, fid):
@@ -266,7 +269,7 @@ def threat_map(g, fid):
             if D.at_war(g, fid, o):
                 enemy += visible_hostile_power(g, fid, n) + 10
             elif not D.has_nonaggr(g, fid, o) and D.opinion(g, fid, o) < -20:
-                enemy += 0.3 * sum(C.UNITS[k]["atk"] * c for a in g.armies_at(n, o)
+                enemy += 0.3 * sum(a.spec(k)["atk"] * c for a in g.armies_at(n, o)
                                    for k, c in a.units.items()) if g.is_visible(fid, n) else 0
         if enemy > 0:
             out[r.id] = enemy / (region_defense(g, fid, r.id) + 10)
@@ -351,12 +354,21 @@ def _trade_offers(g, f):
     ③ 특산물 판매: 행복도가 높거나 돈이 급하면, 남는 특산물을 행복도가 낮은 나라에.
     ④ 특산물 구매: 행복도가 낮거나 반란 문턱이 가까우면, 남는 특산물이 있는 이웃에게."""
     fid = f.id
-    if (g.turn + fid) % C.AI_TRADE_EVERY:
+    cons = g.total_pop(fid) * C.FOOD_PER_POP
+    prod = sum(g.food_prod(fid, r) for r in g.regions_of(fid) if not r.occ and not g.resisting(r))
+    emergency = prod < cons and f.res.get("food", 0) <= cons * 3
+    if emergency:
+        g.set_food_mode(fid, "store")
+        f.ration_bonus = 0.0
+    if not emergency and (g.turn + fid) % C.AI_TRADE_EVERY:
         return
     partners = trade_partners(g, fid)
-    if g.expected_food_balance(f) < g.total_pop(fid) * 2:
-        deficit = max(0, g.total_pop(fid) - sum(g.food_prod(fid, r) for r in g.regions_of(fid)))
+    if emergency:
+        deficit = max(0, cons - prod)
+        contracted = {(c["from"], c["to"], c["res"]) for c in D.contracts(g)}
         for other in sorted(partners, key=lambda x: -g.factions[x].res.get('food', 0)):
+            if (other, fid, "food") in contracted:
+                continue
             n = min(int(math.ceil(deficit)), NG.surplus(g, other, 'food'))
             if n > 0 and _trade_with(g, fid, other, 'food', n, sell=False):
                 break
@@ -563,10 +575,10 @@ def front_analysis(g, fid, o, by_loc=None):
         sectors.append((r.id, mine, theirs))
     targets = []
     for n in enemy_border:
-        atk = sum(C.UNITS[k]["atk"] * c for m in w.land_adj[n] if g.regions[m].owner == fid
+        atk = sum(a.spec(k)["atk"] * c for m in w.land_adj[n] if g.regions[m].owner == fid
                   for a in by_loc.get(m, ()) if a.owner == fid for k, c in a.units.items())
         if n in vis:
-            dfn = sum(C.UNITS[k]["df"] * c for a in by_loc.get(n, ()) if a.owner == o for k, c in a.units.items())
+            dfn = sum(a.spec(k)["df"] * c for a in by_loc.get(n, ()) if a.owner == o for k, c in a.units.items())
         else:
             dfn = C.AI_HIDDEN_GARRISON * 1.2
         dfn *= 1 + C.LINE_BONUS * max(g.regions[n].lines.values(), default=0)
@@ -1411,7 +1423,7 @@ def _army_orders(g, f, threat):
         if contest and a.loc != f.capital and a.loc not in guards and rr.owner == fid and not rr.occs:
             need_at = next((rid for rid in w.land_adj[a.loc] if contest.get(rid, 0) > 0), None)
             if need_at is not None:
-                force = sum(C.UNITS[k]["hp"] * n for k, n in a.units.items())
+                force = sum(a.spec(k)["hp"] * n for k, n in a.units.items())
                 ok, _ = g.order_army(a.id, need_at)
                 if ok:
                     contest[need_at] -= force
@@ -1452,7 +1464,7 @@ def _army_orders(g, f, threat):
             if keep is None or keep >= a.count():
                 continue
             if keep > 0:                          # 가장 가벼운 유닛 하나만 남기고 나머지는 다음 일을 하러 간다
-                k = min(a.units, key=lambda u: (C.UNITS[u]["hp"], C.UNITS[u]["cost"], u))
+                k = min(a.units, key=lambda u: (a.spec(u)["hp"], a.spec(u)["cost"], u))
                 g.split_army(a.id, {k: 1})
         # 저항 중인 점령지: 옛 주인이 맞닿아 있고 아직 전쟁 중이면 작은 부대는 남아 지킨다(비우면 바로 탈환된다)
         if rr.owner == fid and g.resisting(rr) and a.count() <= 3:
@@ -1985,13 +1997,14 @@ def _naval_orders(g, f, threat):
     """함대: 상륙함은 항구에서 병력을 태워 적 해안(항구 우선)에 상륙, 구축함은 적 항구를 먼저 포격, 빈 상륙함은 귀항."""
     fid = f.id
     w = g.world
+    _evacuate_typhoon(g, f)
     if not D.enemies(g, fid):
         return
     cap_min = capital_min_garrison(g, f, threat)
     h_tgt, _urg = EG.harass(g, f) if f.is_ai else (None, 0.0)
     patrol = patrol_seas(g, f) if f.is_ai else set()
     for fl in [a for a in list(g.armies.values()) if a.owner == fid and a.domain() == "naval"]:
-        if fl.id not in g.armies or fl.order:
+        if fl.id not in g.armies or fl.order or getattr(fl, "disaster_shelter_turn", -1) == g.turn:
             continue
         at_port = not w.is_sea(fl.loc)
         if fl.loc in patrol and fl.units.get("dd") and not fl.units.get("lst") and not fl.units.get("cv"):
@@ -2407,6 +2420,7 @@ def _slots(g, f, threat, military=True):
     regs = g.regions_of(fid)
     if not regs:
         return
+    _repair_floods(g, f)
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
     committed = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
@@ -2441,6 +2455,7 @@ def _slots(g, f, threat, military=True):
     at_war = bool(D.enemies(g, fid))
     idle = [r for r in regs if not r.project and not r.occ and not g.resisting(r) and (f.is_ai or not (r.focus or getattr(r, "pop_focus", False)))]
     fuel = fuel_balance(g, fid)
+    edu_centers = AP.education_centers(g, fid)
     unit_val = 1300 * tax                     # 공장 연료 1개가 턴당 버는 세수(대략)
     cands = []
     bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
@@ -2466,10 +2481,8 @@ def _slots(g, f, threat, military=True):
     for r in idle:
         info = g.info(r.id)
         opts = g.options(fid, r.id)
-        housing = next((o for o in opts if o['kind'] == 'build' and o['key'] == 'housing' and o['ok']), None)
-        if housing and (g.area_usage(r.id)[0] >= info.area_km2 * .85 or
-                        any(o['why'] == C.AREA_SHORTAGE for o in opts)):
-            cands.append((20.0, r.id, 'build', 'housing', None, housing['per_turn']))
+        cands.extend(AP.infrastructure_candidates(g, f, r, opts, threat, edu_centers))
+        build_opts = {o["key"]: o for o in opts if o["kind"] == "build" and o["ok"]}
         for o in opts:
             if o['kind'] == 'build' and o['key'] in C.SITE_POWER and o['ok']:
                 cands.append((1.2 + max(0, -fuel['spare']), r.id, 'build', o['key'], None, o['per_turn']))
@@ -2501,11 +2514,10 @@ def _slots(g, f, threat, military=True):
                 g.regions[n].owner == NEUTRAL for n in g.world.land_adj[r.id]) else C.AI_P1_INTERIOR_PROD
         # 생산 건물
         for key in ("farm", "fishery", "factory", "bank"):
-            lv = r.b[key] + 1
-            if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
+            o = build_opts.get(key)
+            if o is None:
                 continue
-            cost = R.prod_building_cost(key, lv)
-            turns = g.build_time(fid, key, R.prod_building_turns(lv))
+            lv, cost, turns = o["level"], o["cost"], o["turns"]
             dy = _delta_output(g, r.id, key)
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             gain = dy * tax * horizon * wts.get("economy", 1)
@@ -2518,16 +2530,19 @@ def _slots(g, f, threat, military=True):
                 pu = C.FACTORY_UNIT_OUTPUT
                 up = (pu[lv - 1] - pu[lv - 2]) * getattr(r, "fuel_used", 0) if lv >= 2 else 0
                 gain = up * tax * horizon * wts.get("economy", 1)
+            if key == "bank" and fuel["spare"] < 0:
+                gain *= 1.5
+            if key == "factory" and AP.housing_weight(g, r.id) > 1:
+                gain *= 1.5                 # 제한된 면적에서 공장과 주거지구를 함께 우선
             gain *= bias(key) * prod_k * place_k
             if eco and key in ("factory", "bank"):
                 gain *= C.AI_ECON_PROD_MULT
                 if top_gdp:
                     gain *= C.AI_ECON_TOP_PROD        # GDP 1위 경제: 턴당 수입부터 빠르게 늘린다
             cands.append((gain / cost, r.id, "build", key, None, cost / turns))
-        if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
-            lv = r.b["extract"] + 1
-            cost = R.prod_building_cost("extract", lv)
-            turns = g.build_time(fid, "extract", R.prod_building_turns(lv))
+        if (info.is_oil or info.is_coal) and "extract" in build_opts:
+            o = build_opts["extract"]
+            lv, cost, turns = o["level"], o["cost"], o["turns"]
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
             # 연료가 모자라면 1개 더 캐는 만큼 공장이 돈다(발전소가 남으면 석탄 1 → 전기 2), 남으면 판매가 정도
             per = (unit_val * (2 if fuel["plant_room"] > 0 else 1) if fuel["spare"] < 0
@@ -2542,12 +2557,11 @@ def _slots(g, f, threat, military=True):
             dy = C.BANK_OUTPUT * R.g(pb) * g.mods(fid).mult("output_bank") * g.mods(fid).mult("output_prod")
             gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1) * prod_k * place_k
             cands.append((gain / cost, r.id, "build", "port", None, cost / turns))
-        if r.b["power"] < 5 and fuel["spare"] < 0 and (fuel["raw_left"] > 0 or r.b["power"] > 0):
+        if "power" in build_opts and fuel["spare"] < 0 and (fuel["raw_left"] > 0 or r.b["power"] > 0):
             # 발전소: 공장 연료가 모자랄 때. 새 칸은 발전소에 못 넣은 석탄·석유가 남을 때만 쓸모(석탄 1 → 전기 2~3),
             # 단계를 올리면 이미 넣는 연료의 전기도 늘어난다(2 → 2.2 → 2.4 → 2.6 → 3)
-            lv = r.b["power"] + 1
-            cost = R.prod_building_cost("power", lv, info.power_site)
-            turns = g.build_time(fid, "power", R.prod_building_turns(lv))
+            o = build_opts["power"]
+            lv, cost, turns = o["level"], o["cost"], o["turns"]
             up = (g.power_elec(fid, "coal", lv) - g.power_elec(fid, "coal", lv - 1)) * r.b["power"] if r.b["power"] else 0.0
             new = (g.power_elec(fid, "coal", lv) - 1) if fuel["raw_left"] > 0 else 0.0
             gain = unit_val * (new + up) * max(0, C.AI_UTILITY_HORIZON - turns)
@@ -2942,13 +2956,20 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             start(r, key, cost=cost)
 
 
-def _disaster_response(g, f):
+def _great_people_orders(g, f, threat=None):
+    AP.great_people_orders(g, f, threat if threat is not None else threat_map(g, f.id))
+
+
+def _repair_floods(g, f):
     # 침수 복구는 무료·한 턴: 기존 공사 진행도를 보류하고 맨 앞에서 처리한다.
     for r in g.regions_of(f.id):
         if r.flooded and not any(p.kind == 'repair' and p.site == r.id for p in g.local_projects(r.id)):
             ok, _ = g.start_project(f.id, r.id, 'repair', 'flood', site=r.id)
             if ok and len(g.local_projects(r.id)) > 1:
                 g.move_queued_project(f.id, r.id, len(g.local_projects(r.id)) - 1, 0)
+
+
+def _evacuate_typhoon(g, f):
     storms = [e for e in g.forecasts if e['kind'] == 'typhoon']
     if g.weather and g.weather['kind'] == 'typhoon':
         storms.append(g.weather)
@@ -2960,6 +2981,15 @@ def _disaster_response(g, f):
         reach = g.reachable(a)
         ports = [rid for rid, o in reach.items() if rid in g.regions and
                  g.regions[rid].owner == f.id and g.regions[rid].b['port'] and o['action'] == 'move']
-        if ports:
-            g.order_army(a.id, min(ports, key=lambda rid: len(reach[rid]['path'])))
-            a.disaster_shelter_turn = g.turn
+        safe_seas = [s for s, o in reach.items() if g.world.is_sea(s) and o["action"] == "move"
+                     and not any(g.typhoon_danger(s, e) for e in storms)]
+        destinations = ports or safe_seas
+        if destinations:
+            dest = min(destinations, key=lambda rid: (len(reach[rid]["path"]), rid))
+            if g.order_army(a.id, dest)[0]:
+                a.disaster_shelter_turn = g.turn
+
+
+def _disaster_response(g, f):
+    _repair_floods(g, f)
+    _evacuate_typhoon(g, f)

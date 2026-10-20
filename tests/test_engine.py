@@ -322,6 +322,8 @@ def test_specialty_auto_lowest_happiness_first_and_manual():
 
 def test_science_victory_chain():
     g = new_game(player_start="S002", n_enemies=1)
+    g.player.techs.add("aerospace")
+    g.player.sci_points = 1e8
     f = g.player
     sci = lambda rid: [o for o in g.options(0, rid) if o["kind"] == "science"]
     other = sorted(g.world.land_adj["S002"])[0]
@@ -384,6 +386,7 @@ def test_science_victory_chain():
     assert len([a for a in g.armies_at(pad, 0) if g.is_science_army(a)]) == 1      # 과학 유닛끼리만 한 부대
     g.end_turn()
     assert g.game_over and g.winner == ((0,), "science")
+
 
 
 def test_science_units_cannot_fight():
@@ -1036,10 +1039,10 @@ def test_simultaneous_occupation_goes_to_bigger_force():
     _neutral_ai(g, 1)
     g.new_army(0, tgt, {"inf": 4})                      # 최대 체력 40
     g.begin_occupation(0, tgt)
-    g.new_army(1, tgt, {"tank": 1})                     # 최대 체력 50 (유닛 수는 적어도 규모가 크다)
+    g.new_army(1, tgt, {"tank": 2})                     # 최대 체력 70 (유닛 수는 적어도 규모가 크다)
     g.begin_occupation(1, tgt)
     rr = g.regions[tgt]
-    assert g.occ_force(0, tgt) == 40 and g.occ_force(1, tgt) == 50
+    assert g.occ_force(0, tgt) == 40 and g.occ_force(1, tgt) == 70
     for fid in (0, 1):
         rr.occs[fid]["need"] = rr.occs[fid]["progress"] + 1
     g._phase_claims()
@@ -1741,9 +1744,9 @@ def test_dangun_one_buff_one_debuff():
 
 def test_unit_table_v14():
     s = C.UNIT_STAT_SCALE
-    spec = {"inf": (250, 1, 0, 1, 1), "art": (500, 2, 0, 1.5, 1), "tank": (750, 3, 1, 2, 5),
+    spec = {"inf": (250, 1, 0, 1, 1), "art": (400, 2, 0, 1.2, 1), "tank": (600, 3, 1, 1.6, 3.5),
             "lst": (500, 2, 1, 0, 2), "dd": (1000, 3, 1, 2, 5), "cv": (1500, 4, 2, 0, 10),
-            "ftr": (750, 3, 1, 3, 3), "bmb": (1000, 3, 1, 4, 2)}
+            "ftr": (650, 3, 1, 2.2, 2.5), "bmb": (900, 3, 1, 3.5, 2)}
     for k, (cost, turns, oil, atk, hp) in spec.items():
         u = C.UNITS[k]
         power = max(u["atk"], u["bomb"], u.get("intercept", 0))
@@ -1764,9 +1767,9 @@ def test_assault_damage_order_and_random_bombard():
     for x in g.armies_at(tgt):
         g.remove_army(x)
     d = g.new_army(1, tgt, {"tank": 2, "inf": 3, "art": 1})
-    lost = g.apply_damage([d], 60, order=C.ASSAULT_DAMAGE_ORDER)
+    lost = g.apply_damage([d], C.UNITS["tank"]["hp"] + 10, order=C.ASSAULT_DAMAGE_ORDER)
     assert lost == {"tank": 1} and d.units["inf"] == 3 and d.dmg["tank"] == pytest.approx(10)
-    lost = g.apply_damage([d], 60, order=C.ASSAULT_DAMAGE_ORDER)
+    lost = g.apply_damage([d], C.UNITS["tank"]["hp"] - 10 + 20, order=C.ASSAULT_DAMAGE_ORDER)
     assert lost == {"tank": 1, "inf": 2}
     # 폭격: 무작위 분배(총 피해는 보존)
     e = g.new_army(1, tgt, {"inf": 10, "tank": 2})
@@ -1789,13 +1792,13 @@ def test_bombard_ranges_and_interception():
     assert (ad, aa, ftr) == (30, 3, 0)                    # v1.3.0: 공항이 없는 곳의 전투기는 요격하지 않는다
     g.regions[two].b["airport"] = 1
     ad, aa, ftr = g.air_defense(0, two)
-    assert (ad, aa, ftr) == (60, 3, 1)
+    assert (ad, aa, ftr) == (30 + C.UNITS["ftr"]["intercept"], 3, 1)
     g.regions["S002"].b["airport"] = 1
     b = g.new_army(0, "S002", {"bmb": 5})
     assert g._can_bombard(b, two)
     g._bombard(b, two, g._bombard_units(b, two))
     lost_hp = 5 * C.UNITS["bmb"]["hp"] - b.hp_left("bmb") if b.id in g.armies else 5 * C.UNITS["bmb"]["hp"]
-    assert 0.5 * 0.85 * 60 - 1e-6 <= lost_hp <= 0.5 * 1.15 * 60 + 1e-6
+    assert 0.5 * 0.85 * ad - 1e-6 <= lost_hp <= 0.5 * 1.15 * ad + 1e-6
 
 
 def test_econ_share_counts_neutral_and_rebel_weary_mult():
@@ -1946,28 +1949,20 @@ def test_production_level_names():
     assert g.build_label("S002", "power", 2) == "발전소 2단계"
 
 
-def test_government_v190():
+def test_government_policy_replaces_fixed_effects():
     from korciv.leaders import GOV_BY_KEY
-    assert GOV_BY_KEY["fascist"]["fx"]["start_opinion"] == -5
-    assert GOV_BY_KEY["socialist"]["fx"]["output_bank"] == -0.20
-    assert GOV_BY_KEY["presidential"]["fx"]["war_weary_rate"] == 0.20
+    assert all(GOV_BY_KEY[k]["fx"] == {} for k in ("fascist", "socialist", "presidential"))
     g = new_game(player_start="S002", n_enemies=1)
     g.set_player_government("absolute")
-    # 기준 세율 12%: 12%에서 행복도 변화 없음, 10%면 +0.2
+    assert g.tax_base(0) == 10
+    g.player.admin = 10000
+    for _ in range(3):
+        assert g.unlock_policy(0)[0]
     assert g.tax_base(0) == 12
     assert g.tax_happy(0, 12) == pytest.approx(0.0)
     assert g.tax_happy(0, 10) == pytest.approx(0.2)
     assert g.tax_happy(0, 22) == pytest.approx(-1.0)
-    # 수도에서 3칸 밖 지역 산출 −5%
-    near3 = g.near_capital(0, 3)
-    far = next(r for r in g.world.order if r not in near3 and g.world.land_adj[r])
-    mid = next(r for r in near3 - g.near_capital(0, 2))
-    _own(g, 0, [far, mid])
-    y_far, y_mid = g.calc_output(far), g.calc_output(mid)
-    g.set_player_government("philosopher")
-    g._mods.pop(0, None)
-    assert y_far == pytest.approx(g.calc_output(far) * 0.95)
-    assert y_mid == pytest.approx(g.calc_output(mid))
+    assert g.mods(0).value("far_output_gov") is None
 
 
 def test_half_year_ranking_schedule():
@@ -2385,12 +2380,12 @@ def test_v120_leader_changes():
     assert g.unit_cost(0, "S002", "inf") == pytest.approx(base_inf)
     assert g.mods(0).add("happy_turn") == pytest.approx(0.10)
     # 광해군 '폐모살제': 정치체제 버프 50%, 디버프는 그대로
-    m = Mods("hae", "absolute")
-    assert m.add("tax_base") == pytest.approx(1.0) and m.value("far_output_gov") == 0.05
-    assert Mods("hae", "parliamentary").mult("output_bank") == pytest.approx(1.05)
-    assert Mods("hae", "fascist").mult("cost_mil") == pytest.approx(0.925)
-    assert Mods("hae", "fascist").add("start_opinion") == -5
-    assert Mods("cus", "parliamentary").mult("output_bank") == pytest.approx(1.1)
+    m = Mods("hae", "absolute", 3)
+    assert m.add("tax_base") == pytest.approx(1.0) and m.value("far_output_gov") is None
+    assert Mods("hae", "parliamentary", 1).mult("output_bank") == pytest.approx(1.05)
+    assert Mods("hae", "fascist", 2).mult("cost_mil") == pytest.approx(0.925)
+    assert Mods("hae", "fascist", 2).add("start_opinion") == 0
+    assert Mods("cus", "parliamentary", 1).mult("output_bank") == pytest.approx(1.1)
     assert LEADER_BY_KEY["jun"]["fx"]["output_bank"] == -0.08
     assert LEADER_BY_KEY["mac"]["fx"]["outnumbered_dmg"] == 0.10
     assert g.fx_source(0, "cost_noninf").endswith("'신화 시대'")
@@ -2861,6 +2856,8 @@ def test_ai_only_goal_builds_victory_projects():
     """과학·경제 단계는 그 방향일 때만 짓는다: 돈이 아주 많아도 정복 방향은 손대지 않는다."""
     from korciv import ai, ai_strategy as ST
     g = _p2_game()
+    g.player.techs.add("aerospace")
+    g.player.sci_points = 1e8
     f = g.factions[0]
     s = ST.state(f)
     s.update(posture="normal", path="conquest", scan={}, mil_ok=True)
@@ -2875,6 +2872,7 @@ def test_ai_only_goal_builds_victory_projects():
     assert not run() & {"science", "econ"}
     s["path"] = f.ai["victory_goal"] = "science"
     assert "science" in run()
+
 
 def test_ai_p2_two_front_blocks_new_war():
     from korciv import ai, ai_strategy as ST
@@ -3047,6 +3045,9 @@ def test_ai_phase3_sprint_when_ahead():
     """3페이즈: 내 승리 ETA 가 다른 나라 가장 빠른 ETA 의 1.2배 안이면 질주."""
     from korciv import ai_endgame as EG
     g = _p2_game(n=3)
+    for nation in g.factions:
+        nation.techs.add("aerospace")
+        nation.sci_points = 1e8
     f = g.factions[0]
     f.ai.update(phase=3, p3={"kind": "science", "turn": 0})
     f.science = list(C.SCIENCE_STEPS[:6])
@@ -3063,6 +3064,9 @@ def test_ai_harass_imminent_winner():
     """승리가 임박한 나라(ETA 150턴 안)가 나보다 앞서면 견제 대상(2페이즈도). 6턴마다 위급도를 다시 계산."""
     from korciv import ai_endgame as EG
     g = _p2_game(n=3)
+    for nation in g.factions:
+        nation.techs.add("aerospace")
+        nation.sci_points = 1e8
     f = g.factions[0]
     leader = g.factions[1]
     leader.science = list(C.SCIENCE_STEPS[:6])
@@ -3176,6 +3180,7 @@ def test_chain_build_continues_to_max():
     g.player.money = 1e8
     rr = g.regions["S002"]
     _room(g, [rr.id])
+    g.player.techs.add("farm")
     lv0 = rr.b["farm"]
     ok, msg = g.start_project_max(0, "S002", "build", "farm")
     assert ok and rr.project.chain and "이어서" in msg
@@ -3343,7 +3348,7 @@ def test_occ_contest_reinforcement_target():
     imp = AI.occ_importance(g, 0, tgt)
     got = AI.occ_contests(g, 0)
     if imp >= C.AI_OCC_CONTEST_MIN:
-        assert got.get(tgt) == 100 - 10 + 1                         # 상대 100 vs 나 10
+        assert got.get(tgt) == 2 * C.UNITS["tank"]["hp"] - 10 + 1                         # 상대 100 vs 나 10
     else:
         assert tgt not in got
 
@@ -3924,11 +3929,15 @@ def test_ai_peace_desire_around_conquest_ready():
 def test_science_steps_hidden_when_science_victory_off():
     """QA: 과학승리를 끈 판에서는 과학 단계를 지을 수 없다(경제승리를 끄면 경제 단계가 숨는 것과 같게)."""
     g = Game(Settings(seed=5, n_enemies=1, player_start="S002", victories=("conquest", "time")))
+    g.player.techs.add("aerospace")
+    g.player.sci_points = 1e8
     g.set_player_government("presidential")
     assert not [o for o in g.options(0, "S002") if o["kind"] == "science"]
     g = Game(Settings(seed=5, n_enemies=1, player_start="S002"))
     g.set_player_government("presidential")
+    g.player.techs.add("aerospace")
     assert [o for o in g.options(0, "S002") if o["kind"] == "science"]
+
 
 
 def test_victory_checked_after_turn_start_rebellion(monkeypatch):

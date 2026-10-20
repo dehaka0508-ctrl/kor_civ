@@ -55,12 +55,13 @@ class QueueMixin:
         r = self.queue_region(rid)
         if not p.started:
             if p.kind == 'unit':
-                oil = C.UNITS[p.key]['oil']
+                oil = self.unit_spec(r.owner, p.key)['oil']
                 if not self.can_pay_oil(r.owner, oil):
                     p.stalled, p.blocked_reason = True, f'석유 {oil} 필요'
                     return False
                 self.pay_oil(r.owner, oil)
-                r.h_delta += C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
+                p.happy_cost = 0 if self.mods(r.owner).value("unit_happy_free") else C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
+                r.h_delta += p.happy_cost
             p.started = True
         return True
 
@@ -101,7 +102,7 @@ class QueueMixin:
         refund = p.paid * C.PROJECT_REFUND
         self.factions[fid].money += refund
         if p.kind == 'unit' and p.started:
-            r.h_delta -= C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
+            r.h_delta -= p.happy_cost if p.happy_cost is not None else C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
         return True, f'대기 작업 삭제: {refund:,.0f} 환급'
 
     def cancel_project(self, fid, rid):
@@ -112,7 +113,7 @@ class QueueMixin:
         refund = p.paid * C.PROJECT_REFUND
         self.factions[fid].money += refund
         if p.kind == 'unit' and p.started:
-            r.h_delta -= C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
+            r.h_delta -= p.happy_cost if p.happy_cost is not None else C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
         self._clear_project(r)
         self.promote_queues()
         extra = ' · 행복도 회복' if p.kind == 'unit' and p.started else ''
@@ -126,6 +127,10 @@ class QueueMixin:
             if kind == 'build':
                 m = M.of(self, rid)
                 sites = M.pool_members(self, m, o['pool']) if m and o.get('pool') else [o.get('site') or rid]
+                for site in sites:
+                    allowed, reason = self.building_allowed(fid, site, key, o["level"], pool=o.get("pool"))
+                    if not allowed:
+                        o["ok"], o["why"] = False, reason
                 if not all(self.area_build_ok(s, key, o['level']) for s in sites):
                     o['ok'], o['why'] = False, C.AREA_SHORTAGE
             elif kind != 'unit' and any(p.kind == kind and p.key == key for p in ps):
@@ -152,6 +157,9 @@ class QueueMixin:
         o = opts[0]
         if not o['ok']:
             return False, o['why']
+        if kind == "repair" and self.mods(fid).value("flood_instant"):
+            self.regions[o.get("site") or rid].flooded = False
+            return True, "침수 복구 즉시 완료"
         m = M.of(self, rid)
         self.proj_counter = getattr(self, 'proj_counter', 0) + 1
         label = o['name']
@@ -189,6 +197,9 @@ class QueueMixin:
                 why = '이전 단계 건설이 먼저 필요합니다.'
             for s in self.project_sites(r.id, p):
                 rr = self.regions[s]
+                allowed, reason = self.building_allowed(r.owner, s, p.key, p.level, pool=p.pool)
+                if not allowed:
+                    why = reason
                 lv = rr.lines.get(p.border, 0) if p.key == 'line' else rr.b.get(p.key, 0)
                 if not p.pool and p.level > lv + 1:
                     why = '이전 단계 건설이 먼저 필요합니다.'
@@ -198,6 +209,8 @@ class QueueMixin:
                     why = C.AREA_SHORTAGE
         elif p.kind == 'unit':
             s = self.regions[p.site or rid]
+            if not self.unit_spec(r.owner, p.key)["available"]:
+                why = "항공모함 강습단 기술 필요"
             if C.UNITS[p.key]['kind'] == 'naval' and not s.b.get('port'):
                 why = '항구 필요'
         elif p.kind == 'science' and not self.science_site_ok(r.owner, p.site or rid, p.key):

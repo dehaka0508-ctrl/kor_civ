@@ -59,6 +59,7 @@ def main():
     a = ap.parse_args()
     rng = random.Random(a.seed)
     appmod.SAVE_DIR = tempfile.mkdtemp(prefix="korciv_qa_")
+    appmod.PREFS_PATH = os.path.join(appmod.SAVE_DIR, "prefs.json")
     pygame.mouse.get_pos = lambda: Mouse.pos
     pygame.mouse.get_pressed = lambda num_buttons=3: Mouse.pressed
     w, h = (int(x) for x in a.size.split("x"))
@@ -188,6 +189,19 @@ def warm_up(app, turns, rng):
 def force_state(app, rng):
     """무작위 입력만으로는 닿기 어려운 화면 상태로 바로 옮긴다."""
     g = app.game
+    if g and g.player.alive and rng.random() < .22:
+        from korciv.progression import GREAT_PEOPLE
+        rid = g.player.capital
+        rr = g.regions[rid]
+        rr.b.update(admin=4, edu=4, academy=1, specialty=3)
+        g.player.admin = g.player.sci_points = 50000
+        for kind in GREAT_PEOPLE:
+            g.recruit_great_person(g.player_id, kind, rid)
+        app.select(rid)
+        app.scene = "main"
+        app.left_open, app.left_tab = True, "progression"
+        app.progression_tab = rng.choice(["policy", "tech", "people"])
+        return
     if g and g.player.alive and rng.random() < .10:
         rid = g.player.capital
         if g.regions[rid].owner == g.player_id:

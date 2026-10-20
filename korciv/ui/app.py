@@ -59,7 +59,8 @@ MODE_ICONS = {"political": "flag", "happy": "face", "pop": "people", "resource":
 SUB_MODES = {
     "resource": [("specialty", "특산물", "#2B8A3E", 3), ("coal", "석탄", "#6F4E37", 5), ("oil", "석유", "#000000", 6),
                  ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", None), ("nuclear", "원전", "#F08C00", None)],
-    "building": [("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
+    "building": [("admin", "행정", "#6741D9", 5), ("edu", "연구", "#087F8C", 5),
+                 ("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
                  ("bank", "시장", "#2F9E44", 5), ("housing", "주거 지구", "#9C36B5", 5), ("power", "발전소", "#FAB005", 5)],
     "military": [("line", "방어선", "#C92A2A", 5), ("aa", "대공포", "#7048E8", 5), ("shelter", "방공호", "#5C940D", 5),
                  ("academy", "사관학교", "#E67700", None), ("airport", "공항", "#1864AB", None),
@@ -216,6 +217,8 @@ class App:
         self.war_confirm = None      # 선전포고 확인 대기 중인 세력
         self.qty = None              # 수량 슬라이더 창 (modals.open_qty)
         self.rally_pick = None       # 생산 집결지 고르는 중: 지역 ID, 일괄이면 "*"
+        self.gp_move_pick = None
+        self.progression_tab = "policy"
         self.metro_pick = None       # 광역시 지정 중(v1.3.0): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
@@ -1340,6 +1343,8 @@ class App:
                     self._flag_hits.append((pygame.Rect(x0 - int(2 * u), y0 - int(3 * u), int(fw + 6 * u),
                                                         int(fh + 9 * u)), a.id))
                 fx += fw + int(4 * u)
+        from .progression import draw_map_people
+        draw_map_people(self, at)
         # 줌 4배 이상: 인구 배지
         if mv.z >= 4:
             for rid in self.world.order:
@@ -1400,6 +1405,22 @@ class App:
                 return
             if getattr(self, "rally_pick", None) is not None:
                 self.finish_rally_pick(node)
+                return
+            if getattr(self, "gp_move_pick", None) is not None:
+                ok, message = self.game.move_great_person(self.gp_move_pick, node)
+                self.toast(message, None if ok else self.theme.bad)
+                if ok:
+                    self.gp_move_pick = None
+                    self.sel = node
+                    self.changed()
+                return
+            person_hit = next((h for h in reversed(getattr(self, "_great_person_hits", []))
+                               if h[0].collidepoint(pos)), None)
+            person = next((p for p in self.game.great_people if person_hit and p["id"] == person_hit[1]), None)
+            if person is not None:
+                self.sel = person["loc"]
+                self.left_open, self.left_tab, self.tab = True, "region", "info"
+                self.gui.scroll["left"] = 0
                 return
             hit = next((h for h in reversed(getattr(self, "_flag_hits", [])) if h[0].collidepoint(pos)), None)
             if hit is not None and hit[1] in self.game.armies:
@@ -1462,6 +1483,9 @@ class App:
         return owner
 
     def right_click(self, node, pos):
+        if getattr(self, "gp_move_pick", None) is not None:
+            self.gp_move_pick = None
+            return
         g = self.game
         if getattr(self, "metro_pick", None) is not None:
             self.toggle_metro_pick(node)              # 광역시 지정 중: 우클릭도 넣고 빼기
@@ -1629,6 +1653,10 @@ class App:
             elif k.key == pygame.K_ESCAPE and getattr(self, "rally_pick", None) is not None:
                 self.rally_pick = None
                 self.toast("집결지 지정을 취소했습니다.")
+                g.keys.remove(k)
+            elif k.key == pygame.K_ESCAPE and getattr(self, "gp_move_pick", None) is not None:
+                self.gp_move_pick = None
+                self.toast("위인 이동을 취소했습니다.")
                 g.keys.remove(k)
             elif k.key == pygame.K_ESCAPE:
                 if self.sel_army:

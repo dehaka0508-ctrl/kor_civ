@@ -196,7 +196,7 @@ for _l in LEADERS:
     _l["cat"] = _CAT_OF.get(_l["key"], "cus")
 LEADER_BY_KEY = {l["key"]: l for l in LEADERS}
 
-GOVERNMENTS = [
+_LEGACY_GOVERNMENTS = [
     dict(key="absolute", buff_keys=("tax_base",), name="전제군주제", target=7.5,
          buff=("왕권 통치", "기준 세율 +2%"),
          debuff=("", "수도에서 3칸 밖 지역 산출 −5%"),
@@ -219,6 +219,98 @@ GOVERNMENTS = [
     dict(key="philosopher", buff_keys=(), name="철인통치", target=None,
          buff=("", "없음"), debuff=("", "없음"), fx={}),
 ]
+POLICY_COSTS = (100, 250, 500, 900, 1500)
+
+
+def _policy(name, description, **fx):
+    return dict(name=name, description=description, fx=fx)
+
+
+POLICIES = {
+    "absolute": [
+        _policy("왕실 직할령", "수도 금전 산출 +15%, 수도 행정력 +10", capital_money=.15, capital_admin=10),
+        _policy("중앙집권 관료제", "행정 건물 건설비 -20%, 소요 -1턴", cost_admin=-.2, build_admin_turns=-1),
+        _policy("흠정 헌법", "행복도 감소 없는 기준 세율 +2%p", tax_base=2),
+        _policy("근위대 창설", "수도 및 수도 인접 지역 방어력 +20%", capital_guard_def=.2),
+        _policy("어전 회의", "중립 편입 비용 -20%, 재상·장군 구매비 -15%",
+                cost_annex=-.2, gp_chancellor_cost=-.15, gp_general_cost=-.15),
+    ],
+    "constitutional": [
+        _policy("대헌장", "전 지역 행복도 +0.15/턴, 무법 유예 +2턴", happy_turn=.15, lawless_grace=2),
+        _policy("왕립 학술원", "연구 건물 과학력 +10%, 과학자·예술가 구매비 -15%",
+                science_edu=.1, gp_scientist_cost=-.15, gp_artist_cost=-.15),
+        _policy("권리장전", "세율 행복도 감소 -25%, 점령 저항 -1턴", tax_penalty=-.25, resist_turns=-1),
+        _policy("내각 책임제", "행정 건물 산출 +15%, 특산물 행복도 +50%",
+                admin_building_output=.15, specialty_happy=.5),
+        _policy("국왕의 상징적 통합", "전쟁 피로 회복 +0.5/턴, 양수 우호도 자연 감소율 절반",
+                war_weary_recovery_add=.5, positive_op_decay=-.5),
+    ],
+    "presidential": [
+        _policy("제헌 국회", "지역당 기본 행정력 +2, 행정 건물 건설 -1턴", admin_each=2, build_admin_turns=-1),
+        _policy("삼권분립", "시장·공장 산출 +10%, 자금 적자 행복도 페널티 절반",
+                output_bank=.1, output_factory=.1, debt_happy=-.5),
+        _policy("국책 사업 추진단", "생산 건물 건설 시간 -15%, 침수 복구 즉시 완료",
+                build_time_prod=-.15, flood_instant=True),
+        _policy("산학협력 연구단지", "연구 3단계 이상 지역 시장·공장 산출 +15%", educated_output=.15),
+        _policy("대통령 긴급재정명령", "경제·과학 승리 단계 턴당 비용 -15%", victory_turn_cost=-.15),
+    ],
+    "parliamentary": [
+        _policy("의회 주권 확립", "시장 산출 +10%, 국가 행정력 +10%", output_bank=.1, admin_output=.1),
+        _policy("자유무역협정(FTA)", "시장 판매가 +20%, 외교 자원 거래 우호도 ×1.5",
+                market_sell=.2, trade_opinion=.5),
+        _policy("연립 내각 구성", "우호 선언·불가침·동맹 우호도 문턱 -10, 선물 효율 +20%",
+                treaty_threshold=-10, friend_threshold=-10, gift_opinion=.2),
+        _policy("중앙은행 독립", "시장 3단계 이상 지역 금전 산출 +300/턴", bank3_income=300),
+        _policy("복지 국가 기틀", "주거 지구 면적 절감 효율 +20%, 행복도 +0.15/턴",
+                housing_efficiency=.2, happy_turn=.15),
+    ],
+    "socialist": [
+        _policy("토지 개혁 및 집단화", "농장·어장 면적 -20%, 식량 배급 성장 보너스 ×1.3",
+                farm_area=-.2, fishery_area=-.2, ration_growth=.3),
+        _policy("경제개발 5개년 계획", "공장·발전소·탄광·정유공장 건설비 -20%",
+                cost_factory=-.2, cost_power=-.2, cost_extract=-.2),
+        _policy("무상 교육·무상 주거", "초·중등교육기관·주거 지구 건설비 -30%", cost_edu_low=-.3, cost_housing=-.3),
+        _policy("중공업 우선 정책", "공장 산출 +15%, 3단계 이상 탄광·정유 생산 +1",
+                output_factory=.15, extract3_extra=1),
+        _policy("인민 과학원", "국가 과학력 +15%, 과학승리 유닛 생산 -3턴",
+                science_output=.15, science_unit_turns=-3),
+    ],
+    "fascist": [
+        _policy("선전", "전쟁 피로 증가 -30%, 개전 피로 -50%", war_weary_rate=-.3, war_start_weary=-.5),
+        _policy("국가 총동원령", "군사 유닛 생산비 -15%, 생산 착수 행복도 감소 면제",
+                cost_mil=-.15, unit_happy_free=True),
+        _policy("군수산업 복합체", "사관학교·방어선·방공호·대공포 건설비 -25%, 군 유지비 -15%",
+                cost_academy=-.25, cost_line=-.25, cost_shelter=-.25, cost_aa=-.25, upkeep_mil=-.15),
+        _policy("비밀경찰 및 계엄령", "점령 저항 -2턴, 반란 임계 행복도 -70", resist_turns=-2, rebel_threshold=-70),
+        _policy("기갑·기동전 교리", "육군·공군 공격력 +10%, 적 지역 무력 점령 시간 -25%",
+                atk_land=.1, atk_air=.1, enemy_occ_time=-.25),
+    ],
+}
+POLICY_COMPLETION = {
+    "absolute": _policy("절대왕정 확립", "전 지역 금전 산출 +10%, 수도 인구 산출 +30%",
+                        output_money=.1, capital_pop_output=.3),
+    "constitutional": _policy("군림하되 통치하지 않는다", "실질 행복도 +10, 광역시 방어력 페널티 면제",
+                              effective_happy=10, metro_def_exempt=True),
+    "presidential": _policy("선진 민주 공화국", "인구 성장 +20%, 모든 건물 건설비 -15%, 국가 과학력 +15%",
+                            growth=.2, cost_build=-.15, science_output=.15),
+    "parliamentary": _policy("책임 의회정치 완성", "시장 산출 +25%, 경제승리 -3턴, 연합 동맹 유지 조건 12턴",
+                             output_bank=.25, econ_turns=-3, coalition_alliance_turns=12),
+    "socialist": _policy("계획경제 완성", "공장·발전소·채굴 산출 +20%, 징집 피로 무페널티 기준 8턴",
+                         output_factory=.2, output_power=.2, output_extract=.2, conscript_free_turns=8),
+    "fascist": _policy("전체주의 총력전 국가", "전 병종 공격·방어·폭격 +15%, 적 지역 점령 완료 시 보병 1기",
+                       combat_all=.15, capture_infantry=1),
+}
+for _tree in POLICIES.values():
+    for _stage, _cost in zip(_tree, POLICY_COSTS):
+        _stage["cost"] = _cost
+
+# 체제 선택 자체에는 고정 효과가 없다. 정책을 해금하면서 단계별 효과가 누적된다.
+GOVERNMENTS = [
+    {**g, "fx": {}, "buff_keys": (),
+     "buff": ("정책 트리", "행정력으로 5단계 정책을 순차 해금"),
+     "debuff": ("", "없음")} if g["key"] in POLICIES else g
+    for g in _LEGACY_GOVERNMENTS
+]
 GOV_BY_KEY = {g["key"]: g for g in GOVERNMENTS}
 
 MULT_KEYS = {
@@ -235,18 +327,24 @@ ADD_KEYS = {"tax_base", "happy_turn", "surprise", "trade_m", "treaty_threshold",
             "ai_opinion_turn", "suppress", "occupied_happy_extra", "power_elec_add"}
 
 
-def effects(leader_key: str, gov_key: str | None):
+def effects(leader_key: str, gov_key: str | None, policy_level: int = 0):
     out = []
     l = LEADER_BY_KEY.get(leader_key)
     if l:
         out.append(l["fx"])
     g = GOV_BY_KEY.get(gov_key) if gov_key else None
     if g:
-        fx = g["fx"]
         k = gov_buff_scale(leader_key)
-        if k != 1.0:                                     # 광해군 '폐모살제': 정치체제 버프는 50%만
-            fx = {key: (v * k if key in g.get("buff_keys", ()) else v) for key, v in fx.items()}
-        out.append(fx)
+        stages = POLICIES.get(gov_key, ())[:max(0, min(5, int(policy_level)))]
+        if policy_level >= 5 and gov_key in POLICY_COMPLETION:
+            stages = [*stages, POLICY_COMPLETION[gov_key]]
+        for stage in stages:
+            # 값으로 지정한 기준은 기본값과의 차이를 절반만 적용한다.
+            bases = {"rebel_threshold": -50, "conscript_free_turns": 6, "coalition_alliance_turns": 24}
+            fx = {key: (v if isinstance(v, bool) else
+                        bases[key] + (v - bases[key]) * k if key in bases else v * k)
+                  for key, v in stage["fx"].items()}
+            out.append(fx)
     return out
 
 
@@ -258,8 +356,8 @@ def gov_buff_scale(leader_key: str) -> float:
 class Mods:
     """한 세력의 지도자·체제 효과 합산기."""
 
-    def __init__(self, leader_key: str, gov_key: str | None):
-        self.fx = effects(leader_key, gov_key)
+    def __init__(self, leader_key: str, gov_key: str | None, policy_level: int = 0):
+        self.fx = effects(leader_key, gov_key, policy_level)
 
     def mult(self, key: str) -> float:
         m = 1.0
@@ -281,8 +379,7 @@ class Mods:
         return any(key in fx for fx in self.fx)
 
 
-AI_GOV_AGGR_JITTER = 2.0      # 체제를 고를 때 호전성을 ±2 범위에서 흔든다(같은 지도자도 다른 체제를 고를 수 있게)
-AI_PHILOSOPHER_P = 0.10       # 10% 확률로 철인통치(효과 없음)
+AI_PHILOSOPHER_P = 0.0       # AI는 실제 정책 트리가 있는 여섯 체제 중 선택한다.
 
 
 def banned_govs(leader_key: str) -> set:
@@ -293,22 +390,28 @@ def banned_govs(leader_key: str) -> set:
     return set()
 
 
-def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=()) -> str:
-    """9절: 1 - |호전성' - 목표| / 10 + U(0, 0.1), 공장 > 시장이면 사회주의 +0.2.
-    호전성' = 호전성 + U(−2, +2). 전체의 10%는 철인통치. banned 체제는 고르지 않는다."""
-    if rng.random() < AI_PHILOSOPHER_P:
-        return "philosopher"
-    aggression = aggression + rng.uniform(-AI_GOV_AGGR_JITTER, AI_GOV_AGGR_JITTER)
-    best, best_score = None, -1e9
-    for g in GOVERNMENTS:
-        if g["target"] is None or g["key"] in banned:
-            continue
-        s = 1 - abs(aggression - g["target"]) / 10 + rng.random() * 0.1
-        if g["key"] == "socialist" and factory_level > bank_level:   # 공장이 시장보다 많을 때만
-            s += 0.2
-        if s > best_score:
-            best, best_score = g["key"], s
-    return best
+def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=(),
+                       *, leader_key="cus", resources=0, coastal=False, neighbors=0) -> str:
+    """지도자의 효과와 시작 권역 산업·자원·해안·이웃 환경의 시너지.
+
+    aggression 인자는 이전 호출/세이브 호환을 위해 받지만 체제 점수에는 사용하지 않는다.
+    """
+    fx = LEADER_BY_KEY.get(leader_key, {}).get("fx", {})
+    scores = {key: rng.random() * .1 for key in POLICIES}
+    scores["absolute"] += .10 * max(0, neighbors) + .25 * bool(fx.get("capital_bonus_mult"))
+    scores["constitutional"] += .22 * max(0, neighbors) + .5 * bool(fx.get("happy_turn"))
+    scores["presidential"] += .15 * (factory_level + bank_level) + .8 * bool(fx.get("build_time_prod"))
+    scores["parliamentary"] += .35 * bank_level + .45 * bool(coastal) + .6 * bool(fx.get("output_bank"))
+    scores["parliamentary"] += .5 * any(k in fx for k in ("trade_m", "market_sell", "ai_opinion_turn", "port_bank"))
+    scores["socialist"] += .35 * factory_level + .45 * resources
+    scores["socialist"] += .65 * any(k in fx for k in ("output_factory", "build_time_factory", "output_farm", "food_prod"))
+    scores["fascist"] += .12 * max(0, neighbors) + .25 * resources
+    scores["fascist"] += .6 * any(k in fx for k in ("cost_mil", "atk_assault", "atk_inf", "bomb_art", "naval_power", "inf_wave"))
+    scores["constitutional"] += .6 * any(k in fx for k in ("science_turns", "war_start_weary", "tax_over10"))
+    scores["absolute"] += .5 * any(k in fx for k in ("occ_time", "occupied_happy_extra", "far_output"))
+    blocked = set(banned) | banned_govs(leader_key)
+    allowed = [key for key in scores if key not in blocked]
+    return max(allowed, key=scores.get) if allowed else "philosopher"
 
 
 # 정치체제 계열 (반란 세력끼리 우호/적대 판정). 계열이 겹치면 '유사'.

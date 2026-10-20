@@ -21,13 +21,13 @@ from . import rules as R
 from .state import NEUTRAL, Project
 
 # (통합 종류, 건물 키). 탄광·정유는 같은 '채굴 시설' 키지만 지을 수 있는 지역이 달라 따로 묶는다
-POOLS = (("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"), ("housing", "housing"),
+POOLS = (("admin", "admin"), ("edu", "edu"), ("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"), ("housing", "housing"),
          ("power", "power"), ("specialty", "specialty"), ("coal", "extract"), ("oil", "extract"),
          ("shelter", "shelter"), ("aa", "aa"))
 POOL_KEY = dict(POOLS)
 SINGLES = ("port", "airport", "academy")
-SNAP_KEYS = ("housing", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
-POOL_NAMES = {"housing": "광역 주거 지구", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
+SNAP_KEYS = ("admin", "edu", "housing", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
+POOL_NAMES = {"admin": "광역시청", "edu": "연구 건물", "housing": "광역 주거 지구", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
               "power": "광역 발전소", "specialty": "광역 특산물 시설", "coal": "광역 탄광", "oil": "광역 정유공장",
               "shelter": "광역 방공호", "aa": "광역 대공포"}
 
@@ -95,6 +95,10 @@ def max_level(key) -> int:
 def pool_name(g, pool, level) -> str:
     """'광역 경작지 3단계 (농장)' 처럼. 6단계는 고유 이름."""
     key = POOL_KEY[pool]
+    if key == "admin":
+        return "정부청사" if level == 5 else f"{level}단계 광역시청"
+    if key == "edu":
+        return "거점국립대학" if level == 4 else C.PROD_LEVEL_NAMES[key][max(0, level - 1)]
     if key in C.PROD_LEVEL_NAMES and level >= 6:
         return C.PROD_LEVEL_NAMES[key][5]
     return f"{POOL_NAMES[pool]} {level}단계"
@@ -103,7 +107,7 @@ def pool_name(g, pool, level) -> str:
 def def_mult(g, rid) -> float:
     """넓을수록 지키기 어렵다: 지역 n곳을 묶은 광역시는 방어력 ×(1 − 0.02(n − 1))."""
     m = of(g, rid)
-    if not m:
+    if not m or g.mods(g.regions[rid].owner).value("metro_def_exempt"):
         return 1.0
     return max(0.0, 1.0 - C.METRO_DEF_PER_REGION * (len(m["members"]) - 1))
 
@@ -236,9 +240,13 @@ def check(g, fid, center, sel) -> tuple:
     bank = any(r.b["bank"] >= 5 for r in regs)
     items.append(("공업 단지(공장 5단계)", fac, "있음" if fac else "없음"))
     items.append(("복합 무역 센터(시장 5단계)", bank, "있음" if bank else "없음"))
-    prod = sum(g.food_prod(fid, r) for r in regs)
-    cons = pop * C.FOOD_PER_POP
-    items.append(("식량 생산 > 소비", prod > cons, f"{prod:,.1f} / {cons:,.1f}"))
+    admin = g.regions[center].b.get("admin", 0)
+    items.append(("중심 지역 시청 이상", admin >= 3, f"행정 {admin}단계"))
+    prod = sum(g.admin_output(r.id) for r in regs)
+    cons = sum(g.admin_consumption(r.id) for r in regs)
+    national_prod, national_cons = g.admin_balance(fid)
+    items.append(("구성 지역 행정력 흑자", prod > cons, f"{prod:,.1f} / {cons:,.1f}"))
+    items.append(("국가 행정력 흑자", national_prod > national_cons, f"{national_prod:,.1f} / {national_cons:,.1f}"))
     h = sum(r.happy for r in regs) / max(1, len(regs))
     items.append(("평균 행복도 0 이상", h >= 0, f"{h:+.1f}"))
     return all(it[1] for it in items), items
@@ -273,9 +281,14 @@ def feasible(g, fid, center) -> tuple:
         reasons.append("묶을 수 있는 지역에 공업 단지(공장 5단계)가 없습니다.")
     if not any(r.b["bank"] >= 5 for r in regs):
         reasons.append("묶을 수 있는 지역에 복합 무역 센터(시장 5단계)가 없습니다.")
-    surplus = {r.id: g.food_prod(fid, r) - r.pop * C.FOOD_PER_POP for r in regs}
+    if g.regions[center].b.get("admin", 0) < 3:
+        reasons.append("중심 지역에 시청(행정 3단계)이 필요합니다.")
+    surplus = {r.id: g.admin_output(r.id) - g.admin_consumption(r.id) for r in regs}
     if surplus[center] + sum(max(0.0, v) for k, v in surplus.items() if k != center) <= 0:
-        reasons.append("식량이 남는 지역만 골라도 식량 생산이 소비보다 적습니다.")
+        reasons.append("행정력이 남는 지역만 골라도 행정력 생산이 소비보다 적습니다.")
+    prod, cons = g.admin_balance(fid)
+    if prod <= cons:
+        reasons.append("국가 전체 행정력 흑자가 필요합니다.")
     happy = g.regions[center].happy + sum(max(0.0, r.happy) for r in regs if r.id != center)
     if happy < 0:
         reasons.append("행복도가 높은 지역만 골라도 평균 행복도가 0보다 낮습니다.")
@@ -320,7 +333,7 @@ def create(g, fid, center, sel, name=None) -> tuple:
     g.metro_seq = getattr(g, "metro_seq", 0) + 1
     mid = g.metro_seq
     m = {"id": mid, "owner": fid, "founder": fid, "center": center, "members": sel,
-         "name": full_name(g, fid, center, name), "special": f.capital == center, "turn": g.turn,
+         "name": full_name(g, fid, center, name), "special": f.capital in sel, "turn": g.turn,
          "pre": {r: {k: g.regions[r].b[k] for k in SNAP_KEYS} for r in sel}, "merge": {}}
     for rid in sel:
         rr = g.regions[rid]
@@ -458,6 +471,10 @@ def dissolve(g, mid, why="") -> bool:
                     a.order = None
     for r in sel:
         g.regions[r].metro = None
+        rr = g.regions[r]
+        if rr.owner != NEUTRAL and g.factions[rr.owner].capital != r:
+            for key in ("admin", "edu"):
+                rr.b[key] = min(4, rr.b.get(key, 0))
     if owner != NEUTRAL:
         g.event("info", f"{m['name']} 지정 해제" + (f" — {why}" if why else ""), region=center, fids=(owner,))
     return True
@@ -501,17 +518,19 @@ def options(g, fid, mid) -> list:
             if p.kind == 'build' and p.pool == pool:
                 planned.append(max_level(key) if p.chain else p.level)
         lv = max(planned) + 1
+        if key in ("admin", "edu") and lv > (5 if g.factions[fid].capital in sel else 4):
+            continue
         if lv > max_level(key):
             continue
         if key in C.PROD_BUILDINGS:
             cost = R.prod_building_cost(key, lv, any(g.info(r).power_site for r in el))
-            if key == "factory":
-                cost *= mods.mult("cost_factory")
+            cost *= g.building_cost_mult(fid, key, lv)
             turns = g.build_time(fid, key, R.prod_building_turns(lv))
         else:
-            cost = R.def_building_cost(key, lv)
+            cost = R.def_building_cost(key, lv) * g.building_cost_mult(fid, key, lv)
             turns = g.build_time(fid, key, R.def_building_turns(lv))
-        add("build", key, pool_name(g, pool, lv), cost * len(el), turns, level=lv, pool=pool)
+        ok, why = g.building_allowed(fid, center, key, lv, pool=pool)
+        add("build", key, pool_name(g, pool, lv), cost * len(el), turns, ok, why, level=lv, pool=pool)
     seen = set()
     for r in sel:
         for o in raw[r]:
@@ -544,14 +563,14 @@ def options(g, fid, mid) -> list:
             if not coast:
                 continue
             site = center if center in coast else max(coast, key=lambda r: (g.regions[r].pop, r))
-        add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE,
+        add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * g.building_cost_mult(fid, key),
             g.build_time(fid, key, spec["turns"]), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
     port = next((r for r in sel if g.projected_buildings(r).get('port') and g.info(r).coastal), None)
     for key in C.BUILD_UNITS:
-        u = C.UNITS[key]
+        u = g.unit_spec(fid, key)
         site = center
-        ok, why = True, ""
+        ok, why = (False, "항공모함 강습단 기술 필요") if key == "cv" and "cv" not in g.factions[fid].techs else (True, "")
         if u["kind"] == "naval":
             if not any(g.info(r).coastal for r in sel):
                 continue
@@ -615,7 +634,7 @@ def complete(g, f, p):
     if p.kind == "unit":
         n = len(sel)
         g.deliver_units(f.id, site, p.key, n)
-        g.event("complete", f"{name}에서 {C.UNITS[p.key]['name']} {n}개 생산 완료", region=site, fids=(f.id,))
+        g.event("complete", f"{name}에서 {g.unit_spec(f.id, p.key)['name']} {n}개 생산 완료", region=site, fids=(f.id,))
         if getattr(p, "repeat", 0) > 0:
             g._repeat_unit(f, g.regions[m['center']], p)
         return
@@ -645,6 +664,7 @@ def after_capture(g, mid, new_owner):
     if m is None:
         return
     m["owner"] = new_owner
+    m["special"] = new_owner != NEUTRAL and g.factions[new_owner].capital in m["members"]
 
 
 def phase(g):

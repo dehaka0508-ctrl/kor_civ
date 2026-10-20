@@ -166,6 +166,7 @@ def area_usage(pop, buildings) -> tuple:
     housing = max(0, min(6, buildings.get("housing", 0)))
     people = pop * C.POP_AREA_PER_10K[housing]
     built = sum(buildings.get(k, 0) * area for k, area in C.BUILDING_AREA_PER_LEVEL.items())
+    built += sum(areas[max(0, min(5, buildings.get(k, 0)))] for k, areas in C.BUILDING_AREA_LEVELS.items())
     return people + built, people, built
 
 

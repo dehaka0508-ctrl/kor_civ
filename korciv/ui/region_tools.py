@@ -97,5 +97,8 @@ def area_effect(g, rid, opt):
     if key == 'housing':
         a, b = C.POP_AREA_PER_10K[max(0, level - 1)], C.POP_AREA_PER_10K[level]
         return f'인구 면적 −{1-b/a:.0%}'
+    if key in C.BUILDING_AREA_LEVELS:
+        areas = C.BUILDING_AREA_LEVELS[key]
+        return f'면적 +{areas[level] - areas[level - 1]:g}km²'
     n = C.BUILDING_AREA_PER_LEVEL.get(key, 0)
     return f'면적 +{n:g}km²' if n else ''

@@ -96,6 +96,10 @@ def check(g, where):
     for f in g.factions:
         if not finite(f.money):
             report("돈 NaN", f"{where} f{f.id}")
+        if not finite(f.admin) or f.admin < 0 or not finite(f.sci_points) or f.sci_points < 0:
+            report("행정·과학 자원 불변식", f"{where} f{f.id} {f.admin}/{f.sci_points}")
+        if not 0 <= f.policy_level <= 5:
+            report("정책 단계 범위", f"{where} f{f.id} {f.policy_level}")
         for k, v in f.res.items():
             # v1.3.0: 판매 계약분은 배정보다 먼저 보내므로 석유·석탄·전기는 '보낸 계약량'까지 음수일 수 있다
             # (전기는 턴 끝 발전으로, 나머지는 시장 구매로 메운다)
@@ -147,6 +151,13 @@ def check(g, where):
         for k, d in a.dmg.items():
             if not finite(d) or d < -1e-6 or (k in a.units and d > a.hp_max(k) + 1e-6):
                 report("피해량 범위", f"{where} {aid} {k} dmg={d} max={a.hp_max(k) if k in a.units else '-'}")
+    names = [gp["name"] for gp in g.great_people]
+    if len(set(names)) != len(names) or not set(names) <= g.spawned_great_people:
+        report("위인 중복·기록", where)
+    for gp in g.great_people:
+        escort = gp["kind"] == "general" and bool(g.armies_at(gp["loc"], gp["owner"]))
+        if gp["loc"] not in g.regions or (g.regions[gp["loc"]].owner != gp["owner"] and not escort):
+            report("위인 위치·소유", f"{where} {gp}")
     for key, v in vars(g.dip).items():
         if isinstance(v, dict):
             for kk, vv in v.items():
@@ -180,6 +191,18 @@ def player_turn(g, rng):
     f = g.player
     mine = [r.id for r in g.regions_of(pid)]
     acts = 0
+    from korciv.progression import TECHS, GREAT_PEOPLE
+    if rng.random() < .4:
+        g.unlock_policy(pid)
+        g.unlock_tech(pid, rng.choice(list(TECHS)))
+    if mine and rng.random() < .3:
+        g.recruit_great_person(pid, rng.choice(list(GREAT_PEOPLE)), rng.choice(mine))
+    people = [p for p in g.great_people if p["owner"] == pid]
+    if people and mine:
+        person = rng.choice(people)
+        g.move_great_person(person["id"], rng.choice(mine))
+        if rng.random() < .4:
+            g.activate_great_person(person["id"], rng.choice(("project", "science")))
     # 반란·제안 응답
     for rid in list(g.pending_rebellions):
         g.resolve_rebellion(pid, rid, rng.choice(["pay", "tax", "suppress"]))

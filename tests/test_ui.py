@@ -1557,6 +1557,8 @@ def test_metro_designation_by_clicking_map(app):
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy = None, None, 10.0
         rr.b["farm"] = 5
+        rr.b["admin"] = 5 if r == g.player.capital else 4
+        rr.pop = min(rr.pop, 45)
     g.regions["S002"].b["factory"] = 5
     g.regions[nb[0]].b["bank"] = 5
     g.player.money = 10 ** 7
@@ -1611,6 +1613,8 @@ def test_metro_pick_limit_25_and_drawn_as_one_region(app):
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy, rr.occ = None, None, 10.0, None
         rr.b["farm"] = 5
+        rr.b["admin"] = 5 if r == g.player.capital else 4
+        rr.pop = min(rr.pop, 45)
     g.regions["S002"].b["factory"] = 5
     g.regions["S002"].b["bank"] = 5
     g.player.money = 10 ** 7

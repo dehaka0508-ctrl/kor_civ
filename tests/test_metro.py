@@ -24,8 +24,11 @@ def _setup(n_extra=3, **kw):
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy = None, None, 10.0
         rr.b["farm"] = 5
+        rr.b["admin"] = 5 if r == g.player.capital else 4
+        rr.pop = min(rr.pop, 45) if r != g.player.capital else rr.pop
     g.regions["S002"].b["factory"] = 5
     g.regions[nb[0]].b["bank"] = 5
+    g.player.techs.update(("farm", "fishery", "factory", "bank", "coal", "oil", "power"))
     g.player.money = 10 ** 7
     return g, sel
 
@@ -90,7 +93,12 @@ def test_coal_pool_example():
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy = None, None, 5
         rr.pop = max(rr.pop, 60)
-        rr.b.update(farm=5, factory=5, bank=5)
+        rr.b.update(farm=5, factory=5, bank=5, admin=4)
+    g.player.capital = a
+    g.regions[a].b["admin"] = 5
+    for rr in g.regions_of(0):
+        if rr.id not in (a, b):
+            rr.b["admin"] = 4
     g.regions[a].b["extract"], g.regions[b].b["extract"] = 2, 3
     ok, msg = g.create_metro(0, a, [a, b])
     assert ok, msg
@@ -332,6 +340,8 @@ def _own_ring(g, k):
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy, rr.occ = None, None, 10.0, None
         rr.b["farm"] = 5
+        rr.b["admin"] = 5 if r == g.player.capital else 4
+        rr.pop = min(rr.pop, 45) if r != g.player.capital else rr.pop
     return d
 
 

@@ -145,10 +145,12 @@ VICTORY_TIPS = {
     "conquest": f"정복승리: 전체 지역의 3분의 2 이상을 차지하고, 반란이 일어날 수 있는 지역\n"
                 f"(반란 판정 행복도 {C.REBEL_THRESHOLD:.0f} 이하)이 하나도 없으면 승리. 단 어느 나라와든 전쟁 중이면 불발 —\n"
                 f"강화해 전쟁이 끝나는 순간 조건이 맞으면 승리. 다른 세력을 모두 멸망시키면 승리 조건 설정과 관계없이 승리",
-    "science": "과학승리: ① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 시장 5단계(복합 무역 센터) 지역에서\n"
+    "science": "과학승리: 먼저 과학력 3,500으로 우주항공공학을 해금합니다.\n"
+               "① 수도에 항공우주연구소 → ② 산맥과 맞닿은 지역에 천체관측소 → ③ 시장 5단계(복합 무역 센터) 지역에서\n"
                "예산 편성 → ④ 바다와 맞닿은 지역에 로켓 발사대 → ⑤ 공장 5단계 지역에서 로켓 추진체 →\n"
                "⑥ 공장 5단계 지역에서 탑승 모듈 → ⑦ 정유공장 5단계 지역에서 발사체 연료. 세 유닛을 발사대 지역에 모으고 턴을 마치면 승리\n"
                f"(단계마다 {C.SCIENCE_TURNS}턴, 턴당 {C.SCIENCE_COST_PER_TURN:,}부터 단계가 오를 때마다 ×{C.SCIENCE_COST_GROWTH:g})\n"
+               "각 단계는 턴당 과학력 200부터 ×1.15씩 함께 소비하며 자금이나 과학력이 부족하면 정지합니다.\n"
                "천체관측소가 폭격으로 파괴되면 다른 단계를 다 마쳤어도 다시 지을 때까지 발사할 수 없습니다",
     "economic": f"경제승리: ① 수도를 포함해 서로 맞닿은 복합 무역 센터(시장 5단계) {C.ECON_CLUSTER}곳 → ② 금융 권역에\n"
                 f"증권거래소(수도 포함 {C.ECON_EXCHANGES}곳) → ③ 수도에 경제특구 → ④ 우호 선언 이상 관계 {C.ECON_IFC_FRIENDS}개국이면\n"
@@ -995,10 +997,11 @@ def draw_start_popup(app, rid):
 
 # ------------------------------------------------------------------ 정치체제
 def draw_government(app):
+    from ..progression import POLICIES, POLICY_COMPLETION
     gui = app.gui
     t = app.theme
     r = modal_frame(app, 760, 600, "정치체제를 고르세요")
-    gui.text((r.x + 24, r.y + 52), "지도자 효과와 곱으로 합산됩니다. 한 번 정하면 바꿀 수 없습니다.", 13, t.muted)
+    gui.text((r.x + 24, r.y + 52), "잉여 행정력으로 정책 5단계를 해금합니다. 한 번 정하면 바꿀 수 없습니다.", 13, t.muted)
     y = r.y + 84
     from ..leaders import banned_govs
     banned = banned_govs(app.game.player.leader)
@@ -1015,16 +1018,15 @@ def draw_government(app):
         gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
         gui.rect(t.border, row, 1, radius=8)
         gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        if no_effect(*gdef["buff"]) and no_effect(*gdef["debuff"]):
-            gui.text((row.x + 16, row.y + 36), "버프·디버프 없음", 12, t.muted)      # 철인통치
-        elif gov_buff_scale(app.game.player.leader) != 1.0 and gdef.get("buff_keys"):
-            lead = LEADER_BY_KEY[app.game.player.leader]
-            k = gov_buff_scale(app.game.player.leader)
-            gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]} ({lead['debuff'][0]}: {k:.0%})", 12, t.good)
-        else:
-            gui.text((row.x + 16, row.y + 36), f"＋ {gdef['buff'][1]}", 12, t.good)
-        if not no_effect(*gdef["debuff"]):
-            gui.text((row.x + 330, row.y + 36), f"－ {gdef['debuff'][1]}", 12, t.bad)
+        policies = POLICIES.get(gdef["key"], [])
+        completion = POLICY_COMPLETION.get(gdef["key"])
+        text = "정책 트리 없음" if not policies else " → ".join(p["name"] for p in policies)
+        gui.text((row.x + 16, row.y + 36), text, 11, t.muted, max_w=row.w - 32)
+        if hov and policies:
+            gui.tooltip = "\n".join(f"{i}. {p['name']} (행정력 {p['cost']:,}): {p['description']}"
+                                    for i, p in enumerate(policies, 1))
+            if completion:
+                gui.tooltip += f"\n★ {completion['name']}: {completion['description']}"
         if hov and gui.clicked:
             gui.clicked = False
             app.game.set_player_government(gdef["key"])
@@ -1154,8 +1156,9 @@ def draw_metro_pick(app):
         app.confirm_metro_pick()
 
 
-def _units_text(units):
-    return ", ".join(f"{C.UNITS[k]['name']} {n}" for k in C.UNIT_ORDER for n in [units.get(k, 0)] if n) or "없음"
+def _units_text(units, g=None, owner=NEUTRAL):
+    return ", ".join(f"{(g.unit_spec(owner, k) if g else C.UNITS[k])['name']} {n}"
+                     for k in C.UNIT_ORDER for n in [units.get(k, 0)] if n) or "없음"
 
 
 def draw_battle(app):
@@ -1196,15 +1199,15 @@ def draw_battle(app):
         st["mode"] = "assault" if idx == 0 else "surprise"
     # 양측 체력: 지금 남은 체력 / 가득 찬 체력
     att_hp, att_max = bd["att_hp"], bd["att_max"]
-    def_max = sum(C.UNITS[k]["hp"] * n for u in bd["def_units"].values() for k, n in u.items())
+    def_max = sum(g.unit_spec(owner, k)["hp"] * n for owner, u in bd["def_units"].items() for k, n in u.items())
     def_hp = pv["def_hp"]
     colw = (r.w - 72) / 2
     for i, (title, units_txt, val, factors, color, hp, mx) in enumerate((
             (f"공격 · {g.fname(army.owner)}" + (f" · 부대 {len(extra) + 1}개" if extra else ""),
-             _units_text(bd["att_units"]), f"공격력 {pv['A']:,.1f}",
+             _units_text(bd["att_units"], g, army.owner), f"공격력 {pv['A']:,.1f}",
              bd["att_factors"], t.accent, att_hp, att_max),
             ("방어 · " + ", ".join(g.fname(o) for o in bd["def_units"]),
-             " / ".join(_units_text(u) for u in bd["def_units"].values()), f"방어력 {pv['D']:,.1f}",
+             " / ".join(_units_text(u, g, owner) for owner, u in bd["def_units"].items()), f"방어력 {pv['D']:,.1f}",
              bd["def_factors"], t.bad, def_hp, def_max))):
         x = r.x + 24 + i * (colw + 24)
         y = r.y + 64
@@ -1238,7 +1241,7 @@ def draw_battle(app):
             cx = r.x + 24 + (i % 2) * (cw + 12)
             cy = y + (i // 2) * 28
             on = a.id in st["extra"]
-            lab = f"{app.world.node_name(a.loc)} · {_units_text(a.units)}"
+            lab = f"{app.world.node_name(a.loc)} · {_units_text(a.units, g, a.owner)}"
             v = gui.checkbox((cx, cy, cw, 24), lab, on, size=12)
             if v != on:
                 (st["extra"].add if v else st["extra"].discard)(a.id)
@@ -1273,7 +1276,8 @@ def draw_battle(app):
             gui.text((row.right - 300, by + 7), f"{hp:,.0f} − {dmg:,.0f} → {left:,.0f}", 12, t.text, "semibold",
                      anchor="midleft")
             gui.text((row.right - 12, by + 7), ("생존" if alive else "전멸") +
-                     (f" · 손실 {_units_text(lost)}" if lost else " · 손실 없음"), 12,
+                     (f" · 손실 {_units_text(lost, g, army.owner if j == 0 else next(iter(bd['def_units']), NEUTRAL))}"
+                      if lost else " · 손실 없음"), 12,
                      t.good if (alive if j == 0 else not alive) else t.bad, "semibold", anchor="midright", max_w=170)
         y += 118
     if gui.button((r.right - 264, r.bottom - 60, 110, 42), "취소"):
@@ -1326,7 +1330,7 @@ def draw_bombard(app):
     x = r.x + 24
     gui.rect(t.panel_alt, (x, y0, colw, box_h), radius=10)
     gui.text((x + 14, y0 + 10), f"폭격 · {g.fname(army.owner)}", 14, t.accent, "bold", max_w=colw - 28)
-    y = gui.wrap((x + 14, y0 + 34), _units_text(pv["units"]), colw - 28, 13)
+    y = gui.wrap((x + 14, y0 + 34), _units_text(pv["units"], g, army.owner), colw - 28, 13)
     gui.text((x + 14, y + 2), f"폭격 피해 {pv['dmg']:,.1f}", 16, weight="bold")
     gui.text((x + colw - 14, y + 4), f"({pv['lo']:,.1f} ~ {pv['hi']:,.1f})", 12, t.muted, anchor="topright")
     y += 30
@@ -1344,7 +1348,8 @@ def draw_bombard(app):
     who = ", ".join(g.fname(o) for o in pv["def_units"]) or g.fname(g.regions[node].owner)
     gui.text((x + 14, y0 + 10), f"대상 · {who}", 14, t.bad, "bold", max_w=colw - 28)
     if has_def:
-        y = gui.wrap((x + 14, y0 + 34), " / ".join(_units_text(u) for u in pv["def_units"].values()), colw - 28, 13)
+        y = gui.wrap((x + 14, y0 + 34), " / ".join(_units_text(u, g, owner) for owner, u in pv["def_units"].items()),
+                     colw - 28, 13)
         gui.text((x + 14, y + 2), f"체력 {pv['def_hp']:,.0f} / {pv['def_max']:,.0f}", 15, weight="bold")
         y += 28
         gui.wrap((x + 14, y), "피해는 대상 지역의 모든 부대에 무작위로 나뉩니다.", colw - 28, 12, t.muted)
