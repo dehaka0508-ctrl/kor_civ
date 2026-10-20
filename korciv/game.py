@@ -4734,6 +4734,15 @@ class Game(QueueMixin, LandMixin, DisasterMixin):
         이번 턴에 다 찬 것을 {(세력, 대상): (대표 지역, 참여 지역들)} 로 돌려준다."""
         groups = {}
         seen = set()
+        # 맞닿지 않은 지역을 편입하던 작업(v1.3.4: 지도에서 떨어진 대안–송림 등이 도하 자료로 이웃이었던 예전 세이브)은 취소
+        for rr in list(self.regions.values()):
+            p = rr.project
+            if p and p.kind == "annex" and rr.owner != NEUTRAL and p.key in self.regions \
+                    and not any(p.key in self.world.land_adj[m] for m in M.members(self, rr.id)):
+                ok, msg = self.cancel_project(rr.owner, rr.id)
+                if ok:
+                    self.event("info", f"{self.info(rr.id).name}: {josa(self.info(p.key).name, '과/와')} 맞닿지 않아 "
+                                       f"편입을 취소했습니다({msg}).", region=rr.id, fids=(rr.owner,))
         for rr in self.regions.values():
             p = rr.project
             if p and p.kind == "annex" and rr.owner != NEUTRAL and id(p) not in seen:

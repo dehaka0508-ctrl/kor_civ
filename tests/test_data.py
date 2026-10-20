@@ -96,3 +96,24 @@ def test_ongjin_split():
     assert w.land_adj[ic.id] == {n["경기 안산시"]} and w.is_bridge(ic.id, n["경기 안산시"])
     assert w.land_adj[hw.id] and ic.seas == ("SEA2",) and hw.seas == ("SEA1", "SEA2")
     assert ic.power_site and "꽃게" in ic.specialties and ic.scenic == "두무진"
+
+
+def test_no_adjacency_across_other_regions_land():
+    """v1.3.4: 지도에서 맞닿지 않은 두 지역은 이웃이 아니다. 도하(강 건너기) 자료로 이어 주는 것은 하구처럼
+    사이에 다른 지역 땅이 없는 물길뿐 — 남포 대안–황북 송림(사이에 평양 강남·남포 룡강), 평양 중구역–대동강구역,
+    평천구역–선교구역은 다른 구역 땅을 사이에 두고 이어져 있었다."""
+    import json
+    import os
+    from korciv.data import load_world
+    w = load_world()
+    path = os.path.join(os.path.dirname(__file__), "..", "korciv", "data", "map_geometry.json")
+    with open(path, encoding="utf-8") as f:
+        touch = {frozenset(p) for p in json.load(f)["adjacency"]}
+    nm = {v.name: k for k, v in w.regions.items()}
+    for a, b in (("남포 대안", "황북 송림"), ("평양 중구역", "평양 대동강"), ("평양 평천", "평양 선교")):
+        assert nm[b] not in w.land_adj[nm[a]], (a, b)
+        assert nm[a] in w.river_regions and nm[b] in w.river_regions       # 다른 도하 경계가 있어 하천 지역은 그대로
+    extra = {frozenset((a, b)) for a in w.order for b in w.land_adj[a]} - touch - set(w.bridges)
+    names = {tuple(sorted(w.regions[x].name for x in k)) for k in extra}
+    # 맞닿지 않고 이웃인 쌍은 한강 하구(물길만 건넘)와 같은 섬 안의 육로뿐
+    assert names <= {("개성 개풍", "인천 강화"), ("제주 서귀포", "제주 제주")}, names

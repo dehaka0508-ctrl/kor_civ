@@ -4939,3 +4939,20 @@ def test_fog_lifted_after_game_over():
     assert g.seen_name(other) == g.fname(other)
     g._update_fog()
     assert g.player.explored == explored0 and g.player.met == met0
+
+
+def test_annex_of_non_adjacent_target_is_cancelled():
+    """v1.3.4: 맞닿지 않은 지역을 편입하던 작업(예전 세이브의 대안 → 송림 등)은 다음 편입 진행 때 취소·50% 환급."""
+    g = new_game(player_start="S002", n_enemies=1)
+    tgt = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL and r not in g.world.land_adj["S002"])
+    rr = g.regions["S002"]
+    rr.project = None
+    from korciv.state import Project
+    p = Project(kind="annex", key=tgt, level=0, turns=4, per_turn=100.0, name=f"편입: {g.info(tgt).name}")
+    p.paid, p.funded = 200.0, True
+    rr.project = p
+    money = g.player.money
+    g._advance_annexes()
+    assert rr.project is None or rr.project.key != tgt
+    assert g.player.money == pytest.approx(money + 200.0 * C.PROJECT_REFUND)
+    assert any("맞닿지 않아" in e["text"] for e in g.events)
