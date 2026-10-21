@@ -25,7 +25,7 @@ class SetupState:
         self.leader = "sej"
         self.custom_name = ""
         self.n_enemies = 7
-        self.mode = "standard"
+        self.mode = "frontier"            # 건국 화면 기본 판도: 개척시대(v1.3.6)
         self.difficulty = 2
         self.fog = 1
         self.victories = {k: True for k in C.VICTORY_TYPES}
@@ -458,7 +458,7 @@ def draw_setup(app):
         else:
             pygame.draw.rect(gui.screen, t.border, gui.R(cr), 1, border_radius=int(3 * gui.u))
         if hov:
-            gui.tooltip = f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n디버프 {l['debuff'][0]}: {l['debuff'][1]}"
+            gui.tooltip = leader_tip(l, t)
             if gui.clicked:
                 gui.clicked = False
                 s.leader = l["key"]
@@ -795,10 +795,9 @@ def draw_ai_leader_picker(app):
             l = LEADER_BY_KEY[k]
             cell = (x + (n % cols) * (bw + gap), y + (n // cols) * (bh + gap), bw, bh)
             mine = k == s.leader
-            tip = (f"{l['name']}\n버프 {l['buff'][0]}: {l['buff'][1]}\n"
-                   f"디버프 {l['debuff'][0]}: {l['debuff'][1]}")
+            tip = leader_tip(l, t)
             if k in taken:
-                tip = ("내 지도자입니다." if mine else "다른 AI가 이미 골랐습니다.") + "\n" + tip
+                tip = ["내 지도자입니다." if mine else "다른 AI가 이미 골랐습니다."] + tip
             if gui.button(cell, l["name"], selected=k == cur, enabled=k not in taken,
                           size=13 if len(l["name"]) <= 7 else 11, tooltip=tip):
                 s.ai_leaders[i] = k
@@ -875,6 +874,16 @@ def start_from_setup(app):
         player_name=s.name.strip() or "대한", player_start=s.start, player_flag=dict(s.flag),
         ai_leaders=_unique_ai_leaders(s), ai_starts=list(s.ai_starts[: s.n_enemies]), seed=seed, max_turns=s.max_turns)
     app.start_game(settings)
+
+
+def leader_tip(l, t) -> list:
+    """지도자 툴팁(v1.3.6): 이름, 버프 이름(초록)·내용, 디버프 이름(빨강)·내용. 효과가 없는 칸은 뺀다."""
+    lines = [[(l["name"], t.text)]]
+    for (nm, desc), col in ((l["buff"], t.good), (l["debuff"], t.bad)):
+        if no_effect(nm, desc):
+            continue
+        lines.append([(nm, col), (f": {desc}", t.text)] if nm else [(desc, col)])
+    return lines
 
 
 def no_effect(name, desc) -> bool:

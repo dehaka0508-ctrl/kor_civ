@@ -30,7 +30,7 @@ COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
 RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
 RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
-NEUTRAL_POP_PER_INF = 15   # 기본모드 중립 보병: 15만 명당 1기(올림). 개척·혼돈은 1기, 편입 시 1기만 인계
+NEUTRAL_POP_PER_INF = 15   # 현실 모드 중립 보병: 15만 명당 1기(올림). 개척·혼돈은 1기, 편입 시 1기만 인계
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
 FACTORY_UNIT_OUTPUT = (1000, 1200, 1400, 1600, 2000)
@@ -172,7 +172,8 @@ LAWLESS_HAPPY = -5
 LAWLESS_TURNS = 4
 AREA_SHORTAGE = "부지 면적 부족 (주거 지구를 증축하거나 건물을 정리하세요)"
 DENSITY_BONUS_SCALE_MAX = 10.0
-GAME_MODES = {"standard": "기본모드", "frontier": "개척시대", "chaos": "혼돈의 강산"}
+# 게임모드(v1.3.6: 개척시대를 맨 앞·건국 화면 기본 선택으로, 기본모드 → 현실). 내부 키는 세이브 호환을 위해 그대로
+GAME_MODES = {"frontier": "개척시대", "standard": "현실", "chaos": "혼돈의 강산"}
 WEATHER_CHANCE = 0.012       # 전국 기상 약 0.58회/년 + 국지 산불·지진
 FIRE_CHANCE = 0.004          # 산불 발화 추첨은 전국에서 한 번
 QUAKE_CHANCE = 0.005

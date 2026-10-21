@@ -1740,3 +1740,36 @@ def test_fullscreen_toggle_does_not_minimize(app, monkeypatch):
     now[0] += 5000
     app.system_event(pygame.event.Event(pygame.WINDOWMINIMIZED))
     assert restored == [1]
+
+
+def test_v136_mode_order_leader_tip_and_pop_focus_rate(app, monkeypatch):
+    """v1.3.6: ① 개척시대가 맨 앞·기본 선택, '기본모드' → '현실' ② 지도자 툴팁은 '버프'·'디버프' 글자 없이
+    효과 이름을 초록·빨강으로 ③ 인구 성장 집중 성장률은 소수점 둘째 자리까지."""
+    import re
+    from korciv.leaders import LEADER_BY_KEY
+    from korciv.ui import modals as MO
+    assert list(C.GAME_MODES) == ["frontier", "standard", "chaos"]
+    assert C.GAME_MODES["standard"] == "현실" and "기본모드" not in C.GAME_MODES.values()
+    assert MO.SetupState().mode == "frontier"
+    t = app.theme
+    tip = MO.leader_tip(LEADER_BY_KEY["dan"], t)
+    flat = " ".join(s for line in tip for s, _ in line)
+    assert "버프" not in flat and "디버프" not in flat
+    assert tip[1][0] == (LEADER_BY_KEY["dan"]["buff"][0], t.good)
+    assert tip[2][0] == (LEADER_BY_KEY["dan"]["debuff"][0], t.bad)
+    assert len(MO.leader_tip(LEADER_BY_KEY["kgu"], t)) == 2          # 디버프 없음: 줄째 뺀다
+    app.gui.tooltip = tip                                            # 조각마다 색이 다른 툴팁도 그려진다
+    app.gui.draw_tooltip()
+    # 인구 성장 집중: 0.236361 → 0.24
+    g = _main_game(app, seed=3, n_enemies=1, player_start="S002")
+    monkeypatch.setattr(g, "growth_scale", lambda rid: 0.945444)
+    app.select("S002")
+    app.left_open, app.left_tab, app.tab = True, "region", "action"
+    spy = _Spy(app)
+    try:
+        spy.draw()
+        label = spy.find("인구 성장 집중")
+    finally:
+        spy.close()
+    assert label == "인구 성장 집중 (+0.24%p/턴)", label
+    assert not re.search(r"\d\.\d{3}", label)

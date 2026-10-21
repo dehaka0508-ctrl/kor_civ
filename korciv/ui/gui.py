@@ -495,10 +495,20 @@ class Gui:
     def draw_tooltip(self):
         if not self.tooltip:
             return
-        lines = str(self.tooltip).split("\n")
+        # 글자열(줄바꿈 \n) 또는 줄 목록. 줄은 글자열, (글자, 색), [(글자, 색), …] 조각 목록 가운데 하나(v1.3.6)
+        tip = self.tooltip
+        raw = str(tip).split("\n") if isinstance(tip, str) else list(tip)
+        lines = []
+        for ln in raw:
+            if isinstance(ln, str):
+                lines.append([(ln, None)])
+            elif isinstance(ln, tuple) and len(ln) == 2 and isinstance(ln[0], str):
+                lines.append([ln])
+            else:
+                lines.append([(s, c) for s, c in ln])
         size = 13
         lh = measure("가", size)[1] + 4
-        w = max(measure(l, size)[0] for l in lines) + 24
+        w = max(sum(measure(s, size)[0] for s, _ in segs) for segs in lines) + 24
         h = len(lines) * lh + 14
         x, y = self.mouse[0] + 18, self.mouse[1] + 20
         sw, sh = self.size()
@@ -512,5 +522,9 @@ class Gui:
         self.paper((x, y, w, h))
         pygame.draw.rect(self.screen, mix(t.gold, t.text, 0.2), self.R((x, y, w, h)), 1, border_radius=int(4 * self.u))
         self.rect(t.vermilion, (x, y, 3, h))
-        for i, l in enumerate(lines):
-            self.text((x + 12, y + 7 + i * lh), l, size, t.text)
+        for i, segs in enumerate(lines):
+            sx = x + 12
+            for s, c in segs:
+                if s:
+                    self.text((sx, y + 7 + i * lh), s, size, c or t.text)
+                    sx += measure(s, size)[0]

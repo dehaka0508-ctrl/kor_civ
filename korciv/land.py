@@ -13,7 +13,7 @@ def fit_initial(info, b):
     limit = info.area_km2 * 0.85
     while R.area_usage(info.pop0, b)[0] > limit and b['housing'] < 5:
         b['housing'] += 1
-    # 농업 부지부터 정리. 수력·원전은 기본모드에서 가동 상태를 보존한다.
+    # 농업 부지부터 정리. 수력·원전은 현실 모드에서 가동 상태를 보존한다.
     for key in ('farm', 'fishery', 'bank', 'factory', 'power', 'extract', 'specialty'):
         while b.get(key, 0) and R.area_usage(info.pop0, b)[0] > limit:
             b[key] -= 1

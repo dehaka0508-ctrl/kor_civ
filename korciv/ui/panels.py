@@ -630,7 +630,8 @@ def draw_action_tab(app, body):
     # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
     pf = getattr(r, "pop_focus", False)
     can = pf or g.growth_happy(r) >= C.POP_FOCUS_MIN_H
-    on = gui.checkbox((x, y, w - 110, 26), f"인구 성장 집중 (+{C.POP_FOCUS_GROWTH * g.growth_scale(rid) * 100:g}%p/턴)", pf, size=13)
+    rate = f"{C.POP_FOCUS_GROWTH * g.growth_scale(rid) * 100:.2f}".rstrip("0").rstrip(".")   # 0.236361 → 0.24
+    on = gui.checkbox((x, y, w - 110, 26), f"인구 성장 집중 (+{rate}%p/턴)", pf, size=13)
     if on != pf:
         ok, msg = g.set_pop_focus(pid, rid, on)
         app.toast(msg, None if ok else t.bad)
