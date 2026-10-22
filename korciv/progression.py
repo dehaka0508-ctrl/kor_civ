@@ -106,10 +106,11 @@ class ProgressionMixin:
         if key in f.techs:
             return False, "이미 해금한 기술입니다."
         spec = TECHS[key]
-        if f.sci_points < spec["cost"]:
-            return False, f"과학력 {spec['cost']:,}이 필요합니다."
+        cost = self.tech_cost(fid, key)
+        if f.sci_points < cost:
+            return False, f"과학력 {cost:,.0f}이 필요합니다."
         old_hp = self.unit_spec(fid, key)["hp"] if spec["kind"] == "unit" else None
-        f.sci_points -= spec["cost"]
+        f.sci_points -= cost
         f.techs.add(key)
         if old_hp:
             new_hp = self.unit_spec(fid, key)["hp"]
@@ -122,9 +123,17 @@ class ProgressionMixin:
         self.event("info", f"{self.fname(fid)}: {spec['name']} 기술 해금", fids=(fid,))
         return True, spec["name"]
 
+    def tech_cost(self, fid, key):
+        return TECHS[key]["cost"] * (self.mods(fid).mult("military_tech_cost") if TECHS[key]["kind"] == "unit" else 1)
+
     def unit_spec(self, fid, key):
         f = self.factions[fid] if isinstance(fid, int) and 0 <= fid < len(self.factions) else None
-        return unit_spec_for(getattr(f, "techs", ()), key)
+        spec = unit_spec_for(getattr(f, "techs", ()), key)
+        if f and self.mods(fid).value("multiwar_def_flat"):
+            from . import diplomacy as D
+            if len(D.enemies(self, fid)) >= 2:
+                spec["df"] = max(0, spec["df"] - self.mods(fid).value("multiwar_def_flat"))
+        return spec
 
     @staticmethod
     def science_per_turn_cost(tier):
@@ -141,10 +150,14 @@ class ProgressionMixin:
         f = self.factions[fid] if isinstance(fid, int) and 0 <= fid < len(self.factions) else None
         if not f or not f.alive or kind not in GREAT_PEOPLE:
             return False, "위인을 맞이할 국가 또는 분야가 없습니다."
+        if kind == "chancellor" and self.mods(fid).value("no_chancellor"):
+            return False, "문신 숙청: 위대한 재상 구매 불가"
         rid = rid or f.capital
         rr = self.regions.get(rid)
         if rr is None or rr.owner != fid:
             return False, "자국 지역에만 위인을 배치할 수 있습니다."
+        if f.leader == "sej" and kind == "scientist" and rr.b.get("edu", 0) < 4:
+            return False, "집현전: 연구 4단계 이상 지역에서 과학자를 구매하세요."
         regs = list(self.regions_of(fid))
         gates = {
             "scientist": (any(r.b.get("edu", 0) >= 4 for r in regs), "종합대학(연구 4단계)이 필요합니다."),
@@ -188,6 +201,25 @@ class ProgressionMixin:
         return [gp for gp in self.great_people
                 if gp["loc"] == rid and (kind is None or gp["kind"] == kind)]
 
+    def sync_general_escorts(self):
+        """전투에 동행한 장군은 생존 부대를 따라가며, 타국에서 호위가 사라지면 퇴장한다."""
+        for gp in list(getattr(self, "great_people", [])):
+            if gp["kind"] != "general":
+                continue
+            escort = self.armies.get(gp.get("escort"))
+            if escort is not None and escort.owner == gp["owner"]:
+                gp["loc"] = escort.loc
+                continue
+            gp.pop("escort", None)
+            rr = self.regions.get(gp["loc"])
+            if rr is not None and rr.owner == gp["owner"]:
+                continue
+            troops = self.armies_at(gp["loc"], gp["owner"])
+            if troops:
+                gp["escort"] = max(troops, key=lambda a: a.count()).id
+            else:
+                self.great_people.remove(gp)
+
     def great_person_bonus(self, rid, key, fid=None):
         rr = self.regions.get(rid)
         owner = fid if fid is not None else (rr.owner if rr else None)
@@ -208,6 +240,7 @@ class ProgressionMixin:
         if not self.factions[gp["owner"]].alive:
             return False, "멸망한 국가의 위인은 이동할 수 없습니다."
         gp["loc"] = rid
+        gp.pop("escort", None)
         self._progression_changed()
         return True, f"{gp['name']} 이동"
 

@@ -85,6 +85,8 @@ class GovernanceMixin:
         if fid == NEUTRAL or not 0 <= fid < len(self.factions):
             return False, "국가가 없습니다."
         f = self.factions[fid]
+        if key == "academy" and self.mods(fid).value("no_academy"):
+            return False, "대숙청: 사관학교 건설 불가"
         if key == "nuclear" and self.settings.mode != "standard" and "power" not in f.techs:
             return False, "대용량 전력망 기술 필요"
         if level >= 4:

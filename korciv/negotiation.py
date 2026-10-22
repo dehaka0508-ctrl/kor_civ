@@ -234,6 +234,9 @@ def start(g, ai, other, res, n, ai_sells, init="player"):
     noise = rng.uniform(0.92, 1.08)
     st = {"ai": ai, "other": other, "res": res, "n": int(n), "ai_sells": bool(ai_sells), "init": init,
           "turn": g.turn, "noise": noise, "hist": [], "status": "open", "final": False}
+    if not D.resource_trade_allowed(g, ai, other):
+        st.update(status="refused", why="자력갱생: 외국과 자원·특산물 협상 불가")
+        return st
     if blocked(g, ai, other, res, ai_sells):
         st.update(status="refused", why="이번 턴에는 이 거래를 다시 이야기하지 않겠답니다(협상 결렬).")
         return st

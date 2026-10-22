@@ -271,7 +271,7 @@ def draw_region_info(app, rect):
                        f"{g.seen_name(wf)}에게 돌려줍니다")
             y = gui.wrap((x, y), txt, w, 11, t.accent if back is not None else t.muted) + 4
     if full and r.focus:
-        y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
+        y = kv(gui, x, y, w, "생산 집중", f"적용 중 (인구 산출 +{C.FOCUS_POP_BONUS * g.focus_multiplier(r.owner):.0%})" if g.focus_active(r) else "대기 (건설·생산 중)",
                t.good if g.focus_active(r) else t.muted)
     if visible:
         # 나라마다 점령·편입 가운데 빨리 끝나는 쪽 하나만(같은 나라의 점령과 편입은 서로 경쟁하지 않는다)
@@ -618,7 +618,7 @@ def draw_action_tab(app, body):
             app.start_metro_pick(rid)
         y += 34
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
-    on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS:.0%})", r.focus, size=13)
+    on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS * g.focus_multiplier(r.owner):.0%})", r.focus, size=13)
     if on != r.focus:
         ok, msg = g.set_focus(pid, rid, on)
         app.toast(msg)
@@ -630,7 +630,7 @@ def draw_action_tab(app, body):
     # 인구 성장 집중: 건설·병력 생산을 하지 않고 실질 행복도 5 이상이면 성장률 +0.5%p
     pf = getattr(r, "pop_focus", False)
     can = pf or g.growth_happy(r) >= C.POP_FOCUS_MIN_H
-    rate = f"{C.POP_FOCUS_GROWTH * g.growth_scale(rid) * 100:.2f}".rstrip("0").rstrip(".")   # 0.236361 → 0.24
+    rate = f"{C.POP_FOCUS_GROWTH * g.growth_scale(rid) * g.focus_multiplier(r.owner) * 100:.2f}".rstrip("0").rstrip(".")
     on = gui.checkbox((x, y, w - 110, 26), f"인구 성장 집중 (+{rate}%p/턴)", pf, size=13)
     if on != pf:
         ok, msg = g.set_pop_focus(pid, rid, on)
@@ -1186,7 +1186,7 @@ def _army_tab_body(app, x, y, w, pid):
     if g.solo_army(army):
         # 포병·폭격기 부대(v1.3.0): 우클릭한 곳에 적 병력이 있으면 폭격 확인 창, 없으면 이동
         what = "포병" if army.units.get("art") else "폭격기"
-        rng = (f"육상 {C.ART_RANGE}칸" if army.units.get("art")
+        rng = (f"육상 {g.artillery_range(army.owner)}칸" if army.units.get("art")
                else f"공항이 있는 지역에서 {C.BOMB_RANGE}칸, 육지↔바다는 2칸으로 셈")
         y = gui.wrap((x, y + 2), f"{what} 부대 — 우클릭: 적 병력이 있으면 폭격 확인 창({rng}), 없으면 이동. "
                                  f"Shift+우클릭: 병력 없는 곳의 건물 폭격", w, 12, t.muted) + 8
@@ -2086,7 +2086,7 @@ def draw_nation_status(app, body):
     if stalled:
         y = kv(gui, x, y, w, "자금 부족으로 정지", f"{stalled}건", t.bad)
     focus = [r for r in regs if g.focus_active(r)]
-    bonus = sum(C.POP_OUTPUT * r.pop * C.FOCUS_POP_BONUS for r in focus)
+    bonus = sum(C.POP_OUTPUT * r.pop * C.FOCUS_POP_BONUS * g.focus_multiplier(r.owner) for r in focus)
     y = kv(gui, x, y, w, "생산 집중 지역", f"{len(focus)}곳 (+{bonus:,.0f})")
     # 승리의 길
     y = section(gui, x, y + 6, w, "승리의 길")

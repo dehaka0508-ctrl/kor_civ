@@ -15,6 +15,7 @@ from .land import LandMixin, fit_initial, chaos_world
 from .disasters import DisasterMixin
 from .governance import GovernanceMixin
 from .progression import ProgressionMixin
+from .leader_rules import LeaderRulesMixin
 from .data import DO8, load_world
 from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
 from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES, ALL_BUILDINGS
@@ -127,7 +128,7 @@ def pick_starts(world, rng, n, requested=()):
     return [r if r else next(rest) for r in fixed]
 
 
-class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMixin):
+class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMixin):
     def __init__(self, settings: Settings | None = None, world=None):
         self.settings = settings or Settings()
         self.world = world or load_world()
@@ -256,6 +257,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 f.annex_disband = set()
         self._morale = {}
         self._mods = {}
+        self.migrate_leader_state()
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
 
     # ------------------------------------------------------------------ 초기화
@@ -336,6 +338,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def _give_start_region(self, f: Faction, rid: str):
         r = self.regions[rid]
         r.owner = f.id
+        self.leader_acquired(f.id, rid)
         r.b["admin"] = min(5, r.b.get("admin", 0) + 1) if self.settings.mode == "standard" else 1
         f.admin = r.pop * 10 if self.settings.mode == "standard" else 10.0
         self._take_garrison(rid, f.id)
@@ -355,8 +358,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         self._mods.clear()
         for f in self.factions:
             f.money = C.START_MONEY * C.MONEY_SCALE * self.mods(f.id).mult("start_money")
-            if self.settings.mode == "standard":
-                self.regions[f.capital].pop *= self.mods(f.id).mult("start_pop")     # 온조왕 '십제'
+            self.regions[f.capital].pop *= self.mods(f.id).mult("start_pop")     # 온조왕 '십제'
         for a in self.factions:
             for b in self.factions:
                 if a.id != b.id and a.is_ai:
@@ -548,6 +550,14 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def remove_army(self, army):
         self.armies.pop(army.id, None)
+        for gp in list(getattr(self, "great_people", [])):
+            if gp["kind"] != "general":
+                continue
+            if gp.get("escort") == army.id:
+                gp["loc"] = army.loc
+                others = self.armies_at(army.loc, gp["owner"])
+                gp["escort"] = max(others, key=lambda a: a.count()).id if others else None
+        self.sync_general_escorts()
 
     def hostile(self, fid, other) -> bool:
         if other == fid:
@@ -667,6 +677,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 else:
                     army.loc = u
                     army.order = None
+                    self.sync_general_escorts()
                     return
             for v in self.world.node_neighbors(u):
                 if v not in seen:
@@ -958,6 +969,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         a = self.armies.get(army_id)
         if not a:
             return False, "부대가 없습니다."
+        remain = {k: n - max(0, min(units.get(k, 0), n)) for k, n in a.units.items()}
+        test = Army(0, a.owner, a.loc, {k: n for k, n in remain.items() if n > 0})
+        if (a.domain() == "naval" and not test.empty()
+                and (test.cargo_used() > test.cargo_cap() or test.air_used() > test.air_cap())):
+            return False, "수송 중인 육군·항공기를 먼저 하역하거나 함께 해산하세요."
         in_own = not self.world.is_sea(a.loc) and self.regions[a.loc].owner == a.owner
         for k, v in units.items():
             v = min(v, a.units.get(k, 0))
@@ -974,11 +990,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         return True, ""
 
     def _validate_capacity(self, a):
-        if a.domain() != "naval":
+        if a.domain() != "naval" and not self.world.is_sea(a.loc):
             return
         while a.cargo_used() > a.cargo_cap():
             for k in ("tank", "art", "inf"):
                 if a.units.get(k, 0) > 0:
+                    self._split_dmg(a, k, 1)
                     a.units[k] -= 1
                     break
             else:
@@ -986,11 +1003,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         while a.air_used() > a.air_cap():
             for k in ("bmb", "ftr"):
                 if a.units.get(k, 0) > 0:
+                    self._split_dmg(a, k, 1)
                     a.units[k] -= 1
                     break
             else:
                 break
-        a.units = {k: v for k, v in a.units.items() if v > 0}
+        self._prune_army(a)
 
     # ------------------------------------------------------------------ 이동 범위
     def can_attack_now(self, fid, target_owner) -> bool:
@@ -1001,6 +1019,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def reachable(self, army) -> dict:
         """node -> {"action": move/attack/land/bombard, "path": [...], "strong": bool}"""
+        if army.id in getattr(self, "post_attack_moves", set()):
+            return self.post_attack_options(army)
         out = {}
         fid = army.owner
         dom = army.domain()
@@ -1043,7 +1063,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                         continue
                     out[v] = {"action": "attack" if hostile_units else "move", "path": [v], "strong": False}
             if army.units.get("art"):
-                for v in self.land_within(start, C.ART_RANGE):
+                for v in self.land_within(start, self.artillery_range(fid)):
                     if self.hostile(fid, self.regions[v].owner) and v not in out:
                         out[v] = {"action": "bombard", "path": [], "strong": False}
                 if self.solo_army(army):
@@ -1056,7 +1076,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             start = army.loc
             frontier = [(start, [])]
             seen = {start}
-            for step in range(C.NAVAL_STEPS):
+            for step in range(self.naval_steps(army)):
                 nxt = []
                 for u, path in frontier:
                     if w.is_sea(u):
@@ -1089,7 +1109,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                                 seen.add(v)
                 frontier = nxt
             if army.units.get("dd") and w.is_sea(start):
-                for v in w.distances_from(start, C.NAVAL_BOMB_RANGE):
+                for v in w.distances_from(start, self.naval_bomb_range(fid)):
                     if not w.is_sea(v) and self.hostile(fid, self.regions[v].owner) \
                             and out.get(v, {}).get("action") != "attack":
                         out.setdefault(v, {"action": "bombard", "path": [], "strong": False})
@@ -1321,9 +1341,9 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def _bombard_units(self, a, target):
         w = self.world
         out = {}
-        if a.units.get("art") and not w.is_sea(a.loc) and target in self.land_within(a.loc, C.ART_RANGE):
+        if a.units.get("art") and not w.is_sea(a.loc) and target in self.land_within(a.loc, self.artillery_range(a.owner)):
             out["art"] = a.units["art"]
-        if a.units.get("dd") and w.is_sea(a.loc) and w.distances_from(a.loc, C.NAVAL_BOMB_RANGE).get(target):
+        if a.units.get("dd") and w.is_sea(a.loc) and w.distances_from(a.loc, self.naval_bomb_range(a.owner)).get(target):
             out["dd"] = a.units["dd"]
         if a.units.get("bmb"):
             # 폭격기는 공항이 있는 지역(내 땅이나 통행권으로 들어간 나라의 공항)이나 항공모함에서만 출격
@@ -1363,7 +1383,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             sm = 1 / (1 + C.SHELTER_K * rr.b["shelter"])
             dmg *= sm
             factors.append((f"방공호 {rr.b['shelter']}단계", sm))
-        dmg *= m.mult("combat_all")
+        dmg *= m.mult("combat_all") * self.leader_bomb_mult(fid, a.loc, tgt, units)
         mo = self.morale(fid)
         if abs(mo - 1) >= 0.005:
             dmg *= mo
@@ -1381,7 +1401,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 "intercept": intercept, "aa": aa, "ftr": ftr,
                 "bmb_hp": a.hp_left("bmb") if units.get("bmb") else 0.0,
                 "bmb_max": a.hp_max("bmb") if units.get("bmb") else 0.0,
-                "building_p": R.bomb_building_chance(guns, units.get("bmb", 0) > 0) if self.bomb_targets(tgt) else 0.0,
+                "building_p": self.bomb_building_probability(fid, guns, units.get("bmb", 0) > 0) if self.bomb_targets(tgt) else 0.0,
                 "shelter": rr.b["shelter"]}
 
     # ------------------------------------------------------------------ 전투 예측
@@ -1424,7 +1444,10 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         w = self.world
         m = self.mods(fid)
         tgt_owner = self.regions[target].owner
-        mult = self.morale(fid)                  # 사기: 실질 평균 행복도 −10 이하면 감소
+        mult = self.morale(fid)
+        if max(self.regions[target].lines.values(), default=0) >= 2:
+            mult *= m.mult("strong_line_attack")
+        # 사기: 실질 평균 행복도 −10 이하면 감소
         if tgt_owner != NEUTRAL and any(self.regions[target].lines.values()):
             mult *= m.mult("atk_vs_line")        # 당 태종 '안시성': 방어선이 있는 지역
         if self.retake_bonus(fid, target):
@@ -1463,6 +1486,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                     val *= m.mult("ally_war_atk")
                 elif mode == "assault":
                     val *= m.mult("no_ally_assault")
+            val *= self.leader_attack_mult(fid, a.loc, target, a.units, mode)
             val *= mult * m.mult("combat_all") * self.great_person_bonus(a.loc, "attack_mult", fid)
             total += val
             src = "coast" if amph else a.loc
@@ -1476,21 +1500,23 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def defense_strength(self, fid_att, target, main_src, mode):
         defenders = self.hostile_units_at(fid_att, target)
         rr = self.regions[target]
-        dsum = sum(a.spec(k)["df"] * self.eff(a, k) * self.morale(a.owner) * self.mods(a.owner).mult("combat_all")
-                   * self.great_person_bonus(target, "defense_mult", a.owner) for a in defenders for k in a.units
+        dsum = sum(self.leader_unit_defense(a, k) * self.eff(a, k) * self.morale(a.owner) * self.mods(a.owner).mult("combat_all")
+                   * self.great_person_bonus(target, "defense_mult", a.owner) * self.leader_defense_mult(a.owner, main_src, target) for a in defenders for k in a.units
                    if k not in C.NO_GROUND_COMBAT)                   # 포병·공군은 돌격·기습 전투력 0
         if rr.owner != NEUTRAL and defenders and self.hostile(fid_att, rr.owner):
             dsum += self.air_support(rr.owner, target, False)[0] * self.morale(rr.owner)   # 근처 공항 전투기 방어 지원
         line_level = rr.lines.get(main_src, 0) if main_src else 0
+        if rr.owner != NEUTRAL and self.resisting(rr):
+            line_level = max(line_level, int(self.mods(rr.owner).value("resisting_line", 0)))
         if rr.owner != NEUTRAL and mode == "assault":
             k = self.mods(rr.owner).value("line_k", C.LINE_BONUS)
+            if self.ambushed(rr.owner, fid_att):
+                k *= self.mods(rr.owner).value("ambushed_line", 1)
             dsum *= 1 + k * line_level
         if rr.owner != NEUTRAL and self.region_count(rr.owner) <= 3:
             dsum *= self.mods(rr.owner).mult("defense_small")
         if rr.owner != NEUTRAL and self.info(target).coastal:
             dsum *= self.mods(rr.owner).mult("def_coast")      # 이순신: 해안 지역 방어
-        if self.ambushed(rr.owner, fid_att):
-            dsum *= 1 - self.mods(rr.owner).value("ambushed_def")   # 선덕여왕 '대야성 함락'
         if rr.owner != NEUTRAL and target in self.near_capital(rr.owner, 1):
             dsum *= self.mods(rr.owner).mult("capital_guard_def")
         dsum *= M.def_mult(self, target)                            # 광역시: 넓을수록 지키기 어렵다
@@ -1498,7 +1524,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def ambushed(self, fid, attacker) -> bool:
         """선덕여왕 '대야성 함락': attacker 의 선전포고를 받은 지 4턴이 안 됐다."""
-        if fid == NEUTRAL or not self.mods(fid).value("ambushed_def"):
+        if fid == NEUTRAL or not (self.mods(fid).value("ambushed_def") or self.mods(fid).value("ambushed_line")):
             return False
         w = self.dip.wars.get(D.pair(fid, attacker))
         return bool(w) and w.get("aggressor") == attacker and self.turn - w["start"] < C.AMBUSH_TURNS
@@ -1555,6 +1581,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             add(af, f"협공 {n}방향", 1 + C.FLANK_BONUS * (n - 1))
         if att_units.get("inf"):
             add(af, self.fx_source(fid, "atk_inf") + " — 보병", m.mult("atk_inf"))
+        for a in armies:
+            add(af, LEADER_BY_KEY[self.factions[fid].leader]["name"] + " 지도자 효과",
+                self.leader_attack_mult(fid, a.loc, target, a.units, mode))
+        if max(rr.lines.values(), default=0) >= 2:
+            add(af, self.fx_source(fid, "strong_line_attack"), m.mult("strong_line_attack"))
         if mode == "assault":
             add(af, self.fx_source(fid, "atk_assault"), m.mult("atk_assault"))
             if amph:
@@ -1583,13 +1614,15 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             om = self.mods(rr.owner)
             if mode == "assault" and line:
                 k = om.value("line_k", C.LINE_BONUS)
+                if self.ambushed(rr.owner, fid):
+                    k *= om.value("ambushed_line", 1)
                 add(df, f"방어선 {line}단계", 1 + k * line)
             if self.region_count(rr.owner) <= 3:
                 add(df, self.fx_source(rr.owner, "defense_small"), om.mult("defense_small"))
             if self.info(target).coastal:
                 add(df, self.fx_source(rr.owner, "def_coast"), om.mult("def_coast"))
             if self.ambushed(rr.owner, fid):
-                add(df, self.fx_source(rr.owner, "ambushed_def"), 1 - om.value("ambushed_def"))
+                add(df, self.fx_source(rr.owner, "ambushed_line") + " — 방어선 효과", om.value("ambushed_line", 1))
             if M.of(self, target):
                 add(df, f"{M.label(self, target)}({len(M.members(self, target))}개 지역) 넓은 방어", M.def_mult(self, target))
         for o in def_units:
@@ -1686,6 +1719,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         spread="share": (수 x 체력) 비율로 나눔 / order=(키, ...): 그 순서로 먼저 채움(돌격 방어측) /
         spread="random": 유닛 하나하나에 무작위로 나눔(폭격)."""
         pool = []
+        naval_ids = {a.id for a in armies if a.domain() == "naval"}
         generals = [(gp, {a.id for a in armies if a.owner == gp["owner"] and a.loc == gp["loc"]})
                     for gp in self.great_people if gp["kind"] == "general"]
         acted = self.__dict__.setdefault("_acted", set())
@@ -1733,7 +1767,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 lost[k] = lost.get(k, 0) + dead
         for a in armies:
             a.units = {k: v for k, v in a.units.items() if v > 0}
-            if a.domain() == "naval":
+            if a.id in naval_ids:
                 self._validate_capacity(a)
             if a.empty():
                 self.remove_army(a)
@@ -1742,11 +1776,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 self.great_people.remove(gp)
         return lost
 
-    def units_value(self, lost: dict) -> float:
-        return sum(C.UNITS[k]["cost"] * C.UNITS[k]["turns"] * n for k, n in lost.items())
+    def units_value(self, lost: dict, owner=None) -> float:
+        return sum((self.unit_spec(owner, k) if owner is not None else C.UNITS[k])["cost"] * C.UNITS[k]["turns"] * n for k, n in lost.items())
 
     # ------------------------------------------------------------------ 건설·생산 옵션
-    def build_time(self, fid, key, base_turns):
+    def build_time(self, fid, key, base_turns, rid=None, level=0):
         m = self.mods(fid)
         mult = m.mult("build_time_all")
         if key in C.PROD_BUILDINGS:
@@ -1755,7 +1789,15 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             mult *= m.mult("build_time_factory")
         if key in C.INDUSTRY_BUILDINGS:
             mult *= m.mult("build_time_industry")     # 정조 '문체반정'
+        if key in ("extract", "power"):
+            mult *= m.mult("build_time_" + key)
+        if rid is not None and any(r in self.world.river_regions for r in M.members(self, rid)):
+            mult *= m.mult("river_build_time")
         extra = m.add("build_admin_turns") if key == "admin" else 0
+        if level == 5 and key in C.PROD_BUILDINGS:
+            extra += m.add("level5_build_add")
+        if key == "port":
+            extra += m.add("port_turns_add")
         return max(1, int(math.floor(base_turns * mult + 0.5)) + int(extra))
 
     def unit_cost(self, fid, rid, key) -> float:
@@ -1776,10 +1818,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         if self.regions[rid].b["academy"] and self.regions[rid].owner == fid:
             disc = C.ACADEMY_LOCAL
         else:
-            for n in self.world.land_adj[rid]:
+            for n in self.land_within(rid, int(m.value("academy_radius", 1))):
                 rr = self.regions[n]
                 if rr.owner == fid and rr.b["academy"]:
                     disc = max(disc, C.ACADEMY_ADJ)
+        if self.regions[rid].war_from not in (None, fid):
+            c *= m.mult("occupied_unit_cost")
         return c * (1 - disc)
 
     def region_value(self, rid):
@@ -1810,10 +1854,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         if self.regions[rid].owner != NEUTRAL:
             return 0
         m = self.mods(fid)
-        return R.value_turns(self.region_value(rid)[0], m.mult("occ_time") * m.mult("enemy_occ_time"))
+        return R.value_turns(self.region_value(rid)[0], m.mult("occ_time") * m.mult("enemy_occ_time")) + int(m.add("military_occ_add"))
 
-    def annex_cost(self, fid, rid) -> float:
-        return R.annex_cost(self.region_output_estimate(rid), self.region_count(fid)) * self.mods(fid).mult("cost_annex")
+    def annex_cost(self, fid, rid, participants=1) -> float:
+        reduction = self.mods(fid).add("joint_cost_reduction") * participants if participants >= 2 else 0
+        return R.annex_cost(self.region_output_estimate(rid), self.region_count(fid)) * self.mods(fid).mult("cost_annex") * max(0, 1 - reduction)
 
     def annex_sources(self, fid, target) -> list:
         """target(중립)을 지금 편입 착수할 수 있는 내 지역: 맞닿고 슬롯이 비어 있음(광역시는 한 번만). 인구 많은 순."""
@@ -1875,7 +1920,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             base = self.neutral_turns(fid, v)
             n = joint.get(v, 0)
             red = self.joint_annex_reduction(n + w_self, bool(me) or v in jm)
-            out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v),
+            out.append({"target": v, "turns": base, "cost": self.annex_cost(fid, v, n + w_self),
                         "value": self.region_value(v)[0], "joint": n, "sea": False, "self_weight": w_self,
                         "reduction": red, "eff_turns": max(1, math.ceil(base * (1 - red) - 1e-9)),
                         # 다른 세력의 점령·편입이 끝나기까지 남은 턴(가장 빠른 것). 경쟁 판단용
@@ -1918,13 +1963,13 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             cost = R.prod_building_cost(key, lv, info.power_site)
             cost *= self.building_cost_mult(fid, key, lv)
             ok, why = self.building_allowed(fid, rid, key, lv)
-            add("build", key, self.building_name(rid, key), cost, self.build_time(fid, key, R.prod_building_turns(lv)),
+            add("build", key, self.building_name(rid, key), cost, self.build_time(fid, key, R.prod_building_turns(lv), rid, lv),
                 ok, why, lv)
         for key in ("shelter", "aa"):
             lv = self.reserved_level(rid, key) + 1
             if lv <= 5:
                 add("build", key, C.DEF_BUILDINGS[key]["name"], R.def_building_cost(key, lv) * self.building_cost_mult(fid, key, lv),
-                    self.build_time(fid, key, R.def_building_turns(lv)), level=lv)
+                    self.build_time(fid, key, R.def_building_turns(lv), rid, lv), level=lv)
         borders = sorted(self.world.land_adj[rid]) + (["coast"] if info.coastal else [])
         for bkey in borders:
             lv = self.reserved_level(rid, "line", bkey) + 1
@@ -1932,7 +1977,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 continue
             nm = "해안선" if bkey == "coast" else self.info(bkey).name
             add("build", "line", f"방어선({nm})", R.def_building_cost("line", lv) * self.building_cost_mult(fid, "line", lv),
-                self.build_time(fid, "line", R.def_building_turns(lv)), level=lv, border=bkey)
+                self.build_time(fid, "line", R.def_building_turns(lv), rid, lv), level=lv, border=bkey)
         for key, spec in C.SINGLE_BUILDINGS.items():
             if self.reserved_level(rid, key):
                 continue
@@ -1940,7 +1985,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             if key == "port" and not info.coastal:
                 continue
             add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * self.building_cost_mult(fid, key),
-                self.build_time(fid, key, spec["turns"]), ok, why, 1)
+                self.build_time(fid, key, spec["turns"], rid, 1), ok, why, 1)
         for key, (label, equivalent) in C.SITE_POWER.items():
             if not getattr(info, key) or self.reserved_level(rid, key):
                 continue
@@ -1948,7 +1993,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             if key == 'nuclear' and rr.nuclear_destroyed:
                 ok, why = False, '원전 재건설 영구 불가'
             add('build', key, label + ' 건설', R.prod_building_cost('power', equivalent) * self.building_cost_mult(fid, key),
-                self.build_time(fid, 'power', R.prod_building_turns(equivalent)), ok,
+                self.build_time(fid, 'power', R.prod_building_turns(equivalent), rid, 1), ok,
                 why, level=1)
         if rr.flooded:
             add('repair', 'flood', '침수 복구', 0, 1)
@@ -1959,10 +2004,10 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 continue                      # 내륙 지역: 해군은 아예 표시하지 않는다(항구도 지을 수 없음)
             if u["kind"] == "naval" and not self.projected_buildings(rid).get('port'):
                 ok, why = False, "항구 필요"
-            if ok and not rr.project and not self.can_pay_oil(fid, u["oil"]):
-                ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
+            if ok and not rr.project and not self.can_pay_oil(fid, self.unit_oil(fid, key)):
+                ok, why = False, f"석유 {self.unit_oil(fid, key)} 필요(석탄 {self.unit_oil(fid, key) * C.OIL_AS_COAL}로 대체 가능)"
             per = self.unit_cost(fid, rid, key)
-            add("unit", key, u["name"], per * u["turns"], u["turns"], ok, why, oil=u["oil"])
+            add("unit", key, u["name"], per * u["turns"], self.unit_turns(fid, key), ok, why, oil=self.unit_oil(fid, key))
         for t in self.annex_targets(fid, rid):
             name = f"편입: {self.info(t['target']).name} [{t['value']}]"
             n = t["joint"] + t["self_weight"]
@@ -1995,7 +2040,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             # 천도는 한 번에 한 곳만: 다른 지역에서 진행 중이면 고를 수 없다
             busy = next((r.id for r in self.regions_of(fid)
                          if r.id != rid and r.project and r.project.kind == "capital"), None)
-            add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT, C.CAPITAL_MOVE_TURNS,
+            add("capital", "capital", "천도(수도 이전)", y * C.CAPITAL_MOVE_COST_MULT * m.value("capital_cost_mult", 1),
+                max(1, round(C.CAPITAL_MOVE_TURNS * m.value("capital_turns_mult", 1))),
                 busy is None, "" if busy is None else f"{josa(self.info(busy).name, '으로/로')} 천도 진행 중")
         return self.queued_options(fid, rid, opts)
 
@@ -2077,7 +2123,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         if any(st not in built for st in C.SCIENCE_STEPS if not C.SCIENCE[st]["unit"]):
             return None                          # 점령으로 꺼진 시설이 있으면 발사할 수 없다(되찾거나 철거 뒤 다시 지어야)
         for r in mine:
-            if "pad" not in r.sci:
+            if "pad" not in r.sci or self.facility_paused(r.id):
                 continue
             have = set()
             for a in self.armies_at(r.id, fid):
@@ -2106,7 +2152,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         return seen
 
     def econ_buildings(self, fid, key) -> list:
-        return [r.id for r in self.regions_of(fid) if key in r.econ]
+        return [r.id for r in self.regions_of(fid) if key in r.econ and not self.facility_paused(r.id)]
 
     def econ_need(self, fid, n) -> int:
         """관계 조건 국가 수: 살아 있는 다른 나라가 적으면 그 과반수까지만 요구."""
@@ -2245,6 +2291,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                    f"(다시 지으려면 처음부터)", region=rr.id, fids=(f.id,))
 
     def _check_econ_projects(self, f):
+        if any(r.econ and self.facility_paused(r.id) for r in self.regions_of(f.id)):
+            return
         for rr in self.regions_of(f.id):
             p = rr.project
             if not p or p.kind != "econ":
@@ -2389,10 +2437,10 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                     f"산출 {C.FISH_OUTPUT * lv * fm * pm:,.0f}")
         if key == "factory":
             u = max(0, min(lv, getattr(rr, "fuel_used", 0)))
-            out = R.factory_output(lv, u) * m.mult("output_factory") * pm
+            out = R.factory_output(lv, u) * m.mult("output_factory") * pm * (1 + m.add("factory_fuel_output") * u)
             return f"연료 {u}/{lv}개 → 턴당 산출 {out:,.0f}"
         if key == "bank":
-            bm = m.mult("output_bank") * (m.mult("educated_output") if rr.b.get("edu", 0) >= 3 else 1) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0)
+            bm = m.mult("output_bank") * self.leader_bank_mult(fid, rid) * (m.mult("educated_output") if rr.b.get("edu", 0) >= 3 else 1) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ and not self.facility_paused(rr.id) else 1.0)
             return f"턴당 산출 {C.BANK_OUTPUT * R.g(lv) * bm * pm:,.0f}"
         if key == "power":
             return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → {self.power_elec(fid, 'coal', lv):g}, "
@@ -2534,6 +2582,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def tax_happy(self, fid, t_pct) -> float:
         """세율 t%일 때 턴당 행복도 변화."""
         m = self.mods(fid)
+        if m.value("tax_relief_cap"):
+            cap = min(t_pct, m.value("tax_relief_cap"))
+            result = R.tax_happiness(t_pct, 1, 1, self.tax_base(fid))
+            result += R.tax_happiness(cap, m.value("tax_over10", 1), 1, self.tax_base(fid)) - R.tax_happiness(cap, 1, 1, self.tax_base(fid))
+            return result * m.mult("tax_penalty") if result < 0 else result
         result = R.tax_happiness(t_pct, m.value("tax_over10", 1.0), m.value("tax_over15", 1.0), self.tax_base(fid))
         return result * m.mult("tax_penalty") if result < 0 else result
 
@@ -2703,11 +2756,15 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             for sp in self.info(r.id).specialties:
                 made[sp] = made.get(sp, 0) + r.b["specialty"]
         tithe = self.mods(f.id).value("specialty_tithe")     # 세종대왕 '고기 없이는 못살아'
+        f.last["specialty_tithe"] = 0
+        f.last["specialty_tithe_items"] = {}
         if tithe:
             cut = sum(made.values()) // int(tithe)
             for _ in range(cut):                              # 가장 많이 나는 특산물부터 1개씩 수라상으로
                 sp = max(made, key=lambda k: (made[k], k))
                 made[sp] -= 1
+                items = f.last["specialty_tithe_items"]
+                items[sp] = items.get(sp, 0) + 1
             f.last["specialty_tithe"] = cut
         cap = self.regions.get(f.capital)
         if self.mods(f.id).value("tribute") and cap and cap.owner == f.id and not cap.occ and not self.resisting(cap):
@@ -2924,7 +2981,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 return 1 + C.COAST_FISH_BONUS
         return 1.0
 
-    def calc_output(self, rid, full=False, owner=None):
+    def calc_output(self, rid, full=False, owner=None, ignore_resistance=False):
         """full=True 면 공장에 연료가 가득 들어간다고 보고 계산(추정·미리보기용)."""
         rr = self.regions[rid]
         if rr.flooded:
@@ -2933,13 +2990,13 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         m = self.mods(owner)
         phi = None if full else getattr(rr, "fuel_used", 0)
         educated = m.mult("educated_output") if rr.b.get("edu", 0) >= 3 else 1.0
-        pop_mult = 1 + C.FOCUS_POP_BONUS if self.focus_active(rr) and owner == rr.owner else 1.0
+        pop_mult = 1 + C.FOCUS_POP_BONUS * self.focus_multiplier(owner) if self.focus_active(rr) and owner == rr.owner else 1.0
         if owner != NEUTRAL and rid == self.factions[owner].capital:
             pop_mult *= m.mult("capital_pop_output")
         y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
                             phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
-                            m.mult("output_bank") * educated * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ else 1.0),
-                            m.mult("output_factory") * educated,
+                            m.mult("output_bank") * educated * self.leader_bank_mult(owner, rid) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ and not self.facility_paused(rr.id) else 1.0),
+                            m.mult("output_factory") * educated * (1 + m.add("factory_fuel_output") * (rr.b["factory"] if full else getattr(rr, "fuel_used", 0))),
                             pop_mult,
                             m.mult("output_prod"), self.farm_mult(owner, rid))
         if rr.b["bank"] >= 3:
@@ -2950,7 +3007,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             y += C.BANK_OUTPUT * R.g(pb) * m.mult("output_bank") * m.mult("output_prod")
         if owner != NEUTRAL and owner == rr.owner:
             y *= m.mult("output_money") * self.great_person_bonus(rid, "output_mult")
-            y *= R.unhappy_output_mult(self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
+            y *= R.unhappy_output_mult(rr.happy if ignore_resistance else self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
             if rid == self.factions[owner].capital:
                 y *= m.mult("capital_money")
                 y *= 1 + C.CAPITAL_OUTPUT_BONUS * m.value("capital_bonus_mult", 1.0)   # 수도 (선왕 '5경 분산': 절반)
@@ -2963,7 +3020,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             if self.turn <= m.value("early_output_turns", 0):
                 y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 10턴
             y *= 1 + C.HAEDONG_OUTPUT * self.haedong_steps(owner)   # 발해 선왕 '해동성국'
-        return y * (0.9 if self.weather_at(rid, "snow") else 1.0)
+        return y * self.leader_output_mult(rid) * (0.9 if self.weather_at(rid, "snow") else 1.0)
 
     def near_capital(self, fid, dist=2) -> set:
         """수도에서 육상 dist칸 이내 지역."""
@@ -2989,6 +3046,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         rr = self.regions[rid]
         if rr.owner != fid:
             return False, "내 지역이 아닙니다."
+        if not on:
+            self.release_focus(rr)
         rr.focus = bool(on)
         if on:
             rr.pop_focus = False             # 집중은 하나만
@@ -3002,7 +3061,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             return False, f"행복도(전쟁 피로 제외) {C.POP_FOCUS_MIN_H} 이상에서만 쓸 수 있습니다."
         rr.pop_focus = bool(on)
         if on:
-            rr.focus = False
+            self.release_focus(rr)
         return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH * 100:g}%p" if on else "끔")
 
     def pop_focus_active(self, rr) -> bool:
@@ -3019,6 +3078,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         return capacity, tier2
 
     def crowd_penalty(self, rr) -> float:
+        if rr.owner != NEUTRAL and self.mods(rr.owner).value("no_crowd"):
+            return 0.0
         used = self.area_usage(rr.id)[0]
         area = self.info(rr.id).area_km2
         if used >= area * 1.10:
@@ -3058,6 +3119,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         # 해방 반환용 기록(v1.3.0): 전쟁으로 넘어가면 직전 주인과 그 턴을 남긴다(그 나라의 동맹·연합국이
         # LIBERATION_TURNS 안에 되찾으면 돌려준다). 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
         if reason == "점령" and old != NEUTRAL and new_owner != NEUTRAL:
+            self.factions[old].lost_regions.add(rid)
             rr.war_from, rr.war_turn = old, self.turn
         else:
             rr.war_from, rr.war_turn = None, None
@@ -3109,6 +3171,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             self._line_group_drop(p, rid)
         self._government_before_transfer(rr, old, new_owner, reason)
         rr.owner = new_owner
+        self.leader_acquired(new_owner, rid)
         rr.project = resume
         rr.econ = set()
         if revive is not None:
@@ -3434,6 +3497,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         lib = (f"{josa(self.fname(liberator), '이/가')} {self.fname(old)}에게서 {josa(self.info(rid).name, '을/를')} 되찾아 "
                f"원 주인 {self.fname(fid)}에게 돌려주었습니다") if liberator is not None else None
         fids = (fid, old) if liberator is None else (liberator, fid, old)
+        self.leader_capture_effects(fid, rid, old)
         if retake:
             rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, h_before))
             self.event("captured", (lib + " (저항 없이 복구).") if lib else
@@ -3447,7 +3511,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             n_res = max(0, int(n_res * m.mult("resist_time") + 0.5) + int(m.add("resist_turns")))    # 광개토대왕 '약탈경제': +50%
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": n_res,
-                         "recover": C.RESIST_RECOVER_TURNS // 2 if half else C.RESIST_RECOVER_TURNS}
+                         "recover": C.RESIST_RECOVER_TURNS}
         if lib:
             self.event("captured", lib + f" (저항 {rr.resist['resist']}턴).", region=rid, fids=fids)
             return
@@ -3459,12 +3523,14 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def end_turn(self):
         if self.game_over:
             return
+        self.sync_general_escorts()
         from . import ai
         self.events = []
         self.battle_regions = []
         self.new_ranking = None
         self._morale = {}
         self._acted = set()
+        self.post_attack_moves = set()
         # 대응하지 않은 플레이어 반란은 AI 규칙으로 처리
         for rid in list(self.pending_rebellions):
             rr = self.regions[rid]
@@ -3489,6 +3555,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         self._phase_bombard()
         self._phase_attack()
         self._phase_guerrilla()
+        self.leader_attrition()
         self.evict_trespassers()             # 전쟁이 끝난 나라 땅에 남은 부대는 자국으로
         # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
         self._fund_projects()
@@ -3541,6 +3608,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         self._auto_assign_energy()
         self._update_fog()
         self._advance_gotos()
+        self.sync_general_escorts()
         if self.player.alive and self.player.is_ai is False:
             ai.propose_to_player(self)
 
@@ -3595,10 +3663,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                     self._unload(a, a.order["target"])
 
     def _encounter(self, a, b):
+        richer = b.owner != NEUTRAL and a.owner != NEUTRAL and self.gdp(b.owner) > self.gdp(a.owner)
+        poorer = b.owner != NEUTRAL and a.owner != NEUTRAL and self.gdp(a.owner) > self.gdp(b.owner)
         pa = sum(a.spec(k)["atk"] * self.eff(a, k) * self.mods(a.owner).mult("atk_" + a.spec(k)["kind"]) for k in a.units) * self.mods(a.owner).mult("combat_all")
         pb = sum(b.spec(k)["atk"] * self.eff(b, k) * self.mods(b.owner).mult("atk_" + b.spec(k)["kind"]) for k in b.units) * self.mods(b.owner).mult("combat_all")
-        pa *= self.great_person_bonus(a.loc, "attack_mult", a.owner)
-        pb *= self.great_person_bonus(b.loc, "attack_mult", b.owner)
+        pa *= self.great_person_bonus(a.loc, "attack_mult", a.owner) * self.leader_attack_mult(a.owner, a.loc, b.loc, a.units, "encounter", b.owner)
+        pb *= self.great_person_bonus(b.loc, "attack_mult", b.owner) * self.leader_attack_mult(b.owner, b.loc, a.loc, b.units, "encounter", a.owner)
         r = self.rng.uniform(C.RAND_LO, C.RAND_HI)
         db, da = R.battle_damage(pa, pb, r)
         la = self.apply_damage([a], da)
@@ -3610,6 +3680,10 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         self._score_units(a.owner, b.owner, lb)
         self._score_units(b.owner, a.owner, la)
         a_alive, b_alive = a.id in self.armies, b.id in self.armies
+        if a_alive and not b_alive:
+            self.leader_battle_win(a.owner, b.owner, richer)
+        elif b_alive and not a_alive:
+            self.leader_battle_win(b.owner, a.owner, poorer)
         if a_alive and b_alive:
             a.order = None
             b.order = None
@@ -3627,7 +3701,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 kills[winner] = kills.get(winner, 0) + sum(lost.values())
             k = self.mods(loser).value("bounty")
             if k and lost:                       # 김원봉 '현상금': 잃은 유닛 생산비의 50%를 상대가 얻는다
-                self.factions[winner].money += self.units_value(lost) * k * C.MONEY_SCALE
+                self.factions[winner].money += self.units_value(lost, loser) * k * C.MONEY_SCALE
 
     def _exec_move(self, a, path):
         w = self.world
@@ -3642,6 +3716,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                     a.order = None
                 return
             a.loc = node
+            self.sync_general_escorts()
         a.order = None
         if not w.is_sea(a.loc) and a.domain() == "land":
             rr = self.regions[a.loc]
@@ -3672,8 +3747,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                     if fx and fy:
                         self._naval_battle(sid, x, fx, y, fy)
 
-    def _naval_power(self, fid, fleets, sid):
-        p = sum(a.spec("dd")["atk"] * self.eff(a, "dd") + a.spec("bmb")["bomb"] * self.eff(a, "bmb") for a in fleets)
+    def _naval_power(self, fid, fleets, sid, enemy=None):
+        p = sum((a.spec("dd")["atk"] * self.eff(a, "dd") + a.spec("bmb")["bomb"] * self.eff(a, "bmb")) * self.leader_attack_mult(fid, a.loc, sid, a.units, "naval", enemy) for a in fleets)
         if self.coast_controller(sid) == fid:
             p *= 1 + C.COAST_NAVAL_DEF
         return p * self.morale(fid) * self.lead_mult(fid, "naval_power") * self.mods(fid).mult("combat_all")   # 이순신: 해전 +30%
@@ -3691,11 +3766,18 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         return v
 
     def _naval_battle(self, sid, x, fx, y, fy):
-        px, py = self._naval_power(x, fx, sid), self._naval_power(y, fy, sid)
+        richer = self.gdp(y) > self.gdp(x)
+        poorer = self.gdp(x) > self.gdp(y)
+        px, py = self._naval_power(x, fx, sid, y), self._naval_power(y, fy, sid, x)
         if px <= 0 and py <= 0:
             return
         r = self.rng.uniform(C.RAND_LO, C.RAND_HI)
         dy, dx = R.battle_damage(px, py, r)
+        nx, ny = sum(a.count() for a in fx), sum(a.count() for a in fy)
+        if nx < ny:
+            dx *= self.mods(x).mult("outnumbered_dmg")
+        if ny < nx:
+            dy *= self.mods(y).mult("outnumbered_dmg")
         for loser, lp, wp in ((x, px, py), (y, py, px)):
             off = self.mods(loser).value("naval_loss_off")
             if off and lp < wp:
@@ -3708,6 +3790,10 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         ly = self._ship_damage(fy, dy, x, sid)
         self._score_units(x, y, ly)
         self._score_units(y, x, lx)
+        if any(a.id in self.armies for a in fx) and not any(a.id in self.armies for a in fy):
+            self.leader_battle_win(x, y, richer)
+        elif any(a.id in self.armies for a in fy) and not any(a.id in self.armies for a in fx):
+            self.leader_battle_win(y, x, poorer)
         self.event("battle", f"해전({self.world.seas[sid].name}): {self.fname(x)} 손실 {sum(lx.values())}척, "
                    f"{self.fname(y)} 손실 {sum(ly.values())}척", fids=(x, y))
 
@@ -3795,13 +3881,13 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         dmg += (self.eff(a, "bmb") if n_bmb and live else 0) * a.spec("bmb")["bomb"] * m.mult("atk_air")
         bombers = {"bmb": n_bmb}
         dmg *= self.rng.uniform(C.RAND_LO, C.RAND_HI) / (1 + C.SHELTER_K * rr.b["shelter"])
-        dmg *= self.morale(a.owner) * m.mult("combat_all")
+        dmg *= self.morale(a.owner) * m.mult("combat_all") * self.leader_bomb_mult(a.owner, a.loc, tgt, units)
         defenders = self.hostile_units_at(a.owner, tgt)
         lost = self.apply_damage(defenders, dmg, spread="random") if defenders else {}
         self._score_units(a.owner, rr.owner, lost)
         # 건물 피해: 포병·함포 30%, 폭격기 60%, 둘 다 90%로 생산·방어 건물(방어선 포함) 하나 −1단계
         guns = units.get("art", 0) + units.get("dd", 0) > 0
-        p = R.bomb_building_chance(guns, sum(bombers.values()) > 0)
+        p = self.bomb_building_probability(a.owner, guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
             hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 따로(아래 10% 파괴) — v1.3.0: 함포의 항구 우선 파괴 삭제
             if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
@@ -3881,7 +3967,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def army_acted(self, army_id) -> bool:
         """이번 턴 이미 행동(전투·이동·폭격·상륙)한 부대: 더 움직이거나 공격·폭격할 수 없다."""
-        return army_id in self.fought_armies() or army_id in self.moved_armies()
+        return army_id not in getattr(self, "post_attack_moves", set()) and (army_id in self.fought_armies() or army_id in self.moved_armies())
 
     def air_can_stay(self, fid, rid) -> bool:
         """공군이 들어가 머물 수 있는 땅: 내·연합 영토와 군사 통행권(동맹 포함)이 있는 나라의 땅."""
@@ -3897,6 +3983,14 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
+        if a.id in getattr(self, "post_attack_moves", set()):
+            if target not in self.post_attack_options(a):
+                return False, "추가 이동은 인접한 안전 지역 1칸만 가능합니다."
+            self.post_attack_moves.discard(a.id)
+            self._exec_move(a, [target])
+            self.moved_armies().add(a.id)
+            a.order, a.goto = None, None
+            return True, "몽골 기병: 공격 후 1칸 추가 이동"
         if self.army_acted(a.id):
             return False, "이번 턴에 이미 행동한 부대입니다(다음 턴에 다시 명령)."
         if target is None:
@@ -3934,6 +4028,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         if t == "land" or (t == "attack" and (w.is_sea(a.loc) or a.domain() == "naval")):
             for node in o.get("path", []):          # 함대는 해역 경로를 따라 간 뒤 내린다
                 a.loc = node
+            self.sync_general_escorts()
             tgt = o["target"]
             made, msg = self.unload_cargo(a.id, None, tgt)
             mv.add(a.id)
@@ -3980,6 +4075,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         self.fought_targets.setdefault((a.owner, old), set()).add(target)
         a.order, a.goto = None, None
         a.loc = target
+        self.sync_general_escorts()
         self.begin_occupation(a.owner, target)
         self.fought.add(a.id)
         self._update_fog()
@@ -4113,7 +4209,16 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def _ground_battle(self, fid, armies, tgt, mode, all_attackers):
         escorts = [(gp, [a.id for a in armies if a.owner == fid and a.loc == gp["loc"]])
                    for gp in self.great_people if gp["owner"] == fid and gp["kind"] == "general"]
+        defenders = self.hostile_units_at(fid, tgt)
+        enemy = defenders[0].owner if defenders else self.regions[tgt].owner
+        richer = enemy != NEUTRAL and self.gdp(enemy) > self.gdp(fid)
         self._ground_battle_inner(fid, armies, tgt, mode, all_attackers)
+        if self.armies_at(tgt, fid) and not self.hostile_units_at(fid, tgt):
+            self.leader_battle_win(fid, enemy, richer)
+        if self.mods(fid).value("tank_after_move"):
+            for a in armies:
+                if a.id in self.armies and set(a.units) == {"tank"}:
+                    self.__dict__.setdefault("post_attack_moves", set()).add(a.id)
         for gp, troop_ids in escorts:
             if not troop_ids or gp not in self.great_people:
                 continue
@@ -4121,7 +4226,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             if not survivors:
                 self.great_people.remove(gp)
             else:
-                gp["loc"] = max(survivors, key=lambda a: a.count()).loc
+                escort = max(survivors, key=lambda a: a.count())
+                gp["loc"], gp["escort"] = escort.loc, escort.id
 
     def _ground_battle_inner(self, fid, armies, tgt, mode, all_attackers):
         w = self.world
@@ -4178,8 +4284,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 dd *= win[0]
                 ad *= win[1]
                 note = "기습 성공"
-                if self.mods(fid).value("sabotage") and any(a.units.get("inf") for a in attackers):
-                    note += self._sabotage(rr)               # 김원봉 '의열단'
+                if self.mods(fid).value("sabotage"):
+                    note += self._sabotage(rr, fid)               # 김원봉 '의열단'
             else:
                 dd *= fail[0]
                 ad *= fail[1]
@@ -4249,7 +4355,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             terr = self.world.terrain_between(main, tgt)
             if terr and terr["kind"] == "도하":
                 ad *= dm.mult("river_def_dmg")
-        # 맥아더 '자기과신': 상대 병력이 더 많은 전투에서 받는 피해 +20%
+        if dm is not None and main in self.regions:
+            terr = self.world.terrain_between(main, tgt)
+            if terr and terr["kind"] in ("도하", "돌파", "산악 돌파"):
+                ad *= dm.mult("boundary_def_dmg")
+        # 맥아더 자기과신
         n_att = sum(a.count(("land",)) for a in attackers if a.id in self.armies)
         n_def = sum(a.count() for a in defenders)
         if n_def > n_att:
@@ -4263,16 +4373,21 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             dd += dm.value("loss_dmg")
         return dd, ad
 
-    def _sabotage(self, rr) -> str:
-        """김원봉 '의열단': 대상 지역의 생산·군사 건물 하나를 1단계 낮춘다. 한 단계뿐인 항구·공항·사관학교는
-        폭격과 같이 대상이 아니다(v1.3.0 — 한 번에 통째로 사라지지 않게)."""
+    def _sabotage(self, rr, fid=None) -> str:
+        """생산·방어 건물 2단계 파괴와 과학·경제 시설 일시 정지."""
+        note = ""
+        if fid is not None and (rr.sci or rr.econ) and self.rng.random() < self.mods(fid).add("sabotage_pause_chance"):
+            rr.facility_off_until = self.turn + 4
+            note = ", 과학·경제 시설 4턴 정지"
         keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS)
                 if k in rr.b and k != "line" and rr.b[k] > 0]
         if not keys:
-            return ""
-        k = self.rng.choice(sorted(keys))
-        rr.b[k] -= 1
-        return f", 의열단 파괴: {BUILDING_NAMES.get(k, k)} {rr.b[k] + 1} → {rr.b[k]}단계"
+            return note
+        key = self.rng.choice(sorted(keys))
+        levels = int(self.mods(fid).value("sabotage_levels", 1)) if fid is not None else 1
+        before = rr.b[key]
+        rr.b[key] = max(0, before - levels)
+        return f", 의열단 파괴: {BUILDING_NAMES.get(key, key)} {before} → {rr.b[key]}단계" + note
 
     def _phase_heal(self):
         """회복(v1.3.0): 마지막 전투 뒤 2턴 이상 지난 부대는 매 턴 유닛 1개당 체력 1씩 회복(이동·점령은 상관없음)."""
@@ -4445,10 +4560,14 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     # ---- 6~7. 슬롯 진행
     def _fund_projects(self):
         """세력마다 우선순위 순서로 이번 턴 비용을 낸다. 모자라면 그 작업은 정지(뒤의 더 싼 작업은 진행 가능)."""
+        self.refresh_joint_costs()
         for f in self.factions:
             if not f.alive:
                 continue
             self._reserve_food(f)          # 식량 부족이 예상되면 식량 구매가 최우선
+            for r in self.regions_of(f.id):
+                if not r.project and not r.queue:
+                    r.unit_chain_count = 0
             self._check_econ_projects(f)   # 경제 단계 건설 중 조건이 깨졌으면 중단·환급
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
@@ -4678,11 +4797,11 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             cost = 0.0
             for n in need:
                 for lv in range(r.lines.get(n, 0) + 1, top + 1):
-                    plan["turns_sum"] += self.build_time(fid, "line", R.def_building_turns(lv))
+                    plan["turns_sum"] += self.build_time(fid, "line", R.def_building_turns(lv), r.id, lv)
                     cost += R.def_building_cost("line", lv) * self.building_cost_mult(fid, "line", lv)
                     plan["steps"] += 1
             plan["lines"][r.id] = need
-            plan["cost"][r.id] = cost
+            plan["cost"][r.id] = cost * m.mult("border_group_cost")
         # 광역시(v1.3.0)는 슬롯이 하나: 구성 지역 하나라도 대상이면 모두 함께 묶음 공사에 넣고(경계 없는 지역은 빈 몫),
         # 점령당하는 중·저항 중인 구성 지역이 있으면 광역시 전체를 뺀다. 턴 수는 슬롯(광역시는 한 번) 수로 나눈다
         for rid in list(plan["lines"]):
@@ -4701,14 +4820,14 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 plan["cost"].setdefault(x, 0.0)
         if plan["lines"]:
             plan["steps"] = sum(top - self.regions[rid].lines.get(b, 0) for rid, bs in plan["lines"].items() for b in bs)
-            plan["turns_sum"] = sum(self.build_time(fid, "line", R.def_building_turns(lv))
+            plan["turns_sum"] = sum(self.build_time(fid, "line", R.def_building_turns(lv), rid, lv)
                                     for rid, bs in plan["lines"].items() for b in bs
                                     for lv in range(self.regions[rid].lines.get(b, 0) + 1, top + 1))
         plan["interrupt"] = [rid for rid in plan["lines"] if self.regions[rid].project]
         plan["slots"] = len({M.center_of(self, rid) for rid in plan["lines"]})
         n = plan["slots"]
         if n:
-            plan["turns"] = max(1, math.ceil(plan["turns_sum"] / n - 1e-9))
+            plan["turns"] = max(1, math.ceil(plan["turns_sum"] / n * m.mult("border_group_time") - 1e-9))
             plan["total"] = sum(plan["cost"].values())
             plan["per_turn"] = plan["total"] / plan["turns"]
         return plan
@@ -4884,6 +5003,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def _complete_project(self, f, rr, p):
         name = self.info(rr.id).name
+        if p.kind != "unit":
+            rr.unit_chain_count = 0
         if p.kind == "repair":
             rr.flooded = False
             text = f"{name} 침수 복구 완료"
@@ -4897,7 +5018,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 text = (f"{name} {self.building_name(rr.id, p.key, p.level)} 완공" if p.key in C.PROD_LEVEL_NAMES
                         else f"{name} {self.building_name(rr.id, p.key)} {p.level}단계 완공")
         elif p.kind == "unit":
-            self.deliver_units(f.id, rr.id, p.key, 1)
+            self.deliver_units(f.id, rr.id, p.key, self.leader_units_completed(f.id, rr.id, p.key))
             text = f"{name}에서 {self.unit_spec(f.id, p.key)['name']} 생산 완료"
         elif p.kind == "annex":
             tgt = self.regions[p.key]
@@ -5070,6 +5191,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def set_specialty(self, fid, rid, kind, state):
         """state: pin(고정 공급) / block(제외) / auto(수동 지정 해제). 다음 자원 단계에 반영."""
+        if kind == "국왕 진상":
+            return False, "국왕 진상은 생산량 8개당 1개를 우선 배정하며 수정할 수 없습니다."
         r = self.regions[rid]
         if r.owner != fid:
             return False, "내 지역이 아닙니다."
@@ -5125,7 +5248,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def _phase_tax(self, f: Faction):
         gdp = self.gdp(f.id)
-        revenue = gdp * f.tax * f.income_mult
+        revenue = self.leader_tax_revenue(f.id)
         up = self.upkeep(f.id)
         f.money += revenue - up
         spent = sum(f.spend.values())
@@ -5149,7 +5272,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 # 인구 상한 없음. 성장은 전쟁 피로를 뺀 행복도로 판정하고, 과밀 행복도 감소가 브레이크
                 g = R.pop_growth_rate(self.growth_happy(r), self.density_growth(r.id)) * f.pop_mult
                 if self.pop_focus_active(r):
-                    g += C.POP_FOCUS_GROWTH * self.growth_scale(r.id)
+                    g += C.POP_FOCUS_GROWTH * self.growth_scale(r.id) * self.focus_multiplier(r.owner)
                 g += getattr(f, "ration_bonus", 0.0) * self.growth_scale(r.id) * self.mods(f.id).mult("ration_growth")
                 g *= self.mods(f.id).mult("growth")
                 if g > 0:
@@ -5170,7 +5293,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             # 전쟁 피로도: 전쟁 중이면 쌓이고(선포한 쪽 1, 당한 쪽 0.5/턴), 평시엔 턴당 1 회복
             rate = D.war_weary_rate(self, f.id)
             if rate:
-                D.add_war_weary(self, f.id, rate, defensive=D.war_weary_defensive(self, f.id))
+                D.add_war_weary(self, f.id, rate, defensive=D.war_weary_defensive(self, f.id), scaled=True)
             else:
                 D.add_war_weary(self, f.id, -C.WAR_WEARY_RECOVERY * m.mult("war_weary_recovery") - m.add("war_weary_recovery_add"))
             floor = 0.0 if f.happy_floor_until > self.turn else C.HAPPY_MIN
@@ -5181,6 +5304,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 r.h_delta = 0.0
                 continue
             t, cap, floor = per_fac[r.owner]
+            if self.turn < r.focus_unrest_until:
+                t += self.mods(r.owner).add("focus_release_happy")
             spec = C.SPECIALTY_HAPPY_TURN * len(r.supplied)      # 특산물: 공급받는 종류마다 턴당
             if getattr(r, "metro", None) is not None:
                 spec *= C.METRO_SPEC_HAPPY                       # 광역시: 1종의 효과는 절반(대신 광역시 전체에)
@@ -5240,11 +5365,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         """저항을 반영한 행복도(전쟁 피로·징집 피로 제외)."""
         phase, k = self.resist_phase(rr)
         if phase == "resist":
-            return C.RESIST_HAPPY
+            return C.RESIST_HAPPY * self.mods(rr.owner).value("occupied_happy_mult", 1)
         if phase == "recover":
             rs = rr.resist
             frac = (k - rs["resist"] + 1) / rs["recover"]
-            return C.RESIST_HAPPY + (rr.happy - C.RESIST_HAPPY) * frac
+            low = C.RESIST_HAPPY * self.mods(rr.owner).value("occupied_happy_mult", 1)
+            return low + (rr.happy - low) * frac
         return rr.happy
 
     def eff_happy(self, rr, rebel=False) -> float:
@@ -5254,6 +5380,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
             return rr.happy
         f = self.factions[rr.owner]
         weary = f.war_weary
+        if not rebel and self.mods(rr.owner).value("war_weary_happy_free"):
+            weary = 0
         if rebel:
             weary = (weary - getattr(f, "war_weary_def", 0.0)) * C.REBEL_WEARY_MULT
         h = (self.base_happy(rr) - weary - rr.conscript - self.minority_penalty(rr.owner)
@@ -5271,7 +5399,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         """자연경관: 경관 지역과, 그 지역 주인의 인접 지역에 행복도 +5(경관마다)."""
         if rr.owner == NEUTRAL:
             return 0.0
-        return C.SCENIC_HAPPY * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
+        return C.SCENIC_HAPPY * self.mods(rr.owner).value("scenic_mult", 1) * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
 
     def haedong_steps(self, fid) -> float:
         """발해 선왕 '해동성국': 영토가 20곳을 넘을 때마다 1단계(최대 5). 단계마다 전 지역 산출 +2%."""
@@ -5295,7 +5423,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         stamp = getattr(self, "acq_counter", 0)
         hit = cache.get(fid)
         if hit is None or hit[0] != stamp:
-            hit = (stamp, k * max(0, self.region_count(fid) - C.MINORITY_REGIONS))
+            hit = (stamp, k * max(0, self.region_count(fid) - self.mods(fid).value("minority_regions", C.MINORITY_REGIONS)))
             cache[fid] = hit
         return hit[1]
 
@@ -5337,6 +5465,8 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
         k = self.mods(fid).value("capital_fall_rebel")      # 연개소문 '삼형제의 내분'
         if k and self.turn - getattr(self.factions[fid], "capital_fall_turn", -999) < C.CAPITAL_FALL_TURNS:
             p *= k
+        if self.mods(fid).value("capital_unhappy_rebel") and self.eff_happy(self.regions[self.factions[fid].capital]) < 0:
+            p *= self.mods(fid).value("capital_unhappy_rebel")
         return min(1.0, p)
 
     def _phase_rebellion(self):
@@ -5359,7 +5489,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
 
     def suppress_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
-        S = sum(a.spec(k)["df"] * n for r in M.members(self, rid) for a in self.armies_at(r, fid)
+        S = sum(self.leader_unit_defense(a, k) * n for r in M.members(self, rid) for a in self.armies_at(r, fid)
                 for k, n in a.units.items())
         Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         p = S / (S + Rv) if S + Rv > 0 else 0.0
@@ -5368,7 +5498,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def rebellion_accept_cost(self, fid, rid) -> float:
         """요구 수용 비용: 나라 턴당 GDP × (−반란 판정 행복도) × 0.001(행복도 −50이면 GDP의 5%)."""
         h = max(0.0, -self.rebel_happy(self.regions[rid]))
-        return max(0.0, self.gdp(fid)) * h * C.REBEL_PAY_GDP
+        return max(0.0, self.gdp(fid)) * h * C.REBEL_PAY_GDP * self.mods(fid).mult("rebel_pay_cost")
 
     def resolve_rebellion(self, fid, rid, choice):
         """choice: pay / suppress. 결과 메시지 반환. 요구 수용은 돈 지급뿐이다(예전 'tax' 는 pay 로 본다)."""
@@ -5401,7 +5531,7 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 M.sync(self, M.of(self, rid))
             for a in [a for r in M.members(self, rid) for a in self.armies_at(r, fid)]:
                 for k, n in list(a.units.items()):
-                    loss = min(n, int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random()))
+                    loss = 0 if self.mods(fid).value("suppress_no_loss") else min(n, int(n * C.REBEL_SUPPRESS_LOSS + self.rng.random()))
                     if loss:
                         self._split_dmg(a, k, loss)      # 잃은 유닛 몫의 피해 기록도 함께 덜어 낸다(해산과 같게)
                         a.units[k] = n - loss
@@ -5409,12 +5539,15 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
                 a.dmg = {k: d for k, d in a.dmg.items() if k in a.units and d > 0}
                 if a.empty():
                     self.remove_army(a)
-            msg = f"{name}: 반란 진압 성공 (행복도 +5, 진압 병력 10% 손실)"
+            for site in M.members(self, rid):
+                self.regions[site].suppress_output_until = self.turn + int(self.mods(fid).value("suppress_output_turns", 0))
+            loss_text = "병력 손실 없음" if self.mods(fid).value("suppress_no_loss") else "진압 병력 10% 손실"
+            msg = f"{name}: 반란 진압 성공 (행복도 +5, {loss_text})"
             self.event("rebel", msg, region=rid, fids=(fid,))
             return msg
         # 진압 실패 → 반란 지역이 독립(그 지역을 수도로 하는 국가)
         last = len(self.regions_of(fid)) <= 1
-        nf, joined = self._spawn_rebel(fid, rid, Rv)
+        nf, joined = self._spawn_rebel(fid, rid, Rv, failed_suppression=True)
         if last:
             msg = f"{name}: 진압 실패. 마지막 영토가 {josa(nf.name, '으로/로')} 독립해 멸망했습니다."
         elif joined:
@@ -5427,10 +5560,12 @@ class Game(QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMix
     def rebel_children(self, fid):
         return [f for f in self.factions if f.alive and f.rebel_of == fid]
 
-    def _spawn_rebel(self, fid, rid, Rv):
+    def _spawn_rebel(self, fid, rid, Rv, failed_suppression=False):
         """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
         rr = self.regions[rid]
         n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
+        if failed_suppression:
+            n_inf *= int(self.mods(fid).value("suppress_fail_mult", 1))
         if getattr(rr, "metro", None) is not None:
             M.dissolve(self, rr.metro, "반란")
         keep_project = (rr.project if rr.project and rr.project.kind in ("build", "unit")

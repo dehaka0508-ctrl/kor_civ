@@ -156,7 +156,8 @@ def check(g, where):
         report("위인 중복·기록", where)
     for gp in g.great_people:
         escort = gp["kind"] == "general" and bool(g.armies_at(gp["loc"], gp["owner"]))
-        if gp["loc"] not in g.regions or (g.regions[gp["loc"]].owner != gp["owner"] and not escort):
+        if (gp["loc"] not in g.regions and gp["loc"] not in g.world.seas
+                or (gp["loc"] not in g.regions or g.regions[gp["loc"]].owner != gp["owner"]) and not escort):
             report("위인 위치·소유", f"{where} {gp}")
     for key, v in vars(g.dip).items():
         if isinstance(v, dict):

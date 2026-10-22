@@ -97,6 +97,10 @@ class Region:
                                           # 옛 주인이 되찾으면 그대로, 기간이 지나면 1단계씩 깎여 새 주인 것이 된다
     lost_gov_complex: Optional[dict] = None
     occupied_admin: Optional[dict] = None
+    suppress_output_until: int = 0
+    focus_unrest_until: int = 0
+    facility_off_until: int = 0
+    unit_chain_count: int = 0
 
     @property
     def occ(self) -> Optional[dict]:
@@ -232,6 +236,10 @@ class Faction:
     admin_deficit_turns: int = 0
     lawless: bool = False
     lost_capital: Optional[dict] = None
+    original_regions: set = field(default_factory=set)
+    lost_regions: set = field(default_factory=set)
+    attacked_by: set = field(default_factory=set)
+    coastal_rewards: set = field(default_factory=set)
 
 
 @dataclass

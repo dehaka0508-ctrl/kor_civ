@@ -1757,7 +1757,8 @@ def test_v136_mode_order_leader_tip_and_pop_focus_rate(app, monkeypatch):
     assert "버프" not in flat and "디버프" not in flat
     assert tip[1][0] == (LEADER_BY_KEY["dan"]["buff"][0], t.good)
     assert tip[2][0] == (LEADER_BY_KEY["dan"]["debuff"][0], t.bad)
-    assert len(MO.leader_tip(LEADER_BY_KEY["kgu"], t)) == 2          # 디버프 없음: 줄째 뺀다
+    assert len(MO.leader_tip(LEADER_BY_KEY["kgu"], t)) == 3          # v1.3.7: 망명 정부 디버프 추가
+    assert len(MO.leader_tip(LEADER_BY_KEY["cus"], t)) == 1          # 효과 없음: 줄째 뺀다
     app.gui.tooltip = tip                                            # 조각마다 색이 다른 툴팁도 그려진다
     app.gui.draw_tooltip()
     # 인구 성장 집중: 0.236361 → 0.24

@@ -239,7 +239,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     why["economic"] = (f"GDP {rank or '?'}위" + ("(감당 가능)" if rich else "") + f", 수도 주변 {near}곳, 관계 {partners}"
                        + (", 앞선 나라 있음" if ahead else "") + (f", 앞선 부국 ×{behind:.2f}" if behind < 1 else ""))
     # 외교: 지금 규칙(생존국 전원 한 연합)은 어렵다. 우호적인 나라가 많을 때만
-    if g.mods(fid).value("no_alliance"):
+    if (g.mods(fid).value("no_alliance") or g.mods(fid).value("no_coalition")):
         diplomatic = 0.0
     else:
         alive = [x for x in g.alive_ids() if x != fid]
@@ -270,7 +270,7 @@ def choose_path(g, f, sc, reason="정기") -> str:
     limit = C.AI_P2_HOPELESS * (C.AI_P2_HOPELESS_EXIT if s.get("hopeless") else 1.0)
     # 강국에 기대기로 했으면 최소 48턴은 그대로(관계를 쌓을 시간). 그 뒤 최고점이 문턱×1.25를 넘으면 벗어난다
     committed = s.get("hopeless") and g.turn - s.get("hopeless_turn", -999) < C.AI_P2_HOPELESS_MIN
-    if (other < limit or committed) and not g.mods(f.id).value("no_alliance"):
+    if (other < limit or committed) and not (g.mods(f.id).value("no_alliance") or g.mods(f.id).value("no_coalition")):
         if not s.get("hopeless") or cur != "diplomatic":
             log = s.setdefault("log", [])
             log.append([g.turn, cur, "diplomatic", reason, "어느 방향도 유리하지 않음: 강국에 기대 외교"])
@@ -337,7 +337,7 @@ def choose_patron(g, f):
     known = {g.regions[v].owner for v in g.visible(fid) if v in g.regions}
     known |= set(state(f).get("scan", {}))
     cands = [x for x in known - {NEUTRAL, fid}
-             if g.factions[x].alive and not D.at_war(g, fid, x) and not g.mods(x).value("no_alliance")]
+             if g.factions[x].alive and not D.at_war(g, fid, x) and not (g.mods(x).value("no_alliance") or g.mods(x).value("no_coalition"))]
     if not cands:
         return None
     from . import ai_endgame as EG

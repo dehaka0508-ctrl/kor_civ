@@ -228,13 +228,18 @@ class Gui:
         s = str(s)
         col = color or self.t.text
         u = self.u
-        surf = render_text(s, size, col, weight)
         full = None
-        if max_w and surf.get_width() > max_w * u:
+        if max_w and measure(s, size, weight)[0] > max_w:
             full = s
-            while len(s) > 1 and render_text(s + "…", size, col, weight).get_width() > max_w * u:
-                s = s[:-1]
-            surf = render_text(s + "…", size, col, weight)
+            lo, hi = 0, len(s)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if measure(s[:mid] + "…", size, weight)[0] <= max_w:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            s = s[:lo] + "…"
+        surf = render_text(s, size, col, weight)
         lw, lh = surf.get_width() / u, surf.get_height() / u
         lr = pygame.Rect(0, 0, max(1, int(round(lw))), max(1, int(round(lh))))
         setattr(lr, anchor, (int(round(pos[0])), int(round(pos[1]))))

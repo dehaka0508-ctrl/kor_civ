@@ -2626,9 +2626,18 @@ def draw_specialty(app):
     for rr in g.regions_of(pid):
         for k in rr.supplied:
             used[k] = used.get(k, 0) + 1
+    royal = g.mods(pid).value("specialty_tithe")
+    top = 80
+    if royal:
+        g.specialty_made(f)
+        items = f.last.get("specialty_tithe_items", {})
+        detail = ", ".join(f"{k} {v}개" for k, v in sorted(items.items())) or "없음"
+        gui.text((r.x + 24, r.y + 74), f"국왕 진상 · {f.last.get('specialty_tithe', 0)}개 (강제 우선 배정·수정 불가): {detail}",
+                 12, t.warn, max_w=r.w - 48)
+        top = 104
     # 좌: 지역 목록 (행복도 낮은 순)
     regs = sorted(g.regions_of(pid), key=lambda rr: rr.happy)
-    left = pygame.Rect(r.x + 16, r.y + 80, 430, r.h - 150)
+    left = pygame.Rect(r.x + 16, r.y + top, 430, r.h - 150 - (top - 80))
     gui.rect(t.panel_alt, left, radius=8)
     off = gui.begin_scroll("spec_regions", left, len(regs) * 34 + 8)
     y = left.y + 4 - off
@@ -2652,7 +2661,7 @@ def draw_specialty(app):
     # 우: 선택 지역 편집
     x = r.x + 470
     w = r.right - 24 - x
-    y = r.y + 80
+    y = r.y + top
     rid = app.spec_sel
     if rid not in g.regions or g.regions[rid].owner != pid:
         gui.text((x, y), "왼쪽에서 지역을 고르세요.", 14, t.muted)

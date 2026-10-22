@@ -92,6 +92,11 @@ def tech_order(g, f):
 
 
 def _recruit(g, f, kind, rid, reserve=0):
+    if kind == "scientist" and f.leader == "sej":
+        sites = [r for r in g.regions_of(f.id) if r.b.get("edu", 0) >= 4]
+        if not sites:
+            return False
+        rid = max(sites, key=lambda r: (r.pop, r.id)).id
     if kind == "scientist" and f.sci_points < g.great_person_cost(f.id, kind) + reserve:
         return False
     if kind != "scientist" and f.admin < g.great_person_cost(f.id, kind) + reserve:
@@ -127,7 +132,7 @@ def progression_orders(g, f, threat, crisis=False):
     for key in tech_order(g, f):
         if key in f.techs:
             continue
-        if f.sci_points < TECHS[key]["cost"] + reserve:
+        if f.sci_points < g.tech_cost(f.id, key) + reserve:
             break
         if not g.unlock_tech(f.id, key)[0]:
             break

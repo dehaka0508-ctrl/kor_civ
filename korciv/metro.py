@@ -133,7 +133,7 @@ def exchange_weight(g, fid) -> tuple:
     cap = g.factions[fid].capital
     seen, n, cap_ok = set(), 0, False
     for r in g.regions_of(fid):
-        if "exchange" not in r.econ:
+        if "exchange" not in r.econ or g.facility_paused(r.id):
             continue
         m = of(g, r.id)
         if m:
@@ -235,7 +235,8 @@ def check(g, fid, center, sel) -> tuple:
     items.append(("서로 이어짐", conn, "중심과 육로로 이어진 지역만" if not conn else "이어짐"))
     regs = [g.regions[r] for r in sel]
     pop = sum(r.pop for r in regs)
-    items.append(("인구 100만 이상", pop >= C.METRO_MIN_POP, f"{pop:,.1f}만"))
+    required_pop = C.METRO_MIN_POP * g.mods(fid).value("metro_pop_mult", 1)
+    items.append((f"인구 {required_pop:g}만 이상", pop >= required_pop, f"{pop:,.1f}만"))
     fac = any(r.b["factory"] >= 5 for r in regs)
     bank = any(r.b["bank"] >= 5 for r in regs)
     items.append(("공업 단지(공장 5단계)", fac, "있음" if fac else "없음"))
@@ -525,10 +526,10 @@ def options(g, fid, mid) -> list:
         if key in C.PROD_BUILDINGS:
             cost = R.prod_building_cost(key, lv, any(g.info(r).power_site for r in el))
             cost *= g.building_cost_mult(fid, key, lv)
-            turns = g.build_time(fid, key, R.prod_building_turns(lv))
+            turns = g.build_time(fid, key, R.prod_building_turns(lv), center, lv)
         else:
             cost = R.def_building_cost(key, lv) * g.building_cost_mult(fid, key, lv)
-            turns = g.build_time(fid, key, R.def_building_turns(lv))
+            turns = g.build_time(fid, key, R.def_building_turns(lv), center, lv)
         ok, why = g.building_allowed(fid, center, key, lv, pool=pool)
         add("build", key, pool_name(g, pool, lv), cost * len(el), turns, ok, why, level=lv, pool=pool)
     seen = set()
@@ -564,7 +565,7 @@ def options(g, fid, mid) -> list:
                 continue
             site = center if center in coast else max(coast, key=lambda r: (g.regions[r].pop, r))
         add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * g.building_cost_mult(fid, key),
-            g.build_time(fid, key, spec["turns"]), level=1, site=site)
+            g.build_time(fid, key, spec["turns"], site, 1), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
     port = next((r for r in sel if g.projected_buildings(r).get('port') and g.info(r).coastal), None)
     for key in C.BUILD_UNITS:
@@ -578,10 +579,11 @@ def options(g, fid, mid) -> list:
                 ok, why = False, "항구 필요"
             else:
                 site = port
-        if ok and not cr.project and not g.can_pay_oil(fid, u["oil"]):
-            ok, why = False, f"석유 {u['oil']} 필요(석탄 {u['oil'] * C.OIL_AS_COAL}로 대체 가능)"
+        oil = g.unit_oil(fid, key)
+        if ok and not cr.project and not g.can_pay_oil(fid, oil):
+            ok, why = False, f"석유 {oil} 필요(석탄 {oil * C.OIL_AS_COAL}로 대체 가능)"
         per = g.unit_cost(fid, site, key)
-        add("unit", key, f"{u['name']} ×{n}", per * u["turns"], u["turns"], ok, why, oil=u["oil"], site=site)
+        add("unit", key, f"{u['name']} ×{n}", per * u["turns"], g.unit_turns(fid, key), ok, why, oil=oil, site=site)
     # 천도: 수도가 광역시 밖이면 중심으로
     if g.factions[fid].capital not in sel:
         o = next((o for o in raw[center] if o["kind"] == "capital"), None)
@@ -632,7 +634,7 @@ def complete(g, f, p):
         g._complete_project(f, g.regions[site], p)      # 방어선(예전 세이브의 지역별 특산물 시설도): 그 지역에
         return
     if p.kind == "unit":
-        n = len(sel)
+        n = g.leader_units_completed(f.id, site, p.key, len(sel))
         g.deliver_units(f.id, site, p.key, n)
         g.event("complete", f"{name}에서 {g.unit_spec(f.id, p.key)['name']} {n}개 생산 완료", region=site, fids=(f.id,))
         if getattr(p, "repeat", 0) > 0:

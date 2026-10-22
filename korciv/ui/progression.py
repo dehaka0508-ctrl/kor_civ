@@ -136,12 +136,13 @@ def draw_technologies(app, x, y, w):
             if tech["kind"] != kind:
                 continue
             done = key in f.techs
+            cost = g.tech_cost(f.id, key)
             gui.text((x, y), tech["name"], 13, t.good if done else t.text, "semibold", max_w=w - 78)
-            gui.text((x, y + 21), "연구 완료" if done else f"과학력 {tech['cost']:,}", 11, t.good if done else t.muted)
+            gui.text((x, y + 21), "연구 완료" if done else f"과학력 {cost:,.0f}", 11, t.good if done else t.muted)
             if gui.button((x + w - 70, y, 70, 29), "완료" if done else "해금", "default" if done else "primary",
-                          enabled=not done and f.sci_points >= tech["cost"], size=12,
+                          enabled=not done and f.sci_points >= cost, size=12,
                           tooltip="보유 유닛에도 즉시 적용됩니다." if done and kind == "unit" else
-                          f"과학력 {tech['cost']:,} 소비"):
+                          f"과학력 {cost:,.0f} 소비"):
                 _result(app, g.unlock_tech(f.id, key))
             y = gui.wrap((x, y + 40), tech["description"], w, 11, t.muted) + 14
     return y

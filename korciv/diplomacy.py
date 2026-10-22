@@ -280,6 +280,10 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     g.dip.wars[p] = {"start": g.turn, "declarer": a, "aggressor": aggressor if happiness else None,
                      "score": {a: 0.0, b: 0.0},
                      "regs0": {a: g.region_count(a), b: g.region_count(b)}, "taken": {a: 0, b: 0}}
+    if happiness and aggressor in (a, b):
+        defender = b if aggressor == a else a
+        g.factions[defender].attacked_by.add(aggressor)
+    g.dip.wars[p]["coalition_declarers"] = ({a} if coalition_of(g, a) is not None and aggressor == a else set())
     delay = g.mods(a).value("parliament_delay", 0)
     if delay:
         g.dip.no_attack_until[(a, b)] = g.turn + delay
@@ -288,6 +292,8 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
         role = "aggressor" if f == a and aggressor in (None, a) else "defender"
         add_war_weary(g, f, C.WAR_WEARY_START[role] * g.mods(f).mult("war_start_weary"),
                       defensive=role == "defender")
+        if role == "aggressor":
+            add_war_weary(g, f, g.mods(f).add("declare_weary_add"))
     # 통행권으로 상대 영토에 있던 병력은 가장 가까운 자국 영토로
     for army in list(g.armies.values()):
         if army.owner in (a, b) and not g.world.is_sea(army.loc):
@@ -297,10 +303,12 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
                 g.teleport_home(army)
 
 
-def add_war_weary(g, fid, v, defensive=False):
+def add_war_weary(g, fid, v, defensive=False, scaled=False):
     """전쟁 피로 증감. defensive: 선포당한 전쟁에서 쌓인 피로(war_weary_def 에도 더한다).
     회복(음수)은 두 몫을 같은 비율로 줄인다."""
     f = g.factions[fid]
+    if v > 0 and not scaled:
+        v *= war_weary_gain_mult(g, fid)
     old = f.war_weary
     f.war_weary = max(0.0, min(C.WAR_WEARY_MAX, old + v))
     d = getattr(f, "war_weary_def", 0.0)
@@ -320,6 +328,11 @@ def war_weary_defensive(g, fid) -> bool:
     return True
 
 
+def war_weary_gain_mult(g, fid):
+    return (g.mods(fid).mult("no_allies_weary")
+            if not any(allied(g, fid, x) for x in g.alive_ids() if x != fid) else 1.0)
+
+
 def war_weary_rate(g, fid) -> float:
     """이번 턴 전쟁 피로 증가량: 전쟁 중이면 턴당 0.5(선포·피선포 공통, WAR_WEARY_TURN), 평시 0."""
     rate = 0.0
@@ -331,7 +344,9 @@ def war_weary_rate(g, fid) -> float:
             rate = max(rate, C.WAR_WEARY_TURN["defender"])
         else:
             rate = max(rate, C.WAR_WEARY_TURN["aggressor" if aggr == fid else "defender"])
-    return rate * g.mods(fid).mult("war_weary_rate") if rate else 0.0
+    mult = g.mods(fid).mult("war_weary_rate")
+    mult *= war_weary_gain_mult(g, fid)
+    return rate * mult if rate else 0.0
 
 
 def _peace_cede(g, side, other):
@@ -436,7 +451,15 @@ def make_peace(g, a, b, _done=None):
 
 def op_baseline(g, a, b) -> float:
     """a 가 b 를 볼 때 우호도가 수렴하는 기본값(정치체제 관계)."""
-    return gov_opinion_bias(g.factions[a].gov, g.factions[b].gov)
+    result = gov_opinion_bias(g.factions[a].gov, g.factions[b].gov)
+    for x, y in ((a, b), (b, a)):
+        if g.factions[y].gov in ("absolute", "constitutional"):
+            result += g.mods(x).add("monarchy_opinion")
+        if g.mods(x).has("long_border_opinion"):
+            count = sum(g.regions[n].owner == y for r in g.regions_of(x) for n in g.world.land_adj[r.id])
+            if count >= 10:
+                result += g.mods(x).add("long_border_opinion")
+    return result
 
 
 def war_info(g, a, b) -> dict:
@@ -553,7 +576,7 @@ def friendship_effects(g, a, b) -> list:
         if g.factions[x].is_ai:
             out.append((x, y, C.DECL_FRIEND_BONUS, False))
     for x in g.alive_ids():
-        if x not in (a, b) and g.factions[x].is_ai and hostile_to(g, x, b):
+        if x not in (a, b) and g.factions[x].is_ai and hostile_to(g, x, b) and not g.mods(a).value("neutral_diplomacy"):
             out.append((x, a, C.DECL_FRIEND_ENEMY, False))
     return out
 
@@ -686,6 +709,10 @@ def treaty_check(g, ai, proposer, kind):
     if kind == "peace":
         if not at_war(g, ai, proposer):
             return False, "전쟁 중이 아닙니다."
+        age = g.turn - g.dip.wars[p]["start"]
+        minimum = g.mods(proposer).value("peace_min_turns", 0)
+        if age < minimum:
+            return False, f"요동 정벌 강행: 개전 후 {minimum}턴부터 강화 제안 가능"
         from . import ai as AI
         a = AI.war_assessment(g, ai, proposer)
         ok = a["desire"] >= C.AI_PEACE_ACCEPT
@@ -694,6 +721,8 @@ def treaty_check(g, ai, proposer, kind):
         return False, "전쟁 중입니다."
     if kind in ("alliance", "coalition"):
         for x in (ai, proposer):
+            if kind == "coalition" and g.mods(x).value("no_coalition"):
+                return False, "골품제의 벽: 동맹까지 가능하며 연합은 불가합니다."
             if g.mods(x).value("no_alliance"):          # 장보고 '골품의 벽'
                 return False, f"{g.fx_source(x, 'no_alliance')}: 동맹·연합을 맺을 수 없습니다."
     if kind in ("nonaggr", "passage"):
@@ -738,6 +767,8 @@ def treaty_check(g, ai, proposer, kind):
 
 
 def sign_treaty(g, a, b, kind):
+    if kind == "coalition" and any(g.mods(x).value("no_coalition") for x in (a, b)):
+        return False
     p = pair(a, b)
     if kind == "friendship":
         declare_friendship(g, a, b, force=True)
@@ -1024,6 +1055,9 @@ def evaluate_offer(g, ai, proposer, offer):
     if not met(g, proposer, ai):
         return "reject", None, "조우한 적 없는 나라와는 거래할 수 없습니다."
     give, take = offer["give"], offer["take"]
+    if not resource_trade_allowed(g, ai, proposer) and any(
+            side.get(k, 0) for side in (give, take) for k in C.TRADE_RES):
+        return "reject", None, "자력갱생: 외국과 자원·특산물 협상 불가"
     if is_empty(take) and is_empty(give):
         return "reject", None, "빈 제안입니다."
     if is_empty(take):
@@ -1081,8 +1115,14 @@ def trade_done_opinion(g, a, b, offer=None, n=None):
         add_opinion(g, a, b, C.OP_TRADE_DONE)        # a(수락한 쪽)가 b(제의한 쪽)를 보는 우호도
 
 
+def resource_trade_allowed(g, a, b):
+    return not any(g.mods(fid).value("no_resource_trade") for fid in (a, b))
+
+
 def make_trade(g, seller, buyer, res, n, price, proposer):
     """AI 거래 제의가 수락됨: seller → buyer 턴당 n개 × 12턴, 개당 price(받는 턴마다 낸다)."""
+    if not resource_trade_allowed(g, seller, buyer):
+        return None
     c = add_contract(g, seller, buyer, res, n, price)
     trade_done_opinion(g, seller, buyer, n=n)
     other = buyer if proposer == seller else seller
@@ -1211,7 +1251,7 @@ def update_turn(g):
                 delta += C.OP_SAME_ENEMY
             if (my_friends & b_friends) - {a, b}:
                 delta += C.OP_SAME_FRIEND
-            neutral_dip = g.mods(a).value("neutral_diplomacy")
+            neutral_dip = g.mods(a).value("neutral_diplomacy") or g.mods(b).value("neutral_diplomacy")
             if not neutral_dip:
                 if b_enemies & my_friends:
                     delta += C.OP_WAR_WITH_FRIEND
@@ -1243,7 +1283,8 @@ def update_turn(g):
                     s = g.hegemon_share
                     delta += C.HEGEMON_BALANCE_K * min(
                         C.HEGEMON_OP_MAX, C.HEGEMON_OP_BASE + C.HEGEMON_OP_K * (s - C.HEGEMON_SHARE))
-                delta += g.mods(b).add("ai_opinion_turn")
+            delta += g.mods(b).add("ai_opinion_turn")
+            if fa.is_ai:
                 # 승리에 가까워지는 나라 견제(우호 선언·조약 이상 관계가 아니면)
                 t = g.victory_threat(b)
                 if t > 0 and stage(g, a, b) < 2 and not declared_friends(g, a, b):

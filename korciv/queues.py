@@ -54,8 +54,13 @@ class QueueMixin:
     def _activate_project(self, rid, p):
         r = self.queue_region(rid)
         if not p.started:
+            if p.kind != 'annex' and self.order_frozen(r.owner):
+                p.stalled, p.blocked_reason = True, self.order_frozen(r.owner)
+                return False
+            if p.kind != 'unit':
+                r.unit_chain_count = 0
             if p.kind == 'unit':
-                oil = self.unit_spec(r.owner, p.key)['oil']
+                oil = self.unit_oil(r.owner, p.key)
                 if not self.can_pay_oil(r.owner, oil):
                     p.stalled, p.blocked_reason = True, f'석유 {oil} 필요'
                     return False
@@ -180,7 +185,8 @@ class QueueMixin:
         self._last_started = p
         if not self.factions[fid].is_ai:
             for rrid in M.members(self, rid):
-                self.regions[rrid].focus = self.regions[rrid].pop_focus = False
+                self.release_focus(self.regions[rrid])
+                self.regions[rrid].pop_focus = False
         if kind == 'econ' and key == 'currency' and r.project is p:
             self.econ_alert(fid, f'{self.fname(fid)} 기축통화 지정 착수 — {p.turns}턴 뒤 경제승리')
         turns = self.project_left(r.id) if r.project is p and kind == 'annex' else p.turns
@@ -189,6 +195,9 @@ class QueueMixin:
     def project_ready(self, rid, p):
         r = self.queue_region(rid)
         why = ''
+        if p.kind in ('science', 'econ') and any(self.facility_paused(x.id) and (x.sci if p.kind == 'science' else x.econ) for x in self.regions_of(r.owner)):
+            p.blocked_reason = '의열단: 과학·경제 시설 4턴 정지'
+            return False
         if p.group is not None:
             return True
         if p.kind == 'build':

@@ -65,6 +65,19 @@ def main():
     w, h = (int(x) for x in a.size.split("x"))
     app = appmod.App(width=w, height=h)
     app.qa_mode = a.game_mode
+    # 무작위 클릭이 시작 화면의 정상 [종료] 버튼을 누른 경우도 검사에 포함한다.
+    # 실제 종료 요청을 센 뒤 재개하고, 다른 경로에서 앱이 꺼지면 아래 불변식으로 보고한다.
+    title = modals.draw_title
+    requested_exits = 0
+
+    def title_and_continue(app):
+        nonlocal requested_exits
+        title(app)
+        if not app.running:
+            requested_exits += 1
+            app.running = True
+
+    modals.draw_title = title_and_continue
     held = set()
     if a.warm:
         warm_up(app, a.warm, rng)
@@ -147,6 +160,7 @@ def main():
     for k, v in seen.most_common(40):
         print(v, k)
     print("== 요약 ==")
+    print(f"정상 종료 버튼 처리: {requested_exits}회")
     for k, v in PROBLEMS.most_common():
         print(f"{v}회 · {k}")
     if not PROBLEMS:
