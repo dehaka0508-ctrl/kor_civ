@@ -425,3 +425,22 @@ def _draw_icon(surf, kind, center, col, k=1.0):
     elif kind == "box":
         pygame.draw.rect(surf, col, (x - 7 * k, y - 5 * k, 14 * k, 11 * k), w2)
         pygame.draw.line(surf, col, (x - 7 * k, y - 1 * k), (x + 7 * k, y - 1 * k), w2)
+    elif kind == "seal":                              # 관인(도장): 둥근 꼭지 + 목 + 넓은 인면 + 찍힌 자국
+        pygame.draw.circle(surf, col, (x, y - 6.2 * k), 3.4 * k)
+        pygame.draw.rect(surf, col, (x - 2.2 * k, y - 4 * k, 4.4 * k, 4.5 * k))
+        pygame.draw.rect(surf, col, (x - 7.5 * k, y + 0.3 * k, 15 * k, 4.6 * k), border_radius=max(1, int(1.2 * k)))
+        pygame.draw.line(surf, _mix(col, dark, 0.45), (x - 7.5 * k, y + 2.4 * k), (x + 7.5 * k, y + 2.4 * k),
+                         max(1, int(0.8 * k)))
+        pygame.draw.rect(surf, col, (x - 8.5 * k, y + 6.8 * k, 17 * k, 2.2 * k), border_radius=max(1, int(1 * k)))
+    elif kind == "flask":                             # 과학: 삼각 플라스크(목·입구 테 + 몸통 테두리 + 액체 + 기포)
+        lw = max(2, int(1.8 * k))
+        body = [(x - 2.6 * k, y - 4 * k), (x - 8.6 * k, y + 7.6 * k), (x + 8.6 * k, y + 7.6 * k), (x + 2.6 * k, y - 4 * k)]
+        liquid = [(x - 5.4 * k, y + 1.4 * k), (x - 8.6 * k, y + 7.6 * k), (x + 8.6 * k, y + 7.6 * k), (x + 5.4 * k, y + 1.4 * k)]
+        pygame.draw.polygon(surf, _mix(col, (255, 255, 255), 0.25), liquid)
+        pygame.draw.lines(surf, col, False, body, lw)
+        pygame.draw.line(surf, col, (x - 8.6 * k, y + 7.6 * k), (x + 8.6 * k, y + 7.6 * k), lw)
+        pygame.draw.line(surf, col, (x - 2.6 * k, y - 4 * k), (x - 2.6 * k, y - 8 * k), lw)
+        pygame.draw.line(surf, col, (x + 2.6 * k, y - 4 * k), (x + 2.6 * k, y - 8 * k), lw)
+        pygame.draw.line(surf, col, (x - 4.4 * k, y - 8.6 * k), (x + 4.4 * k, y - 8.6 * k), lw)
+        for bx, by, br in ((-1.6, 4.4, 1.2), (2.4, 3.2, 0.9), (0.4, -1.0, 0.8)):
+            pygame.draw.circle(surf, _mix(col, dark, 0.35) if by > 1.4 else col, (x + bx * k, y + by * k), br * k)

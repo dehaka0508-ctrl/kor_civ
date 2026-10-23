@@ -100,8 +100,11 @@ def test_topbar_combines_balance_and_rate_with_science_precision(app, monkeypatc
     for text, rect in texts:
         if "/턴)" in text:
             assert rect.left >= 650 and rect.right <= app.lsize()[0] - 14 and rect.bottom <= 50
-        if text.startswith(("행복도 ", "전쟁 피로 ", "세율 ", "식량 ")):
-            assert rect.left >= 650
+    # v1.3.14: 왼쪽부터 자금·식량·행정력·과학력·세율·전쟁 피로·행복도, 모두 날짜 오른쪽 · 화면 안
+    order = ["자금(만원)", "식량", "행정력", "과학력", "세율", "전쟁 피로", "행복도"]
+    xs = [shown[name].left for name in order]
+    assert xs == sorted(xs) and len(set(xs)) == len(xs)
+    assert xs[0] >= 650 and all(shown[name].right <= app.lsize()[0] - 14 for name in order)
     assert g.player.sci_points == 98765.4321
 
 
