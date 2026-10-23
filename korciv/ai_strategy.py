@@ -18,6 +18,7 @@ from collections import defaultdict
 
 from . import config as C
 from . import diplomacy as D
+from . import ai_economy as E
 from .state import NEUTRAL
 
 PATHS = ("conquest", "science", "economic", "diplomatic")
@@ -159,6 +160,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     me_row = next((r for r in rows if r["fid"] == fid), None) if rows else None
     others = [r for r in rows if r["fid"] != fid] if rows else []
     why = {}
+    development = E.snapshot(g, f)
     # 정복: 나보다 약한 이웃이 있으면 전력 차이에 비례, 강하고 적대적인 이웃이 있으면 감점
     cands = [v for o, v in sc.items() if not D.allied(g, fid, o)]
     best = max(cands, key=lambda v: v["ratio"], default=None)
@@ -174,6 +176,8 @@ def path_scores(g, f, sc, rng=None) -> dict:
         pen_c *= 0.8
     fit_c = (0.3 + 0.9 * a) * bias("war") * (1 + 0.6 * min(1.0, R / 284))
     conquest = fit_c * feas_c * pen_c
+    if f.lawless or development['admin_cover'] < 6:
+        conquest *= .5
     why["conquest"] = f"최약 이웃 대비 {adv:.1f}배" + (", 강한 적대 이웃" if stronger else "")
     # 과학: 석유·해안·산맥·공장·은행, GDP 순위, 진척. 같은 길에서 크게 앞선 나라가 있으면 감점
     infos = [g.info(r.id) for r in regs]
@@ -201,6 +205,10 @@ def path_scores(g, f, sc, rng=None) -> dict:
     early = science_ready(g, fid)
     if early:
         science *= C.AI_P2_SCI_EARLY
+    # 현금과 지형만 갖추고 과학 산출이 없는 국가는 연구 기반부터 만든다.
+    science *= .35 + .65 * min(1, development['science'] / max(20, development['science_due']))
+    if development['admin_cover'] < 6:
+        science *= .7
     why["science"] = ("조건 완비 " if early else "") + ("석유 " if has_oil else "") + f"GDP {rank or '?'}위" + (", 앞선 나라 있음" if ahead else "")
     # 경제: '돈만 있으면 된다' — 반기 랭킹 GDP 순위(계단 + 연속), 수도 주변 금융 권역 가능성,
     # 수도 2칸 안 은행 4단계(과학보다 큰 가점), 우호 관계, 진척

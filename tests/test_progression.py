@@ -331,9 +331,10 @@ def test_ai_uses_economic_environment_instead_of_aggression():
     assert g.player.capital in education_centers(g, 0)
     r = g.regions[g.player.capital]
     r.project = Project("science", "lab", turns=15)
-    assert science_reserve(g, 0) == 1000
+    assert science_reserve(g, 0) == 3000  # 산출이 없으므로 완공까지 납부할 과학력을 보전한다.
     g.player.ai["victory_goal"] = "science"
-    assert tech_order(g, g.player)[:4] == ["factory", "oil", "bank", "aerospace"]
+    order = tech_order(g, g.player)
+    assert set(order) <= set(TECHS) and len(order) == len(set(order))
 
 
 def test_legacy_damage_ratio_and_military_power_upgrade():

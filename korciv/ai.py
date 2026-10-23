@@ -10,6 +10,8 @@ from . import ai_endgame as EG
 from . import ai_phase as PH
 from . import ai_strategy as ST
 from . import ai_progression as AP
+from . import ai_economy as AE
+from .ai_personality import preference
 from . import config as C
 from . import diplomacy as D
 from . import negotiation as NG
@@ -19,80 +21,9 @@ from .state import NEUTRAL
 
 
 # ------------------------------------------------------------------ 지도자 성향
-# 행동마다 관련된 지도자 효과 (키, 방향). 방향 +1 은 값이 클수록 유리, −1 은 작을수록 유리.
-# 특수 키는 _bias_term 에서 기준값과의 차이로 바꾼다.
-LEADER_BIAS_KEYS = {
-    "inf": [("atk_inf", 1), ("cost_mil", -1), ("inf_cost_early", -1), ("inf_wave", 1)],
-    "tank": [("cost_tank", -1), ("cost_mil", -1), ("cost_noninf", -1)],
-    "art": [("bomb_art", 1), ("cost_mil", -1), ("cost_noninf", -1)],
-    "naval": [("cost_naval", -1), ("naval_power", 1), ("naval_bomb", 1), ("amphib_extra", 1), ("cut_supply", -1),
-              ("amphib_atk", 1), ("cost_noninf", -1)],
-    "air": [("cost_air", -1), ("cost_noninf", -1)],
-    "farm": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1), ("output_farm", 1)],
-    "fishery": [("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
-    "factory": [("output_factory", 1), ("output_prod", 1), ("cost_factory", -1), ("build_time_factory", -1),
-                ("build_time_prod", -1), ("build_time_all", -1), ("build_time_industry", -1)],
-    "bank": [("output_bank", 1), ("output_prod", 1), ("build_time_prod", -1), ("build_time_all", -1)],
-    "line": [("line_k", 1), ("cost_line", -1), ("ambushed_def", 1)],
-    "power": [("build_time_industry", -1)],
-    "extract": [("build_time_industry", -1)],
-    "annex": [("occ_time", -1)],
-    "science": [("science_turns", 1), ("cost_science", -1)],
-    "assault": [("atk_assault", 1), ("no_ally_assault", 1), ("atk_vs_line", 1)],
-    "surprise": [("surprise", 1)],
-    "war": [("war_weary_rate", -1), ("war_start_weary", -1), ("resist_time", -1), ("guerrilla", -1),
-            ("capital_fall_rebel", -1), ("outnumbered_dmg", -1), ("bounty", -1)],
-    "ally": [("ally_war_atk", 1), ("treaty_threshold", -1), ("no_ally_assault", -1)],
-}
-for _action, _keys in {
-    "tank": [("tank_after_move", 1), ("extra_unit_oil", -1)],
-    "art": [("art_range_add", 1), ("unit_triplet", 1)],
-    "naval": [("naval_range_add", 1), ("lst_move_add", 1), ("naval_attrition", -1), ("naval_turns_add", -1)],
-    "factory": [("factory_fuel_output", 1)],
-    "bank": [("city_bank_output", 1), ("metro_tax", 1)],
-    "science": [("gp_scientist_cost", -1), ("military_tech_cost", -1)],
-    "annex": [("joint_cost_reduction", 1)],
-    "assault": [("strong_line_attack", 1), ("richer_attack", 1), ("original_attack", 1), ("capture_heal", 1)],
-    "power": [("power_elec_add", 1), ("build_time_power", -1)],
-    "extract": [("build_time_extract", -1)],
-}.items():
-    LEADER_BIAS_KEYS[_action].extend(_keys)
-
-LEADER_BIAS_K = 0.6        # 효과 크기 → 확률·효용 배수
-LEADER_BIAS_MAX = 0.15     # 소폭: 최대 ±15%
-
-
-def _bias_term(key, v) -> float:
-    """효과 값을 '기준 대비 비율'로."""
-    if key == "occ_time":
-        return min(0.0, v)       # 늘어나는 디버프(수로왕)는 편입 이득 계산에 이미 들어가 있어 성향으로 또 깎지 않는다
-    if key == "amphib_extra":
-        return v - 1.0
-    if key == "line_k":
-        return (v - C.LINE_BONUS) / C.LINE_BONUS
-    if key == "science_turns":
-        return (C.SCIENCE_TURNS - v) / C.SCIENCE_TURNS
-    if key == "surprise":
-        return v * 2
-    if key == "treaty_threshold":
-        return v / 50
-    if key in ("guerrilla",):
-        return 0.1 * v
-    if key == "capital_fall_rebel":
-        return 0.1 * (v - 1)
-    if isinstance(v, bool):
-        return 0.0
-    return float(v)
-
-
-def leader_bias(g, fid, action) -> float:
-    """AI 지도자의 버프·디버프에 따라 유리한 행동은 조금 더, 불리한 행동은 조금 덜(×0.85~1.15)."""
-    fx = LEADER_BY_KEY.get(g.factions[fid].leader, {}).get("fx", {})
-    s = 0.0
-    for key, sign in LEADER_BIAS_KEYS.get(action, ()):
-        if key in fx:
-            s += sign * _bias_term(key, fx[key])
-    return 1 + max(-LEADER_BIAS_MAX, min(LEADER_BIAS_MAX, LEADER_BIAS_K * s))
+def leader_bias(g, fid, action, rid=None, target=None, context=None) -> float:
+    """개편된 지도자 선호와 현재 입지·상대·동맹 상황을 평가한다(0.65~1.35)."""
+    return preference(g, fid, action, rid, target, context)
 
 
 # ------------------------------------------------------------------ 대전략
@@ -132,7 +63,7 @@ def choose_victory_goal(g, f):
     # 외교: 내 연합이 살아 있는 세력 중 차지하는 비율
     cid = D.coalition_of(g, fid)
     c_frac = len(g.dip.coalitions[cid]["members"] & set(alive)) / n if cid is not None else 0.0
-    can_ally = not g.mods(fid).value("no_alliance")
+    can_ally = not (g.mods(fid).value("no_alliance") or g.mods(fid).value("no_coalition"))
     # 시간: 남은 턴이 적을수록, 점수 1위일수록
     max_t = getattr(g.settings, "max_turns", C.TIME_VICTORY_TURNS)
     t_prog = g.turn / max(1, max_t)
@@ -185,6 +116,14 @@ def set_strategy(g, f):
         w["defense"] += 0.5
     if g.turn < 48:
         w["expansion"] += 0.5
+    ctx = AE.snapshot(g, f)
+    AE.remember(f, ctx)
+    if ctx['admin_cover'] < 6 or f.lawless:
+        w['expansion'] *= .35
+        w['economy'] += .5
+    if ctx['food_short'] > 0:
+        w['expansion'] *= .65
+        w['economy'] += .2
     f.ai["weights"] = w
     f.ai["weights_base"] = dict(w)
     f.ai["goal"] = goal
@@ -234,6 +173,7 @@ def plan_turn(g, fid):
     threat = threat_map(g, fid)
     _disaster_response(g, f)
     AP.progression_orders(g, f, threat, crisis=ST.posture_of(f) == "crisis" or _war_crisis(g, fid, threat))
+    AE.metro_orders(g, f, threat)
     _merge_idle(g, fid)
     _austerity(g, f, threat)
     _army_orders(g, f, threat)
@@ -243,14 +183,7 @@ def plan_turn(g, fid):
     _air_orders(g, f, threat)
     _slots(g, f, threat)
     _great_people_orders(g, f, threat)
-    # 슬롯이 비는 지역: 인구가 상한에 한참 못 미치고 민심·식량에 여유가 있으면 인구 성장 집중,
-    # 아니면 생산 집중(둘 다 건설·생산 중엔 효과 없음)
-    food_ok = f.last.get("food_prod", 0) >= f.last.get("food_cons", 0) * 1.05 or f.res.get("food", 0) > \
-        f.last.get("food_cons", 1) * 8
-    for r in g.regions_of(fid):
-        # 과밀(−2) 문턱 아래에서만 키운다
-        grow = food_ok and g.growth_happy(r) >= C.POP_FOCUS_MIN_H + 3 and r.pop < g.crowd_thresholds(r.id)[0]
-        r.pop_focus, r.focus = grow, not grow
+    AP.focus_orders(g, f, threat)
 
 
 # ------------------------------------------------------------------ 위협도
@@ -368,13 +301,16 @@ def _trade_offers(g, f):
     ③ 특산물 판매: 행복도가 높거나 돈이 급하면, 남는 특산물을 행복도가 낮은 나라에.
     ④ 특산물 구매: 행복도가 낮거나 반란 문턱이 가까우면, 남는 특산물이 있는 이웃에게."""
     fid = f.id
+    if g.mods(fid).value('no_resource_trade'):
+        return
     cons = g.total_pop(fid) * C.FOOD_PER_POP
     prod = sum(g.food_prod(fid, r) for r in g.regions_of(fid) if not r.occ and not g.resisting(r))
     emergency = prod < cons and f.res.get("food", 0) <= cons * 3
     if emergency:
         g.set_food_mode(fid, "store")
         f.ration_bonus = 0.0
-    if not emergency and (g.turn + fid) % C.AI_TRADE_EVERY:
+    period = max(1, round(C.AI_TRADE_EVERY / leader_bias(g, fid, 'trade')))
+    if not emergency and (g.turn + fid) % period:
         return
     partners = trade_partners(g, fid)
     if emergency:
@@ -939,10 +875,13 @@ def _consider_war(g, f):
     alive = g.alive_ids()
     aggr = eff_aggression(g, f)
     # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.5: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
-    start_w = C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
+    start_w = (C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
+               + g.mods(fid).add('declare_weary_add')) * D.war_weary_gain_mult(g, fid)
     already = any(w.get("aggressor") == fid for p, w in g.dip.wars.items() if fid in p)   # 이미 선포국 증가율
     proj_h = avg_h - start_w - (0 if already else 20 * C.WAR_WEARY_TURN["aggressor"]
                                 * g.mods(fid).mult("war_weary_rate"))
+    if g.mods(fid).value('war_weary_happy_free'):
+        proj_h = avg_h  # 궁예도 반란 판정 위험까지 면제되지는 않는다.
     # 전쟁광 평판: 다른 세력 우호도가 깎인다(1년 안에 잇따라 선포하면 더). 조약·우호 관계가 많을수록 아깝다
     rep_pen = -D.warmonger_penalty(g, fid)
     ties = sum(1 for x in alive if x != fid and (D.is_friend(g, fid, x) or D.has_nonaggr(g, fid, x)))
@@ -1471,7 +1410,10 @@ def _army_orders(g, f, threat):
                 g.split_army(a.id, stay)
         # 중립 땅 점령은 평시이거나, 전쟁 중이라도 위기가 아니고 작은 부대(2개 이하)일 때만.
         # 나라가 위태로운데 큰 부대가 중립 땅에 묶여 있지 않도록 한다.
-        neutral_ok = not crisis and (not at_war or a.count() <= 2)
+        dev = f.ai.get('development', {})
+        admin_ok = not (f.lawless and f.admin_deficit_turns >= 8
+                        and dev.get('admin_prod', 0) < dev.get('admin_cons', 0) * .6)
+        neutral_ok = not crisis and (not at_war or a.count() <= 2) and (not f.is_ai or admin_ok)
         # 점령 중이면 자리를 지킨다(중립 땅인데 지금은 그럴 때가 아니면 점령을 버리고 전선으로)
         if fid in rr.occs and (rr.owner != NEUTRAL or neutral_ok):
             keep = _occ_keep(g, fid, a) if rr.owner == NEUTRAL and f.is_ai else None
@@ -1534,7 +1476,7 @@ def _army_orders(g, f, threat):
                 if tgt.owner == NEUTRAL and not kill:
                     u = -1
                 elif u > 0:
-                    u *= leader_bias(g, fid, mode)          # 지도자 성향: 돌격/기습
+                    u *= leader_bias(g, fid, mode, rid=a.loc, target=node)
                 if u > best_u:
                     best, best_u, best_mode, best_kill = node, u, mode, kill
         if best and leave_ok(a, best_kill):
@@ -1991,7 +1933,7 @@ def capital_min_garrison(g, f, threat) -> int:
         n += 2
     if EG.sprint(f):
         n += C.AI_P3_SPRINT_GARRISON         # 질주 중: 승리 조건(수도 시설)을 지킨다
-    return n
+    return math.ceil(n * leader_bias(g, f.id, 'protect_capital'))
 
 
 def _sea_targets(g, fid):
@@ -2457,9 +2399,12 @@ def _slots(g, f, threat, military=True):
     _repair_floods(g, f)
     income = f.last.get("tax", sum(g.region_output_estimate(r.id) for r in regs) * tax)
     upkeep = g.upkeep(fid)
+    ctx = AE.snapshot(g, f, threat)
+    AE.remember(f, ctx)
+    income, upkeep = ctx['income'], ctx['upkeep']
     committed = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ("science", "econ"))
-    reserve = 200 + upkeep * 3
-    avail = (income - upkeep) * 0.95 + max(0.0, f.money - reserve) / 5 - committed
+    reserve = ctx['money_keep']
+    avail = (income - upkeep - ctx['food_bill']) * .9 + max(0.0, f.money - reserve) / 6 - ctx['committed']
     eco = f.is_ai and f.ai.get("victory_goal") == "economic" and g.econ_enabled()
     if eco:
         save = econ_saving_target(g, fid)
@@ -2492,13 +2437,14 @@ def _slots(g, f, threat, military=True):
     edu_centers = AP.education_centers(g, fid)
     unit_val = 1300 * tax                     # 공장 연료 1개가 턴당 버는 세수(대략)
     cands = []
+    options_by_region = {}
     bias = (lambda a: leader_bias(g, fid, a)) if f.is_ai else (lambda a: 1.0)
     annex_bias = bias("annex")
     fuel_annex = C.AI_FUEL_ANNEX if g.mods(fid).add("power_elec_add") > 0 else 1.0
     if g.mods(fid).value("minority_rule") and len(regs) >= C.MINORITY_REGIONS:
         annex_bias *= 0.85                    # 홍타이지 '소수민족': 넓힐수록 민심이 깎인다
     # 군 생산 수요
-    mil_units = sum(a.count() for a in g.armies.values() if a.owner == fid)
+    mil_units = g.mil_power(fid) / 10  # 현대화의 전력 증가도 기존 병력의 가치에 반영한다.
     desired = max(2, int(len(regs) * (0.8 if at_war else 0.35) * wts.get("military", 1)))
     if f.aggression >= 6 and g.turn > 6:
         desired += 3
@@ -2509,21 +2455,19 @@ def _slots(g, f, threat, military=True):
     if f.is_ai and PH.phase(f) >= 2 and f.ai.get("victory_goal") == "conquest":
         conq_rich = max(0.0, min(1.0, (f.money - reserve) / (max(0.0, income) * C.AI_P2_CONQ_RICH_TURNS + reserve * 4 + 1)))
         desired = int(desired * (1 + C.AI_P2_CONQ_MIL * conq_rich))
-    mil_need = max(0, desired - mil_units)
+    mil_need = max(0, math.ceil(desired - mil_units))
     producing = sum(1 for r in regs if r.project and r.project.kind == "unit")
     mil_need = max(0, mil_need - producing)
     for r in idle:
         info = g.info(r.id)
         opts = g.options(fid, r.id)
-        cands.extend(AP.infrastructure_candidates(g, f, r, opts, threat, edu_centers))
+        options_by_region[r.id] = opts
+        cands.extend(AE.build_candidates(g, f, r, opts, threat, ctx, fuel, prod_k))
         build_opts = _best_build_opts(g, opts)
-        for o in opts:
-            if o['kind'] == 'build' and o['key'] in C.SITE_POWER and o['ok']:
-                cands.append((1.2 + max(0, -fuel['spare']), r.id, 'build', o['key'], None, o['per_turn']))
         # 편입
         for t in g.annex_targets(fid, r.id):
             # 이미 편입 중인 대상은 오래 걸리는(가치 4 이상) 곳만 공동 편입으로 거든다
-            if t["joint"] and (t["joint"] >= 3 or t["value"] < 4):
+            if t["joint"] and (t["joint"] >= (5 if g.mods(fid).value("joint_cost_reduction") else 3) or t["value"] < 4):
                 continue
             if t.get("rival_left") is not None and t["rival_left"] < t["eff_turns"]:
                 continue                  # 다른 세력이 먼저 끝낼 곳은 경쟁하지 않는다
@@ -2534,75 +2478,19 @@ def _slots(g, f, threat, military=True):
             food = R.food_output(tr.b["farm"], tr.b["fishery"])
             per_turn = y * tax + food * C.MARKET_BUY["food"] * (1.0 if food_short else 0.15)
             # 완공까지 슬롯이 묶이고 이득은 그 뒤부터: 가치가 높은(오래 걸리는) 지역일수록 할인
-            gain = per_turn * max(0, C.AI_ANNEX_HORIZON - t["eff_turns"]) * wts.get("expansion", 1)
+            gain = per_turn * max(0, ctx['horizon'] - t["eff_turns"]) * wts.get("expansion", 1)
             if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
                 gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
-            gain *= annex_bias * annex_k
+            target_need = max(0, tr.pop - C.ADMIN_OUTPUT[min(5, tr.b['admin'])])
+            capacity = 1 / (1 + target_need / max(5, ctx['admin_prod'] - ctx['admin_cons'] + f.admin / 8))
+            # 높은 산출·기존 행정 기반이 있는 도시는 부족한 비축만 보고 일률적으로 포기하지 않는다.
+            # 확장 뒤 생기는 행정 부담을 유지 비용처럼 가격에 반영한다.
+            admin_price = 12 if f.lawless or ctx['admin_cover'] < 6 else 3
+            gain -= target_need * admin_price * max(0, ctx['horizon'] - t['eff_turns'])
+            gain *= leader_bias(g, fid, 'annex', target=t['target']) * annex_k * capacity
             if fuel_annex > 1 and (g.info(t["target"]).is_oil or g.info(t["target"]).is_coal):
                 gain *= fuel_annex            # 수로왕 '철의 왕국': 석탄·석유 지역을 먼저 편입
-            cands.append((gain / t["cost"], r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
-        # 1페이즈: 생산 건물은 편입할 곳이 없는 안쪽 지역부터(맞닿은 중립이 있는 지역 슬롯은 편입에 남긴다)
-        place_k = 1.0
-        if p1:
-            place_k = C.AI_P1_FRONTIER_PROD if any(
-                g.regions[n].owner == NEUTRAL for n in g.world.land_adj[r.id]) else C.AI_P1_INTERIOR_PROD
-        # 생산 건물
-        for key in ("farm", "fishery", "factory", "bank"):
-            o = build_opts.get(key)
-            if o is None:
-                continue
-            lv, cost, turns = o["level"], o["cost"], o["turns"]
-            dy = _delta_output(g, r.id, key, lv)
-            horizon = max(0, C.AI_UTILITY_HORIZON - turns)
-            gain = dy * tax * horizon * wts.get("economy", 1) * _slot_scarcity(g, r.id, o)
-            if key in ("farm", "fishery"):
-                dfood = (C.FISH_FOOD * g.fish_slot_mult(fid, r.id, (o.get("slot") or ("coast",))[0]) if key == "fishery"
-                         else C.FARM_FOOD * g.farm_mult(fid, r.id))
-                gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
-            if key == "factory" and fuel["spare"] < 1:
-                # 남는 연료가 없으면 새 칸은 놀고, 이미 들어가는 연료의 1개당 산출 상승분만 이득
-                pu = C.FACTORY_UNIT_OUTPUT
-                up = (pu[lv - 1] - pu[lv - 2]) * getattr(r, "fuel_used", 0) if lv >= 2 else 0
-                gain = up * tax * horizon * wts.get("economy", 1)
-            if key == "bank" and fuel["spare"] < 0:
-                gain *= 1.5
-            gain *= bias(key) * prod_k * place_k
-            if eco and key in ("factory", "bank"):
-                gain *= C.AI_ECON_PROD_MULT
-                if top_gdp:
-                    gain *= C.AI_ECON_TOP_PROD        # GDP 1위 경제: 턴당 수입부터 빠르게 늘린다
-            cands.append((gain / cost, r.id, "build", key, None, cost / turns))
-        if (info.is_oil or info.is_coal) and "extract" in build_opts:
-            o = build_opts["extract"]
-            lv, cost, turns = o["level"], o["cost"], o["turns"]
-            horizon = max(0, C.AI_UTILITY_HORIZON - turns)
-            # 연료가 모자라면 1개 더 캐는 만큼 공장이 돈다(발전소가 남으면 석탄 1 → 전기 2), 남으면 판매가 정도
-            per = (unit_val * (2 if fuel["plant_room"] > 0 else 1) if fuel["spare"] < 0
-                   else C.MARKET_SELL["oil" if info.is_oil else "coal"])
-            cands.append((per * horizon / cost * bias("extract") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
-                          r.id, "build", "extract", None, cost / turns))
-        pb = g.mods(fid).value("port_bank", 0)
-        if pb and info.coastal and not r.b["port"]:
-            # 근초고왕 '해상 왕국': 항구 = 은행 3단계만큼의 산출
-            cost = C.SINGLE_BUILDINGS["port"]["cost"] * C.BUILD_COST_MULT
-            turns = g.build_time(fid, "port", C.SINGLE_BUILDINGS["port"]["turns"])
-            dy = C.BANK_OUTPUT * R.g(pb) * g.mods(fid).mult("output_bank") * g.mods(fid).mult("output_prod")
-            gain = dy * tax * max(0, C.AI_UTILITY_HORIZON - turns) * wts.get("economy", 1) * prod_k * place_k
-            cands.append((gain / cost, r.id, "build", "port", None, cost / turns))
-        if "power" in build_opts and fuel["spare"] < 0 and (fuel["raw_left"] > 0 or r.b["power"] > 0):
-            # 발전소: 공장 연료가 모자랄 때. 새 칸은 발전소에 못 넣은 석탄·석유가 남을 때만 쓸모(석탄 1 → 전기 2~3),
-            # 단계를 올리면 이미 넣는 연료의 전기도 늘어난다(2 → 2.2 → 2.4 → 2.6 → 3)
-            o = build_opts["power"]
-            lv, cost, turns = o["level"], o["cost"], o["turns"]
-            up = ((g.power_elec(fid, "coal", lv) - g.power_elec(fid, "coal", lv - 1)) * (lv - 1)) if lv > 1 else 0.0
-            new = (g.power_elec(fid, "coal", lv) - 1) if fuel["raw_left"] > 0 else 0.0
-            gain = unit_val * (new + up) * max(0, C.AI_UTILITY_HORIZON - turns)
-            cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
-                          r.id, "build", "power", None, cost / turns))
-        if info.specialty and r.b["specialty"] < 3 and g.turn > 24:
-            lv = r.b["specialty"] + 1
-            cost = R.prod_building_cost("specialty", lv)
-            cands.append((0.15, r.id, "build", "specialty", None, cost / (2 * lv)))
+            cands.append((gain / max(1, t["cost"]), r.id, "annex", t["target"], None, t["cost"] / t["turns"]))
         # 방어선
         th = threat.get(r.id, 0)
         if at_war and th > 0.8:
@@ -2756,7 +2644,7 @@ def _slots(g, f, threat, military=True):
             elif g.rng.random() < (0.28 if at_war else 0.15) * bias("art") / bias("inf") and f.money > 3000:
                 key = "art"                    # 전쟁 중엔 선제 폭격용 포병을 더
             per = g.unit_cost(fid, r.id, key)
-            u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1) * bias(key)
+            u = (1.5 + threat.get(r.id, 0)) * wts.get("military", 1) * leader_bias(g, fid, key, rid=r.id)
             cands.append((u, r.id, "unit", key, None, per))
     # 정복 방향: 모아 둔 돈을 군비로 — 군 유지비가 세수의 30%가 될 때까지 위협이 큰 곳부터 전차·포병을 더 뽑는다
     if military and conq_rich > 0 and post != "crisis":
@@ -2780,7 +2668,9 @@ def _slots(g, f, threat, military=True):
     # 잔고는 턴당 비용 3/가중치 턴분이면 시작한다
     ready_k = C.AI_P2_SCI_EARLY if (step is not None and PH.phase(f) >= 2 and ST.science_ready(g, fid)) else 1.0
     sci_ok = big_ok or (ready_k > 1 and post == "defend" and ST.state(f).get("mil_k", 0.0) * ready_k >= 1)
-    if step is not None and g.science_busy(fid, step) is None and sci_ok:
+    sci_funded = (step is not None and f.sci_points + ctx['science'] * g.science_turns(fid)
+                  >= (g.science_per_turn_cost(C.SCIENCE[step]['tier']) + ctx['science_due']) * g.science_turns(fid))
+    if step is not None and g.science_busy(fid, step) is None and sci_ok and sci_funded:
         sc_turns = g.science_turns(fid)
         sc_total = g.science_step_cost(fid, step)
         sc_per = sc_total / sc_turns
@@ -2819,18 +2709,33 @@ def _slots(g, f, threat, military=True):
         _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias)
     cands.sort(key=lambda c: -c[0])
     used = set()
-    for u, rid, kind, key, border, per in cands:
-        if rid in used or u <= 0.05:
+    f.ai['development_choices'] = [[round(c[0], 3), c[1], c[2], c[3]] for c in cands[:8]]
+    for candidate in cands:
+        u, rid, kind, key, border, per = candidate[:6]
+        slot = candidate[6] if len(candidate) > 6 else None
+        pool = candidate[7] if len(candidate) > 7 else None
+        if rid in used or g.regions[rid].project or u <= 0.05:
             continue
         # 적자인 1페이즈: 재정을 늘리는 생산 건물은 비축(비상금 위)으로도 짓는다
         prod_from_savings = (deficit and kind == "build" and key in C.PROD_PAYBACK_KEYS
                              and f.money - reserve >= per * 3)
         if per > avail and not (kind == "unit" and f.money > per * 2) and not prod_from_savings:
             continue
-        ok, _ = g.start_project(fid, rid, kind, key, border=border)
+        if kind == 'build':
+            actual = [o for o in options_by_region.get(rid, ()) if o['kind'] == kind and o['key'] == key
+                      and o['ok'] and (border is None or o.get('border') == border)
+                      and (slot is None or o.get('slot') == slot) and (pool is None or o.get('pool') == pool)]
+            if not actual:
+                continue
+            option = g._pick_option(actual)
+            per = option['per_turn']
+            if not AE.can_finance(g, f, ctx, option):
+                continue
+        ok, _ = g.start_project(fid, rid, kind, key, border=border, slot=slot, pool=pool)
         if ok:
             used.add(rid)
             avail -= per
+            ctx['new_commitments'] = ctx.get('new_commitments', 0) + per
         if avail <= 0:
             break
     if f.is_ai and PH.phase(f) >= 2:
@@ -2944,52 +2849,28 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
                 continue
             cost = R.def_building_cost(key, lv + 1) * (g.mods(fid).mult("cost_line") if key == "line" else 1)
             start(r, key, border, cost)
-    # ② 발전소: 발전소 용량(단계 합)이 석탄·석유 채굴량에 닿을 때까지
-    mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
-    plants, facts = g.energy_sites(fid)
-    room = mined["coal"] + mined["oil"] - sum(r.b.cap("power") for r in regs) - sum(
-        1 for r in regs if r.project and r.project.key == "power")
-    for r in sorted((r for r in pool if r.id not in used and r.b["power"] < 5),
-                    key=lambda r: (not g.info(r.id).power_site, -r.b["power"], -r.pop, r.id)):
-        if room <= 0:
-            break
-        if start(r, "power", cost=R.prod_building_cost("power", r.b["power"] + 1, g.info(r.id).power_site)):
-            room -= 1
-    # ③ 공장: 공장의 전기 소비(단계 합)가 전기 생산(자체 발전 + 발전소 변환)에 닿을 때까지
-    gen, conv_oil, conv_coal = g.elec_from_fuel(fid, mined["oil"], mined["coal"])
-    elec = mined["elec"] + gen
-    need = elec - sum(r.b.cap("factory") for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
-    for r in sorted((r for r in pool if r.id not in used and r.b["factory"] < 5),
-                    key=lambda r: (-r.b["factory"], -r.pop, r.id)):
-        if need <= 0:
-            break
-        cost = R.prod_building_cost("factory", r.b["factory"] + 1) * g.mods(fid).mult("cost_factory")
-        if start(r, "factory", cost=cost):
-            need -= 1
-    # ④ 완공 뒤 비용이 없는 생산 건물: 산출(·식량)이 가장 많이 느는 것
-    tax = max(0.05, f.tax)
+    ctx = AE.snapshot(g, f)
+    fuel = fuel_balance(g, fid)
+    candidates = []
     for r in pool:
-        if r.id in used:
+        if r.id not in used and not r.project:
+            candidates.extend(AE.build_candidates(g, f, r, g.options(fid, r.id), {}, ctx, fuel))
+    for candidate in sorted(candidates, key=lambda c: -c[0]):
+        value, rid, _, key, _, per, slot, pool_key = candidate
+        r = g.regions[rid]
+        if rid in used or r.project or value <= .1:
             continue
-        info = g.info(r.id)
-        opts = []
-        # 건물 슬롯(v1.3.8): 지금 고를 수 있는 신축·증축 가운데(가장 높은 카드 증축 → 빈 칸 신축 순)
-        best = _best_build_opts(g, g.options(fid, r.id))
-        for key in ("farm", "fishery", "bank"):
-            o = best.get(key)
-            if o is None:
-                continue
-            cost = max(1.0, o["cost"])
-            val = _delta_output(g, r.id, key, o["level"]) * tax + ((C.FARM_FOOD if key == "farm" else C.FISH_FOOD) * C.MARKET_SELL["food"] if key != "bank" else 0)
-            opts.append((val / cost * _slot_scarcity(g, r.id, o), key, cost, o.get("slot")))
-        o = best.get("extract")
-        if o is not None:
-            cost = max(1.0, o["cost"])
-            opts.append((C.MARKET_SELL["oil" if info.is_oil else "coal"] / cost * _slot_scarcity(g, r.id, o), "extract", cost,
-                         o.get("slot")))
-        if opts:
-            _, key, cost, slot = max(opts, key=lambda x: x[0])
-            start(r, key, cost=cost, slot=slot)
+        opts = [o for o in g.options(fid, rid) if o['kind'] == 'build' and o['key'] == key and o['ok']
+                and (slot is None or o.get('slot') == slot) and (pool_key is None or o.get('pool') == pool_key)]
+        if not opts:
+            continue
+        o = g._pick_option(opts)
+        if o['cost'] > budget or not AE.can_finance(g, f, ctx, o):
+            continue
+        if g.start_project(fid, rid, 'build', key, slot=slot, pool=pool_key)[0]:
+            used.add(rid)
+            budget -= o['cost']
+            ctx['new_commitments'] = ctx.get('new_commitments', 0) + o['per_turn']
 
 
 def _great_people_orders(g, f, threat=None):

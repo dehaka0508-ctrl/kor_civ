@@ -258,6 +258,19 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
     scores["fascist"] += .6 * any(k in fx for k in ("cost_mil", "atk_assault", "atk_inf", "bomb_art", "naval_power", "inf_wave"))
     scores["constitutional"] += .6 * any(k in fx for k in ("science_turns", "war_start_weary", "tax_over10"))
     scores["absolute"] += .5 * any(k in fx for k in ("occ_time", "occupied_happy_extra", "far_output"))
+    # 새 지도자 행동 선호와 실제 정책 트리를 연결한다. 호전성 자체로 체제를 정하지 않는다.
+    from .ai_personality import PROFILES
+    pref = PROFILES.get(leader_key, {})
+    synergy = {
+        'absolute': {'admin': 1.5, 'protect_capital': 1, 'growth': .5},
+        'constitutional': {'edu': 1.5, 'scientist': 1.5, 'science': 1, 'line': .5},
+        'presidential': {'bank': 1, 'factory': 1, 'growth': 1, 'admin': .5},
+        'parliamentary': {'bank': 1.5, 'ally': 1, 'trade': 1},
+        'socialist': {'factory': 1.5, 'power': 1, 'extract': 1, 'farm': 1},
+        'fascist': {'inf': 1, 'tank': 1, 'art': 1, 'general': 1, 'war': 1},
+    }
+    for gov, weights in synergy.items():
+        scores[gov] += sum(pref.get(action, 0) * weight for action, weight in weights.items())
     blocked = set(banned) | banned_govs(leader_key)
     allowed = [key for key in scores if key not in blocked]
     return max(allowed, key=scores.get) if allowed else "philosopher"
