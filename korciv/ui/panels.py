@@ -618,51 +618,31 @@ def draw_action_tab(app, body):
             app.left_open, app.left_tab = True, "energy"
         y += 36
     opts = g.options(pid, rid)
-    # 슬롯 필터(v1.3.8): 지역 정보 탭에서 슬롯 카드를 누르면 그 종류 슬롯에 지을 건물만
-    flt = getattr(app, "slot_filter", None)
-    if flt and flt[0] != rid:
-        flt = app.slot_filter = None
-    if flt:
-        bw = 92
-        gui.text((x, y + 5), f"{S.SLOT_NAMES[flt[1]]} 슬롯 건물만 보는 중", 12, t.accent, "semibold", max_w=w - bw - 6)
-        if gui.button((x + w - bw, y, bw, 26), "모두 보기", size=11):
-            app.slot_filter = flt = None
-        y += 32
-    # 건물 슬롯: 칸 순서대로(빈 칸 신축 → 꽂힌 카드 증축), 최대 단계 카드는 '최대 단계'로 남긴다
-    slot_order = {(st, i): n for n, (st, i, _) in enumerate(g.slot_summary(rid))}
-
-    def slot_rank(o):
-        return slot_order.get(tuple(o["slot"]), 99), o["level"] > 1, o["key"]
-    prod = sorted([o for o in opts if o["kind"] == "build" and o.get("slot")
-                   and (not flt or o["slot"][0] == flt[1]) and (not mt or o.get("site") in (None, rid))],
-                  key=slot_rank)
-    if not mt:
-        for st, i, c in g.slot_summary(rid):
-            if c is not None and c["level"] >= g.card_max(rid, c["key"]) and (not flt or st == flt[1]) \
-                    and g.slot_project(rid, (st, i)) is None:
-                prod.append({"kind": "done", "key": c["key"], "level": c["level"], "ok": True, "slot": (st, i)})
-    pooled = [o for o in opts if o["kind"] == "build" and o.get("pool") and not flt]
-    other_prod = [o for o in opts if o["kind"] == "build" and not o.get("slot") and not o.get("pool")
-                  and o["key"] in C.PROD_BUILDINGS and not flt]
-    demolish = [] if mt else [{"kind": "demolish", "key": c["key"], "level": c["level"], "slot": (st, i)}
-                              for st, i, c in g.slot_summary(rid) if c is not None and (not flt or st == flt[1])]
-    metro_slots = [o for o in opts if o["kind"] == "build" and o.get("slot") and mt and o.get("site") not in (None, rid)
-                   and not flt]
-    groups = [("편입", [] if flt else [o for o in opts if o["kind"] == "annex"]),
-              ("건물 슬롯" if not mt else "광역 통합 건물", (pooled + prod) if mt else prod),
-              ("특산물 시설", other_prod),
+    # 건물 슬롯 카드(v1.3.9: 지역 정보 탭에서 옮김) — 카드를 누르면 아래에 그 칸의 건설·증축 선택지를 펼친다
+    from .slot_cards import draw_slot_grid, draw_slot_panel, slot_grid_height, slot_panel_height
+    sel = getattr(app, "slot_sel", None)
+    if sel and (sel[0] != rid or not r.b.valid((sel[1], sel[2]))):
+        sel = app.slot_sel = None
+    pooled = [o for o in opts if o["kind"] == "build" and o.get("pool")]
+    metro_slots = [o for o in opts if o["kind"] == "build" and o.get("slot") and mt and o.get("site") not in (None, rid)]
+    groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
+              ("광역 통합 건물", pooled),
               (f"유닛 생산 · 최근 {g.drafted_turns(rid)}/{C.CONSCRIPT_WINDOW}턴 징집",
-               [] if flt else [o for o in opts if o["kind"] == "unit"]),
-              ("방어·군사 건물", [] if flt else [o for o in opts if o["kind"] == "build" and not o.get("slot")
-                                              and o["key"] not in C.PROD_BUILDINGS]
-               + metro_slots),
-              ("특수", [] if flt else [o for o in opts if o["kind"] in ("science", "econ", "capital")]),
-              ('시설 정리 · 슬롯 비우기', demolish)]
+               [o for o in opts if o["kind"] == "unit"]),
+              ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and not o.get("slot") and not o.get("pool")
+                              and o["key"] not in C.PROD_BUILDINGS] + metro_slots),
+              ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
+    slot_h = 26 + slot_grid_height(app, rid, w) + (slot_panel_height(app, rid, (sel[1], sel[2]), opts) + 8 if sel else 0)
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
-    content = sum(28 + sum(60 if o["kind"] in ("build", "science", "econ", "unit") else 44 for o in lst)
-                  for _, lst in groups if lst)
+    content = slot_h + sum(28 + sum(60 if o["kind"] in ("build", "science", "econ", "unit") else 44 for o in lst)
+                           for _, lst in groups if lst)
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
+    yy = section(gui, x, yy, w, f"건물 슬롯 {r.b.used()}/{r.b.total()}칸 · 카드를 눌러 건설·증축")
+    yy = draw_slot_grid(app, x, yy, w, rid, mine=True, select=True)
+    sel = getattr(app, "slot_sel", None)
+    if sel and sel[0] == rid and r.b.valid((sel[1], sel[2])):
+        yy = draw_slot_panel(app, x, yy, w, rid, (sel[1], sel[2]), opts)
     money = g.player.money
     for title, lst in groups:
         if not lst:
@@ -672,29 +652,6 @@ def draw_action_tab(app, body):
         if title.startswith("유닛 생산") and gui.hover((x, top - 4, w, yy - top + 4)):
             gui.tooltip = f"{min(C.CONSCRIPT_PENALTY)}/{C.CONSCRIPT_WINDOW}턴부터 지역 행복도 감소"
         for o in lst:
-            if o['kind'] == 'demolish':
-                st, i = o['slot']
-                c = r.b.card((st, i))
-                label = f"[{S.slot_label((st, i))}] {g.card_title(rid, o['key'], o['level'], st)} {o['level']}단계"
-                gui.text((x, yy+2), label, 12, t.muted, max_w=w-70)
-                busy = g.slot_project(rid, (st, i)) is not None
-                tip = ('이 칸에 공사가 잡혀 있어 철거할 수 없습니다.' if busy
-                       else '이 건물을 통째로 철거해 슬롯을 비웁니다(비용 환급 없음).')
-                if gui.button((x+w-62, yy+3, 62, 27), '철거', size=11, enabled=not busy and c is not None, tooltip=tip):
-                    ok, msg = g.demolish_card(pid, rid, (st, i))
-                    app.toast(msg, None if ok else t.bad)
-                    app.changed()
-                yy += 44
-                continue
-            if o["kind"] == "done":
-                lv = o["level"]
-                st, i = o["slot"]
-                label = f"[{S.slot_label((st, i))}] {g.card_title(rid, o['key'], lv, st)} · 최대 단계"
-                gui.text((x, yy + 2), label, 13, t.text, "semibold", max_w=w - 16)
-                gui.text((x, yy + 21), g.card_effect(pid, rid, {"key": o["key"], "level": lv}, st), 11, t.good, "semibold",
-                         max_w=w - 16)
-                yy += 44
-                continue
             row = pygame.Rect(x, yy, w, 40)
             label = o["name"] + (f" {o['level']}단계" if o["kind"] == "build" and o["key"] != "line"
                                  and o["key"] not in C.SINGLE_BUILDINGS else "")

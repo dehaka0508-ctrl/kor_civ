@@ -38,9 +38,7 @@ def initial_buildings(info, world=None):
     슬롯 건물(행정·연구·농장·어장·공장·시장·채굴·발전소·항구·사관학교)은 slots.initial 이 칸 수 안에서 0~3단계로 꽂고,
     특산물 시설·공항은 슬롯 밖에 따로 둔다."""
     world = world or load_world()
-    b = S.initial(world, info.id, info.pop0)
-    if info.specialty:
-        b["specialty"] = 1
+    b = S.initial(world, info.id, info.pop0)          # 특산물 시설·댐·원전은 기타 슬롯, 시작 항구는 덤 해안 칸(v1.3.9)
     if getattr(info, "start_airport", False):
         b["airport"] = 1                  # 현실 공항 소재지는 공항 1단계로 시작(v1.3.0)
     return b
@@ -262,8 +260,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             frontier = self.settings.mode != 'standard'
             # 개척시대·혼돈의 강산은 모든 슬롯이 빈 상태로 시작(무연륙 섬은 항구만)
             b = S.new(w, rid) if frontier else initial_buildings(info, w)
-            if frontier and info.island == '무연륙 섬':
-                b['port'] = 1
+            if frontier and S.start_port_bonus(info, self.settings.mode):
+                S.give_start_port(b)                  # 무연륙 섬 항구: 해안 슬롯 1칸을 더 만들어(v1.3.9)
             pop = 1.0 if frontier else info.pop0
             self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=pop, b=b)
             self.new_army(NEUTRAL, rid, {"inf": 1 if frontier else neutral_garrison(pop)})
@@ -315,6 +313,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """예전 세이브(v1.3.7까지: 건물 단계 사전·면적·주거 지구) → 건물 슬롯 카드(v1.3.8).
         우선순위(행정·연구·사관학교·채굴 → 높은 단계 생산 건물, 해안·하천은 원전·댐 > 발전소 > 항구 > 어장)로 칸에
         꽂고 남는 건물과 주거 지구는 철거한다. 광역시에 퍼져 있던 항구·사관학교는 한 곳에만 남긴다."""
+        mode = getattr(getattr(self, "settings", None), "mode", "standard")
+        moved = set()
+        for r in self.regions.values():           # v1.3.8 세이브: 기타 슬롯·시작 항구 덤 칸(v1.3.9)
+            if isinstance(r.b, S.Buildings) and S.migrate_etc(self.world, r.id, r.b, mode):
+                moved.add(r.id)
+        self._move_free_ports(moved)
         olds = {}
         for r in self.regions.values():
             if isinstance(r.b, S.Buildings):
@@ -337,8 +341,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     if x != keep:
                         olds[x][k] = 0
         lost = 0
+        mode = getattr(getattr(self, "settings", None), "mode", "standard")
         for rid, old in olds.items():
-            b, dropped = S.from_legacy(self.world, rid, old)
+            b, dropped = S.from_legacy(self.world, rid, old, mode)
             self.regions[rid].__dict__["b"] = b
             lost += sum(1 for k, _ in dropped if k != "housing")
         for r in self.regions.values():
@@ -351,6 +356,17 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     else:
                         r.queue.remove(q)
         self.slot_migrated = lost
+        self._move_free_ports(set(olds))
+
+    def _move_free_ports(self, rids):
+        """장보고 무료 항구(coastal_rewards)를 해안 슬롯에서 기타 슬롯으로 옮긴다(예전 세이브를 불러올 때)."""
+        for f in self.factions:
+            for rid in getattr(f, "coastal_rewards", set()) & set(rids):
+                b = self.regions[rid].b
+                pos = b.primary("port")
+                if pos is not None and pos[0] == "coast":
+                    c = b.remove(pos)
+                    b.add_free("port", c["level"])
 
     def _pick_starts(self, n, requested):
         return pick_starts(self.world, self.rng, n, requested)
@@ -1993,13 +2009,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
         # 슬롯 건물(v1.3.8): 빈 칸에 1단계 신축, 꽂힌 카드마다 다음 단계 증축
         self.slot_options(fid, rid, add)
-        # 슬롯 밖 생산 건물: 특산물 시설
-        lv = self.reserved_level(rid, "specialty") + 1
-        if info.specialty and lv <= C.PROD_BUILDINGS["specialty"]["max"]:
-            ok, why = self.building_allowed(fid, rid, "specialty", lv)
-            add("build", "specialty", self.building_name(rid, "specialty"),
-                R.prod_building_cost("specialty", lv) * self.building_cost_mult(fid, "specialty", lv),
-                self.build_time(fid, "specialty", R.prod_building_turns(lv), rid, lv), ok, why, lv)
+        # 특산물 시설·수력·원자력은 기타 슬롯 카드(v1.3.9, 위 slot_options)
         for key in ("shelter", "aa"):
             lv = self.reserved_level(rid, key) + 1
             if lv <= 5:

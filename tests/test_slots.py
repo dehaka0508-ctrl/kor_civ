@@ -48,20 +48,25 @@ def test_base_slot_count_by_area_and_water_slots(world):
         cap = S.capacity(world, rid)
         assert 2 <= cap["base"] <= 6
         assert cap["coast"] == int(info.coastal)
-        assert cap["river"] == int(rid in world.river_regions or bool(info.hydro)
-                                   or (info.fishery > 0 and not info.coastal))
-    # 댐(수력) 소재지는 하천과 닿아 있지 않아도 하천 슬롯이 있다(장진강 등)
-    jangjin = world.name_to_id["함남 장진군"]
-    assert jangjin not in world.river_regions and S.capacity(world, jangjin)["river"] == 1
+        assert cap["river"] == int(rid in world.river_regions or (info.fishery > 0 and not info.coastal))
+        # 기타 슬롯(v1.3.9): 댐·원전·특산물 입지마다 한 칸
+        assert cap["etc"] == int(bool(info.hydro)) + int(bool(info.nuclear)) + int(bool(info.specialty))
+        # 시작 항구를 받는 지역은 해안 슬롯 1칸 더(현실: 시작 항구 16곳, 개척·혼돈: 무연륙 섬)
+        assert S.slot_lengths(world, rid, "standard")["coast"] == int(info.coastal) + int(info.start_port)
+        assert S.slot_lengths(world, rid, "frontier")["coast"] == int(info.coastal) + int(info.island == "무연륙 섬")
+    jangjin = world.name_to_id["함남 장진군"]                # 댐은 기타 슬롯에(하천 슬롯과 무관)
+    assert S.capacity(world, jangjin)["river"] == 0 and S.capacity(world, jangjin)["etc"] >= 1
 
 
 def test_slot_kinds_allowed_per_slot_type():
     assert set(S.SLOT_KEYS["base"]) == {"farm", "factory", "bank", "admin", "edu", "academy", "extract"}
-    assert set(S.SLOT_KEYS["river"]) == {"fishery", "power", "hydro"}
-    assert set(S.SLOT_KEYS["coast"]) == {"port", "fishery", "power", "nuclear"}
-    for k in ("specialty", "shelter", "aa", "airport"):
+    assert set(S.SLOT_KEYS["river"]) == {"fishery", "power"}
+    assert set(S.SLOT_KEYS["coast"]) == {"port", "fishery", "power"}
+    assert set(S.SLOT_KEYS["etc"]) == {"hydro", "nuclear", "specialty", "port"}       # 항구는 장보고 무료 항구만
+    for k in ("shelter", "aa", "airport"):
         assert k not in S.CARD_KEYS                         # 슬롯을 쓰지 않는 건물
-    assert {"admin", "edu", "academy", "port"} <= S.UNIQUE_KEYS
+    assert {"admin", "edu", "academy", "port", "hydro", "nuclear", "specialty"} <= S.UNIQUE_KEYS
+    assert S.slot_types_for("port") == ("coast",)
     assert set(S.STACK_KEYS) == {"farm", "fishery", "factory", "bank", "power", "extract"}
 
 
@@ -69,22 +74,22 @@ def test_slot_kinds_allowed_per_slot_type():
 def test_standard_start_cards_follow_spec(world):
     for rid, info in world.regions.items():
         b = S.initial(world, rid)
-        assert {t: len(v) for t, v in b.slots.items()} == S.capacity(world, rid)
+        assert {t: len(v) for t, v in b.slots.items()} == S.slot_lengths(world, rid)
         assert b.used() <= b.total()
         for key in S.UNIQUE_KEYS:
             assert b.count(key) <= 1
         assert all(c["level"] <= 3 for _, _, c in b.cards())
         assert b["admin"] == S.admin_start_level(info.pop0) or b.count("admin") == 0
-        coast = b.slots["coast"][0] if b.slots["coast"] else None
-        if coast is not None and coast["key"] in ("power", "nuclear"):
-            assert info.power_source and not info.hydro
-        if info.coastal and info.power_source and not info.hydro:
-            assert coast["key"] in ("power", "nuclear")
-            assert coast["level"] == max(1, min(2, info.power_self)) or coast["key"] == "nuclear"
-        elif info.coastal and info.start_port:
-            assert coast == {"key": "port", "level": 1}
-        if info.hydro:
-            assert b.slots["river"][0] == {"key": "hydro", "level": info.hydro}
+        coast = [c for c in b.slots["coast"] if c]
+        thermal = bool(info.power_source) and not info.hydro and not info.nuclear
+        if info.start_port:                                 # 시작 항구는 덤 해안 칸(맨 앞)에
+            assert b.slots["coast"][0] == {"key": "port", "level": 1}
+        if info.coastal and thermal:
+            assert {"key": "power", "level": max(1, min(2, info.power_self))} in coast
+        # 기타 슬롯: 댐·원전·특산물 시설
+        etc = {c["key"]: c["level"] for c in b.slots["etc"] if c}
+        assert etc == {**({"hydro": info.hydro} if info.hydro else {}), **({"nuclear": info.nuclear} if info.nuclear else {}),
+                       **({"specialty": 1} if info.specialty else {})}
         # 시장·공장·농장은 칸이 모자라면 도심은 시장 > 공장 > 농장, 농촌은 농장 > 공장 > 시장 순으로만 남는다
         order = ("bank", "factory", "farm") if info.rtype != "군" else ("farm", "factory", "bank")
         want = [k for k in order if getattr(info, k) > 0]
@@ -96,13 +101,19 @@ def test_standard_start_cards_follow_spec(world):
 
 def test_start_card_examples(world):
     n = world.name_to_id
-    # 부산 기장(원전 고리, 자체 발전 2): 해안 슬롯에 원자력발전소 2단계
-    assert S.initial(world, n["부산 기장군"]).slots["coast"] == [{"key": "nuclear", "level": 2}]
+    # 부산 기장(원전 고리, 자체 발전 2): 기타 슬롯에 원자력발전소 2단계, 해안 슬롯은 바다 어장
+    b = S.initial(world, n["부산 기장군"])
+    assert b.slots["etc"][0] == {"key": "nuclear", "level": 2} and b.slots["coast"] == [{"key": "fishery", "level": 2}]
     # 충남 태안(화력): 해안 슬롯에 발전소 1단계, 평양 평천(내륙 화력): 하천 슬롯에 발전소
     assert S.initial(world, n["충남 태안군"]).slots["coast"] == [{"key": "power", "level": 1}]
     assert S.initial(world, "N021").slots["river"] == [{"key": "power", "level": 1}]
-    # 대전 대덕(대청댐): 하천 슬롯에 수력발전소
-    assert S.initial(world, n["대전 대덕구"]).slots["river"] == [{"key": "hydro", "level": 1}]
+    # 대전 대덕(대청댐): 기타 슬롯에 수력발전소, 하천 슬롯은 비어 있음
+    b = S.initial(world, n["대전 대덕구"])
+    assert b.slots["etc"] == [{"key": "hydro", "level": 1}] and b.slots["river"] == [None]
+    # 함북 청진(시작 항구 + 화력): 덤 해안 칸에 항구, 원래 해안 칸에 발전소
+    assert S.initial(world, "N151").slots["coast"] == [{"key": "port", "level": 1}, {"key": "power", "level": 1}]
+    # 부산 중구(시작 항구 + 어장): 항구와 바다 어장 둘 다
+    assert S.initial(world, "S041").slots["coast"] == [{"key": "port", "level": 1}, {"key": "fishery", "level": 1}]
     # 서울 송파(인구 64.9만, 기본 2칸): 구청 + 시장 3단계(시장 2단계·인구 50만 이상)
     assert cards(S.initial(world, "S001"))["base"] == [("admin", 2), ("bank", 3)]
     # 서울 관악(거점대학): 행정 → 연구 2단계가 먼저 칸을 차지한다
@@ -210,7 +221,9 @@ def test_slot_options_new_upgrade_and_unique():
     # 빈 기본 슬롯(첫 빈 칸 = 2번 칸)에 1단계 신축. 행정은 이미 있어 신축 없음, 하천 칸에는 어장·발전소·수력
     assert ("bank", ("base", 2)) in new and ("farm", ("base", 2)) in new and ("academy", ("base", 2)) in new
     assert not any(k == "admin" for k, _ in new)
-    assert {k for k, s in new if s[0] == "river"} == {"fishery", "power", "hydro"}
+    assert {k for k, s in new if s[0] == "river"} == {"fishery", "power"}
+    # 기타 슬롯: 안동의 댐(수력)·특산물 시설
+    assert {k for k, s in new if s[0] == "etc"} == {"hydro", "specialty"}
     up = {(o["key"], o["slot"], o["level"]) for o in opts if o["level"] > 1}
     assert ("admin", ("base", 0), 3) in up and ("farm", ("base", 1), 2) in up
     # 슬롯을 정해 신축 → 그 칸에 카드
@@ -286,7 +299,7 @@ def test_ai_turns_keep_slot_invariants():
     for _ in range(12):
         g.end_turn()
     for rid, r in g.regions.items():
-        assert {t: len(v) for t, v in r.b.slots.items()} == S.capacity(g.world, rid)
+        assert {t: len(v) for t, v in r.b.slots.items()} == S.slot_lengths(g.world, rid, "standard", r.b.free_cards())
         for key in S.UNIQUE_KEYS:
             assert r.b.count(key) <= 1
         for key in S.CARD_KEYS:
@@ -294,7 +307,29 @@ def test_ai_turns_keep_slot_invariants():
 
 
 # ------------------------------------------------------------------ 화면
-def test_slot_cards_render_and_empty_slot_opens_filtered_action_tab(monkeypatch, tmp_path):
+def test_any_empty_slot_can_be_targeted_and_choices():
+    g = game()
+    rr = own(g, "S192")
+    rr.b.reset({})
+    rr.b.place("farm", 2, ("base", 0))
+    # 빈 칸 아무 곳(첫 빈 칸이 아니어도)에 신축
+    choices = g.slot_choices(0, "S192", ("base", 3))
+    assert {o["key"] for o in choices} >= {"farm", "bank", "factory", "admin"}
+    assert all(o["slot"] == ("base", 3) and o["level"] == 1 for o in choices)
+    ok, msg = g.start_project(0, "S192", "build", "bank", slot=("base", 3))
+    assert ok and msg.startswith("[기본 슬롯 4]") and rr.project.slot == ("base", 3)
+    # 지은 칸: 그 카드의 다음 단계만
+    up = g.slot_choices(0, "S192", ("base", 0))
+    assert [(o["key"], o["level"], o["slot"]) for o in up] == [("farm", 3, ("base", 0))]
+    # 예약한 빈 칸은 이제 '지은 칸'처럼 다음 단계(대기열)
+    assert [(o["key"], o["level"]) for o in g.slot_choices(0, "S192", ("base", 3))] == [("bank", 2)]
+    # 기타 슬롯: 댐·특산물 입지의 빈 칸
+    assert {o["key"] for o in g.slot_choices(0, "S192", ("etc", 0))} == {"hydro", "specialty"}
+
+
+def test_slot_cards_in_action_tab_click_expands_choices(monkeypatch, tmp_path):
+    """v1.3.9: 슬롯 카드는 [행동] 탭에. 카드를 누르면 그 칸의 선택지(건설·최대 건설 / 다음 단계·최대 건설·철거)를 펼친다.
+    지역 정보 탭은 내 지역이면 부존 자원 칩만, 다른 지역은 슬롯 카드를 읽기 전용으로."""
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     pygame = pytest.importorskip("pygame")
@@ -310,36 +345,97 @@ def test_slot_cards_render_and_empty_slot_opens_filtered_action_tab(monkeypatch,
         g = app.game
         rid = g.player.capital
         rr = g.regions[rid]
-        first_empty = next(k for k, (t, i, c) in enumerate(g.slot_summary(rid)) if c is None)
-        assert rr.b.empty("base")
+        rr.sci.add("lab")
         app.select(rid)
+        # 행동 탭: 카드 그리드 → 빈 칸 클릭 → 펼침
+        app.left_open, app.left_tab, app.tab = True, "region", "action"
+        app.gui.begin([])
+        app.frame()
+        summary, specials, cells = SC._cells(app, rid)
+        assert specials and specials[0][1] == C.SCIENCE["lab"]["name"]       # 기타 아래 금빛 카드
+        layout, _ = SC.grid_layout(cells, 20, 120, 330)
+        rows = {}
+        for (st, i), rect in layout:
+            rows.setdefault(st, set()).add(rect.y)
+        ys = [min(rows[t]) for t in ("base", "river", "etc", "gold") if t in rows]
+        assert ys == sorted(ys) and len(set(ys)) == len(ys)                   # 슬롯 종류마다 새 줄
+        empty = next((st, i) for st, i, c in summary if c is None and st == "base")
+        rect = dict(layout)[empty]
+        app.gui.begin([])
+        app.gui.mouse = rect.center
+        app.gui.clicked = True
+        SC.draw_slot_grid(app, 20, 120, 330, rid, mine=True, select=True)
+        assert app.slot_sel == (rid, *empty)
+        app.gui.begin([])
+        app.frame()                                                          # 펼친 선택지 그리기
+        assert SC.slot_panel_height(app, rid, empty, g.options(0, rid)) > SC.PANEL_ROW * 3
+        app.gui.begin([])
+        app.gui.mouse = rect.center
+        app.gui.clicked = True
+        SC.draw_slot_grid(app, 20, 120, 330, rid, mine=True, select=True)
+        assert app.slot_sel is None                                          # 다시 누르면 접힘
+        # 지역 정보 탭: 내 지역은 카드 대신 [행동] 탭 안내, 다른 나라 지역은 읽기 전용 카드
+        drawn = []
+        monkeypatch.setattr(SC, "draw_slot_grid", lambda *a, **k: drawn.append(a[4]) or a[3])
+        app.tab = "info"
+        app.gui.begin([])
+        app.frame()
+        assert rid not in drawn
+        other = next(r for r in g.world.land_adj[rid])
+        app.fog_reveal = True
+        app.select(other)
         app.left_open, app.left_tab, app.tab = True, "region", "info"
         app.gui.begin([])
         app.frame()
-        # 빈 슬롯 카드를 누르면 행동 탭으로 가고 그 슬롯 종류 건물만
-        x, y, w = 20, 120, 330
-        n = SC.columns(w)
-        cw = (w - SC.GAP * (n - 1)) / n
-        cx = x + (first_empty % n) * (cw + SC.GAP) + cw / 2
-        cy = y + (first_empty // n) * (SC.CARD_H + SC.GAP) + SC.CARD_H / 2
-        app.gui.begin([])
-        app.gui.mouse = (int(cx), int(cy))
-        app.gui.clicked = True
-        SC.draw_slot_grid(app, x, y, w, rid, mine=True)
-        assert app.tab == "action" and app.slot_filter == (rid, "base")
-        app.gui.begin([])
-        app.frame()
+        assert other in drawn
         chips = SC.resource_chips(app, rid) + SC.facility_chips(app, rid)
-        assert any(c.startswith("발전원(수력)") for c in chips)
-        assert any(c.startswith("특산물: ") and "시설" in c for c in chips)
-        assert any(c.startswith("방어선") for c in chips)
+        assert any(c.startswith("발전원(수력)") for c in chips) and any(c.startswith("특산물: ") for c in chips)
         for dark in (True, False):
             app.theme.set_dark(dark)
-            assert SC.slot_colors(app.theme, "base")["accent"] == (201, 42, 42)
-            app.tab = "info"
+            assert SC.slot_colors(app.theme, "etc")["accent"] == (73, 80, 87)
+            assert SC.slot_colors(app.theme, "gold")["accent"] == (222, 168, 20)
             app.gui.begin([])
             app.frame()
     finally:
         theme._fonts.clear()
         theme._text_cache.clear()
         pygame.quit()
+
+
+def test_v138_save_moves_site_plants_specialty_and_free_port_to_etc():
+    """v1.3.8 세이브(기타 슬롯 전): 하천·해안 슬롯의 댐·원전 카드와 특산물 시설 단계는 기타 슬롯으로, 장보고 무료 항구는
+    해안 슬롯에서 기타 슬롯으로 옮기고, 시작 항구 지역에는 해안 슬롯 1칸을 뒤에 더 붙인다."""
+    g = game()
+    dam = g.world.name_to_id["대전 대덕구"]
+    nuke = g.world.name_to_id["부산 기장군"]
+    port = "S041"                                            # 부산 중구(시작 항구)
+    reward = next(r for r in g.world.order if g.info(r).coastal and not g.info(r).start_port
+                  and not g.info(r).nuclear and g.regions[r].owner == NEUTRAL)
+    for rid in g.world.order:
+        b = g.regions[rid].b
+        info = g.info(rid)
+        etc = [c for c in b.slots.pop("etc") if c]
+        sp = next((c["level"] for c in etc if c["key"] == "specialty"), 0)
+        for c in etc:
+            if c["key"] in ("hydro", "nuclear"):          # v1.3.8: 댐은 하천, 원전은 해안 슬롯
+                t = "river" if c["key"] == "hydro" else "coast"
+                b.slots[t].append(dict(c))
+        if S.start_port_bonus(info):                         # v1.3.8: 덤 해안 칸 없음
+            b.slots["coast"] = [c for c in b.slots["coast"] if c and c["key"] == "port"][:1] or [None]
+        dict.__setitem__(b, "specialty", sp)
+    g.regions[reward].b.slots["coast"] = [{"key": "port", "level": 1}]
+    g.player.coastal_rewards = {reward}
+    state = g.__getstate__()
+    restored = Game.__new__(Game)
+    restored.__setstate__(state)
+    b = restored.regions[dam].b
+    assert b.slots["etc"] == [{"key": "hydro", "level": 1}] and all(c is None or c["key"] != "hydro" for c in b.slots["river"])
+    assert restored.self_power(dam) == 1
+    b = restored.regions[nuke].b
+    assert {"key": "nuclear", "level": 2} in b.slots["etc"] and all(c is None or c["key"] != "nuclear" for c in b.slots["coast"])
+    b = restored.regions[port].b
+    assert b.slots["coast"] == [{"key": "port", "level": 1}, None]           # 덤 칸은 뒤에(칸 번호가 밀리지 않게)
+    b = restored.regions[reward].b
+    assert b.slots["coast"] == [None] and b.slots["etc"][-1] == {"key": "port", "level": 1, "free": True}
+    sp = next(r for r in restored.world.order if restored.info(r).specialty)
+    assert restored.regions[sp].b["specialty"] == 1 and restored.regions[sp].b.count("specialty") == 1

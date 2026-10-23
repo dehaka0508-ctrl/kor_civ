@@ -4789,13 +4789,13 @@ def test_v1214_start_airports_and_ports():
     ports = ("S041 S059 S169 S075 S084 S154 S168 N036 N112 N151 N042 N001 N131 S209 S228 S229").split()
     for rid in airports:
         assert g.regions[rid].b["airport"] == 1, rid
-    # 건물 슬롯(v1.3.8): 해안 슬롯은 해안 발전소 > 항구 > 바다 어장 순 — 발전소 소재지(청진 등)는 항구 대신 발전소
-    plants = {rid for rid in ports if g.regions[rid].b["power"] or g.regions[rid].b["nuclear"]}
-    assert plants == {"N151"}
+    # 건물 슬롯(v1.3.9): 시작 항구는 해안 슬롯을 1칸 더 만들어 꽂는다 — 화력발전소 소재지 청진도 항구 + 발전소
     for rid in ports:
-        assert g.regions[rid].b["port"] == (0 if rid in plants else 1), rid
+        assert g.regions[rid].b["port"] == 1, rid
+        assert len(g.regions[rid].b.slots["coast"]) == 2
+    assert g.regions["N151"].b["power"] == 1
     assert sum(r.b["airport"] for r in g.regions.values()) == len(airports)
-    assert sum(r.b["port"] for r in g.regions.values()) == len(ports) - len(plants)
+    assert sum(r.b["port"] for r in g.regions.values()) == len(ports)
 
 
 def test_v1214_paid_capital_move_gives_border_lines_but_forced_move_does_not():

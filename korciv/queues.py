@@ -172,7 +172,19 @@ class QueueMixin:
         if site and len(opts) > 1:
             opts = [o for o in opts if o.get('site') == site] or opts
         if slot is not None:
-            opts = [o for o in opts if o.get('slot') and tuple(o['slot']) == tuple(slot)]
+            slot = tuple(slot)
+            exact = [o for o in opts if o.get('slot') and tuple(o['slot']) == slot]
+            if not exact:
+                # 빈 칸 신축(v1.3.9): 선택지는 그 종류의 첫 빈 칸을 가리키지만, 같은 종류의 다른 빈 칸에도 지을 수 있다
+                for o in opts:
+                    s0 = o.get('slot')
+                    if not s0 or s0[0] != slot[0]:
+                        continue
+                    proj = self.projected_slots(o.get('site') or rid)
+                    row = proj.get(slot[0], [])
+                    if row[s0[1]] is None and 0 <= slot[1] < len(row) and row[slot[1]] is None:
+                        exact.append(dict(o, slot=slot))
+            opts = exact
         if not opts:
             return False, '선택할 수 없는 항목입니다.'
         o = self._pick_option(opts) if len(opts) > 1 else opts[0]

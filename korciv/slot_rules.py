@@ -42,10 +42,10 @@ class SlotMixin:
         info = self.info(rid)
         if key not in S.SLOT_KEYS[stype]:
             return False
+        if stype == "etc":                    # 기타 슬롯: 댐·원전·특산물 입지만(항구는 장보고 무료 항구로만)
+            return key in S.etc_kinds(info)
         if key == "extract":
             return info.is_oil or info.is_coal
-        if key in ("hydro", "nuclear"):
-            return bool(getattr(info, key))
         return True
 
     def card_max(self, rid, key) -> int:
@@ -100,6 +100,28 @@ class SlotMixin:
                 ok, why = self.building_allowed(fid, rid, key, lv)
                 add("build", key, self.building_name(rid, key), cost, turns, ok, why, level=lv, slot=(stype, idx))
 
+    def slot_choices(self, fid, rid, slot, opts=None) -> list:
+        """행동 탭에서 고른 칸의 선택지: 빈 칸이면 그 칸에 지을 수 있는 1단계 건물들(그 칸으로 바꿔서),
+        건물이 있는 칸이면 그 카드의 다음 단계 증축."""
+        opts = self.options(fid, rid) if opts is None else opts
+        slot = tuple(slot)
+        proj = self.projected_slots(rid)
+        lst = proj.get(slot[0], [])
+        if not 0 <= slot[1] < len(lst):
+            return []
+        cur = lst[slot[1]]
+        out = []
+        for o in opts:
+            s0 = o.get("slot")
+            if o["kind"] != "build" or not s0 or (o.get("site") or rid) != rid:
+                continue
+            if cur is None:
+                if s0[0] == slot[0] and proj[s0[0]][s0[1]] is None:
+                    out.append(dict(o, slot=slot))
+            elif tuple(s0) == slot:
+                out.append(o)
+        return out
+
     def slot_option_label(self, rid, o) -> str:
         """'[기본 슬롯 2] 농장 건설 · 텃밭' / '[기본 슬롯 1] 농장 2→3단계 증축'."""
         stype, idx = o["slot"]
@@ -119,6 +141,8 @@ class SlotMixin:
             return "화력발전소"
         if key == "extract":
             return "정유공장" if self.info(rid).is_oil else "탄광"
+        if key == "port" and stype == "etc":
+            return "무료 항구"
         return BUILDING_NAMES.get(key, key)
 
     def card_title(self, rid, key, level, stype=None) -> str:
@@ -218,11 +242,21 @@ class SlotMixin:
         if key == "academy":
             return f"유닛 생산비 −{C.ACADEMY_LOCAL:.0%}"
         if key == "port":
-            return "해군 생산·정박"
+            return "해군 생산·정박" + (" (청해진)" if card.get("free") else "")
+        if key == "specialty":
+            sps = info.specialties
+            return ("「" + sps[0] + "」" + (f" 외 {len(sps) - 1}" if len(sps) > 1 else "") + f" {lv}개/턴") if sps else ""
         return ""
 
+    def etc_placeholders(self, rid) -> dict:
+        """기타 슬롯의 빈 칸마다 들어갈 건물(입지에 있는데 아직 없는 댐·원전·특산물 시설을 칸 순서대로)."""
+        proj = self.projected_slots(rid).get("etc", [])
+        have = {c["key"] for c in proj if c}
+        missing = [k for k in S.etc_kinds(self.info(rid)) if k not in have]
+        return {i: missing.pop(0) for i, c in enumerate(proj) if c is None and missing}
+
     def slot_summary(self, rid) -> list:
-        """[(슬롯 종류, 칸 번호, 카드 또는 None)] 기본 → 하천 → 해안 순."""
+        """[(슬롯 종류, 칸 번호, 카드 또는 None)] 기본 → 하천 → 해안 → 기타 순."""
         b = self.regions[rid].b
         return [(t, i, c) for t in S.SLOT_TYPES for i, c in enumerate(b.slots.get(t, ()))]
 

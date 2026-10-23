@@ -24,10 +24,10 @@ class LeaderRulesMixin:
                 for r in coast:
                     if len(f.coastal_rewards) >= limit:
                         break
-                    if r.b.get("port") or (hasattr(r.b, "free") and r.b.free("port") is None):
+                    if r.b.get("port"):
                         continue
                     f.coastal_rewards.add(r.id)
-                    r.b["port"] = 1
+                    r.b.add_free("port", 1)
             f.tax = min(f.tax, self.tax_max(f.id))
         self._minority = {}
 
@@ -39,9 +39,9 @@ class LeaderRulesMixin:
         limit = self.mods(fid).value("free_coastal_ports", 0)
         b = self.regions[rid].b
         if limit and self.info(rid).coastal and rid not in f.coastal_rewards and len(f.coastal_rewards) < limit \
-                and not b.get("port") and (not hasattr(b, "free") or b.free("port") is not None):
-            f.coastal_rewards.add(rid)          # 해안 슬롯이 비어 있을 때만(v1.3.8)
-            b["port"] = 1
+                and not b.get("port"):
+            f.coastal_rewards.add(rid)          # 기타 슬롯에 붙여 꽂는다 — 해안 슬롯을 차지하지 않음(v1.3.9)
+            b.add_free("port", 1)
 
     def unit_oil(self, fid, key):
         base = self.unit_spec(fid, key)["oil"]

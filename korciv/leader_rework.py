@@ -58,7 +58,7 @@ LEADERS = [
            ("외환위기 수습", "첫 10턴 전 지역 산출 −20%"), dict(ai_opinion_turn=.3, gift_opinion=.3, early_output=-.2, early_output_turns=10), "early_output early_output_turns"),
     leader("yon", "연개소문", 8, ("천리장성", "국경 방어선 일괄 건설 비용·시간 −25%"),
            ("막리지 독재", "수도 함락 시 8턴간 전 지역 반란 확률 +50%"), dict(border_group_cost=-.25, border_group_time=-.25, capital_fall_rebel=1.5), "capital_fall_rebel"),
-    leader("jan", "장보고", 4, ("청해진 해상왕", "처음 획득한 해안 지역 3곳(해안 슬롯이 빈 곳)에 항구 무료 제공"),
+    leader("jan", "장보고", 4, ("청해진 해상왕", "처음 획득한 해안 지역 3곳에 항구 무료 제공(기타 슬롯)"),
            ("골품제의 벽", "연합 창설·가입 불가(동맹까지 가능)"), dict(free_coastal_ports=3, no_coalition=True), "no_coalition"),
     leader("kgc", "강감찬", 4, ("귀주대첩", "도하·산악 경계를 건넌 적에게 방어 피해 +50%"),
            ("문신의 신중함", "기습 사용 불가"), dict(boundary_def_dmg=.5, no_surprise=True), "no_surprise"),

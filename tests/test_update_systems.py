@@ -42,7 +42,7 @@ def test_geometry_and_all_standard_starting_areas():
         assert i.area_km2 == max(3, round(g.world.geometry[rid]['area'] * 9321.3, 1))
         # 건물 슬롯(v1.3.8): 면적에 따른 기본 슬롯 2~6칸, 시작 카드는 칸 수를 넘지 않는다
         b = g.regions[rid].b
-        assert {t: len(v) for t, v in b.slots.items()} == S.capacity(g.world, rid), i.name
+        assert {t: len(v) for t, v in b.slots.items()} == S.slot_lengths(g.world, rid, 'standard', b.free_cards()), i.name
         assert len(b.slots['base']) == S.base_slot_count(i.area_km2)
         assert b.used() <= b.total()
     hongcheon = g.world.name_to_id['강원 홍천군']
@@ -317,7 +317,7 @@ def test_old_save_migration_populates_queue_and_power():
     assert restored.weather is None
     for r in restored.regions.values():
         assert hasattr(r, 'queue') and isinstance(r.b, S.Buildings) and 'housing' not in r.b
-        assert {t: len(v) for t, v in r.b.slots.items()} == S.capacity(restored.world, r.id)
+        assert {t: len(v) for t, v in r.b.slots.items()} == S.slot_lengths(restored.world, r.id, 'standard', r.b.free_cards())
         assert r.b.used() <= r.b.total()
     assert sum(restored.self_power(rid) for rid in restored.world.order) > 0
     big = next(r for r in restored.regions.values() if len(r.b.slots['base']) >= 6 and not r.b['admin'])

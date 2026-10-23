@@ -1,12 +1,14 @@
 """건물 슬롯(v1.3.8): 지역마다 기본·하천·해안 슬롯에 건물 카드를 꽂는다.
 
 - 기본 슬롯: 면적에 따라 2~6칸. 농장·공장·시장·행정·연구·사관학교·지하자원 시설(탄광·정유공장)
-- 하천 슬롯: 하천과 맞닿은 지역(댐·내륙 어장이 있는 지역 포함) 1칸. 하천 어장·발전소(화력·수력)
-- 해안 슬롯: 바다와 맞닿은 지역 1칸. 항구·바다 어장·발전소(화력·원자력)
-- 특산물 시설·방어 건물·공항·과학·경제 시설은 슬롯을 쓰지 않는다.
+- 하천 슬롯: 하천과 맞닿은 지역(내륙 어장이 있는 지역 포함) 1칸. 하천 어장·화력발전소
+- 해안 슬롯: 바다와 맞닿은 지역 1칸. 항구·바다 어장·화력발전소
+- 기타 슬롯(v1.3.9): 위 세 슬롯을 차지하지 않는 입지 건물 — 수력발전소(댐)·원자력발전소·특산물 시설의
+  자리가 입지마다 한 칸씩 있고, 장보고 '청해진 해상왕'의 무료 항구는 기타 슬롯에 한 칸을 더 붙여 꽂는다.
+- 방어 건물·공항·과학·경제 시설은 슬롯을 쓰지 않는다.
 
 카드는 {"key": 건물 키, "level": 단계}, 빈 칸은 None. 같은 생산 건물을 여러 칸에 지을 수 있고(행정·연구·
-사관학교·항구·수력·원자력은 지역에 하나), 산출·연료는 카드마다 따로 계산해 더한다.
+사관학교·항구·수력·원자력·특산물 시설은 지역에 하나), 산출·연료는 카드마다 따로 계산해 더한다.
 
 지역의 r.b 는 Buildings(사전)다. 슬롯 건물 키의 값은 그 종류 카드 가운데 가장 높은 단계(없으면 0)로, 승리·위인·
 광역시 조건처럼 '○○ n단계 지역'을 볼 때 그대로 쓴다. 슬롯 건물 키에 값을 쓰면 가장 높은 카드의 단계가 바뀌고
@@ -17,20 +19,23 @@ from __future__ import annotations
 
 from . import config as C
 
-SLOT_TYPES = ("base", "river", "coast")
-SLOT_NAMES = {"base": "기본", "river": "하천", "coast": "해안"}
+SLOT_TYPES = ("base", "river", "coast", "etc")
+SLOT_NAMES = {"base": "기본", "river": "하천", "coast": "해안", "etc": "기타"}
 SLOT_KEYS = {
     "base": ("farm", "factory", "bank", "admin", "edu", "academy", "extract"),
-    "river": ("fishery", "power", "hydro"),
-    "coast": ("port", "fishery", "power", "nuclear"),
+    "river": ("fishery", "power"),
+    "coast": ("port", "fishery", "power"),
+    "etc": ("hydro", "nuclear", "specialty", "port"),
 }
+# 기타 슬롯에 입지마다 한 칸씩 자리가 있는 건물(항구는 장보고 무료 항구만 기타 슬롯에)
+ETC_KEYS = ("hydro", "nuclear", "specialty")
 CARD_KEYS = frozenset(k for keys in SLOT_KEYS.values() for k in keys)
-# 지역에 하나만 지을 수 있는 카드(행정·연구·사관학교·항구, 댐·원전은 입지가 하나)
-UNIQUE_KEYS = frozenset(("admin", "edu", "academy", "port", "hydro", "nuclear"))
+# 지역에 하나만 지을 수 있는 카드(행정·연구·사관학교·항구, 댐·원전·특산물 시설은 입지가 하나)
+UNIQUE_KEYS = frozenset(("admin", "edu", "academy", "port", "hydro", "nuclear", "specialty"))
 # 같은 건물을 여러 칸에 지을 수 있는 생산 건물
 STACK_KEYS = ("farm", "fishery", "factory", "bank", "power", "extract")
-# 슬롯을 정하지 않고 카드를 꽂을 때(광역시 통합 건물·예전 세이브) 고르는 순서
-PREFER = {"fishery": ("coast", "river"), "power": ("river", "coast")}
+# 슬롯을 정하지 않고 카드를 꽂을 때(광역시 통합 건물·예전 세이브) 고르는 순서. 항구는 해안 슬롯에만 짓는다
+PREFER = {"fishery": ("coast", "river"), "power": ("river", "coast"), "port": ("coast",)}
 # 면적(km²) 상한 → 기본 슬롯 칸 수. 1,000km² 초과는 6칸
 BASE_SLOT_AREA = ((100, 2), (300, 3), (600, 4), (1000, 5))
 BASE_SLOT_MAX = 6
@@ -50,16 +55,43 @@ def base_slot_count(area_km2) -> int:
 
 
 def has_river_slot(world, rid) -> bool:
-    """하천 슬롯: 도하 경계·국경 하천·내륙 하천에 맞닿은 지역, 댐(수력) 소재지, 바다와 닿지 않았는데 어장이 있는 지역."""
+    """하천 슬롯: 도하 경계·국경 하천·내륙 하천에 맞닿은 지역, 바다와 닿지 않았는데 어장이 있는 지역."""
     info = world.regions[rid]
-    return rid in world.river_regions or bool(info.hydro) or (info.fishery > 0 and not info.coastal)
+    return rid in world.river_regions or (info.fishery > 0 and not info.coastal)
+
+
+def etc_kinds(info) -> list:
+    """그 지역 기타 슬롯에 자리가 있는 건물(댐·원전·특산물 입지)."""
+    return [k for k in ETC_KEYS if (info.specialty if k == "specialty" else getattr(info, k, 0))]
 
 
 def capacity(world, rid) -> dict:
-    """{"base": 2~6, "river": 0~1, "coast": 0~1}"""
+    """{"base": 2~6, "river": 0~1, "coast": 0~1, "etc": 0~3}(기타 슬롯의 무료 항구 칸은 따로 붙는다)"""
     info = world.regions[rid]
     return {"base": base_slot_count(info.area_km2), "river": int(has_river_slot(world, rid)),
-            "coast": int(bool(info.coastal))}
+            "coast": int(bool(info.coastal)), "etc": len(etc_kinds(info))}
+
+
+def start_port_bonus(info, mode="standard") -> bool:
+    """시작할 때 항구를 받는 지역(현실: 시작 항구 16곳, 개척·혼돈: 무연륙 섬). v1.3.9: 항구를 받은 만큼
+    해안 슬롯을 1칸 더 준다(기본 제공 항구가 어장·발전소 자리를 빼앗지 않게)."""
+    if not info.coastal:
+        return False
+    return bool(info.start_port) if mode == "standard" else info.island == "무연륙 섬"
+
+
+def give_start_port(b):
+    """해안 슬롯 맨 앞에 칸을 하나 더 만들고 시작 항구를 꽂는다(새 판을 만들 때만 — 칸 번호가 밀린다)."""
+    b.slots["coast"].insert(0, None)
+    b.place("port", 1, ("coast", 0))
+
+
+def slot_lengths(world, rid, mode="standard", free=0) -> dict:
+    """그 지역 슬롯 칸 수(시작 항구 덤 해안 칸, 기타 슬롯에 붙인 무료 카드 free 장 포함)."""
+    cap = capacity(world, rid)
+    cap["coast"] += int(start_port_bonus(world.regions[rid], mode))
+    cap["etc"] += int(free)
+    return cap
 
 
 def slot_types_for(key) -> tuple:
@@ -157,6 +189,10 @@ class Buildings(dict):
     def total(self) -> int:
         return sum(len(v) for v in self.slots.values())
 
+    def free_cards(self) -> int:
+        """기타 슬롯에 붙인 무료 카드(장보고 항구) 수."""
+        return sum(1 for c in self.slots.get("etc", ()) if c and c.get("free"))
+
     def used(self) -> int:
         return sum(1 for _ in self.cards())
 
@@ -179,13 +215,24 @@ class Buildings(dict):
         self._sync(key)
         return True
 
+    def add_free(self, key, level=1) -> bool:
+        """기타 슬롯에 칸을 하나 붙여 무료 카드를 꽂는다(장보고 무료 항구). 다른 슬롯은 차지하지 않는다."""
+        if key in UNIQUE_KEYS and self.count(key):
+            return False
+        lst = self.slots.setdefault("etc", [])
+        lst.append({"key": key, "level": int(level), "free": True})
+        self._sync(key)
+        return True
+
     def remove(self, slot):
-        """그 칸을 비운다. 뺀 카드를 돌려준다."""
+        """그 칸을 비운다(무료로 붙인 기타 칸은 칸째 없앤다). 뺀 카드를 돌려준다."""
         if not self.valid(slot):
             return None
         stype, idx = slot
         c = self.slots[stype][idx]
         self.slots[stype][idx] = None
+        if c is not None and c.get("free") and stype == "etc" and idx == len(self.slots[stype]) - 1:
+            self.slots[stype].pop()
         if c is not None:
             self._sync(c["key"])
         return c
@@ -203,7 +250,8 @@ class Buildings(dict):
 
     def clear_cards(self):
         for t in SLOT_TYPES:
-            self.slots[t] = [None] * len(self.slots.get(t, ()))
+            lst = self.slots.get(t, [])
+            self.slots[t] = [None] * (len(lst) - sum(1 for c in lst if c and c.get("free")))
         for k in CARD_KEYS:
             dict.__setitem__(self, k, 0)
 
@@ -277,31 +325,32 @@ def admin_start_level(pop) -> int:
 
 
 def initial(world, rid, pop=None) -> Buildings:
-    """현실 모드 시작 건물: regions.csv 와 인구 규모로 0~3단계 카드를 슬롯 칸 수 안에서 꽂는다."""
+    """현실 모드 시작 건물: regions.csv 와 인구 규모로 0~3단계 카드를 슬롯 칸 수 안에서 꽂는다.
+    시작 항구는 해안 슬롯을 1칸 더 만들어 꽂는다(v1.3.9)."""
     info = world.regions[rid]
     pop = info.pop0 if pop is None else pop
     b = new(world, rid)
+    if start_port_bonus(info, "standard"):
+        give_start_port(b)
     src = info.power_source or ""
-    coastal_plant = bool(src) and not info.hydro and (bool(info.nuclear) or info.coastal)
+    thermal = bool(src) and not info.hydro and not info.nuclear      # 화력발전소 소재지(댐·원전은 기타 슬롯)
+    coastal_plant = thermal and info.coastal
     plant_lv = max(1, min(2, int(info.power_self or 0)))
     fish_used = False
-    # 1. 해안 슬롯: 해안 발전소 > 항구 > 바다 어장
-    if b.slots["coast"]:
+    # 0. 기타 슬롯(v1.3.9): 댐·원전·특산물 시설은 입지 칸에(다른 슬롯을 차지하지 않는다)
+    for key in etc_kinds(info):
+        b.place(key, 1 if key == "specialty" else max_level(key, info))
+    # 1. 해안 슬롯(항구를 꽂은 덤 칸 말고 남은 칸): 해안 화력발전소 > 바다 어장
+    if b.empty("coast"):
+        spot = ("coast", b.empty("coast")[0])
         if coastal_plant:
-            if info.nuclear:
-                b.place("nuclear", max_level("nuclear", info), ("coast", 0))
-            else:
-                b.place("power", plant_lv, ("coast", 0))
-        elif info.start_port:
-            b.place("port", 1, ("coast", 0))
+            b.place("power", plant_lv, spot)
         elif info.fishery > 0:
-            b.place("fishery", min(3, _scaled(info.fishery, pop)), ("coast", 0))
+            b.place("fishery", min(3, _scaled(info.fishery, pop)), spot)
             fish_used = True
-    # 2. 하천 슬롯: 댐·내륙 발전소 > 하천 어장
+    # 2. 하천 슬롯: 내륙 화력발전소 > 하천 어장
     if b.slots["river"]:
-        if info.hydro:
-            b.place("hydro", max_level("hydro", info), ("river", 0))
-        elif src and not coastal_plant:
+        if thermal and not coastal_plant:
             b.place("power", plant_lv, ("river", 0))
         elif info.fishery > 0 and not fish_used:
             b.place("fishery", min(2, _scaled(info.fishery, pop)), ("river", 0))
@@ -331,15 +380,17 @@ def initial(world, rid, pop=None) -> Buildings:
 MIGRATE_ORDER = ("admin", "edu", "academy", "extract", "factory", "bank", "farm")
 
 
-def from_legacy(world, rid, old: dict) -> tuple:
+def from_legacy(world, rid, old: dict, mode="standard") -> tuple:
     """예전 r.b 사전 → Buildings. 슬롯에 들어가지 않는 건물은 버린다. (Buildings, 버린 [(키, 단계)])"""
     b = new(world, rid)
+    if start_port_bonus(world.regions[rid], mode):
+        b.slots["coast"].append(None)                 # 시작 항구 덤 칸(v1.3.9)
     dropped = []
     for k, v in old.items():
         if k not in CARD_KEYS and k in ALL_BUILDINGS:
             dict.__setitem__(b, k, v)
-    # 해안·하천: 원전·댐 > 발전소 > 항구 > 어장 순으로 자리를 잡는다
-    for key in ("nuclear", "hydro", "power", "port", "fishery"):
+    # 기타: 원전·댐·특산물 시설, 해안·하천: 발전소 > 항구 > 어장 순으로 자리를 잡는다
+    for key in ("nuclear", "hydro", "specialty", "power", "port", "fishery"):
         lv = int(old.get(key, 0) or 0)
         if lv <= 0:
             continue
@@ -356,3 +407,24 @@ def from_legacy(world, rid, old: dict) -> tuple:
     if int(old.get("housing", 0) or 0) > 0:
         dropped.append(("housing", int(old["housing"])))
     return b, dropped
+
+
+def migrate_etc(world, rid, b, mode="standard") -> bool:
+    """v1.3.8 세이브(기타 슬롯 전): 하천·해안 슬롯의 댐·원전 카드와 슬롯 밖 특산물 시설 단계를 기타 슬롯으로 옮기고,
+    시작 항구 지역에 해안 슬롯 1칸을 더 붙인다(칸 번호가 밀리지 않게 뒤에)."""
+    if "etc" in b.slots:
+        return False
+    b.slots["etc"] = [None] * capacity(world, rid)["etc"]
+    if start_port_bonus(world.regions[rid], mode):
+        b.slots["coast"].append(None)
+    for t in ("river", "coast"):
+        for i, c in enumerate(b.slots.get(t, [])):
+            if c and c["key"] in ("hydro", "nuclear"):
+                b.slots[t][i] = None
+                b.place(c["key"], c["level"])
+    sp = int(dict.get(b, "specialty", 0) or 0)
+    dict.__setitem__(b, "specialty", 0)
+    if sp > 0:
+        b.place("specialty", sp)
+    b.resync()
+    return True

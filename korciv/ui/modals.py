@@ -955,13 +955,11 @@ def draw_start_popup(app, rid):
     # 현실 모드 시작 슬롯 카드(v1.3.8): [기본] 시청 3 · [해안] 항구 1 … (개척시대·혼돈은 빈 슬롯)
     names = {"admin": "행정", "edu": "연구", "farm": "농장", "factory": "공장", "bank": "시장", "academy": "사관학교",
              "extract": "정유공장" if info.is_oil else "탄광", "fishery": "어장", "power": "화력발전소",
-             "hydro": "수력발전소", "nuclear": "원자력발전소", "port": "항구"}
+             "hydro": "수력발전소", "nuclear": "원자력발전소", "port": "항구", "specialty": "특산물 시설"}
     blds = [f"[{S.SLOT_NAMES[st]}] {names.get(c['key'], c['key'])} {c['level']}" for st, _, c in sb.cards()]
     free = sb.total() - sb.used()
     if free:
         blds.append(f"빈 슬롯 {free}칸")
-    if info.specialty:
-        blds.append("특산물 시설 1단계")
     chips(f"건물 슬롯 {sb.total()}칸 (현실 판도)", blds)
     res = []
     if info.oil:

@@ -289,15 +289,22 @@ def test_free_coastal_ports_and_chancellor_ban():
         b = g.regions[rid].b
         if b.card(("coast", 0)):
             b.remove(("coast", 0))
-    # 건물 슬롯(v1.3.8): 해안 슬롯이 차 있는 지역은 무료 항구를 주지 않고 횟수도 쓰지 않는다
-    full = coast.pop()
+    # 건물 슬롯(v1.3.9): 무료 항구는 기타 슬롯에 칸을 붙여 꽂는다 — 해안 슬롯이 차 있어도 받고, 해안 슬롯은 그대로
+    full = coast[0]
     g.regions[full].b.place("fishery", 1, ("coast", 0))
-    own(g, full)
-    assert g.regions[full].b["port"] == 0 and not g.player.coastal_rewards
+    has_port = coast.pop()                                  # 이미 항구가 있는 지역은 건너뛴다(횟수도 안 씀)
+    g.regions[has_port].b.place("port", 1, ("coast", 0))
+    own(g, has_port)
+    assert not g.player.coastal_rewards
     for rid in coast:
         own(g, rid)
     assert len(g.player.coastal_rewards) == 3
     assert [g.regions[rid].b["port"] for rid in coast] == [1, 1, 1, 0]
+    b = g.regions[full].b
+    assert b.card(("coast", 0)) == {"key": "fishery", "level": 1}
+    assert b.slots["etc"][-1] == {"key": "port", "level": 1, "free": True} and b.free_cards() == 1
+    b["port"] = 0                                           # 폭격으로 부서지면 붙인 칸째 사라진다
+    assert b.free_cards() == 0 and all(c is None or c["key"] != "port" for c in b.slots["etc"])
     leader(g, "jun")
     g.regions[g.player.capital].b["admin"] = 4
     assert not g.can_recruit_great_person(0, "chancellor")[0]
