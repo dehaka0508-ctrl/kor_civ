@@ -236,6 +236,37 @@ def dashed(surf, p1, p2, color, width=2, dash=6):
                          (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), width)
 
 
+def _off_lines(line, others, near=0.6):
+    """선 line 을 others(선 목록)에서 near 보다 먼 꼭짓점 구간들로 나눈다(맞닿는 끝점은 붙여 이어지게)."""
+    if not others:
+        return [line]
+    pts = np.concatenate(others)
+    cell = near * 2
+    grid = {}
+    for (gx, gy), p in zip(np.floor(pts / cell).astype(int).tolist(), pts):
+        grid.setdefault((gx, gy), []).append(p)
+    grid = {k: np.array(v) for k, v in grid.items()}
+    far = []
+    for x, y in line.tolist():
+        gx, gy = int(np.floor(x / cell)), int(np.floor(y / cell))
+        cand = [grid[k] for k in ((gx + dx, gy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)) if k in grid]
+        d = min((np.sqrt(((c - (x, y)) ** 2).sum(axis=1)).min() for c in cand), default=1e9)
+        far.append(d > near)
+    out, i, n = [], 0, len(line)
+    while i < n:
+        if not far[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and far[j]:
+            j += 1
+        piece = line[max(0, i - 1):min(n, j + 1)]
+        if len(piece) >= 2:
+            out.append(piece)
+        i = j
+    return out
+
+
 def _chains(segs):
     """선분 목록 [(a, b), ...] 을 끝점끼리 이어 꺾은선 목록으로."""
     adj = {}
@@ -311,6 +342,10 @@ class MapView:
         self.terrain_outer = [bool(t.get("a")) and not t.get("b") for t in world.terrain_lines]
         # 중국·러시아와 맞닿은 국경선(v1.3.0): tools/build_foreign.py 가 우리 지역 경계에 맞춰 만든다
         self.border_lines = [proj_arr(l) for l in fl.get("borders", []) if len(l) >= 2]
+        # 국경 하천(압록강·두만강)과 겹치지 않는 국경 구간: 지형 경계를 켜면 강이 곧 국경이므로 그 위에는
+        # 국경 띠를 깔지 않는다(띠 + 강 테두리가 겹쳐 다른 강보다 두꺼워 보이던 문제)
+        outer_rivers = [l for (_, lines, _), o in zip(self.terrain_lines, self.terrain_outer) if o for l in lines]
+        self.border_dry = [piece for b in self.border_lines for piece in _off_lines(b, outer_rivers)]
         # 지역 경계 선분: 두 지역이 함께 쓰는 선분(국경 후보)과 한 지역만 쓰는 선분(해안·바깥 경계)
         seg = {}
         for rid, arr, bbox in self.polys:
@@ -353,6 +388,7 @@ class MapView:
         self.terrain_span = [(kind, [put(a) for a in lines], conn, outer)
                              for (kind, lines, conn), outer in zip(self.terrain_lines, self.terrain_outer)]
         self.border_span = [put(a) for a in self.border_lines]
+        self.border_dry_span = [put(a) for a in self.border_dry]
         self.terrain_box = [[(*a.min(axis=0), *a.max(axis=0)) for a in lines] for _, lines, _ in self.terrain_lines]
         self.pair_span = [(a_, b_, put(c)) for a_, b_, c in self.pair_lines]
         # 광역(시·도)이 다른 두 지역 사이의 경계 = 광역 경계(같은 사슬로 한 번만 긋는다)
@@ -732,13 +768,13 @@ class MapView:
             if len(pts) >= 2:
                 pygame.draw.lines(surf, border_ink, False, pts, bw)
         # 나라 국경(중국·러시아, v1.3.0): 옅은 자줏빛 띠 + 일점쇄선. 국경 하천은 그 위에 그린다
-        if self.border_span:
-            self._national_border(surf, [sp(span) for span in self.border_span], theme, u)
+        border_spans = self.border_dry_span if show_terrain else self.border_span
+        if border_spans:
+            self._national_border(surf, [sp(span) for span in border_spans], theme, u)
 
         if show_terrain:
             tw = max(2, int((2 if self.z < 2 else (3 if self.z < 4 else 4)) * u))
             halo = mix(theme.sea, (255, 255, 255), 0.4)
-            outer_halo = mix(TERRAIN_COLORS["도하"], (30, 25, 20), 0.45)
             rk = 0.8 if self.z < 2 else (1.0 if self.z < 4 else (1.2 if self.z < 8 else 1.4))   # 확대하면 산 모양도 조금 크게
             for li, (kind, spans, connector, outer) in enumerate(self.terrain_span):
                 col = TERRAIN_COLORS[kind]
@@ -752,8 +788,8 @@ class MapView:
                     if connector:
                         dashed(surf, pts[0], pts[-1], col, tw)
                     elif kind == "도하":
-                        # 국경 하천은 바다색 테두리 대신 짙은 테두리(국경 띠 위에서 강으로 또렷하게)
-                        pygame.draw.lines(surf, outer_halo if outer else halo, False, pts, tw + 2)
+                        # 국경 하천도 다른 강과 같은 굵기·테두리(그 구간에는 국경 띠를 깔지 않는다)
+                        pygame.draw.lines(surf, halo, False, pts, tw + 2)
                         pygame.draw.lines(surf, col, False, pts, tw)
                     else:
                         draw_ridge_marks(surf, pts, u * rk, seed=li * 31 + si)
@@ -767,9 +803,6 @@ class MapView:
             pygame.draw.circle(surf, (62, 74, 76), c, rad, 1)
         sea_ink = getattr(theme, "sea_ink", theme.sea_line)
         sea_halo = mix(theme.sea, (255, 255, 255), 0.35 if not theme.dark else 0.0)
-        bx, by = proj(*DOKDO_LABEL)
-        t = halo_text("독도", 11 if self.z < 3 else 13, sea_ink, sea_halo, "bold")
-        surf.blit(t, t.get_rect(midleft=(bx * s + ox + 8, by * s + oy)))
         # 주변국 이름(플레이 불가 — 흐리게)
         if self.foreign_labels:
             fcol = mix(theme.muted, (128, 128, 124), 0.3)
@@ -778,11 +811,20 @@ class MapView:
                 t = halo_text(" ".join(nm), 15 if self.z < 2 else 18, fcol, fhalo, "title", 2)
                 surf.blit(t, t.get_rect(center=(x * s + ox, y * s + oy)))
         # 해역 이름(명조, 글자 간격)
+        sea_rects = []
         for sid in self.sea_polys:
             x, y = self.label[sid]
             name = labels.get(sid, "")
             t = halo_text(" ".join(name) if len(name) <= 4 else name, 15 if self.z < 2 else 18, sea_ink, sea_halo, "title", 2)
-            surf.blit(t, t.get_rect(center=(x * s + ox, y * s + oy)))
+            r = t.get_rect(center=(x * s + ox, y * s + oy))
+            surf.blit(t, r)
+            sea_rects.append(r)
+        # 독도 이름: 축소해서 해역 이름(독도 해역 등)과 겹치면 숨긴다
+        bx, by = proj(*DOKDO_LABEL)
+        t = halo_text("독도", 11 if self.z < 3 else 13, sea_ink, sea_halo, "bold")
+        r = t.get_rect(midleft=(bx * s + ox + 8, by * s + oy))
+        if r.inflate(int(36 * u), int(10 * u)).collidelist(sea_rects) < 0:
+            surf.blit(t, r)
         # 구역 이름
         if self.z >= 2.0:
             # 겹침 검사는 격자로: 같은 칸·이웃 칸에 놓인 이름끼리만 비교한다

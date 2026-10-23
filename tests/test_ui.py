@@ -1774,3 +1774,84 @@ def test_v136_mode_order_leader_tip_and_pop_focus_rate(app, monkeypatch):
         spy.close()
     assert label == "인구 성장 집중 (+0.24%p/턴)", label
     assert not re.search(r"\d\.\d{3}", label)
+
+
+# ------------------------------------------------------------------ v1.3.12 지도 메뉴(오른쪽 아래)·부대 카드
+def _click_at(app, lp):
+    """논리 좌표 lp 를 한 번 눌렀다 뗀다(마우스를 그 자리에 둔 채)."""
+    u = app.gui.u
+    p = (int(lp[0] * u), int(lp[1] * u))
+    pygame.mouse.get_pos = lambda: p
+    frame(app)
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=p)]); app.frame()
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=p)]); app.frame()
+
+
+def test_map_menu_bottom_right_vertical(app):
+    """지도 모드는 오른쪽 아래 작은 창에 세로로: 줄을 누르면 모드가 바뀌고, 자원·건물·군사 세부 메뉴는 창 왼쪽에 펼친다."""
+    _main_game(app)
+    sw, sh = app.lsize()
+    win, rows, terr = app._map_menu_layout()
+    assert win.right <= sw - 8 and win.x > sw / 2 and win.y > sh / 3          # 오른쪽 아래
+    assert all(r.x == rows[0].x and r.y > p.y for r, p in zip(rows[1:], rows))  # 세로 한 줄
+    orig = pygame.mouse.get_pos
+    try:
+        _click_at(app, rows[1].center)
+        assert app.mode == "happy"
+        i = [k for k, _ in MAP_MODES].index("resource")
+        _click_at(app, rows[i].center)
+        assert app.mode == "resource" and app.mode_popup == "resource"
+        pop = app.mode_popup_rect()
+        assert pop.right <= win.x and pop.top >= 56 and pop.bottom <= sh       # 창 왼쪽, 화면 안
+        _click_at(app, (pop.x + 30, pop.y + 6 + 1 * (app.SUB_ROW_H + 4) + 10))  # 두 번째 세부 항목
+        from korciv.ui.app import SUB_MODES
+        assert app.sub_modes.get("resource") == SUB_MODES["resource"][1][0] and app.mode_popup is None
+    finally:
+        pygame.mouse.get_pos = orig
+
+
+def test_army_cards_fan_hover_and_pick(app):
+    """지역을 누르면 그 지역 부대가 왼쪽 아래 카드로 펼쳐지고, 커서를 올린 카드는 위로 올라오며, 누르면 그 부대를 고른다."""
+    from korciv.state import Army
+    g = _main_game(app, seed=5, n_enemies=1)
+    pid = g.player_id
+    cap = g.player.capital
+    for units in ({"inf": 3}, {"tank": 2, "inf": 1}, {"art": 2}):
+        nid = max(g.armies) + 1
+        g.armies[nid] = Army(nid, pid, cap, dict(units))
+    app.select(cap)
+    here = [a.id for a in g.armies_at(cap) if not a.empty()]
+    frame(app)
+    for c in app.hand.cards:                     # 올라오는 애니메이션을 건너뛴다
+        c.appear, c.born = 1.0, 0
+    frame(app)
+    assert sorted(aid for _, aid in app.hand.rects) == sorted(here)
+    sw, sh = app.lsize()
+    rects = sorted(app.hand.rects, key=lambda x: x[0].x)
+    assert all(r.x < sw / 2 and r.y > sh - 100 for r, _ in rects)            # 왼쪽 아래에 비죽
+    target = next(aid for _, aid in rects if aid != app.sel_army)
+    r = next(r for r, aid in rects if aid == target)
+    orig = pygame.mouse.get_pos
+    try:
+        u = app.gui.u
+        p = (int((r.x + 8) * u), int((r.y + 16) * u))
+        pygame.mouse.get_pos = lambda: p
+        for _ in range(12):                       # 커서를 올려 두면 카드가 위로 올라온다
+            frame(app)
+        card = next(c for c in app.hand.cards if c.aid == target)
+        assert app.hand.hover == target and card.lift > 0.3
+        lifted = next(rr for rr, aid in app.hand.rects if aid == target)
+        assert lifted.y < r.y - 20
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=p)]); app.frame()
+        app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=p)]); app.frame()
+        assert app.sel_army == target and app.sel == cap                     # 지도는 눌리지 않는다
+        assert app.left_open and app.left_tab == "region" and app.tab == "army"
+        pygame.mouse.get_pos = lambda: (int(sw * u / 2), int(sh * u / 2))
+        for _ in range(12):                       # 커서를 떼면 제자리로
+            frame(app)
+        assert app.hand.hover is None and card.lift < 0.3
+    finally:
+        pygame.mouse.get_pos = orig
+    app.select(None)
+    frame(app)
+    assert app.hand.rects == []                  # 선택을 풀면 카드는 내려간다

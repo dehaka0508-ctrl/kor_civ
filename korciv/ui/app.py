@@ -250,6 +250,8 @@ class App:
         self.slot_sel = None
         self._slot_reveal = None
         self.prio_drag = None
+        from .army_cards import ArmyHand
+        self.hand = ArmyHand()       # 왼쪽 아래 지역 부대 카드(v1.3.12)
 
     # ------------------------------------------------------------ 게임 시작·저장
     def start_game(self, settings: Settings):
@@ -513,14 +515,17 @@ class App:
         # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.3.0)
         pop = self.mode_popup_rect()
         under_pop = pop is not None and pop.collidepoint(self.gui.mouse)
-        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop
+        # 왼쪽 아래 부대 카드가 올라와 패널을 덮고 있으면 그 아래 패널 버튼도 먼저 눌리지 않게(v1.3.12)
+        under_cards = self.hand.covers(self.gui.mouse)
+        self.gui.input_enabled = not modal_open and not under_ctx and not under_pop and not under_cards
         self.draw_map()
         self.draw_topbar()
-        h = sh - TOP_H - 90
+        h = sh - TOP_H - 94
         rail = pygame.Rect(8, TOP_H + 12, panels.RAIL_W, h)
         panels.draw_side(self, rail, pygame.Rect(rail.right + 6, TOP_H + 12, LEFT_W, h))
         self.draw_compass()
         self.gui.input_enabled = not modal_open and not under_ctx
+        self.hand.draw(self)
         self.draw_rally_banner()
         if getattr(self, "metro_pick", None) is not None:
             modals.draw_metro_pick(self)
@@ -1850,104 +1855,102 @@ class App:
             return a != b
 
     # ------------------------------------------------------------ 하단
+    MENU_W = 148          # 지도 메뉴 창 폭(오른쪽 아래, v1.3.12)
+    MENU_ROW_H = 30
+
+    def _map_menu_layout(self):
+        """지도 메뉴 창(오른쪽 아래, 턴 종료 버튼 위): (창, 모드 줄들, 지형 경계 칸)."""
+        sw, sh = self.lsize()
+        n = len(MAP_MODES)
+        h = 32 + n * self.MENU_ROW_H + 8 + 58
+        win = pygame.Rect(sw - 12 - self.MENU_W, sh - 118 - h, self.MENU_W, h)
+        rows = [pygame.Rect(win.x + 8, win.y + 32 + i * self.MENU_ROW_H, win.w - 16, self.MENU_ROW_H - 4)
+                for i in range(n)]
+        terr = pygame.Rect(win.x + 8, rows[-1].bottom + 10, win.w - 16, 48)
+        return win, rows, terr
+
     def draw_mode_chips(self):
-        """지도 모드: 왼쪽 아래 쪽빛 알약 막대(내용 폭만큼) + 지형 경계 토글·범례·배율."""
-        from .art import indigo_band, ui_icon
+        """지도 메뉴: 오른쪽 아래 작은 한지 창에 지도 모드를 세로로(자원·건물·군사는 왼쪽으로 세부 메뉴) +
+        지형 경계 토글·범례·배율."""
+        from .art import ui_icon
+        from .mapview import TERRAIN_COLORS, draw_ridge_marks
         gui = self.gui
         t = self.theme
         u = ui_scale()
-        sw, sh = self.lsize()
-        r, widths = self._mode_bar_layout()
-        gui.shadow(r, 22, 6)
-        pr = gui.R(r)
-        cache = self.__dict__.setdefault("_mode_band", {})
-        band = cache.get(pr.size)
-        if band is None:                       # 알약 모양 쪽빛 띠는 크기별로 한 번만 만든다
-            band = indigo_band(pr.w, pr.h, t.indigo, t.indigo_dk, lattice=False).convert_alpha()
-            mask = pygame.Surface(pr.size, pygame.SRCALPHA)
-            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=pr.h // 2)
-            band.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-            cache.clear()
-            cache[pr.size] = band
-        self.screen.blit(band, pr)
-        pygame.draw.rect(self.screen, t.gold, pr, 1, border_radius=pr.h // 2)
-        gui.block(r)
+        win, rows, terr = self._map_menu_layout()
+        gui.panel(win, radius=6, ornament=True)
+        gui.text((win.x + 17, win.y + 10), "지도", 13, t.text, "title")
+        gui.text((win.right - 15, win.y + 12), f"×{self.map.z:.1f}", 11, t.muted, "semibold", anchor="topright")
+        gui.line(mix(t.gold, t.panel, 0.35), (win.x + 12, win.y + 29), (win.right - 12, win.y + 29))
         popup = getattr(self, "mode_popup", None)
-        bx = r.x + 6
-        for (key, label), w in zip(MAP_MODES, widths):
-            cell = pygame.Rect(bx, r.y + 5, w, 34)
+        for (key, label), row in zip(MAP_MODES, rows):
             sel = self.mode == key
-            hov = gui.hover(cell)
+            hov = gui.hover(row)
             if sel:
-                gui.rect((247, 241, 227), cell, radius=17)
-                pygame.draw.rect(self.screen, t.gold, gui.R(cell), 1, border_radius=int(17 * u))
-            elif hov:
-                gui.rect(mix(t.indigo, (255, 255, 255), 0.12), cell, radius=17)
-            fg = t.indigo if sel else mix((247, 241, 227), t.indigo, 0.12)
-            ui_icon(self.screen, MODE_ICONS.get(key, "flag"), gui.P(cell.x + 15, cell.centery), t.indigo if sel else t.gold_lt,
-                    0.75 * u)
-            gui.text((cell.x + 27, cell.centery), label, 13, fg, "bold" if sel else "semibold", anchor="midleft")
-            if hov and gui.clicked:
-                gui.clicked = False
-                self.mode = key
-                self.mode_popup = (None if popup == key else key) if key in SUB_MODES else None
-                self.changed()
-            if popup == key:
-                self.draw_sub_menu(key, bx, r.y - 6, max(w, 74))
-            bx += w + 4
-        # 지형 경계 토글·범례·배율
-        tr = pygame.Rect(r.right + 8, r.y, 186, 44)
-        gui.panel(tr)
-        on = gui.checkbox((tr.x + 10, tr.y + 3, 100, 20), "지형 경계", self.show_terrain, size=12)
+                gui.rect(t.indigo, row, radius=4)
+                pygame.draw.rect(self.screen, t.gold, gui.R(row), 1, border_radius=int(4 * u))
+            elif hov or popup == key:
+                gui.rect(mix(t.panel_alt, t.gold, 0.15), row, radius=4)
+            fg = (247, 241, 227) if sel else t.text
+            ui_icon(self.screen, MODE_ICONS.get(key, "flag"), gui.P(row.x + 14, row.centery),
+                    t.gold_lt if sel else mix(t.indigo, t.text, 0.3), 0.72 * u)
+            gui.text((row.x + 28, row.centery), label, 13, fg, "bold" if sel else "semibold", anchor="midleft")
+            if key in SUB_MODES:
+                gui.text((row.right - 8, row.centery), "‹", 14, t.gold_lt if sel else t.muted, "bold", anchor="midright")
+            if hov:
+                if key in SUB_MODES:
+                    gui.tooltip = f"{label}: 세부 항목을 고르면 그 한 가지를 지도에 단계별 색으로 표시"
+                if gui.clicked:
+                    gui.clicked = False
+                    self.mode = key
+                    self.mode_popup = (None if popup == key else key) if key in SUB_MODES else None
+                    self.changed()
+        # 지형 경계 토글·범례
+        gui.line(mix(t.gold, t.panel, 0.35), (win.x + 12, terr.y - 5), (win.right - 12, terr.y - 5))
+        on = gui.checkbox((terr.x + 2, terr.y + 2, terr.w - 4, 20), "지형 경계", self.show_terrain, size=12)
         if on != self.show_terrain:
             self.show_terrain = on
             self.changed()
-        from .mapview import TERRAIN_COLORS, draw_ridge_marks
-        lx = tr.x + 12
-        gui.line(TERRAIN_COLORS["도하"], (lx, tr.y + 33), (lx + 16, tr.y + 33), 3)
-        gui.text((lx + 20, tr.y + 33), "강(도하)", 11, t.muted, anchor="midleft")
-        mx = tr.x + 90
-        draw_ridge_marks(self.screen, [gui.P(mx, tr.y + 36), gui.P(mx + 18, tr.y + 36)], u)
-        gui.text((mx + 22, tr.y + 33), "산줄기", 11, t.muted, anchor="midleft")
-        gui.text((tr.right - 10, tr.y + 6), f"×{self.map.z:.1f}", 11, t.muted, "semibold", anchor="topright")
-        if gui.hover(tr):
+        ly = terr.y + 35
+        lx = terr.x + 6
+        gui.line(TERRAIN_COLORS["도하"], (lx, ly), (lx + 14, ly), 3)
+        gui.text((lx + 18, ly), "강", 11, t.muted, anchor="midleft")
+        mx = terr.x + 52
+        draw_ridge_marks(self.screen, [gui.P(mx, ly + 3), gui.P(mx + 16, ly + 3)], u)
+        gui.text((mx + 20, ly), "산줄기", 11, t.muted, anchor="midleft")
+        if gui.hover(terr):
             gui.tooltip = "지형 경계를 넘는 공격은 공격력 ×0.9\n강을 건너는 곳(도하)과 산줄기를 넘는 곳(산악 돌파)\n점선: 맞닿지 않은 하구·수로 경로"
-
-    def _mode_bar_layout(self):
-        """지도 모드 막대의 자리와 칩 폭."""
-        sw, sh = self.lsize()
-        widths = [measure(label, 13, "semibold")[0] + 38 for _, label in MAP_MODES]
-        r = pygame.Rect(8, sh - 56, int(6 + sum(widths) + 4 * (len(widths) - 1) + 6), 44)
-        return r, widths
+        if popup in SUB_MODES:
+            self.draw_sub_menu(popup, rows[[k for k, _ in MAP_MODES].index(popup)])
 
     SUB_ROW_H = 30
     SUB_W = 128
 
-    def _sub_menu_rect(self, mode, x, bottom):
+    def _sub_menu_rect(self, mode, row):
+        """세부 메뉴 자리: 지도 메뉴 창 왼쪽, 고른 줄 높이에 맞춰(화면 안으로)."""
+        sw, sh = self.lsize()
         n = len(SUB_MODES[mode])
-        return pygame.Rect(x, bottom - n * (self.SUB_ROW_H + 4) - 12, self.SUB_W, n * (self.SUB_ROW_H + 4) + 8)
+        h = n * (self.SUB_ROW_H + 4) + 8
+        win = self._map_menu_layout()[0]
+        y = max(TOP_H + 8, min(row.centery - h // 2, sh - 12 - h))
+        return pygame.Rect(win.x - 8 - self.SUB_W, y, self.SUB_W, h)
 
     def mode_popup_rect(self):
         """열려 있는 지도 모드 세부 메뉴의 자리(없으면 None)."""
         popup = getattr(self, "mode_popup", None)
         if popup not in SUB_MODES:
             return None
-        r, widths = self._mode_bar_layout()
-        bx = r.x + 6
-        for (key, _), w in zip(MAP_MODES, widths):
-            if key == popup:
-                return self._sub_menu_rect(key, bx, r.y - 6)
-            bx += w + 4
-        return None
+        rows = self._map_menu_layout()[1]
+        return self._sub_menu_rect(popup, rows[[k for k, _ in MAP_MODES].index(popup)])
 
-    def draw_sub_menu(self, mode, x, bottom, w):
-        """자원·건물·군사 세부 메뉴(칩 위로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
+    def draw_sub_menu(self, mode, row):
+        """자원·건물·군사 세부 메뉴(지도 메뉴 창 왼쪽으로 펼침): 고른 한 가지만 지도에 단계별 색으로 표시."""
         gui = self.gui
         t = self.theme
         opts = SUB_MODES[mode]
         bh = self.SUB_ROW_H
         pw = self.SUB_W
-        p = self._sub_menu_rect(mode, x, bottom)
+        p = self._sub_menu_rect(mode, row)
         gui.panel(p)
         gui.block(p)
         cur = self.sub_mode(mode)[0]
@@ -1962,8 +1965,8 @@ class App:
             c = hex2rgb(col)
             gui.rect(mix((241, 243, 245), c, 0.35), (row.x + 6, row.y + 8, 7, 14), radius=2)
             gui.rect(mix((241, 243, 245), c, 0.95), (row.x + 13, row.y + 8, 7, 14), radius=2)
-            gui.text((row.x + 28, row.centery), name, 13, t.text, "semibold" if key == cur else "regular",
-                     anchor="midleft")
+            gui.text((row.x + 28, row.centery), name, 13, (247, 241, 227) if key == cur else t.text,
+                     "semibold" if key == cur else "regular", anchor="midleft")
 
     def review_queue(self):
         """아직 확인하지 않은 빈 슬롯 지역(수도 → 획득 순)."""
@@ -2016,8 +2019,8 @@ class App:
         gui = self.gui
         t = self.theme
         u = ui_scale()
-        sw, sh = self.lsize()
-        cx, cy = sw - 64, sh - 196
+        win = self._map_menu_layout()[0]
+        cx, cy = win.centerx, win.y - 82          # 지도 메뉴 창 위(v1.3.12)
         R = 34
         pc = gui.P(cx, cy)
         Rp = int(R * u)
