@@ -219,7 +219,7 @@ def draw_region_info(app, rect):
         y = kv(gui, x, y, w, "행정력 소비", f"{r.pop * (0.5 if g.resisting(r) else 1):,.1f} /턴")
         y = kv(gui, x, y, w, "과학력 생산", f"{g.science_output(node):,.1f} /턴")
         if r.b["factory"]:
-            y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b['factory']}개 투입")
+            y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b.cap('factory')}개 투입")
     # 행복도 막대
     if owner != NEUTRAL and visible:
         eh = g.eff_happy(r)
@@ -289,30 +289,9 @@ def draw_region_info(app, rect):
                          + (" — 먼저 채운 쪽이 차지(같은 턴이면 점령은 주둔 병력 체력 합, 편입은 맞닿은 지역 인구 합이 큰 쪽)"
                             if len(claims) > 1 else ""),
                          w, 12, t.warn) + 4
-    # 건물
-    y = section(gui, x, y + 6, w, "건물 단계")
-    chips = []
-    for k in ("admin", "edu", "farm", "fishery", "factory", "bank", "housing", "power", "hydro", "nuclear", "specialty", "extract", "shelter", "aa"):
-        if r.b[k]:
-            if k in C.PROD_LEVEL_NAMES:
-                chips.append(f"{g.building_name(node, k, r.b[k])}({r.b[k]})")   # 예: 공업 단지(5)
-                continue
-            nm = ("정유공장" if app.world.regions[node].is_oil else "탄광") if k == "extract" else BUILDING_NAMES[k]
-            chips.append(f"{nm} {r.b[k]}")
-    for k in ("academy", "airport", "port"):
-        if r.b[k]:
-            chips.append(BUILDING_NAMES[k])
-    for k in C.SCIENCE_STEPS:
-        if k in r.sci:
-            chips.append(f"★ {C.SCIENCE[k]['name']}")
-    for k in C.ECON_STEPS:
-        if k in r.econ:
-            chips.append(f"★ {C.ECON[k]['name']}")
-    for bk, lv in sorted(r.lines.items()):
-        if lv:
-            nm = "해안" if bk == "coast" else app.world.regions[bk].short
-            chips.append(f"방어선({nm}) {lv}")
-    y = draw_chips(gui, x, y, w, chips or ["없음"])
+    # 건물 슬롯 및 부존 자원(v1.3.8): 슬롯 카드 그리드 + 슬롯 밖 시설·자원 칩
+    from .slot_cards import draw_slot_section
+    y = draw_slot_section(app, x, y, w, node, mine=owner == pid and visible)
     ld = getattr(r, "lost_def", None)
     if ld:
         parts = []
@@ -324,24 +303,6 @@ def draw_region_info(app, rect):
         who = g.seen_name(ld["fid"]) if ld["fid"] != pid else "우리"
         y = gui.wrap((x, y + 2), f"점령으로 꺼진 방어 건물: {', '.join(parts)} — 저항·회복 동안 {josa(who, '이/가')} 되찾으면 그대로, "
                                  f"기간이 지나면 1단계씩 깎여 지금 주인 것이 됩니다.", w, 11, t.warn) + 4
-    # 자원
-    y = section(gui, x, y + 6, w, "자원·특산물")
-    res = []
-    if info.oil:
-        res.append(f"정유 {info.oil}+{r.b['extract']}/턴")
-    if info.coal:
-        res.append(f"탄광 {info.coal}+{r.b['extract']}/턴")
-    if info.power_source:
-        res.append(power_text(info))
-        if info.hydro or info.nuclear:
-            res.append(f'자체 발전 가동 {g.self_power(node)}/턴' + (' · 직접 건설 필요' if not r.b['hydro'] and not r.b['nuclear'] else ''))
-    if info.specialty:
-        res += [f"특산물: {sp}" for sp in info.specialties]   # 두 종류면 따로 표기
-    if info.scenic:
-        res.append(f"자연경관: {info.scenic}")
-    if info.coastal:
-        res.append("해안: " + ", ".join(app.world.seas[s].name for s in info.seas))
-    y = draw_chips(gui, x, y, w, res or ["없음"])
     if full:
         cp = g.crowd_penalty(r)
         t1, t2 = g.crowd_thresholds(node)
@@ -434,6 +395,8 @@ def project_name(app, p, rid=None):
         if p.key == "line":
             nm = "해안선" if p.border == "coast" else app.world.regions[p.border].short
             return f"방어선({nm}) {p.level}단계"
+        if getattr(p, "slot", None) and p.name:
+            return p.name
         if rid:
             return app.game.build_label(rid, p.key, p.level)
         return f"{BUILDING_NAMES[p.key]} {p.level}단계"
@@ -552,7 +515,8 @@ def draw_sea_info(app, rect, sid):
 
 # ------------------------------------------------------------------ 우측 패널
 def draw_action_tab(app, body):
-    from .region_tools import draw_area, draw_status, draw_queue, area_effect
+    from .region_tools import draw_area, draw_status, draw_queue
+    from .. import slots as S
     gui = app.gui
     g = app.game
     t = app.theme
@@ -654,24 +618,46 @@ def draw_action_tab(app, body):
             app.left_open, app.left_tab = True, "energy"
         y += 36
     opts = g.options(pid, rid)
-    # 생산 건물: 최대 단계까지 지은 건물은 '… 건설 완료'와 지금 턴당 산출을 남겨 둔다
-    prod = []
-    for key, spec in C.PROD_BUILDINGS.items():
-        if mt:                               # 광역시: 통합 건물(탄광·정유 따로, 특산물 시설도 하나로)을 나열
-            prod += [o for o in opts if o["kind"] == "build" and o["key"] == key]
-            continue
-        o = next((o for o in opts if o["kind"] == "build" and o["key"] == key), None)
-        if o:
-            prod.append(o)
-        elif r.b.get(key, 0) >= spec["max"]:
-            prod.append({"kind": "done", "key": key, "level": r.b[key], "ok": True})
-    groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
-              ("생산 건물", prod),
+    # 슬롯 필터(v1.3.8): 지역 정보 탭에서 슬롯 카드를 누르면 그 종류 슬롯에 지을 건물만
+    flt = getattr(app, "slot_filter", None)
+    if flt and flt[0] != rid:
+        flt = app.slot_filter = None
+    if flt:
+        bw = 92
+        gui.text((x, y + 5), f"{S.SLOT_NAMES[flt[1]]} 슬롯 건물만 보는 중", 12, t.accent, "semibold", max_w=w - bw - 6)
+        if gui.button((x + w - bw, y, bw, 26), "모두 보기", size=11):
+            app.slot_filter = flt = None
+        y += 32
+    # 건물 슬롯: 칸 순서대로(빈 칸 신축 → 꽂힌 카드 증축), 최대 단계 카드는 '최대 단계'로 남긴다
+    slot_order = {(st, i): n for n, (st, i, _) in enumerate(g.slot_summary(rid))}
+
+    def slot_rank(o):
+        return slot_order.get(tuple(o["slot"]), 99), o["level"] > 1, o["key"]
+    prod = sorted([o for o in opts if o["kind"] == "build" and o.get("slot")
+                   and (not flt or o["slot"][0] == flt[1]) and (not mt or o.get("site") in (None, rid))],
+                  key=slot_rank)
+    if not mt:
+        for st, i, c in g.slot_summary(rid):
+            if c is not None and c["level"] >= g.card_max(rid, c["key"]) and (not flt or st == flt[1]) \
+                    and g.slot_project(rid, (st, i)) is None:
+                prod.append({"kind": "done", "key": c["key"], "level": c["level"], "ok": True, "slot": (st, i)})
+    pooled = [o for o in opts if o["kind"] == "build" and o.get("pool") and not flt]
+    other_prod = [o for o in opts if o["kind"] == "build" and not o.get("slot") and not o.get("pool")
+                  and o["key"] in C.PROD_BUILDINGS and not flt]
+    demolish = [] if mt else [{"kind": "demolish", "key": c["key"], "level": c["level"], "slot": (st, i)}
+                              for st, i, c in g.slot_summary(rid) if c is not None and (not flt or st == flt[1])]
+    metro_slots = [o for o in opts if o["kind"] == "build" and o.get("slot") and mt and o.get("site") not in (None, rid)
+                   and not flt]
+    groups = [("편입", [] if flt else [o for o in opts if o["kind"] == "annex"]),
+              ("건물 슬롯" if not mt else "광역 통합 건물", (pooled + prod) if mt else prod),
+              ("특산물 시설", other_prod),
               (f"유닛 생산 · 최근 {g.drafted_turns(rid)}/{C.CONSCRIPT_WINDOW}턴 징집",
-               [o for o in opts if o["kind"] == "unit"]),
-              ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and o["key"] not in C.PROD_BUILDINGS]),
-              ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")]),
-              ('시설 정리', [{'kind': 'demolish', 'key': key, 'level': r.b[key]} for key in C.PROD_BUILDINGS if r.b[key]])]
+               [] if flt else [o for o in opts if o["kind"] == "unit"]),
+              ("방어·군사 건물", [] if flt else [o for o in opts if o["kind"] == "build" and not o.get("slot")
+                                              and o["key"] not in C.PROD_BUILDINGS]
+               + metro_slots),
+              ("특수", [] if flt else [o for o in opts if o["kind"] in ("science", "econ", "capital")]),
+              ('시설 정리 · 슬롯 비우기', demolish)]
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
     content = sum(28 + sum(60 if o["kind"] in ("build", "science", "econ", "unit") else 44 for o in lst)
                   for _, lst in groups if lst)
@@ -687,28 +673,26 @@ def draw_action_tab(app, body):
             gui.tooltip = f"{min(C.CONSCRIPT_PENALTY)}/{C.CONSCRIPT_WINDOW}턴부터 지역 행복도 감소"
         for o in lst:
             if o['kind'] == 'demolish':
-                key = o['key']
-                label = C.PROD_BUILDINGS[key]['name']
-                gui.text((x, yy+2), f'{label} {o["level"]} → {o["level"]-1}단계', 12, t.muted, max_w=w-70)
-                tip = '광역시는 구성 지역 모두 1단계씩 철거합니다.' if mt else '이 건물을 1단계 철거합니다.'
-                if key == 'housing':
-                    tip += ' 주거 철거 시 인구 사용 면적이 늘어납니다.'
-                if gui.button((x+w-62, yy+3, 62, 27), '철거', size=11, tooltip=tip):
-                    ok, msg = g.demolish_building(pid, rid, key)
+                st, i = o['slot']
+                c = r.b.card((st, i))
+                label = f"[{S.slot_label((st, i))}] {g.card_title(rid, o['key'], o['level'], st)} {o['level']}단계"
+                gui.text((x, yy+2), label, 12, t.muted, max_w=w-70)
+                busy = g.slot_project(rid, (st, i)) is not None
+                tip = ('이 칸에 공사가 잡혀 있어 철거할 수 없습니다.' if busy
+                       else '이 건물을 통째로 철거해 슬롯을 비웁니다(비용 환급 없음).')
+                if gui.button((x+w-62, yy+3, 62, 27), '철거', size=11, enabled=not busy and c is not None, tooltip=tip):
+                    ok, msg = g.demolish_card(pid, rid, (st, i))
                     app.toast(msg, None if ok else t.bad)
                     app.changed()
                 yy += 44
                 continue
             if o["kind"] == "done":
                 lv = o["level"]
-                if o["key"] in C.PROD_LEVEL_NAMES:
-                    label = f"{g.building_name(rid, o['key'], lv)} 건설 완료"
-                elif o["key"] == "extract":
-                    label = f"{'정유공장' if app.world.regions[rid].is_oil else '탄광'} {lv}단계 건설 완료"
-                else:
-                    label = f"{g.building_name(rid, o['key'])} {lv}단계 건설 완료"
+                st, i = o["slot"]
+                label = f"[{S.slot_label((st, i))}] {g.card_title(rid, o['key'], lv, st)} · 최대 단계"
                 gui.text((x, yy + 2), label, 13, t.text, "semibold", max_w=w - 16)
-                gui.text((x, yy + 21), g.building_total(pid, rid, o["key"]), 11, t.good, "semibold", max_w=w - 16)
+                gui.text((x, yy + 21), g.card_effect(pid, rid, {"key": o["key"], "level": lv}, st), 11, t.good, "semibold",
+                         max_w=w - 16)
                 yy += 44
                 continue
             row = pygame.Rect(x, yy, w, 40)
@@ -718,6 +702,9 @@ def draw_action_tab(app, body):
                 label = g.build_label(rid, o["key"], o["level"])          # 예: '공업 단지 건설'
             if o["kind"] == "build" and o["key"] == "line":
                 label = o["name"] + f" {o['level']}단계"
+            if o.get("slot"):
+                site = o.get("site") or rid
+                label = ((app.world.regions[site].short + " ") if site != rid else "") + g.slot_option_label(site, o)
             if o.get("pool"):
                 label = o["name"]                                            # 예: '광역 경작지 4단계
             gui.text((x, yy + 2), label, 13, t.text if o["ok"] else t.muted, "semibold", max_w=w - 70)
@@ -726,8 +713,6 @@ def draw_action_tab(app, body):
             sub = f"총 {o['cost']:,.0f} · {turns_txt} · 턴당 {o['per_turn']:,.0f}"
             if o.get("oil"):
                 sub += f" · 석유 {o['oil']}"
-            if o['kind'] == 'build':
-                sub += ' · ' + area_effect(g, rid, o)
             if not o["ok"]:
                 sub = o["why"]
             gui.text((x, yy + 21), sub, 11, t.muted if o["ok"] else t.bad, max_w=w - 70)
@@ -762,14 +747,15 @@ def draw_action_tab(app, body):
                     ok, msg = g.start_units(pid, rid, o["key"], qty)
                 else:
                     ok, msg = g.start_project(pid, rid, o["kind"], o["key"], border=o.get("border"),
-                                              site=o.get("site"), pool=o.get("pool"))
+                                              site=o.get("site"), pool=o.get("pool"), slot=o.get("slot"))
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
             if g.can_chain(o["kind"], o["key"]) and gui.button(
                     (x + w - 62, yy + 36, 62, 22), "최대", "default", enabled=o["ok"], size=11,
                     tooltip="완공되면 바로 다음 단계를 이어서 짓습니다(마지막 단계까지)"):
-                ok, msg = g.start_project_max(pid, rid, o["kind"], o["key"], site=o.get("site"), pool=o.get("pool"))
+                ok, msg = g.start_project_max(pid, rid, o["kind"], o["key"], site=o.get("site"), pool=o.get("pool"),
+                                              slot=o.get("slot"))
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()

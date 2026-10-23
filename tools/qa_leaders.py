@@ -28,7 +28,7 @@ def run(index, leader, turns, seed):
         g.transfer_region(rid, 0, reason="편입")
     for rr in g.regions_of(0):
         rr.b = dict.fromkeys(rr.b, 0)
-        rr.b.update(housing=5, admin=3, edu=4, academy=0 if leader == "sta" else 1)
+        rr.b.update(admin=3, edu=4, academy=0 if leader == "sta" else 1)
         rr.pop, rr.happy = 12, 20
     g.transfer_region(frontier, 1, reason="편입")
     g.regions[frontier].pop = 12

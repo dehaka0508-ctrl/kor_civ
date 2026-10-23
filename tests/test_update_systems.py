@@ -1,10 +1,10 @@
-"""면적·예약·모드·재해의 엔진 경계 및 저장 복원 회귀 테스트."""
+"""면적(밀도·슬롯 칸 수)·예약·모드·재해의 엔진 경계 및 저장 복원 회귀 테스트."""
 import math
 import pickle
 from dataclasses import replace
 
 import pytest
-from korciv import config as C, rules as R, metro as M
+from korciv import config as C, rules as R, metro as M, slots as S
 from korciv.game import Game, initial_buildings
 from korciv.state import Settings, NEUTRAL
 from korciv.data import load_world
@@ -40,7 +40,11 @@ def test_geometry_and_all_standard_starting_areas():
     for rid in g.world.order:
         i = g.info(rid)
         assert i.area_km2 == max(3, round(g.world.geometry[rid]['area'] * 9321.3, 1))
-        assert g.area_usage(rid)[0] <= i.area_km2 * .85 + 1e-8, i.name
+        # 건물 슬롯(v1.3.8): 면적에 따른 기본 슬롯 2~6칸, 시작 카드는 칸 수를 넘지 않는다
+        b = g.regions[rid].b
+        assert {t: len(v) for t, v in b.slots.items()} == S.capacity(g.world, rid), i.name
+        assert len(b.slots['base']) == S.base_slot_count(i.area_km2)
+        assert b.used() <= b.total()
     hongcheon = g.world.name_to_id['강원 홍천군']
     assert g.info(hongcheon).area_km2 == pytest.approx(1731, rel=.02)
 
@@ -85,8 +89,8 @@ def test_queue_levels_paid_swap_cancel_and_national_list():
     g._fund_projects()
     p.progress = 1
     assert g.start_project(0, r.id, 'build', 'bank')[0]
-    assert r.queue[0].level == 2
-    assert g.start_project(0, r.id, 'build', 'housing')[0]
+    assert r.queue[0].level == 2 and r.queue[0].slot == p.slot          # 같은 칸의 다음 단계
+    assert g.start_project(0, r.id, 'build', 'fishery')[0]              # 하천 슬롯 어장
     h = r.queue[1]
     paid = p.paid
     assert g.move_queued_project(0, r.id, 2, 0)[0]
@@ -104,40 +108,41 @@ def test_queue_levels_paid_swap_cancel_and_national_list():
 def test_chain_and_repeat_finish_before_next_queue():
     g = game()
     r = g.regions['S002']
-    assert g.start_project_max(0, r.id, 'build', 'housing')[0]
+    g.player.techs.add('farm')                          # 4단계 이상 증축 기술
+    assert g.start_project_max(0, r.id, 'build', 'farm')[0]
     assert g.start_units(0, r.id, 'inf', 2)[0]
     queued = r.queue[0]
     assert queued.repeat == 1 and r.project.chain
+    slot = r.project.slot
     for lv in range(1, 6):
         complete(g)
-        assert r.b['housing'] == lv
+        assert r.b['farm'] == lv and r.b.card(slot)['level'] == lv      # 같은 칸에서 이어서
     assert r.project is queued
-    assert g.start_project(0, r.id, 'build', 'bank')[0]
+    assert g.start_project(0, r.id, 'build', 'fishery')[0]
     complete(g)
     assert r.project.kind == 'unit' and not r.project.repeat
     complete(g)
-    assert r.project.key == 'bank'
+    assert r.project.key == 'fishery'
 
 
-def test_area_reservations_saturation_and_housing_relief():
+def test_slot_reservations_and_no_population_cap(monkeypatch):
+    """빈 칸은 대기열의 신축이 예약하고(다른 신축이 못 들어간다), 인구는 면적 상한 없이 밀도 성장률로만 자란다."""
+    monkeypatch.setattr(S, 'GROW_WHEN_FULL', False)
     g = game()
     rid = 'S002'
-    # 본 판 복사본의 면적만 줄여 예약 두 건이 함께 초과하는 경계를 검사한다.
-    import copy
-    g.world = copy.copy(g.world)
-    g.world.regions = dict(g.world.regions)
-    g.world.regions[rid] = replace(g.info(rid), area_km2=15)
     r = g.regions[rid]
-    assert g.start_project(0, rid, 'build', 'farm')[0]
-    o = next(o for o in g.options(0, rid) if o['key'] == 'farm')
-    assert o['level'] == 2 and not o['ok'] and o['why'] == C.AREA_SHORTAGE
-    g.cancel_project(0, rid)
-    r.pop, r.happy = 8, 50
+    free = r.b.empty('base')
+    assert free
+    for i in free:
+        assert g.start_project(0, rid, 'build', 'farm', slot=('base', i))[0]
+    opts = [o for o in g.options(0, rid) if o.get('slot') and o['slot'][0] == 'base']
+    assert not [o for o in opts if o['level'] == 1]                       # 빈 기본 슬롯이 남지 않음
+    assert {o['slot'] for o in opts if o['key'] == 'farm'} == {('base', i) for i in free}   # 예약한 칸은 다음 단계
+    assert not g.start_project(0, rid, 'build', 'bank')[0]
+    while r.project:
+        g.cancel_project(0, rid)
+    r.pop, r.happy = 80, 50                                                # 아주 높은 밀도
     p0 = r.pop
-    g._phase_population()
-    assert r.pop == p0 and g.crowd_penalty(r) == -2
-    r.b['housing'] = 2
-    assert g.crowd_penalty(r) == 0
     g._phase_population()
     assert r.pop > p0
 
@@ -263,7 +268,7 @@ def test_metro_queue_shared_and_single_building_reservation():
     g, sel = _setup()
     assert g.create_metro(0, 'S002', sel)[0]
     assert g.start_project(0, sel[1], 'build', 'bank', pool='bank')[0]
-    assert g.start_project(0, sel[2], 'build', 'housing', pool='housing')[0]
+    assert g.start_project(0, sel[2], 'build', 'farm', pool='farm')[0]
     center = g.queue_region(sel[2])
     assert len(center.queue) == 1 and not g.regions[sel[1]].queue
     p = center.project
@@ -295,11 +300,14 @@ def test_reorder_defers_unit_fuel_until_activation_and_charges_once():
 
 
 def test_old_save_migration_populates_queue_and_power():
+    """v1.3.7까지의 세이브(건물 단계 사전·주거 지구)를 불러오면 슬롯 카드로 옮기고 주거 지구는 없앤다."""
     g = game('standard')
     for r in g.regions.values():
         del r.queue
-        for key in ('housing', 'hydro', 'nuclear'):
-            r.b.pop(key)
+        old = {k: v for k, v in dict(r.b).items() if k not in ('hydro', 'nuclear')}
+        old['housing'] = 2
+        old['farm'], old['bank'], old['factory'] = 3, 2, 1
+        r.__dict__['b'] = old
     state = g.__getstate__()
     state.pop('world_overrides')
     for key in ('weather', 'forecasts', 'fires', 'fire_burned'):
@@ -307,8 +315,13 @@ def test_old_save_migration_populates_queue_and_power():
     restored = Game.__new__(Game)
     restored.__setstate__(state)
     assert restored.weather is None
-    assert all(hasattr(r, 'queue') and 'housing' in r.b for r in restored.regions.values())
+    for r in restored.regions.values():
+        assert hasattr(r, 'queue') and isinstance(r.b, S.Buildings) and 'housing' not in r.b
+        assert {t: len(v) for t, v in r.b.slots.items()} == S.capacity(restored.world, r.id)
+        assert r.b.used() <= r.b.total()
     assert sum(restored.self_power(rid) for rid in restored.world.order) > 0
+    big = next(r for r in restored.regions.values() if len(r.b.slots['base']) >= 6 and not r.b['admin'])
+    assert big.b['farm'] == 3 and big.b['bank'] == 2 and big.b['factory'] == 1
 
 
 def test_chaos_overlapping_resources_both_produced():
@@ -342,18 +355,18 @@ def test_repeat_waits_for_fuel_before_promoting_queue():
     r = g.regions['S002']
     g.player.res['oil'] = 1
     assert g.start_units(0,r.id,'tank',2)[0]
-    assert g.start_project(0,r.id,'build','housing')[0]
+    assert g.start_project(0,r.id,'build','farm')[0]
     complete(g)
     assert r.project.kind == 'unit' and r.project.stalled and not r.project.started
-    assert r.queue[0].key == 'housing'
+    assert r.queue[0].key == 'farm'
     g.player.res['oil'] = 1
     complete(g)
-    assert r.project.key == 'housing'
+    assert r.project.key == 'farm'
 
 
 def test_future_unit_can_be_reserved_without_fuel():
     g = game()
-    assert g.start_project(0,'S002','build','housing')[0]
+    assert g.start_project(0,'S002','build','farm')[0]
     g.player.res.update(oil=0,coal=0)
     assert g.start_project(0,'S002','unit','tank')[0]
     complete(g)
@@ -367,8 +380,9 @@ def test_metro_rebuild_after_uneven_disaster_damage():
     assert g.create_metro(0,'S002',sel)[0]
     for rid in sel:
         g.regions[rid].b['bank'] = 3
-    g.regions[sel[1]].b['bank'] = 0
+    g.regions[sel[1]].b['bank'] = 1                      # 재해로 한 곳만 크게 깎임(카드는 남음)
     mean = M.pool_level(g,M.of(g,'S002'),'bank')
+    assert mean == 2
     assert g.start_project(0,'S002','build','bank',pool='bank')[0]
     assert g.regions['S002'].project.level == mean + 1
     complete(g)

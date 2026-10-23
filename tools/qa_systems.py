@@ -44,7 +44,7 @@ def main():
                 g._take_garrison(rid, 0)
                 r = g.regions[rid]
                 r.pop, r.happy = 1, 30
-                r.b.update(farm=1, bank=1, housing=2)
+                r.b.update(farm=1, bank=1)
             g.player.res['food'] = 100000
             for _ in range(args.turns):
                 if not g.player.alive or g.game_over:

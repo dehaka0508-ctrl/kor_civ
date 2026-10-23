@@ -2399,10 +2399,10 @@ def fuel_balance(g, fid) -> dict:
     spare = supply − demand, plant_room 남는 발전소 용량, raw_left 발전소에 못 넣은 석탄·석유."""
     mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
     plants, facts = g.energy_sites(fid)
-    cap = sum(r.b["power"] for r in plants)
+    cap = sum(r.b.cap("power") for r in plants)
     gen, conv_oil, conv_coal = g.elec_from_fuel(fid, mined["oil"], mined["coal"])
     supply = (mined["elec"] + gen + (mined["coal"] - conv_coal) + (mined["oil"] - conv_oil))
-    demand = sum(r.b["factory"] for r in facts)
+    demand = sum(r.b.cap("factory") for r in facts)
     return {"supply": supply, "demand": demand, "spare": supply - demand,
             "plant_room": cap - conv_oil - conv_coal, "raw_left": mined["coal"] - conv_coal + mined["oil"] - conv_oil}
 
@@ -2418,13 +2418,33 @@ def auto_slots(g, fid, military=True):
 
 
 # ------------------------------------------------------------------ 작전: 슬롯
-def _delta_output(g, rid, key):
-    rr = g.regions[rid]
-    b = dict(rr.b)
-    old = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"])
-    b[key] += 1
-    new = R.region_output(rr.pop, b["farm"], b["fishery"], b["factory"], b["bank"])
-    return new - old
+def _delta_output(g, rid, key, lv=None):
+    """카드 한 장을 lv-1 → lv 단계로 올릴 때 늘어나는 산출(lv 를 안 주면 가장 높은 카드의 다음 단계, v1.3.8)."""
+    if lv is None:
+        lv = g.regions[rid].b[key] + 1
+
+    def one(level):
+        return R.region_output(0, level if key == "farm" else 0, level if key == "fishery" else 0,
+                               level if key == "factory" else 0, level if key == "bank" else 0)
+    return one(lv) - one(lv - 1)
+
+
+def _best_build_opts(g, opts) -> dict:
+    """건물 키 → 고를 선택지(슬롯 카드는 가장 높은 카드 증축 → 빈 칸 신축 순, start_project 와 같은 순서)."""
+    by = {}
+    for o in opts:
+        if o["kind"] == "build" and o["ok"] and o.get("border") is None:
+            by.setdefault(o["key"], []).append(o)
+    return {k: g._pick_option(v) for k, v in by.items()}
+
+
+def _slot_scarcity(g, rid, o) -> float:
+    """빈 칸의 마지막 하나를 새 건물로 채우는 선택은 덜 반긴다(증축으로 쓸 칸을 남긴다)."""
+    slot = o.get("slot")
+    if not slot or o["level"] > 1:
+        return 1.0
+    empty = len(g.projected_slots(rid)[slot[0]]) - sum(1 for c in g.projected_slots(rid)[slot[0]] if c)
+    return C.AI_LAST_SLOT_MULT if empty <= 1 and slot[0] == "base" else 1.0
 
 
 def _slots(g, f, threat, military=True):
@@ -2496,7 +2516,7 @@ def _slots(g, f, threat, military=True):
         info = g.info(r.id)
         opts = g.options(fid, r.id)
         cands.extend(AP.infrastructure_candidates(g, f, r, opts, threat, edu_centers))
-        build_opts = {o["key"]: o for o in opts if o["kind"] == "build" and o["ok"]}
+        build_opts = _best_build_opts(g, opts)
         for o in opts:
             if o['kind'] == 'build' and o['key'] in C.SITE_POWER and o['ok']:
                 cands.append((1.2 + max(0, -fuel['spare']), r.id, 'build', o['key'], None, o['per_turn']))
@@ -2532,11 +2552,11 @@ def _slots(g, f, threat, military=True):
             if o is None:
                 continue
             lv, cost, turns = o["level"], o["cost"], o["turns"]
-            dy = _delta_output(g, r.id, key)
+            dy = _delta_output(g, r.id, key, lv)
             horizon = max(0, C.AI_UTILITY_HORIZON - turns)
-            gain = dy * tax * horizon * wts.get("economy", 1)
+            gain = dy * tax * horizon * wts.get("economy", 1) * _slot_scarcity(g, r.id, o)
             if key in ("farm", "fishery"):
-                dfood = (C.FISH_FOOD * g.fish_food_mult(fid, r.id) if key == "fishery"
+                dfood = (C.FISH_FOOD * g.fish_slot_mult(fid, r.id, (o.get("slot") or ("coast",))[0]) if key == "fishery"
                          else C.FARM_FOOD * g.farm_mult(fid, r.id))
                 gain += dfood * C.MARKET_BUY["food"] * horizon * (1.0 if food_short else 0.15)
             if key == "factory" and fuel["spare"] < 1:
@@ -2546,8 +2566,6 @@ def _slots(g, f, threat, military=True):
                 gain = up * tax * horizon * wts.get("economy", 1)
             if key == "bank" and fuel["spare"] < 0:
                 gain *= 1.5
-            if key == "factory" and AP.housing_weight(g, r.id) > 1:
-                gain *= 1.5                 # 제한된 면적에서 공장과 주거지구를 함께 우선
             gain *= bias(key) * prod_k * place_k
             if eco and key in ("factory", "bank"):
                 gain *= C.AI_ECON_PROD_MULT
@@ -2576,7 +2594,7 @@ def _slots(g, f, threat, military=True):
             # 단계를 올리면 이미 넣는 연료의 전기도 늘어난다(2 → 2.2 → 2.4 → 2.6 → 3)
             o = build_opts["power"]
             lv, cost, turns = o["level"], o["cost"], o["turns"]
-            up = (g.power_elec(fid, "coal", lv) - g.power_elec(fid, "coal", lv - 1)) * r.b["power"] if r.b["power"] else 0.0
+            up = ((g.power_elec(fid, "coal", lv) - g.power_elec(fid, "coal", lv - 1)) * (lv - 1)) if lv > 1 else 0.0
             new = (g.power_elec(fid, "coal", lv) - 1) if fuel["raw_left"] > 0 else 0.0
             gain = unit_val * (new + up) * max(0, C.AI_UTILITY_HORIZON - turns)
             cands.append((gain / cost * bias("power") * (C.AI_ECON_FUEL_MULT if eco else 1.0) * prod_k * place_k,
@@ -2884,11 +2902,11 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     pool = sorted(idle, key=lambda r: (-r.pop, r.id))
     used = set()
 
-    def start(r, key, border=None, cost=None):
+    def start(r, key, border=None, cost=None, slot=None):
         nonlocal budget
         if cost is None or cost > budget:
             return False
-        if g.start_project(fid, r.id, "build", key, border=border)[0]:
+        if g.start_project(fid, r.id, "build", key, border=border, slot=slot)[0]:
             used.add(r.id)
             budget -= cost
             return True
@@ -2929,7 +2947,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     # ② 발전소: 발전소 용량(단계 합)이 석탄·석유 채굴량에 닿을 때까지
     mined = g.energy_supply(fid)            # 채굴 + 계약(자원은 쌓이지 않는다)
     plants, facts = g.energy_sites(fid)
-    room = mined["coal"] + mined["oil"] - sum(r.b["power"] for r in regs) - sum(
+    room = mined["coal"] + mined["oil"] - sum(r.b.cap("power") for r in regs) - sum(
         1 for r in regs if r.project and r.project.key == "power")
     for r in sorted((r for r in pool if r.id not in used and r.b["power"] < 5),
                     key=lambda r: (not g.info(r.id).power_site, -r.b["power"], -r.pop, r.id)):
@@ -2940,7 +2958,7 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
     # ③ 공장: 공장의 전기 소비(단계 합)가 전기 생산(자체 발전 + 발전소 변환)에 닿을 때까지
     gen, conv_oil, conv_coal = g.elec_from_fuel(fid, mined["oil"], mined["coal"])
     elec = mined["elec"] + gen
-    need = elec - sum(r.b["factory"] for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
+    need = elec - sum(r.b.cap("factory") for r in regs) - sum(1 for r in regs if r.project and r.project.key == "factory")
     for r in sorted((r for r in pool if r.id not in used and r.b["factory"] < 5),
                     key=lambda r: (-r.b["factory"], -r.pop, r.id)):
         if need <= 0:
@@ -2955,19 +2973,23 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
             continue
         info = g.info(r.id)
         opts = []
+        # 건물 슬롯(v1.3.8): 지금 고를 수 있는 신축·증축 가운데(가장 높은 카드 증축 → 빈 칸 신축 순)
+        best = _best_build_opts(g, g.options(fid, r.id))
         for key in ("farm", "fishery", "bank"):
-            lv = r.b[key] + 1
-            if lv > 5 or (key == "fishery" and not g.can_fish(r.id)):
+            o = best.get(key)
+            if o is None:
                 continue
-            cost = R.prod_building_cost(key, lv)
-            val = _delta_output(g, r.id, key) * tax + ((C.FARM_FOOD if key == "farm" else C.FISH_FOOD) * C.MARKET_SELL["food"] if key != "bank" else 0)
-            opts.append((val / cost, key, cost))
-        if (info.is_oil or info.is_coal) and r.b["extract"] < 5:
-            cost = R.prod_building_cost("extract", r.b["extract"] + 1)
-            opts.append((C.MARKET_SELL["oil" if info.is_oil else "coal"] / cost, "extract", cost))
+            cost = max(1.0, o["cost"])
+            val = _delta_output(g, r.id, key, o["level"]) * tax + ((C.FARM_FOOD if key == "farm" else C.FISH_FOOD) * C.MARKET_SELL["food"] if key != "bank" else 0)
+            opts.append((val / cost * _slot_scarcity(g, r.id, o), key, cost, o.get("slot")))
+        o = best.get("extract")
+        if o is not None:
+            cost = max(1.0, o["cost"])
+            opts.append((C.MARKET_SELL["oil" if info.is_oil else "coal"] / cost * _slot_scarcity(g, r.id, o), "extract", cost,
+                         o.get("slot")))
         if opts:
-            _, key, cost = max(opts)
-            start(r, key, cost=cost)
+            _, key, cost, slot = max(opts, key=lambda x: x[0])
+            start(r, key, cost=cost, slot=slot)
 
 
 def _great_people_orders(g, f, threat=None):

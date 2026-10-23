@@ -60,6 +60,7 @@ def test_annex_completes_and_absorbs_garrison():
 
 def test_cancel_refund_and_stall():
     g = new_game(player_start="S002", n_enemies=1)
+    _room(g, ["S002"])
     ok, _ = g.start_project(0, "S002", "build", "bank")
     assert ok
     g.player.money = 1e6
@@ -225,13 +226,10 @@ def _own(g, fid, rids):
 
 
 def _room(g, rids):
-    """면적과 무관한 기존 엔진 테스트에서 건설할 수 있는 넓은 시험 부지를 만든다."""
-    import copy
-    from dataclasses import replace
-    g.world = copy.copy(g.world)
-    g.world.regions = dict(g.world.regions)
+    """새 건물을 지을 빈 기본 슬롯이 넉넉한 시험 부지(v1.3.8: 빈 기본 슬롯을 3칸 이상으로 늘린다)."""
     for rid in rids:
-        g.world.regions[rid] = replace(g.info(rid), area_km2=1000.0)
+        b = g.regions[rid].b
+        b.slots["base"] += [None] * max(0, 3 - len(b.empty("base")))
 
 
 def test_rebel_region_becomes_capital_and_inherits_state():
@@ -414,6 +412,7 @@ def test_science_leaders():
 
 def test_production_focus_bonus():
     g = new_game(player_start="S002", n_enemies=1)
+    _room(g, ["S002"])
     r = g.regions["S002"]
     base = g.calc_output("S002", full=True)
     g.set_focus(0, "S002", True)
@@ -428,8 +427,9 @@ def test_spending_priority_order():
     g = new_game(player_start="S002", n_enemies=1)
     rids = ["S002"] + sorted(g.world.land_adj["S002"])[:2]
     _own(g, 0, rids[1:])
-    for rid in rids:
-        ok, _ = g.start_project(0, rid, "build", "bank")
+    _room(g, rids)
+    for rid in rids:                      # 같은 비용: 빈 기본 슬롯에 시장 1단계
+        ok, _ = g.start_project(0, rid, "build", "bank", slot=("base", g.regions[rid].b.empty("base")[0]))
         assert ok
     per = g.regions["S002"].project.per_turn
     g.player.money = per * 1.5            # 한 건만 낼 수 있음
@@ -637,6 +637,7 @@ def test_joint_annex_speeds_up():
 
 def test_net_includes_project_spending():
     g = new_game(player_start="S002", n_enemies=1)
+    _room(g, ["S002"])
     ok, _ = g.start_project(0, "S002", "build", "bank")
     assert ok
     per = g.regions["S002"].project.per_turn
@@ -678,6 +679,7 @@ def test_food_bought_before_projects():
     g = new_game(player_start="S002", n_enemies=1)
     f = g.player
     f.res["food"] = 0
+    _room(g, ["S002"])
     ok, _ = g.start_project(0, "S002", "build", "bank")
     per = g.regions["S002"].project.per_turn
     short = -g.expected_food_balance(f)
@@ -1553,23 +1555,25 @@ def test_pop_focus():
 
 
 def test_crowd_penalty_tiers():
+    """과밀(v1.3.8): 면적 점유 대신 다시 시작 인구 대비 문턱(−2·−4)."""
     g = new_game(player_start="S002", n_enemies=1)
     small = next(rid for rid in g.world.order if g.info(rid).pop0 <= 10)
     big = next(rid for rid in g.world.order if g.info(rid).pop0 > 60)
     _own(g, 0, [small, big])
     rs, rb = g.regions[small], g.regions[big]
     for rr in (rs, rb):
-        capacity = g.population_capacity(rr.id)
-        rr.pop = capacity * .99
+        p0 = g.info(rr.id).pop0
+        top, a, b = next(x for x in C.CROWD_TIERS if x[0] is None or p0 <= x[0])
+        t1, t2 = g.crowd_thresholds(rr.id)
+        assert (t1, t2) == (pytest.approx(p0 * (1 + a)), pytest.approx(p0 * (1 + b)))
+        rr.pop = t1 * .99
         assert g.crowd_penalty(rr) == 0
-        rr.pop = capacity
+        rr.pop = t1
         assert g.crowd_penalty(rr) == -2
-        # -4는 전체 사용 면적이 총면적의 110%인 경계다.
-        _, _, built = g.area_usage(rr.id)
-        rr.pop = (g.info(rr.id).area_km2 * 1.11 - built) / C.POP_AREA_PER_10K[rr.b['housing']]
+        rr.pop = t2
         assert g.crowd_penalty(rr) == -4
         h = g.eff_happy(rr)
-        rr.pop = capacity * .9
+        rr.pop = t1 * .9
         assert g.eff_happy(rr) == pytest.approx(h + 4)
 
 
@@ -1583,6 +1587,7 @@ def test_energy_coal_fields_and_plants_start():
     assert g.regions[n["충남 당진시"]].b["power"] == 1           # 현실 발전소 1단계
     assert g.regions["S002"].b["power"] == 0
     _own(g, 0, [paju])
+    _room(g, [paju])
     opt = next(o for o in g.options(0, paju) if o["key"] == "extract")
     assert opt["ok"]
     assert not any(o["key"] == "extract" for o in g.options(0, "S002"))   # 유전·탄전이 없으면 아예 안 나옴
@@ -1671,7 +1676,13 @@ def test_impossible_facilities_hidden():
     for rid in list(g.regions)[:200]:
         info = g.info(rid)
         keys = {o["key"] for o in g.options(pid, rid) if o["kind"] == "build"}
-        assert ("fishery" in keys) == (g.can_fish(rid) and g.regions[rid].b["fishery"] < 5) or g.regions[rid].b["fishery"] >= 5
+        # 어장(v1.3.8): 빈 하천·해안 슬롯이 있거나 5단계 아래 어장 카드가 있을 때만
+        proj = g.projected_slots(rid)
+        can = (any(c is None for t in ("river", "coast") for c in proj[t])
+               or any(c and c["key"] == "fishery" and c["level"] < 5 for t in proj for c in proj[t]))
+        assert ("fishery" in keys) == can
+        if not proj["river"] and not proj["coast"]:
+            assert not keys & {"fishery", "power", "port", "hydro", "nuclear"}
         if not info.specialty:
             assert "specialty" not in keys
         if not (info.is_oil or info.is_coal):
@@ -3204,10 +3215,13 @@ def test_start_message_uses_level_names_and_unchecks_focus():
     g = new_game(player_start="S002", n_enemies=1, player_leader="cus")
     g.player.money = 1e8
     rr = g.regions["S002"]
+    _room(g, ["S002"])
     g.set_focus(0, "S002", True)
-    lv = rr.b["factory"] + 1
+    slot = ("base", rr.b.empty("base")[0])
     ok, msg = g.start_project(0, "S002", "build", "factory")
-    assert ok and msg.startswith(g.build_label("S002", "factory", lv))
+    # 슬롯 카드(v1.3.8): '[기본 슬롯 n] 공장 건설 · 공방'(1단계 이름)
+    assert ok and msg.startswith(f"[기본 슬롯 {slot[1] + 1}] 공장 건설 · {g.building_name('S002', 'factory', 1)}")
+    assert rr.project.slot == slot
     assert not rr.focus
 
 
@@ -3806,7 +3820,7 @@ def test_peace_cancels_orders_into_former_enemy_and_evicts():
 
 
 def test_river_farm_bonus():
-    """농장은 단계당 식량 12·산출 120, 하천에 맞닿은 지역의 농장은 15·150."""
+    """v1.3.8: 하천 농장 보너스 삭제 — 모든 농장이 단계당 식량 15·산출 150(바다 어장과 같다). 하천 어장은 12·120."""
     g = new_game(player_start="S002", n_enemies=1)
     w = g.world
     riv = next(r for r in w.order if r in w.river_regions and g.regions[r].owner == NEUTRAL)
@@ -3815,10 +3829,10 @@ def test_river_farm_bonus():
     for rid in (riv, dry):
         g.regions[rid].b.update(farm=3, fishery=0)
     assert g.food_prod(0, g.regions[riv]) == pytest.approx(15 * 3)
-    assert g.food_prod(0, g.regions[dry]) == pytest.approx(12 * 3)
-    assert g.farm_mult(0, riv) == pytest.approx(1.25) and g.farm_mult(0, dry) == pytest.approx(1.0)
+    assert g.food_prod(0, g.regions[dry]) == pytest.approx(15 * 3)
+    assert g.farm_mult(0, riv) == pytest.approx(1.0) and g.farm_mult(0, dry) == pytest.approx(1.0)
     assert R.region_output(0, 1, 0, 0, 0, farm_mult=g.farm_mult(0, riv)) == pytest.approx(150)
-    assert R.region_output(0, 1, 0, 0, 0) == pytest.approx(120)
+    assert R.region_output(0, 1, 0, 0, 0) == pytest.approx(150)
     assert R.region_output(0, 0, 1, 0, 0) == pytest.approx(150)
     assert R.region_output(0, 0, 1, 0, 0, fish_mult=C.RIVER_FISH_MULT) == pytest.approx(120)
 
@@ -4775,10 +4789,13 @@ def test_v1214_start_airports_and_ports():
     ports = ("S041 S059 S169 S075 S084 S154 S168 N036 N112 N151 N042 N001 N131 S209 S228 S229").split()
     for rid in airports:
         assert g.regions[rid].b["airport"] == 1, rid
+    # 건물 슬롯(v1.3.8): 해안 슬롯은 해안 발전소 > 항구 > 바다 어장 순 — 발전소 소재지(청진 등)는 항구 대신 발전소
+    plants = {rid for rid in ports if g.regions[rid].b["power"] or g.regions[rid].b["nuclear"]}
+    assert plants == {"N151"}
     for rid in ports:
-        assert g.regions[rid].b["port"] == 1, rid
+        assert g.regions[rid].b["port"] == (0 if rid in plants else 1), rid
     assert sum(r.b["airport"] for r in g.regions.values()) == len(airports)
-    assert sum(r.b["port"] for r in g.regions.values()) == len(ports)
+    assert sum(r.b["port"] for r in g.regions.values()) == len(ports) - len(plants)
 
 
 def test_v1214_paid_capital_move_gives_border_lines_but_forced_move_does_not():
@@ -4917,6 +4934,7 @@ def test_priority_mode_stays_until_turned_off():
     f = g.factions[0]
     f.money = 1e7
     f.res["oil"] = 5
+    _room(g, [near[0]])
     assert g.start_project(0, near[0], "build", "bank")[0]
     assert g.start_project(0, near[1], "unit", "inf")[0]
     assert g.set_priority_mode(0, "build") == "build"

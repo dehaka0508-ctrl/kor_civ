@@ -61,7 +61,7 @@ SUB_MODES = {
                  ("scenic", "자연경관", "#0CA678", None), ("dam", "댐", "#1971C2", None), ("nuclear", "원전", "#F08C00", None)],
     "building": [("admin", "행정", "#6741D9", 5), ("edu", "연구", "#087F8C", 5),
                  ("farm", "농장", "#B5803A", 5), ("fishery", "어장", "#1C7ED6", 5), ("factory", "공장", "#E8590C", 5),
-                 ("bank", "시장", "#2F9E44", 5), ("housing", "주거 지구", "#9C36B5", 5), ("power", "발전소", "#FAB005", 5)],
+                 ("bank", "시장", "#2F9E44", 5), ("power", "발전소", "#FAB005", 5)],
     "military": [("line", "방어선", "#C92A2A", 5), ("aa", "대공포", "#7048E8", 5), ("shelter", "방공호", "#5C940D", 5),
                  ("academy", "사관학교", "#E67700", None), ("airport", "공항", "#1864AB", None),
                  ("port", "항구", "#0C8599", None)],
@@ -698,7 +698,10 @@ class App:
             b = {key: 0 for key in r.b}
             b['port'] = int(info.island == '무연륙 섬')
         else:
-            b = initial_buildings(info)
+            cache = self.__dict__.setdefault("_init_b", {})
+            b = cache.get(info.id)
+            if b is None:
+                b = cache[info.id] = initial_buildings(info, self.world)
         lines = r.lines if visible else {}
         src = info.power_source or ""
         if sub == "specialty":
@@ -714,7 +717,7 @@ class App:
         if sub == "nuclear":
             return info.nuclear
         if sub == "power":
-            return b["power"] - (1 if ("수력" in src or "원자력" in src) else 0)   # 댐·원전은 자원 탭에서
+            return b["power"]                      # 화력발전소 카드(댐·원전은 자원 탭에서)
         if sub == "line":
             return max(lines.values(), default=0)
         return b.get(sub, 0)

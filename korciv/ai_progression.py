@@ -20,12 +20,6 @@ def science_reserve(g, fid):
                    for p in g.unique_projects(g.regions_of(fid)) if p.kind == "science")
 
 
-def housing_weight(g, rid):
-    rr = g.regions[rid]
-    free = g.info(rid).area_km2 - g.area_usage(rid)[0]
-    return 3.0 if free < 2.0 or rr.pop >= g.population_capacity(rid) else 1.0
-
-
 def admin_weight(g, f, rid, level, threat):
     prod, cons = g.admin_balance(f.id)
     interior = not any(g.regions[n].owner in D.enemies(g, f.id)
@@ -37,7 +31,7 @@ def infrastructure_candidates(g, f, r, opts, threat, edu_centers):
     """신규 내정 건물 효용. 실제 옵션의 정책 할인·광역 비용·입지 제한을 따른다."""
     cands = []
     for o in opts:
-        if o["kind"] != "build" or not o["ok"] or o["key"] not in ("admin", "edu", "housing"):
+        if o["kind"] != "build" or not o["ok"] or o["key"] not in ("admin", "edu"):
             continue
         key, level = o["key"], o["level"]
         cost = max(1, o["cost"])
@@ -59,10 +53,11 @@ def infrastructure_candidates(g, f, r, opts, threat, edu_centers):
             value = delta * 6 * horizon / cost
             if f.ai.get("victory_goal") == "science":
                 value *= 1.5
-        else:
-            weight = housing_weight(g, r.id)
-            occupancy = g.area_usage(r.id)[0] / max(.001, g.info(r.id).area_km2)
-            value = (2.0 + 5.0 * min(1.5, occupancy)) * weight if occupancy >= .7 or weight > 1 else .1
+        if o.get("slot") and level <= 1:
+            # 행정·연구 1단계는 기본 슬롯 한 칸을 쓴다: 마지막 빈 칸이면 덜 반긴다(v1.3.8)
+            proj = g.projected_slots(r.id)["base"]
+            if sum(1 for c in proj if c is None) <= 1:
+                value *= C.AI_LAST_SLOT_MULT
         cands.append((value, r.id, "build", key, None, o["per_turn"]))
     return cands
 

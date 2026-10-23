@@ -16,12 +16,12 @@ TAX_DEFAULT = 0.10
 TAX_MAX = 0.50
 
 POP_OUTPUT = 30            # 인구 1만 명당 산출
-FARM_OUTPUT = 120          # 농장 산출 120 × 단계(식량의 10배)
+FARM_OUTPUT = 150          # 농장 산출 150 × 단계(식량의 10배, v1.3.8: 120 → 150, 바다 어장과 같게)
 FISH_OUTPUT = 150          # 바다 어장 산출 150 × 단계(식량의 10배)
 FACTORY_OUTPUT = 1000
 BANK_OUTPUT = 600
 LEVEL_GROWTH = 0.2         # g(L) = L * (1 + r (L - 1))
-FARM_FOOD = 12             # 농장 식량 12 × 단계
+FARM_FOOD = 15             # 농장 식량 15 × 단계(v1.3.8: 12 → 15, 바다 어장과 같게)
 FISH_FOOD = 15             # 바다 어장 식량 15 × 단계
 FOOD_BUILD_COST_TURN = (200, 400, 600, 800, 1000, 1200)   # 6단계는 광역시만(v1.3.0)   # 농장·어장 단계별 턴당 건설비
 FOOD_PER_POP = 1           # 인구 1만 명당 식량 소비/턴
@@ -29,7 +29,7 @@ START_FOOD_TURNS = 5       # 시작 식량 = 인구 * 5
 COAST_FISH_BONUS = 0.20    # 해안선 점유(해역에 닿는 해안 지역 전부 보유) 시 바다 어장 식량·산출 +20%
 COAST_NAVAL_DEF = 0.10     # 해안선 점유 시 그 해역 해전 방어 +10%
 RIVER_FISH_MULT = 0.80     # 하천 어장(도하 경계를 가진 내륙 지역): 식량·산출 ×0.8 → 단계당 12/120
-RIVER_FARM_MULT = 1.25     # 하천(도하 경계·국경 하천)에 맞닿은 지역의 농장: 식량·산출 ×1.25 → 단계당 15/150
+RIVER_FARM_MULT = 1.0      # v1.3.8: 하천 농장 보너스 삭제(모든 농장이 단계당 15/150)
 NEUTRAL_POP_PER_INF = 15   # 현실 모드 중립 보병: 15만 명당 1기(올림). 개척·혼돈은 1기, 편입 시 1기만 인계
 
 # 에너지: 공장은 단계 L마다 연료 1개(석탄·석유·전기 무관)까지 받아, 1개당 단계별 산출
@@ -111,30 +111,29 @@ PROD_BUILDINGS = {
     "fishery":   {"name": "어장", "base": 400, "max": 5},
     "factory":   {"name": "공장", "base": 1500, "max": 5},
     "bank":      {"name": "시장", "base": 1200, "max": 5},
-    "housing":   {"name": "주거 지구", "base": 600, "max": 5},
     "power":     {"name": "발전소", "base": 1500, "max": 5},
     "specialty": {"name": "특산물 시설", "base": 600, "max": 3},
     "extract":   {"name": "정유·탄광 증설", "base": 2500, "max": 5},
 }
 PROD_TURNS_PER_LEVEL = 2
-CHAIN_BUILDINGS = ("admin", "edu", "housing", "farm", "fishery", "factory", "bank", "extract", "power", "specialty")
+CHAIN_BUILDINGS = ("admin", "edu", "farm", "fishery", "factory", "bank", "extract", "power", "specialty")
 # 생산 건물 단계별 이름(행동 탭 '○○ 건설', 완공 알림, 지역 정보)
 PROD_LEVEL_NAMES = {
     "admin": ("주민센터", "구청", "시청", "도청", "정부청사"),
     "edu": ("초등교육기관", "중등교육기관", "단과대학", "종합대학", "국립연구원"),
-    "housing": ("저밀도 주택가", "밀집 주택가", "저층 아파트 단지", "고층 아파트 단지", "초고층 아파트 단지", "초고층 주상복합 타운"),
     "farm":    ("텃밭", "경작지", "농장", "대농장", "플랜테이션 농장", "스마트팜 단지"),
     "fishery": ("낚시터", "나루터", "소형 포구", "어항", "대형 어항", "대규모 양식장"),
     "factory": ("공방", "작업장", "공장", "대형 공장", "공업 단지", "첨단산업단지"),
     "bank":    ("장터", "상설 시장", "종합 상가", "상업 업무 지구", "복합 무역 센터", "광역 경제 타운"),
 }
 # 광역시(v1.3.0): 중심에서 육상 3칸 안의 내 지역들을 하나의 지역처럼 묶는다(v1.3.0: 2칸 → 3칸, 최대 25곳)
+AI_LAST_SLOT_MULT = 0.6       # AI: 마지막 빈 기본 슬롯을 새 건물로 채우는 선택의 효용 배수(증축 칸을 남긴다, v1.3.8)
 METRO_RANGE = 3              # 중심에서 육상 이 칸 수 안의 지역만
 METRO_MAX_REGIONS = 25       # 구성 지역 수 상한(서울 25개 구)
 METRO_MIN_POP = 100          # 묶는 지역들의 인구 합(만 명)
 METRO_DEF_PER_REGION = 0.02  # 지역 n곳을 묶으면 방어력 ×(1 − 0.02(n − 1))
 METRO_SPEC_HAPPY = 0.5       # 광역시에 공급한 특산물 1종의 행복도 효과(지역 하나일 때의 절반, 대신 광역시 전체에)
-METRO_L6_KEYS = ("housing", "farm", "fishery", "factory", "bank", "power", "extract")
+METRO_L6_KEYS = ("farm", "fishery", "factory", "bank", "power", "extract")
 METRO_ANNEX_MAX_REDUCTION = 0.5   # 광역시 편입: 구성 지역 수만큼의 공동 편입으로 치되 기간 감소는 최대 50%
 PROD_L6_MULT = 1.2           # 농장·어장·시장 6단계: 5단계 산출 × 1.2
 FACTORY_L6_MULT = 1.1        # 첨단산업단지: 연료 1개당 5단계 산출 × 1.1(연료는 6개까지)
@@ -158,19 +157,14 @@ ACADEMY_ADJ = 0.10
 AIRPORT_CAPACITY = 20
 
 # 지역 면적·게임모드·기상. 인구 단위는 만 명, 면적 단위는 km².
+# 면적은 인구밀도에 따른 성장률과 기본 슬롯 칸 수(2~6칸, slots.BASE_SLOT_AREA)에만 쓴다(v1.3.8: 건물·인구의 면적 점유 삭제)
 AREA_KM2_SCALE = 9321.3
-POP_AREA_PER_10K = (2.0, 1.2, 0.6, 0.25, 0.10, 0.04, 0.02)
-BUILDING_AREA_PER_LEVEL = {"farm": 10.0, "fishery": 3.0, "bank": 4.0,
-                           "factory": 2.0, "power": 1.0, "extract": 1.0,
-                           "specialty": 1.0, "hydro": 1.0, "nuclear": 1.0, "housing": 0.0}
-BUILDING_AREA_LEVELS = {"admin": (0, 0, 0, 1, 1, 3), "edu": (0, 0, 0, 1, 2, 4)}
 ADMIN_OUTPUT = (0, 5, 15, 30, 50, 100)
 EDU_SCIENCE = (0, 1, 2, 4, 6, 10)
 INITIAL_EDU = ("S006", "S033", "S044", "S061", "S067", "S109", "S126",
                "S152", "S213", "S228", "N001", "N076", "N150")
 LAWLESS_HAPPY = -5
 LAWLESS_TURNS = 4
-AREA_SHORTAGE = "부지 면적 부족 (주거 지구를 증축하거나 건물을 정리하세요)"
 DENSITY_BONUS_SCALE_MAX = 10.0
 # 게임모드(v1.3.6: 개척시대를 맨 앞·건국 화면 기본 선택으로, 기본모드 → 현실). 내부 키는 세이브 호환을 위해 그대로
 GAME_MODES = {"frontier": "개척시대", "standard": "현실", "chaos": "혼돈의 강산"}

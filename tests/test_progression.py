@@ -96,7 +96,7 @@ def test_admin_deficit_grace_and_recovery_resistance():
     assert g.player.lawless
 
 
-def test_building_area_levels_costs_and_adjacent_reservations():
+def test_admin_edu_costs_and_adjacent_reservations():
     g = game()
     rid = g.player.capital
     a = g.regions[rid]
@@ -104,7 +104,6 @@ def test_building_area_levels_costs_and_adjacent_reservations():
     empty(a)
     empty(b)
     a.pop = b.pop = 1
-    assert R.area_usage(1, {"admin": 5, "edu": 5}) == (9, 2, 7)
     for k, base in (("admin", 800), ("edu", 1000)):
         o = next(o for o in g.options(0, rid) if o["kind"] == "build" and o["key"] == k)
         assert o["cost"] == base * C.BUILD_COST_MULT
@@ -136,10 +135,11 @@ def test_technology_construction_gates_and_atomic_science_funding():
     r = g.regions[g.player.capital]
     empty(r)
     r.pop = 1
-    r.b["housing"], r.b["bank"] = 5, 3
-    assert not g.start_project(0, r.id, "build", "bank")[0]
+    r.b["bank"] = 3
+    slot = r.b.primary("bank")                      # 그 시장 카드를 4단계로(빈 칸 신축은 기술 없이 된다)
+    assert not g.start_project(0, r.id, "build", "bank", slot=slot)[0]
     assert g.unlock_tech(0, "bank")[0]
-    assert g.start_project(0, r.id, "build", "bank")[0]
+    assert g.start_project(0, r.id, "build", "bank", slot=slot)[0]
     g.cancel_project(0, r.id)
     assert not g.science_site_ok(0, r.id, "lab")
     assert g.unlock_tech(0, "aerospace")[0]
@@ -325,13 +325,11 @@ def test_save_migration_and_invalid_ids():
 
 def test_ai_uses_economic_environment_instead_of_aggression():
     import random
-    from korciv.ai_progression import education_centers, housing_weight, science_reserve, tech_order
+    from korciv.ai_progression import education_centers, science_reserve, tech_order
     assert ai_pick_government(random.Random(1), 1, 4, 1, leader_key="cus") == ai_pick_government(random.Random(1), 10, 4, 1, leader_key="cus")
     g = game()
     assert g.player.capital in education_centers(g, 0)
     r = g.regions[g.player.capital]
-    r.pop = g.population_capacity(r.id)
-    assert housing_weight(g, r.id) == 3
     r.project = Project("science", "lab", turns=15)
     assert science_reserve(g, 0) == 1000
     g.player.ai["victory_goal"] = "science"

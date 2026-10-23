@@ -10,7 +10,10 @@
 - 행복도는 중심 값 하나(구성 지역은 같은 값), 특산물 배분·반란 판정도 한 지역처럼.
 - 군 유닛은 하나를 생산하면 지역 수만큼 나온다. 공격받으면 광역시 안의 병력이 함께 방어하고(방어력 ×(1 − 0.02(n − 1))),
   점령되면 통째로 넘어간다(저항 기간이 끝나면 지정 해제).
-- 해제하면 건물 단계 = 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 유일 건물은 중심(항구는 해안 지역), 부대는 중심으로.
+- 해제하면 건물 단계 = 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 공항은 중심, 부대는 중심으로.
+- 건물 슬롯(v1.3.8): 슬롯 건물의 통합은 그 건물 카드를 가진 구성 지역끼리(가장 높은 카드의 단계를 함께 올린다).
+  아무도 없으면 그 건물을 꽂을 빈 칸이 있는 구성 지역 모두에 1단계를 새로 짓는다. 항구·사관학교는 슬롯 카드라
+  광역시 전체로 퍼지지 않고 지은 지역에만 있다(사관학교 할인·해군 생산은 광역시 어디에 있어도 된다).
 """
 from __future__ import annotations
 
@@ -18,16 +21,18 @@ import math
 
 from . import config as C
 from . import rules as R
+from . import slots as S
 from .state import NEUTRAL, Project
 
 # (통합 종류, 건물 키). 탄광·정유는 같은 '채굴 시설' 키지만 지을 수 있는 지역이 달라 따로 묶는다
-POOLS = (("admin", "admin"), ("edu", "edu"), ("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"), ("housing", "housing"),
+POOLS = (("admin", "admin"), ("edu", "edu"), ("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"),
          ("power", "power"), ("specialty", "specialty"), ("coal", "extract"), ("oil", "extract"),
          ("shelter", "shelter"), ("aa", "aa"))
 POOL_KEY = dict(POOLS)
 SINGLES = ("port", "airport", "academy")
-SNAP_KEYS = ("admin", "edu", "housing", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
-POOL_NAMES = {"admin": "광역시청", "edu": "연구 건물", "housing": "광역 주거 지구", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
+SPREAD_SINGLES = ("airport",)        # 광역시 전체로 퍼지는 유일 건물(슬롯 밖). 항구·사관학교는 슬롯 카드(v1.3.8)
+SNAP_KEYS = ("admin", "edu", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
+POOL_NAMES = {"admin": "광역시청", "edu": "연구 건물", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
               "power": "광역 발전소", "specialty": "광역 특산물 시설", "coal": "광역 탄광", "oil": "광역 정유공장",
               "shelter": "광역 방공호", "aa": "광역 대공포"}
 
@@ -70,7 +75,15 @@ def eligible(g, pool, rid) -> bool:
 
 
 def pool_members(g, m, pool) -> list:
-    return [r for r in m["members"] if eligible(g, pool, r)]
+    el = [r for r in m["members"] if eligible(g, pool, r)]
+    key = POOL_KEY[pool]
+    if key not in S.CARD_KEYS:
+        return el
+    # 슬롯 카드(v1.3.8): 그 건물을 가진 구성 지역끼리. 아무도 없으면 빈 칸이 있는 구성 지역들
+    have = [r for r in el if g.regions[r].b.get(key, 0) > 0]
+    if have:
+        return have
+    return [r for r in el if hasattr(g.regions[r].b, "free") and g.regions[r].b.free(key) is not None]
 
 
 def pool_level(g, m, pool) -> int:
@@ -83,7 +96,9 @@ def pool_level(g, m, pool) -> int:
 
 
 def max_level(key) -> int:
-    if key in C.SINGLE_BUILDINGS or key in C.SITE_POWER:
+    if key in C.SITE_POWER:
+        return 3
+    if key in C.SINGLE_BUILDINGS:
         return 1
     if key in C.METRO_L6_KEYS:
         return 6
@@ -364,11 +379,10 @@ def create(g, fid, center, sel, name=None) -> tuple:
         m["merge"][pool] = lv
         for r in el:
             g.regions[r].b[key] = lv
-    for k in SINGLES:
+    for k in SPREAD_SINGLES:
         if any(g.regions[r].b[k] for r in sel):
             for r in sel:
-                if k != "port" or g.info(r).coastal:
-                    g.regions[r].b[k] = 1
+                g.regions[r].b[k] = 1
     # 행복도는 평균 하나로, 특산물 공급·징집 피로도 중심 기준으로 맞춘다
     regs = [g.regions[r] for r in sel]
     h = sum(r.happy for r in regs) / len(regs)
@@ -441,22 +455,15 @@ def dissolve(g, mid, why="") -> bool:
             rr = g.regions[r]
             pre = m["pre"].get(r, {}).get(key, 0)
             rr.b[key] = max(0, min(top, pre + rr.b[key] - base))
-    # 유일 건물: 중심에(항구는 중심이 내륙이면 인구가 가장 많은 해안 지역에)
-    port_site = None
-    for k in SINGLES:
+    # 공항: 중심에. 항구·사관학교는 슬롯 카드라 지은 지역에 그대로(v1.3.8)
+    for k in SPREAD_SINGLES:
         had = any(g.regions[r].b[k] for r in sel)
         for r in sel:
             g.regions[r].b[k] = 0
-        if not had:
-            continue
-        site = center
-        if k == "port" and not g.info(center).coastal:
-            coast = [r for r in sel if g.info(r).coastal]
-            site = max(coast, key=lambda r: (g.regions[r].pop, r)) if coast else None
-        if site is not None:
-            g.regions[site].b[k] = 1
-            if k == "port":
-                port_site = site
+        if had:
+            g.regions[center].b[k] = 1
+    ports = [r for r in sel if g.regions[r].b.get("port")]
+    port_site = (center if center in ports else max(ports, key=lambda r: (g.regions[r].pop, r))) if ports else None
     # 부대: 주인의 육군·공군은 중심으로, 정박한 함대는 새 항구로
     if owner != NEUTRAL:
         for a in list(g.armies.values()):
@@ -496,7 +503,7 @@ def options(g, fid, mid) -> list:
     n = len(sel)
     opts = []
 
-    def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0, site=None, pool=None):
+    def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0, site=None, pool=None, slot=None):
         turns = max(1, turns)
         if resisting:
             ok, why = False, "점령 저항 중"
@@ -504,7 +511,7 @@ def options(g, fid, mid) -> list:
             ok, why = False, frozen
         opts.append({"kind": kind, "key": key, "name": name, "cost": cost, "turns": turns,
                      "per_turn": cost / turns, "ok": ok, "why": why, "level": level,
-                     "border": border, "oil": oil, "site": site or center, "pool": pool})
+                     "border": border, "oil": oil, "site": site or center, "pool": pool, "slot": slot})
 
     raw = {r: g.options(fid, r, raw=True) for r in sel}
     # 통합 건물: 한 단계 올리면 지을 수 있는 구성 지역 모두가 함께 오른다(비용 = 한 지역 비용 × 지역 수)
@@ -547,23 +554,24 @@ def options(g, fid, mid) -> list:
                 opts[-1]["eff_turns"] = o.get("eff_turns", o["turns"])     # 구성 지역 수만큼 줄어든 턴
             elif k == 'repair' or (k == 'build' and key in C.SITE_POWER):
                 add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
-                    o['ok'], o['why'], o['level'], site=r)
+                    o['ok'], o['why'], o['level'], site=r, slot=o.get('slot'))
+            elif k == 'build' and o.get('slot') and key in ("port", "academy") and o['level'] <= 1 \
+                    and ("single", key) not in seen and not any(g.reserved_level(x, key) for x in sel):
+                seen.add(("single", key))      # 항구·사관학교: 광역시에 하나(빈 칸이 있는 첫 구성 지역에)
+                add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
+                    o['ok'], o['why'], o['level'], site=r, slot=o.get('slot'))
             elif k in ("science", "econ") and (k, key) not in seen:
                 if k == "econ" and key == "exchange" and any("exchange" in g.regions[x].econ for x in sel):
                     continue                     # 증권거래소는 광역시에 하나
                 seen.add((k, key))
                 add(k, key, o["name"] + ("" if r == center else f" ({g.info(r).short})"), o["cost"], o["turns"],
                     o["ok"], o["why"], o["level"], site=r)
-    # 유일 건물(항구·공항·사관학교): 광역시에 하나도 없을 때만. 항구는 해안 지역에
-    for key, spec in C.SINGLE_BUILDINGS.items():
+    # 공항: 광역시에 하나도 없을 때만(항구·사관학교는 위에서 슬롯 카드로)
+    for key in SPREAD_SINGLES:
+        spec = C.SINGLE_BUILDINGS[key]
         if any(g.reserved_level(r, key) for r in sel):
             continue
         site = center
-        if key == "port":
-            coast = [r for r in sel if g.info(r).coastal]
-            if not coast:
-                continue
-            site = center if center in coast else max(coast, key=lambda r: (g.regions[r].pop, r))
         add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * g.building_cost_mult(fid, key),
             g.build_time(fid, key, spec["turns"], site, 1), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
@@ -625,10 +633,9 @@ def complete(g, f, p):
                     q = g.regions[m["center"]].project
                     q.chain, q.priority, q.pinned = True, p.priority, p.pinned
             return
-        if p.key in SINGLES:
+        if p.key in SPREAD_SINGLES:
             for r in sel:
-                if p.key != "port" or g.info(r).coastal:
-                    g.regions[r].b[p.key] = 1
+                g.regions[r].b[p.key] = 1
             g.event("complete", f"{name} {C.SINGLE_BUILDINGS[p.key]['name']} 완공", region=site, fids=(f.id,))
             return
         g._complete_project(f, g.regions[site], p)      # 방어선(예전 세이브의 지역별 특산물 시설도): 그 지역에

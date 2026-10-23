@@ -21,7 +21,11 @@ class LeaderRulesMixin:
                 limit = self.mods(f.id).value("free_coastal_ports", 0)
                 coast = sorted((r for r in self.regions_of(f.id) if self.info(r.id).coastal),
                                key=lambda r: (r.acquired_seq, r.id))
-                for r in coast[:limit]:
+                for r in coast:
+                    if len(f.coastal_rewards) >= limit:
+                        break
+                    if r.b.get("port") or (hasattr(r.b, "free") and r.b.free("port") is None):
+                        continue
                     f.coastal_rewards.add(r.id)
                     r.b["port"] = 1
             f.tax = min(f.tax, self.tax_max(f.id))
@@ -33,9 +37,11 @@ class LeaderRulesMixin:
         f = self.factions[fid]
         f.original_regions.add(rid)
         limit = self.mods(fid).value("free_coastal_ports", 0)
-        if limit and self.info(rid).coastal and rid not in f.coastal_rewards and len(f.coastal_rewards) < limit:
-            f.coastal_rewards.add(rid)
-            self.regions[rid].b["port"] = 1
+        b = self.regions[rid].b
+        if limit and self.info(rid).coastal and rid not in f.coastal_rewards and len(f.coastal_rewards) < limit \
+                and not b.get("port") and (not hasattr(b, "free") or b.free("port") is not None):
+            f.coastal_rewards.add(rid)          # 해안 슬롯이 비어 있을 때만(v1.3.8)
+            b["port"] = 1
 
     def unit_oil(self, fid, key):
         base = self.unit_spec(fid, key)["oil"]

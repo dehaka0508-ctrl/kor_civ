@@ -97,7 +97,7 @@ def test_dangun_scenery_crowding_and_oil():
     rid = next(r for r in g.world.order if g.info(r).scenic)
     r = own(g, rid)
     assert g.scenic_bonus(r) >= 10
-    r.pop = g.population_capacity(rid) * 2
+    r.pop = g.crowd_thresholds(rid)[1] * 2             # 과밀 −4 문턱의 두 배여도
     assert g.crowd_penalty(r) == 0
     assert g.unit_oil(0, "inf") == 0
     for key in ("tank", "lst", "dd", "cv", "ftr", "bmb"):
@@ -284,9 +284,17 @@ def test_tank_only_surprise_uses_reworked_sabotage(monkeypatch):
 
 def test_free_coastal_ports_and_chancellor_ban():
     g = game("jan")
-    coast = [rid for rid in g.world.order if g.info(rid).coastal and g.regions[rid].owner == -1][:4]
+    coast = [rid for rid in g.world.order if g.info(rid).coastal and g.regions[rid].owner == -1][:5]
     for rid in coast:
-        g.regions[rid].b["port"] = 0
+        b = g.regions[rid].b
+        if b.card(("coast", 0)):
+            b.remove(("coast", 0))
+    # 건물 슬롯(v1.3.8): 해안 슬롯이 차 있는 지역은 무료 항구를 주지 않고 횟수도 쓰지 않는다
+    full = coast.pop()
+    g.regions[full].b.place("fishery", 1, ("coast", 0))
+    own(g, full)
+    assert g.regions[full].b["port"] == 0 and not g.player.coastal_rewards
+    for rid in coast:
         own(g, rid)
     assert len(g.player.coastal_rewards) == 3
     assert [g.regions[rid].b["port"] for rid in coast] == [1, 1, 1, 0]

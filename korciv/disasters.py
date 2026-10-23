@@ -1,6 +1,6 @@
 """1턴 예보, 계절 기상, 국지 피해와 수확 이력. 모든 난수는 판의 rng를 사용한다."""
 from __future__ import annotations
-from . import config as C, rules as R
+from . import config as C, rules as R, slots as S
 
 WEATHER = {
     'drought': ('가뭄', (3, 4, 5), (2, 4), '내륙 비하천 농장 식량·산출 −30%'),
@@ -125,8 +125,8 @@ class DisasterMixin:
         mult = 0.7 if self.weather_at(rid, 'drought') and not self.info(rid).coastal and not self.river_farm(rid) else 1.0
         return mult * (1.3 if self.harvest_active(rid) else 1.0)
 
-    def weather_fish_mult(self, rid):
-        river = not self.sea_fishery(rid)
+    def weather_fish_mult(self, rid, river=None):
+        river = not self.sea_fishery(rid) if river is None else river
         if (river and self.weather_at(rid, 'cold')) or self.typhoon_danger(rid):
             return 0.0
         return 0.7 if river and self.weather_at(rid, 'heat') else 1.0
@@ -138,13 +138,14 @@ class DisasterMixin:
         r, info = self.regions[rid], self.info(rid)
         if r.flooded:
             return 0
-        hydro = info.hydro if r.b.get('hydro') else 0
+        hydro = min(info.hydro, r.b.get('hydro', 0)) if r.b.get('hydro') else 0      # 카드 단계 = 발전량(v1.3.8)
         if hydro:
             if self.weather_at(rid, 'rain') or (self.weather_at(rid, 'typhoon') and not self.typhoon_danger(rid)):
                 hydro += 1
             elif self.weather_at(rid, 'heat'):
                 hydro = max(0, hydro - 1)
-        nuclear = info.nuclear if r.b.get('nuclear') and not r.nuclear_destroyed and self.turn >= r.nuclear_off_until else 0
+        nuclear = (min(info.nuclear, r.b.get('nuclear', 0)) if r.b.get('nuclear') and not r.nuclear_destroyed
+                   and self.turn >= r.nuclear_off_until else 0)
         return hydro + nuclear
 
     def terrain_multiplier(self, src, target, terrain):
@@ -219,15 +220,26 @@ class DisasterMixin:
 
     def apply_quake_tier(self, rid, tier):
         r = self.regions[rid]
-        had_nuclear = bool(r.b.get('nuclear'))
-        for values in (r.b, r.lines):
-            for key, lv in list(values.items()):
-                loss = (int(self.rng.random() < .5) if tier == 5 else 1 if tier == 6 else
-                        self.rng.randint(1, 2) if tier == 7 else 2 if tier == 8 else lv)
-                values[key] = max(0, lv - loss)
+        nuke = r.b.primary('nuclear') if hasattr(r.b, 'primary') else None
+        nuke_lv = r.b.card(nuke)['level'] if nuke else 0
+
+        def loss(lv):
+            return (int(self.rng.random() < .5) if tier == 5 else 1 if tier == 6 else
+                    self.rng.randint(1, 2) if tier == 7 else 2 if tier == 8 else lv)
+        # 슬롯 카드는 카드마다, 슬롯 밖 건물(특산물·방어·공항)과 방어선은 단계마다 피해(v1.3.8)
+        if hasattr(r.b, 'cards'):
+            for t, i, c in list(r.b.cards()):
+                r.b.set_card((t, i), max(0, c['level'] - loss(c['level'])))
+        for key, lv in list(r.b.items()):
+            if key in S.CARD_KEYS:
+                continue
+            r.b[key] = max(0, lv - loss(lv))
+        for key, lv in list(r.lines.items()):
+            r.lines[key] = max(0, lv - loss(lv))
         r.pop = max(0.1, r.pop * (1 - {5: 0, 6: .0001, 7: .001, 8: .01, 9: .10}[tier]))
-        if had_nuclear and tier == 8:
-            r.b['nuclear'] = 1
+        if nuke and tier == 8:
+            if r.b.card(nuke) is None:
+                r.b.place('nuclear', nuke_lv, nuke)       # 원전은 부서지지 않고 4턴 정지
             r.nuclear_off_until = self.turn + 4
         if self.info(rid).nuclear and tier == 9:
             r.nuclear_destroyed = True

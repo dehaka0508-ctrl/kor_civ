@@ -914,12 +914,11 @@ def draw_start_popup(app, rid):
         sub += f" · {info.island}"
     gui.text((x, r.y + 54), sub, 13, t.muted)
     y = r.y + 86
-    rfarm = C.RIVER_FARM_MULT if rid in w.river_regions else 1.0
-    out = R.region_output(info.pop0, info.farm, info.fishery, info.factory, info.bank, False,
-                          fish_mult=C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0,
-                          farm_mult=rfarm)
-    food = R.food_output(info.farm * rfarm, info.fishery,
-                         C.RIVER_FISH_MULT if (not info.coastal and rid in w.river_regions) else 1.0)
+    from .. import slots as S
+    sb = S.initial(w, rid)                     # 현실 모드 시작 슬롯 카드(v1.3.8)
+    fish = sum(c["level"] * (C.RIVER_FISH_MULT if st == "river" else 1.0) for st, _, c in sb.cards("fishery"))
+    out = R.region_output(info.pop0, sb.cap("farm"), fish, sb.levels("factory"), sb.levels("bank"), False)
+    food = R.food_output(sb.cap("farm"), fish)
     half = (cw - 20) // 2
 
     def stat(col, row, k, v, vc=None):
@@ -953,13 +952,17 @@ def draw_start_popup(app, rid):
             cx += cwid + 6
         y += 30
 
-    blds = [f"{nm} {lv}단계" for nm, lv in (("농장", info.farm), ("어장", info.fishery), ("공장", info.factory),
-                                             ("시장", info.bank)) if lv]
+    # 현실 모드 시작 슬롯 카드(v1.3.8): [기본] 시청 3 · [해안] 항구 1 … (개척시대·혼돈은 빈 슬롯)
+    names = {"admin": "행정", "edu": "연구", "farm": "농장", "factory": "공장", "bank": "시장", "academy": "사관학교",
+             "extract": "정유공장" if info.is_oil else "탄광", "fishery": "어장", "power": "화력발전소",
+             "hydro": "수력발전소", "nuclear": "원자력발전소", "port": "항구"}
+    blds = [f"[{S.SLOT_NAMES[st]}] {names.get(c['key'], c['key'])} {c['level']}" for st, _, c in sb.cards()]
+    free = sb.total() - sb.used()
+    if free:
+        blds.append(f"빈 슬롯 {free}칸")
     if info.specialty:
         blds.append("특산물 시설 1단계")
-    if info.start_port:
-        blds.append("항구")
-    chips("건물", blds)
+    chips(f"건물 슬롯 {sb.total()}칸 (현실 판도)", blds)
     res = []
     if info.oil:
         res.append(f"정유 석유 {info.oil}/턴")

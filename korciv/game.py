@@ -11,7 +11,9 @@ from . import diplomacy as D
 from . import metro as M
 from . import rules as R
 from .queues import QueueMixin
-from .land import LandMixin, fit_initial, chaos_world
+from . import slots as S
+from .land import LandMixin, chaos_world
+from .slot_rules import SlotMixin
 from .disasters import DisasterMixin
 from .governance import GovernanceMixin
 from .progression import ProgressionMixin
@@ -31,25 +33,17 @@ def faction_name_from(short: str) -> str:
     return short + "국"
 
 
-def initial_buildings(info) -> dict:
-    """게임 시작 시점의 건물 단계(지역 자료 기준). 전장의 안개로 모르는 지역은 지도에 이 상태로 보인다."""
-    b = {k: 0 for k in ALL_BUILDINGS}
-    b.update(farm=info.farm, fishery=info.fishery, factory=info.factory, bank=info.bank)
-    if info.is_coal:
-        b["extract"] = info.coal          # 탄광: ① 1단계로 시작, ② 0단계(건설 가능)
-    if info.power_source:
-        b["power"] = 1                    # 현실 발전소(화력·원자력·수력) 소재지는 1단계로 시작
+def initial_buildings(info, world=None):
+    """현실 모드 시작 시점의 건물(지역 자료 기준, v1.3.8: 슬롯 카드). 전장의 안개로 모르는 지역은 지도에 이 상태로 보인다.
+    슬롯 건물(행정·연구·농장·어장·공장·시장·채굴·발전소·항구·사관학교)은 slots.initial 이 칸 수 안에서 0~3단계로 꽂고,
+    특산물 시설·공항은 슬롯 밖에 따로 둔다."""
+    world = world or load_world()
+    b = S.initial(world, info.id, info.pop0)
     if info.specialty:
         b["specialty"] = 1
-    if info.start_port:
-        b["port"] = 1
     if getattr(info, "start_airport", False):
         b["airport"] = 1                  # 현실 공항 소재지는 공항 1단계로 시작(v1.3.0)
-    b["hydro"] = int(bool(info.hydro))
-    b["nuclear"] = int(bool(info.nuclear))
-    b["admin"] = 0 if info.pop0 < 20 else 1 if info.pop0 < 50 else 2 if info.pop0 < 100 else 3
-    b["edu"] = 2 if info.id in C.INITIAL_EDU else 0
-    return fit_initial(info, b)
+    return b
 
 
 def neutral_garrison(pop) -> int:
@@ -128,7 +122,7 @@ def pick_starts(world, rng, n, requested=()):
     return [r if r else next(rest) for r in fixed]
 
 
-class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMixin):
+class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, GovernanceMixin, ProgressionMixin):
     def __init__(self, settings: Settings | None = None, world=None):
         self.settings = settings or Settings()
         self.world = world or load_world()
@@ -202,14 +196,14 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                     setattr(f, attr, value)
             if "techs" not in f.__dict__:
                 f.techs = set()
+        self._migrate_slots(s)
         for r in self.regions.values():   # 이전 버전 세이브 호환
             if not hasattr(r, 'queue'):
                 r.queue = []
             for key in ALL_BUILDINGS:
-                r.b.setdefault(key, 0)
-            if 'world_overrides' not in s:
-                r.b['hydro'] = int(bool(self.info(r.id).hydro))
-                r.b['nuclear'] = int(bool(self.info(r.id).nuclear))
+                if key not in r.b:
+                    dict.__setitem__(r.b, key, 0)
+            r.b.resync()
             for attr in ("spec_pin", "spec_block"):
                 if not hasattr(r, attr):
                     setattr(r, attr, set())
@@ -266,7 +260,8 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         for rid in w.order:
             info = w.regions[rid]
             frontier = self.settings.mode != 'standard'
-            b = {k: 0 for k in ALL_BUILDINGS} if frontier else initial_buildings(info)
+            # 개척시대·혼돈의 강산은 모든 슬롯이 빈 상태로 시작(무연륙 섬은 항구만)
+            b = S.new(w, rid) if frontier else initial_buildings(info, w)
             if frontier and info.island == '무연륙 섬':
                 b['port'] = 1
             pop = 1.0 if frontier else info.pop0
@@ -316,6 +311,47 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         if st.all_ai:
             self.finalize_setup()
 
+    def _migrate_slots(self, s):
+        """예전 세이브(v1.3.7까지: 건물 단계 사전·면적·주거 지구) → 건물 슬롯 카드(v1.3.8).
+        우선순위(행정·연구·사관학교·채굴 → 높은 단계 생산 건물, 해안·하천은 원전·댐 > 발전소 > 항구 > 어장)로 칸에
+        꽂고 남는 건물과 주거 지구는 철거한다. 광역시에 퍼져 있던 항구·사관학교는 한 곳에만 남긴다."""
+        olds = {}
+        for r in self.regions.values():
+            if isinstance(r.b, S.Buildings):
+                continue
+            old = dict(r.b)
+            if 'world_overrides' not in s:
+                old['hydro'] = int(bool(self.info(r.id).hydro))
+                old['nuclear'] = int(bool(self.info(r.id).nuclear))
+            olds[r.id] = old
+        if not olds:
+            return
+        for m in M.metros(self).values():
+            sel = [x for x in m["members"] if x in olds]
+            for k in ("port", "academy"):
+                have = [x for x in sel if olds[x].get(k)]
+                if len(have) <= 1:
+                    continue
+                keep = m["center"] if m["center"] in have else max(have, key=lambda x: (self.regions[x].pop, x))
+                for x in have:
+                    if x != keep:
+                        olds[x][k] = 0
+        lost = 0
+        for rid, old in olds.items():
+            b, dropped = S.from_legacy(self.world, rid, old)
+            self.regions[rid].__dict__["b"] = b
+            lost += sum(1 for k, _ in dropped if k != "housing")
+        for r in self.regions.values():
+            for q in list(([r.project] if r.project else []) + list(getattr(r, "queue", []))):
+                if q.kind == "build" and q.key == "housing":
+                    if r.owner != NEUTRAL:
+                        self.factions[r.owner].money += q.paid
+                    if r.project is q:
+                        r.project = None
+                    else:
+                        r.queue.remove(q)
+        self.slot_migrated = lost
+
     def _pick_starts(self, n, requested):
         return pick_starts(self.world, self.rng, n, requested)
 
@@ -339,7 +375,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         r = self.regions[rid]
         r.owner = f.id
         self.leader_acquired(f.id, rid)
-        r.b["admin"] = min(5, r.b.get("admin", 0) + 1) if self.settings.mode == "standard" else 1
+        self._start_admin(r)
         f.admin = r.pop * 10 if self.settings.mode == "standard" else 10.0
         self._take_garrison(rid, f.id)
         if self.world.regions[rid].island == "무연륙 섬":
@@ -349,6 +385,17 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         for n in list(self.world.land_adj[rid]) + (["coast"] if self.world.regions[rid].coastal else []):
             if self.settings.mode == "standard":
                 r.lines[n] = max(r.lines.get(n, 0), C.START_LINE_LEVEL)
+
+    def _start_admin(self, r):
+        """시작 수도의 행정 건물(v1.3.8): 행정 카드가 있으면 +1단계, 없으면 빈 기본 슬롯(없으면 마지막 기본 슬롯을 바꿔)에 1단계."""
+        b = r.b
+        pos = b.primary("admin")
+        if pos is not None:
+            b.set_card(pos, min(5, b.card(pos)["level"] + 1))
+            return
+        if not b.place("admin", 1) and b.slots["base"]:
+            b.remove(("base", len(b.slots["base"]) - 1))
+            b.place("admin", 1, ("base", len(b.slots["base"]) - 1))
 
     def finalize_setup(self):
         """정치체제 선택 후 호출: 시작 자금·우호도 적용."""
@@ -364,10 +411,6 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 if a.id != b.id and a.is_ai:
                     self.dip.op[(a.id, b.id)] = self.mods(b.id).add("start_opinion") + D.op_baseline(self, a.id, b.id)
         for r in self.regions.values():
-            if self.settings.mode == 'standard':
-                # 지도자 시작 인구 보정 후에도 초기 여유 면적을 보장한다.
-                from dataclasses import replace
-                r.b = fit_initial(replace(self.info(r.id), pop0=r.pop), r.b)
             r.output = self.calc_output(r.id, full=True)
             r.food = self.food_prod(r.owner, r)
         for f in self.factions:
@@ -1815,8 +1858,8 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         if key != "inf":
             c *= m.mult("cost_noninf")                # 단군왕검 '신화 시대'
         disc = 0.0
-        if self.regions[rid].b["academy"] and self.regions[rid].owner == fid:
-            disc = C.ACADEMY_LOCAL
+        if any(self.regions[x].b["academy"] and self.regions[x].owner == fid for x in M.members(self, rid)):
+            disc = C.ACADEMY_LOCAL                    # 광역시는 구성 지역 어디에 있어도(v1.3.8)
         else:
             for n in self.land_within(rid, int(m.value("academy_radius", 1))):
                 rr = self.regions[n]
@@ -1835,10 +1878,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                      '수력': int(bool(info.hydro)), '원전': 2 * int(bool(info.nuclear)),
                      '석탄': int(info.is_coal), '석유': 2 * int(info.is_oil),
                      '경관': 0.5 * bool(info.scenic), '하천': 0.2 * self.river_farm(rid),
-                     '해안': 0.4 * info.coastal, '면적': info.area_km2 / 1000}
+                     '해안': 0.4 * info.coastal,
+                     '슬롯': 0.25 * (len(rr.b.slots.get('base', ())) - 2)}   # v1.3.8: 면적 대신 기본 슬롯 칸 수(2~6칸 → 0~1)
             return max(1, min(10, math.floor(sum(parts.values())))), parts
-        levels = sum(rr.b[k] for k in ("farm", "fishery", "factory", "bank", "power",
-                                       "specialty", "extract"))
+        levels = rr.level_sum()
         singles = sum(rr.b[k] for k in ("port", "airport", "academy"))
         parts = R.region_value_parts(self.region_output_estimate(rid), rr.pop, levels, singles,
                                      info.oil, info.coal, info.power_self, info.power_site,
@@ -1938,7 +1981,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         resisting = self.resisting(rr)
         frozen = self.order_frozen(fid)
 
-        def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0):
+        def add(kind, key, name, cost, turns, ok=True, why="", level=0, border=None, oil=0, slot=None):
             turns = max(1, turns)
             if resisting:
                 ok, why = False, "점령 저항 중"
@@ -1946,25 +1989,17 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 ok, why = False, frozen
             opts.append({"kind": kind, "key": key, "name": name, "cost": cost, "turns": turns,
                          "per_turn": cost / turns, "ok": ok, "why": why, "level": level,
-                         "border": border, "oil": oil})
+                         "border": border, "oil": oil, "slot": slot})
 
-        for key, spec in C.PROD_BUILDINGS.items():
-            lv = self.reserved_level(rid, key) + 1
-            ok, why = True, ""
-            if lv > spec["max"]:
-                continue
-            # 지역 조건상 영영 지을 수 없는 시설은 목록에 넣지 않는다
-            if key == "fishery" and not self.can_fish(rid):
-                continue
-            if key == "specialty" and not info.specialty:
-                continue
-            if key == "extract" and not (info.is_oil or info.is_coal):
-                continue
-            cost = R.prod_building_cost(key, lv, info.power_site)
-            cost *= self.building_cost_mult(fid, key, lv)
-            ok, why = self.building_allowed(fid, rid, key, lv)
-            add("build", key, self.building_name(rid, key), cost, self.build_time(fid, key, R.prod_building_turns(lv), rid, lv),
-                ok, why, lv)
+        # 슬롯 건물(v1.3.8): 빈 칸에 1단계 신축, 꽂힌 카드마다 다음 단계 증축
+        self.slot_options(fid, rid, add)
+        # 슬롯 밖 생산 건물: 특산물 시설
+        lv = self.reserved_level(rid, "specialty") + 1
+        if info.specialty and lv <= C.PROD_BUILDINGS["specialty"]["max"]:
+            ok, why = self.building_allowed(fid, rid, "specialty", lv)
+            add("build", "specialty", self.building_name(rid, "specialty"),
+                R.prod_building_cost("specialty", lv) * self.building_cost_mult(fid, "specialty", lv),
+                self.build_time(fid, "specialty", R.prod_building_turns(lv), rid, lv), ok, why, lv)
         for key in ("shelter", "aa"):
             lv = self.reserved_level(rid, key) + 1
             if lv <= 5:
@@ -1979,22 +2014,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
             add("build", "line", f"방어선({nm})", R.def_building_cost("line", lv) * self.building_cost_mult(fid, "line", lv),
                 self.build_time(fid, "line", R.def_building_turns(lv), rid, lv), level=lv, border=bkey)
         for key, spec in C.SINGLE_BUILDINGS.items():
-            if self.reserved_level(rid, key):
-                continue
-            ok, why = True, ""
-            if key == "port" and not info.coastal:
-                continue
+            if key in S.CARD_KEYS or self.reserved_level(rid, key):
+                continue                      # 항구·사관학교는 슬롯 카드(위), 공항만 슬롯 밖
             add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * self.building_cost_mult(fid, key),
-                self.build_time(fid, key, spec["turns"], rid, 1), ok, why, 1)
-        for key, (label, equivalent) in C.SITE_POWER.items():
-            if not getattr(info, key) or self.reserved_level(rid, key):
-                continue
-            ok, why = self.building_allowed(fid, rid, key, 1)
-            if key == 'nuclear' and rr.nuclear_destroyed:
-                ok, why = False, '원전 재건설 영구 불가'
-            add('build', key, label + ' 건설', R.prod_building_cost('power', equivalent) * self.building_cost_mult(fid, key),
-                self.build_time(fid, 'power', R.prod_building_turns(equivalent), rid, 1), ok,
-                why, level=1)
+                self.build_time(fid, key, spec["turns"], rid, 1), True, "", 1)
         if rr.flooded:
             add('repair', 'flood', '침수 복구', 0, 1)
         for key in C.BUILD_UNITS:
@@ -2344,10 +2367,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
             lv, key = opt["level"], opt["key"]
             if key == "admin":
                 base = 50 * len(sites) + 100 if opt.get("pool") and lv == 5 else C.ADMIN_OUTPUT[lv] * len(sites)
-                return f"기본 행정력 {base:g}/턴 · 면적 {C.BUILDING_AREA_LEVELS[key][lv]:g}km²/지역"
+                return f"기본 행정력 {base:g}/턴"
             pop = sum(self.regions[x].pop for x in sites)
             base = 6 * pop + 500 if opt.get("pool") and lv == 5 else C.EDU_SCIENCE[lv] * pop
-            return f"기본 과학력 {base:g}/턴 · 면적 {C.BUILDING_AREA_LEVELS[key][lv]:g}km²/지역"
+            return f"기본 과학력 {base:g}/턴"
         if opt.get("pool") and M.of(self, rid):
             el = M.pool_members(self, M.of(self, rid), opt["pool"])
             if el and opt["key"] == "specialty":
@@ -2365,20 +2388,17 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         key, lv = opt["key"], opt["level"]
         m = self.mods(fid)
         dg = R.g(lv) - R.g(lv - 1)
-        if key == 'housing':
-            old, new = C.POP_AREA_PER_10K[max(0, lv - 1)], C.POP_AREA_PER_10K[lv]
-            return f'인구 면적 −{(1 - new / old):.0%} · 과밀 완화'
         if key in C.SITE_POWER:
             return f'전기 {getattr(info, key)}/턴 · 연료 불필요'
         if key == "farm":
             fm = self.farm_mult(fid, rid)
-            return (("하천 농장: " if self.river_farm(rid) else "")
-                    + f"턴당 식량 +{round(C.FARM_FOOD * fm * m.mult('food_prod'), 1):g}, "
+            return (f"턴당 식량 +{round(C.FARM_FOOD * fm * m.mult('food_prod'), 1):g}, "
                     f"산출 +{C.FARM_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "fishery":
-            fm = self.fish_mult(fid, rid)
-            kind = "하천" if (not info.coastal and rid in self.world.river_regions) else "바다"
-            return (f"{kind} 어장: 턴당 식량 +{round(C.FISH_FOOD * self.fish_food_mult(fid, rid), 1):g}, "
+            stype = (opt.get("slot") or ("coast" if info.coastal else "river",))[0]
+            fm = self.fish_slot_mult(fid, rid, stype)
+            kind = "하천" if stype == "river" else "바다"
+            return (f"{kind} 어장: 턴당 식량 +{round(C.FISH_FOOD * fm * m.mult('food_prod'), 1):g}, "
                     f"산출 +{C.FISH_OUTPUT * fm * m.mult('output_prod'):.0f}")
         if key == "factory":
             per = R.factory_unit(lv) * m.mult('output_factory') * m.mult('output_prod')
@@ -2392,9 +2412,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
         if key == "extract":
-            if info.is_oil:
-                return f"석유 {info.oil + lv - 1}+1/턴"
-            return f"석탄 {lv - 1}+1/턴"
+            return ("석유" if info.is_oil else "석탄") + " +1/턴"
         if key == "line":
             k = m.value("line_k", C.LINE_BONUS)
             return f"돌격 방어 +{k * lv * 100:.0f}%"
@@ -2412,44 +2430,44 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         return ""
 
     def building_total(self, fid, rid, key) -> str:
-        """다 지은(최대 단계) 생산 건물의 지금 턴당 산출."""
+        """그 종류 건물(카드 여러 장이면 모두 합친)의 지금 턴당 산출."""
         rr = self.regions[rid]
         info = self.info(rid)
-        lv = rr.b.get(key, 0)
+        b = rr.b
+        lv = b.get(key, 0)
         m = self.mods(fid)
         pm = m.mult("output_prod")
         if key == "admin":
             return f"행정력 {self.admin_output(rid):,.1f}/턴"
         if key == "edu":
             return f"과학력 {self.science_output(rid):,.1f}/턴"
-        if key == 'housing':
-            old, new = C.POP_AREA_PER_10K[max(0, lv - 1)], C.POP_AREA_PER_10K[lv]
-            return f'인구 면적 −{(1 - new / old):.0%} · 과밀 완화'
         if key in C.SITE_POWER:
             return f'전기 {getattr(info, key)}/턴 · 연료 불필요'
         if key == "farm":
             fm = self.farm_mult(fid, rid)
-            return (f"턴당 식량 {C.FARM_FOOD * lv * fm * m.mult('food_prod'):.0f}, "
-                    f"산출 {C.FARM_OUTPUT * lv * fm * pm:,.0f}")
+            n = b.cap("farm")
+            return (f"턴당 식량 {C.FARM_FOOD * n * fm * m.mult('food_prod'):.0f}, "
+                    f"산출 {C.FARM_OUTPUT * n * fm * pm:,.0f}")
         if key == "fishery":
-            fm = self.fish_mult(fid, rid)
-            return (f"턴당 식량 {round(C.FISH_FOOD * lv * self.fish_food_mult(fid, rid) * m.mult('food_prod'), 1):g}, "
-                    f"산출 {C.FISH_OUTPUT * lv * fm * pm:,.0f}")
+            fe = self.fishery_eff(fid, rid)
+            return (f"턴당 식량 {round(C.FISH_FOOD * fe * m.mult('food_prod'), 1):g}, "
+                    f"산출 {C.FISH_OUTPUT * fe * pm:,.0f}")
         if key == "factory":
-            u = max(0, min(lv, getattr(rr, "fuel_used", 0)))
-            out = R.factory_output(lv, u) * m.mult("output_factory") * pm * (1 + m.add("factory_fuel_output") * u)
-            return f"연료 {u}/{lv}개 → 턴당 산출 {out:,.0f}"
+            cap = b.cap("factory")
+            u = max(0, min(cap, getattr(rr, "fuel_used", 0)))
+            out = R.factory_output(b.levels("factory"), u) * m.mult("output_factory") * pm * (1 + m.add("factory_fuel_output") * u)
+            return f"연료 {u}/{cap}개 → 턴당 산출 {out:,.0f}"
         if key == "bank":
             bm = m.mult("output_bank") * self.leader_bank_mult(fid, rid) * (m.mult("educated_output") if rr.b.get("edu", 0) >= 3 else 1) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ and not self.facility_paused(rr.id) else 1.0)
-            return f"턴당 산출 {C.BANK_OUTPUT * R.g(lv) * bm * pm:,.0f}"
+            return f"턴당 산출 {R.bank_output(b.levels('bank')) * bm * pm:,.0f}"
         if key == "power":
-            return (f"연료 최대 {lv}개/턴 → 전기 (석탄 1 → {self.power_elec(fid, 'coal', lv):g}, "
+            return (f"연료 최대 {b.cap('power')}개/턴 → 전기 (석탄 1 → {self.power_elec(fid, 'coal', lv):g}, "
                     f"석유 1 → {self.power_elec(fid, 'oil', lv):g})")
         if key == "specialty":
             each = " 각" if len(info.specialties) > 1 else ""
             return "특산물 " + "·".join(f"「{sp}」" for sp in info.specialties) + f" 턴당{each} {lv}개"
         if key == "extract":
-            return f"석유 {info.oil + lv}/턴" if info.is_oil else f"석탄 {lv}/턴"
+            return ("석유" if info.is_oil else "석탄") + f" {self.extract_amount(fid, rr):g}/턴"
         return ""
 
     def review_order(self, fid):
@@ -2702,8 +2720,20 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         return (base + self.mods(fid).add("power_elec_add")) * self.mods(fid).mult("output_power")
 
     def plant_elec(self, fid, level, coal, oil) -> float:
-        """발전소 한 곳의 전기(소수점 포함)."""
-        return self.power_elec(fid, "coal", level) * coal + self.power_elec(fid, "oil", level) * oil
+        """발전소 한 곳의 전기(소수점 포함). 발전소 카드가 여러 장이면(v1.3.8) 단계 목록을 넘긴다:
+        석유부터 높은 단계 카드에 채운다."""
+        if not isinstance(level, (list, tuple)):
+            return self.power_elec(fid, "coal", level) * coal + self.power_elec(fid, "oil", level) * oil
+        left = {"oil": max(0, int(oil)), "coal": max(0, int(coal))}
+        e = 0.0
+        for lv in sorted(level, reverse=True):
+            room = lv
+            for key in ("oil", "coal"):
+                k = min(room, left[key])
+                room -= k
+                left[key] -= k
+                e += self.power_elec(fid, key, lv) * k
+        return e
 
     def elec_from_fuel(self, fid, oil, coal):
         """석유·석탄을 발전소에 자동 배정 순서대로(단계 높은 곳부터, 석유 먼저) 넣었을 때
@@ -2713,13 +2743,14 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         used = {"oil": 0, "coal": 0}
         e = 0.0
         for r in plants:
-            room = r.b["power"]
-            for key in ("oil", "coal"):
-                k = min(room, left[key])
-                room -= k
-                left[key] -= k
-                used[key] += k
-                e += self.power_elec(fid, key, r.b["power"]) * k
+            for lv in r.b.levels("power"):
+                room = lv
+                for key in ("oil", "coal"):
+                    k = min(room, left[key])
+                    room -= k
+                    left[key] -= k
+                    used[key] += k
+                    e += self.power_elec(fid, key, lv) * k
         return int(e + 1e-9), used["oil"], used["coal"]
 
     def energy_mined(self, fid) -> dict:
@@ -2730,9 +2761,9 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 continue
             info = self.info(r.id)
             if info.is_oil:
-                out["oil"] += (info.oil + r.b["extract"] + (self.mods(fid).add("extract3_extra") if r.b["extract"] >= 3 else 0)) * self.mods(fid).mult("output_extract")
+                out["oil"] += self.extract_amount(fid, r, "oil")
             if info.is_coal:
-                out["coal"] += (r.b["extract"] + (self.mods(fid).add("extract3_extra") if r.b["extract"] >= 3 else 0)) * self.mods(fid).mult("output_extract")
+                out["coal"] += self.extract_amount(fid, r, "coal")
             out["elec"] += self.self_power(r.id)
         return out
 
@@ -2790,8 +2821,8 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
     def energy_sites(self, fid):
         """연료를 받는 시설: (발전소 지역들, 공장 지역들). 공장은 단계가 높은 순."""
         act = [r for r in self.regions_of(fid) if not r.occ and not self.resisting(r) and not r.flooded]
-        plants = sorted([r for r in act if r.b["power"] > 0], key=lambda r: (-r.b["power"], r.id))
-        facts = sorted([r for r in act if r.b["factory"] > 0], key=lambda r: (-r.b["factory"], r.id))
+        plants = sorted([r for r in act if r.b["power"] > 0], key=lambda r: (-r.b["power"], -r.b.cap("power"), r.id))
+        facts = sorted([r for r in act if r.b["factory"] > 0], key=lambda r: (-r.b["factory"], -r.b.cap("factory"), r.id))
         return plants, facts
 
     def auto_energy_plan(self, fid, stock, oil_reserve=None) -> dict:
@@ -2804,7 +2835,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         left = {"oil": max(0, int(stock["oil"]) - reserve), "coal": max(0, int(stock["coal"])),
                 "elec": max(0, int(stock["elec"]))}
         plan = {r.id: {"coal": 0, "oil": 0} for r in plants}
-        room = {r.id: r.b["power"] for r in plants}
+        room = {r.id: r.b.cap("power") for r in plants}
         for key in ("oil", "coal"):                       # ①② 발전소: 석유 먼저, 그다음 석탄
             for r in plants:
                 k = min(room[r.id], left[key])
@@ -2812,10 +2843,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 room[r.id] -= k
                 left[key] -= k
         # 전국 발전량을 합친 뒤 소수점은 버린다
-        left["elec"] += int(sum(self.plant_elec(fid, self.regions[rid].b["power"], a["coal"], a["oil"])
+        left["elec"] += int(sum(self.plant_elec(fid, self.regions[rid].b.levels("power"), a["coal"], a["oil"])
                                 for rid, a in plan.items()) + 1e-9)
         fplan = {r.id: {"coal": 0, "oil": 0, "elec": 0} for r in facts}
-        froom = {r.id: r.b["factory"] for r in facts}
+        froom = {r.id: r.b.cap("factory") for r in facts}
         for key in ("elec", "coal", "oil"):               # ③④⑤ 공장: 전기 → 석탄 → 석유, 단계 높은 공장부터
             for r in facts:
                 k = min(froom[r.id], left[key])
@@ -2838,7 +2869,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         f.auto_energy = False
         plan = self.energy_plan(fid)
         units = sum(a["units"] for a in plan["factories"].values())
-        cap = sum(self.regions[rid].b["factory"] for rid in plan["factories"])
+        cap = sum(self.regions[rid].b.cap("factory") for rid in plan["factories"])
         return units, cap
 
     def _auto_assign_energy(self):
@@ -2848,8 +2879,8 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
             if not f.alive or f.is_ai or f.auto_energy:
                 continue
             plants, facts = self.energy_sites(f.id)
-            sites = {("p", r.id): r.b["power"] for r in plants}
-            sites.update({("f", r.id): r.b["factory"] for r in facts})
+            sites = {("p", r.id): r.b.cap("power") for r in plants}
+            sites.update({("f", r.id): r.b.cap("factory") for r in facts})
             seen = getattr(f, "energy_seen", None)
             f.energy_seen = sites
             if getattr(f, "energy_each_turn", True):
@@ -2880,21 +2911,21 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         gen = 0.0
         for r in plants:
             a = want["p"].get(r.id, {})
-            room = r.b["power"]
+            room = r.b.cap("power")
             used = {}
             for key in ("oil", "coal"):
                 k = int(max(0, min(a.get(key, 0), room, s[key])))
                 used[key] = k
                 room -= k
                 s[key] -= k
-            e = self.plant_elec(fid, r.b["power"], used["coal"], used["oil"])
+            e = self.plant_elec(fid, r.b.levels("power"), used["coal"], used["oil"])
             gen += e
             out_p[r.id] = {"coal": used["coal"], "oil": used["oil"], "elec_out": e}
         gen_int = int(gen + 1e-9)                 # 전국 발전량을 합친 뒤 소수점은 버린다
         s["elec"] += gen_int
         for r in facts:
             a = want["f"].get(r.id, {})
-            room = r.b["factory"]
+            room = r.b.cap("factory")
             used = {}
             for key in ("elec", "coal", "oil"):
                 k = int(max(0, min(a.get(key, 0), room, s[key])))
@@ -2911,7 +2942,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         rr = self.regions[rid]
         if rr.owner != fid or site not in ("p", "f"):
             return False
-        cap = rr.b["power"] if site == "p" else rr.b["factory"]
+        cap = rr.b.cap("power") if site == "p" else rr.b.cap("factory")
         if cap <= 0 or (site == "p" and key == "elec") or key not in ("coal", "oil", "elec"):
             return False
         en = dict(rr.energy or {})
@@ -2950,12 +2981,12 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         return info.coastal or info.fishery > 0 or rid in self.world.river_regions
 
     def river_farm(self, rid) -> bool:
-        """하천(도하 경계·국경 하천)에 맞닿은 지역: 농장 식량·산출 ×1.25."""
+        """하천(도하 경계·국경 하천)에 맞닿은 지역(가뭄을 덜 탄다). v1.3.8부터 농장 산출 보너스는 없다."""
         return rid in self.world.river_regions
 
     def farm_mult(self, fid, rid) -> float:
-        """농장 식량·산출 배수(지도자 효과 × 하천 농장). 광역시는 하나라도 하천 농장이면 전체가 하천 농장."""
-        river = M.river_farm(self, rid) if getattr(self.regions[rid], "metro", None) is not None else self.river_farm(rid)
+        """농장 식량·산출 배수(지도자·정책 효과 × 날씨). v1.3.8: 하천 농장 보너스 삭제(RIVER_FARM_MULT = 1)."""
+        river = self.river_farm(rid)
         return self.mods(fid).mult("output_farm") * (C.RIVER_FARM_MULT if river else 1.0) * self.weather_farm_mult(rid)
 
     def fish_food_mult(self, fid, rid):
@@ -2967,9 +2998,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         return not (not info.coastal and rid in self.world.river_regions)
 
     def fish_mult(self, fid, rid):
-        """어장 배수. 광역시는 구성 지역 가운데 가장 좋은 어장(하나라도 바다 어장이면 바다 어장) 기준."""
-        if getattr(self.regions[rid], "metro", None) is not None:
-            return M.fish_mult(self, fid, rid) * self.weather_fish_mult(rid)
+        """그 지역의 대표 어장 배수(해안 지역은 바다 어장, 내륙은 하천 어장). 카드마다는 fish_slot_mult."""
         return self._fish_mult_one(fid, rid) * self.weather_fish_mult(rid)
 
     def _fish_mult_one(self, fid, rid):
@@ -2993,10 +3022,14 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         pop_mult = 1 + C.FOCUS_POP_BONUS * self.focus_multiplier(owner) if self.focus_active(rr) and owner == rr.owner else 1.0
         if owner != NEUTRAL and rid == self.factions[owner].capital:
             pop_mult *= m.mult("capital_pop_output")
-        y = R.region_output(rr.pop, rr.b["farm"], rr.b["fishery"], rr.b["factory"], rr.b["bank"],
-                            phi, self.fish_mult(owner, rid) if owner != NEUTRAL else 1.0,
+        # 건물 슬롯(v1.3.8): 카드마다 산출을 따로 계산해 더한다(농장·어장은 단계 합, 공장·시장은 카드별)
+        b = rr.b
+        fish = self.fishery_eff(owner, rid)
+        fac = b.levels("factory")
+        y = R.region_output(rr.pop, b.cap("farm"), fish, fac, b.levels("bank"),
+                            phi, 1.0,
                             m.mult("output_bank") * educated * self.leader_bank_mult(owner, rid) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ and not self.facility_paused(rr.id) else 1.0),
-                            m.mult("output_factory") * educated * (1 + m.add("factory_fuel_output") * (rr.b["factory"] if full else getattr(rr, "fuel_used", 0))),
+                            m.mult("output_factory") * educated * (1 + m.add("factory_fuel_output") * (sum(fac) if full else min(sum(fac), getattr(rr, "fuel_used", 0)))),
                             pop_mult,
                             m.mult("output_prod"), self.farm_mult(owner, rid))
         if rr.b["bank"] >= 3:
@@ -3070,22 +3103,21 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 and self.growth_happy(rr) >= C.POP_FOCUS_MIN_H)
 
     def crowd_thresholds(self, rid) -> tuple:
-        """과밀 행복도 감소가 시작되는 인구 (−2, −4)."""
-        capacity = self.population_capacity(rid)
-        r = self.regions[rid]
-        built = self.area_usage(rid)[2]
-        tier2 = max(0.0, (self.info(rid).area_km2 * 1.10 - built) / C.POP_AREA_PER_10K[r.b.get('housing', 0)])
-        return capacity, tier2
+        """과밀 행복도 감소가 시작되는 인구 (−2, −4): 시작 인구 대비(v1.3.8: 면적 점유 대신 다시 시작 인구 기준)."""
+        p0 = self.info(rid).pop0
+        for top, a, b in C.CROWD_TIERS:
+            if top is None or p0 <= top:
+                return p0 * (1 + a), p0 * (1 + b)
 
     def crowd_penalty(self, rr) -> float:
+        """과밀: 시작 인구 대비 크게 늘면 그 지역 행복도 −2, 더 늘면 −4(단군왕검 '홍익인간'은 없음)."""
         if rr.owner != NEUTRAL and self.mods(rr.owner).value("no_crowd"):
             return 0.0
-        used = self.area_usage(rr.id)[0]
-        area = self.info(rr.id).area_km2
-        if used >= area * 1.10:
-            return -4.0
-        if used >= area - 1e-8:
-            return -2.0
+        t1, t2 = self.crowd_thresholds(rr.id)
+        if rr.pop >= t2:
+            return float(C.CROWD_HAPPY[1])
+        if rr.pop >= t1:
+            return float(C.CROWD_HAPPY[0])
         return 0.0
 
     def growth_happy(self, rr) -> float:
@@ -4599,8 +4631,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         if r.flooded:
             return 0.0
         m = self.mods(fid)
-        return R.food_output(r.b["farm"] * self.farm_mult(fid, r.id), r.b["fishery"],
-                             self.fish_food_mult(fid, r.id)) * m.mult("food_prod")
+        return R.food_output(r.b.cap("farm") * self.farm_mult(fid, r.id), self.fishery_eff(fid, r.id)) * m.mult("food_prod")
 
     def expected_food_balance(self, f) -> float:
         """이번 턴 자원 단계 뒤 예상 식량 비축(비축 + 생산 − 소비)."""
@@ -4680,10 +4711,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         """최대 건설 대상: 생산 건물(농업·어업·공업·금융·채굴·발전소·특산물)."""
         return kind == "build" and key in C.CHAIN_BUILDINGS
 
-    def start_project_max(self, fid, rid, kind, key, site=None, pool=None):
-        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다.
+    def start_project_max(self, fid, rid, kind, key, site=None, pool=None, slot=None):
+        """[최대]: 착수하고, 완공될 때마다 다음 단계를 이어서 건설한다(슬롯 카드는 같은 칸에서).
         광역시는 통합 건물 종류(pool)를 넘겨야 탄광·정유처럼 같은 건물 키를 쓰는 것을 구분한다."""
-        ok, msg = self.start_project(fid, rid, kind, key, site=site, pool=pool)
+        ok, msg = self.start_project(fid, rid, kind, key, site=site, pool=pool, slot=slot)
         if ok and self.can_chain(kind, key):
             self._last_started.chain = True
             msg += " · 최대 단계까지 이어서 건설"
@@ -4742,10 +4773,15 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         return k, units
 
     def _chain_next(self, f, rr, p):
-        """최대 건설: 방금 완공한 건물의 다음 단계를 바로 착수(못 하면 알리고 멈춘다)."""
-        if rr.owner != f.id or rr.project or rr.b.get(p.key, 0) >= C.PROD_BUILDINGS[p.key]["max"]:
+        """최대 건설: 방금 완공한 건물의 다음 단계를 바로 착수(못 하면 알리고 멈춘다). 슬롯 카드는 같은 칸에서."""
+        slot = getattr(p, "slot", None)
+        if slot:
+            c = rr.b.card(tuple(slot))
+            if rr.owner != f.id or rr.project or c is None or c["key"] != p.key or c["level"] >= self.card_max(rr.id, p.key):
+                return
+        elif rr.owner != f.id or rr.project or rr.b.get(p.key, 0) >= C.PROD_BUILDINGS[p.key]["max"]:
             return
-        ok, msg = self.start_project(f.id, rr.id, "build", p.key)
+        ok, msg = self.start_project(f.id, rr.id, "build", p.key, slot=slot)
         if ok:
             rr.project.chain = True
             rr.project.priority = p.priority          # 자금 우선순위는 그대로
@@ -5013,6 +5049,10 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 rr.lines[p.border] = p.level
                 nm = "해안선" if p.border == "coast" else self.info(p.border).name
                 text = f"{name} 방어선({nm}) {p.level}단계 완공"
+            elif getattr(p, "slot", None) and p.key in S.CARD_KEYS:
+                text = self._complete_card(f, rr, p)
+                if text is None:
+                    return
             else:
                 rr.b[p.key] = p.level
                 text = (f"{name} {self.building_name(rr.id, p.key, p.level)} 완공" if p.key in C.PROD_LEVEL_NAMES
@@ -5078,6 +5118,26 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
         else:
             text = "완료"
         self.event("complete", text, region=rr.id, fids=(f.id,))
+
+    def _complete_card(self, f, rr, p):
+        """슬롯 카드 공사 완공(v1.3.8): 빈 칸이면 새 카드, 같은 건물이면 단계를 올린다. 칸이 바뀌어 못 지으면 전액 환급."""
+        slot = tuple(p.slot)
+        b = rr.b
+        c = b.card(slot) if b.valid(slot) else None
+        lv = S.max_level(p.key, self.info(rr.id)) if p.key in C.SITE_POWER else p.level
+        if c is None and b.valid(slot) and b.place(p.key, lv, slot):
+            pass
+        elif c is not None and c["key"] == p.key:
+            b.set_card(slot, max(c["level"], lv))
+        else:
+            f.money += p.paid
+            f.refund += p.paid
+            self.event("info", f"{self.info(rr.id).name} {S.slot_label(slot)}: 칸이 바뀌어 "
+                       f"{self.slot_kind_name(rr.id, p.key, slot[0])} 공사를 마칠 수 없어 전액 환급({p.paid:,.0f})",
+                       region=rr.id, fids=(f.id,))
+            return None
+        title = self.card_title(rr.id, p.key, lv, slot[0])
+        return f"{self.info(rr.id).name} [{S.slot_label(slot)}] {title}" + (f" {lv}단계" if lv > 1 and p.key not in C.PROD_LEVEL_NAMES and p.key not in ("admin", "edu") else "") + " 완공"
 
     # ---- 8. 자원
     def _phase_resources(self, f: Faction):
@@ -5276,7 +5336,7 @@ class Game(LeaderRulesMixin, QueueMixin, LandMixin, DisasterMixin, GovernanceMix
                 g += getattr(f, "ration_bonus", 0.0) * self.growth_scale(r.id) * self.mods(f.id).mult("ration_growth")
                 g *= self.mods(f.id).mult("growth")
                 if g > 0:
-                    r.pop = max(r.pop, min(r.pop * (1 + g), self.population_capacity(r.id)))
+                    r.pop *= 1 + g
             if self.eff_happy(r) <= C.MIGRATION_H:        # 이주는 전쟁 피로를 포함한 실질 행복도로 판정
                 r.pop *= 1 + C.MIGRATION_POP
             r.pop = max(0.1, r.pop)

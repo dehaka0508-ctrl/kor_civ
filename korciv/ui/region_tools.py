@@ -4,17 +4,12 @@ from .. import config as C
 
 
 def draw_area(app, x, y, w, rid):
+    """면적·인구밀도·기본 슬롯 칸 수(v1.3.8: 면적은 밀도 성장과 슬롯 칸 수에만 쓴다)."""
     gui, g, t = app.gui, app.game, app.theme
-    used, people, buildings = g.area_usage(rid)
     area = g.info(rid).area_km2
-    gui.text((x, y), f'면적 사용량: {used:,.1f} / {area:,.1f} km²', 12,
-             t.bad if used >= area else t.text, 'semibold', max_w=w)
-    y += 18
-    gui.rect(t.panel_alt, (x, y, w, 6), radius=3)
-    gui.rect(t.bad if used >= area else t.accent, (x, y, max(1, w * min(1, used / area)), 6), radius=3)
-    y += 10
-    gui.text((x, y), f'인구 {people:,.1f} · 건물 {buildings:,.1f} km² · 밀도 {g.regions[rid].pop * 10000 / area:,.1f}명/km²',
-             11, t.muted, max_w=w)
+    dens = g.regions[rid].pop * 10000 / area
+    base = len(g.regions[rid].b.slots.get("base", ()))
+    gui.text((x, y), f'면적 {area:,.1f} km² · 밀도 {dens:,.0f}명/km² · 기본 슬롯 {base}칸', 12, t.muted, max_w=w)
     return y + 20
 
 
@@ -90,15 +85,3 @@ def draw_queue(app, x, y, w, rid):
                 gui.keys.remove(event)
                 app.queue_sel = None
     return area.bottom + 8
-
-
-def area_effect(g, rid, opt):
-    key, level = opt['key'], opt['level']
-    if key == 'housing':
-        a, b = C.POP_AREA_PER_10K[max(0, level - 1)], C.POP_AREA_PER_10K[level]
-        return f'인구 면적 −{1-b/a:.0%}'
-    if key in C.BUILDING_AREA_LEVELS:
-        areas = C.BUILDING_AREA_LEVELS[key]
-        return f'면적 +{areas[level] - areas[level - 1]:g}km²'
-    n = C.BUILDING_AREA_PER_LEVEL.get(key, 0)
-    return f'면적 +{n:g}km²' if n else ''

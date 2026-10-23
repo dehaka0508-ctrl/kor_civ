@@ -25,22 +25,43 @@ def factory_unit(level: int) -> float:
     return C.FACTORY_UNIT_OUTPUT[level - 1]
 
 
-def factory_output(level: int, fuel=None) -> float:
-    """공장: 연료 1개당 단계별 산출(factory_unit), 단계 L이면 L개까지. fuel=None 이면 가득."""
-    if level <= 0:
-        return 0.0
-    n = level if fuel is None else max(0, min(level, fuel))
-    return factory_unit(level) * n
+def _cards(v) -> list:
+    """단계 하나(예전 방식) 또는 카드 단계 목록 → 높은 순 목록."""
+    if isinstance(v, (list, tuple)):
+        return sorted((int(x) for x in v if x > 0), reverse=True)
+    return [int(v)] if v and v > 0 else []
+
+
+def factory_output(level, fuel=None) -> float:
+    """공장: 연료 1개당 단계별 산출(factory_unit), 단계 L이면 L개까지. fuel=None 이면 가득.
+    공장 카드가 여러 장이면(v1.3.8) 단계 목록을 넘긴다: 연료는 높은 단계 공장부터 채운다."""
+    cards = _cards(level)
+    left = None if fuel is None else max(0, int(fuel))
+    out = 0.0
+    for lv in cards:
+        n = lv if left is None else min(lv, left)
+        out += factory_unit(lv) * n
+        if left is not None:
+            left -= n
+    return out
+
+
+def bank_output(level) -> float:
+    """시장 카드(들)의 산출 600 g(L) 합."""
+    return sum(C.BANK_OUTPUT * g(lv) for lv in _cards(level))
 
 
 def region_output(pop, farm, fishery, factory, bank, fuel=None,
                   fish_mult=1.0, bank_mult=1.0, factory_mult=1.0, pop_mult=1.0, prod_mult=1.0, farm_mult=1.0) -> float:
-    """Y = 30P + 120F + 150S + 1000g(M)φ + 600g(B) (pop_mult: 생산 집중, prod_mult: 생산 건물분)"""
+    """Y = 30P + 150F + 150S + Σ공장 + Σ600g(B) (pop_mult: 생산 집중, prod_mult: 생산 건물분).
+    농장·어장은 단계 합(카드 여러 장이면 합), 공장·시장은 단계 하나 또는 카드 단계 목록(v1.3.8)."""
+    farm = sum(_cards(farm)) if isinstance(farm, (list, tuple)) else farm
+    fishery = sum(_cards(fishery)) if isinstance(fishery, (list, tuple)) else fishery
     return (C.POP_OUTPUT * pop * pop_mult
             + (C.FARM_OUTPUT * farm * farm_mult           # 농장·어장은 단계에 비례
                + C.FISH_OUTPUT * fishery * fish_mult
                + factory_output(factory, fuel) * factory_mult
-               + C.BANK_OUTPUT * g(bank) * bank_mult) * prod_mult)
+               + bank_output(bank) * bank_mult) * prod_mult)
 
 
 def food_output(farm, fishery, fish_mult=1.0) -> float:
@@ -160,14 +181,6 @@ def density_growth_max(density: float) -> float:
     if density <= 400:
         return 0.0025 + 0.0975 * math.log(400 / max(5.0, density)) / math.log(80)
     return 0.0025 * max(0.05, 1 - math.log(density / 400) / math.log(50))
-
-
-def area_usage(pop, buildings) -> tuple:
-    housing = max(0, min(6, buildings.get("housing", 0)))
-    people = pop * C.POP_AREA_PER_10K[housing]
-    built = sum(buildings.get(k, 0) * area for k, area in C.BUILDING_AREA_PER_LEVEL.items())
-    built += sum(areas[max(0, min(5, buildings.get(k, 0)))] for k, areas in C.BUILDING_AREA_LEVELS.items())
-    return people + built, people, built
 
 
 def pop_growth_rate(h: float, g_max: float = C.G_MAX) -> float:

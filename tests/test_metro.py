@@ -63,19 +63,20 @@ def test_designation_conditions_and_names():
 
 
 def test_pooled_levels_output_and_fuel():
-    """농장·공장·탄광은 평균 단계(내림)를 구성 지역마다 적용 → 산출·연료가 '평균 단계 × 지역 수'."""
+    """농장·공장·탄광은 그 건물 카드를 가진 구성 지역끼리 평균 단계(내림)를 적용(v1.3.8 슬롯) → 산출·연료가
+    '평균 단계 × 가진 지역 수'. 카드가 없는 지역은 끼지 않는다."""
     g, sel = _setup()
     levels = [5, 4, 5, 4]                                     # 농장 합 18 → 평균 4.5 → 4
     for r, lv in zip(sel, levels):
         g.regions[r].b["farm"] = lv
-    facs = [5, 3, 0, 2]                                       # 공장 합 10 → 평균 2.5 → 2
+    facs = [5, 3, 0, 2]                                       # 공장을 가진 3곳 합 10 → 평균 3.33 → 3
     for r, lv in zip(sel, facs):
         g.regions[r].b["factory"] = lv
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
     assert [g.regions[r].b["farm"] for r in sel] == [4] * 4
-    assert [g.regions[r].b["factory"] for r in sel] == [2] * 4
-    assert sum(g.regions[r].b["factory"] for r in sel) == 2 * len(sel)          # 연료 최대 = 2단계 × 지역 수
+    assert [g.regions[r].b["factory"] for r in sel] == [3, 3, 0, 3]
+    assert sum(g.regions[r].b.cap("factory") for r in sel) == 3 * 3             # 연료 최대 = 3단계 × 가진 지역 수
     # 하나라도 하천 농장이면 전체가 하천 농장
     assert any(g.river_farm(r) for r in sel)
     assert all(g.farm_mult(0, r) == pytest.approx(g.mods(0).mult("output_farm") * C.RIVER_FARM_MULT) for r in sel)

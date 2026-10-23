@@ -5,11 +5,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config as C
+from .slots import ALL_BUILDINGS as _ALL, Buildings
 
 NEUTRAL = -1
 
-ALL_BUILDINGS = ["admin", "edu", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "housing", "hydro", "nuclear",
-                 "shelter", "aa", "academy", "airport", "port"]
+ALL_BUILDINGS = list(_ALL)
 BUILDING_NAMES = {**{k: v[0] for k, v in C.SITE_POWER.items()}, **{k: v["name"] for k, v in C.PROD_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.DEF_BUILDINGS.items()},
                   **{k: v["name"] for k, v in C.SINGLE_BUILDINGS.items()}}
@@ -43,6 +43,8 @@ class Project:
     metro: Optional[int] = None
     site: Optional[str] = None
     pool: Optional[str] = None
+    # 건물 슬롯(v1.3.8): 이 공사가 짓거나 올리는 칸 ("base"|"river"|"coast", 칸 번호). None 이면 예전 방식(가장 높은 카드)
+    slot: Optional[tuple] = None
 
     @property
     def remaining(self) -> int:
@@ -113,9 +115,21 @@ class Region:
     def occ(self, v):
         self.occs = {} if v is None else {v["by"]: v}
 
+    def __setattr__(self, name, value):
+        # r.b = {...}(테스트·도구): 슬롯 칸은 그대로 두고 카드를 새로 쓴다
+        if name == "b" and not isinstance(value, Buildings) and isinstance(self.__dict__.get("b"), Buildings):
+            self.__dict__["b"].reset(value)
+            return
+        object.__setattr__(self, name, value)
+
+    @property
+    def slots(self) -> dict:
+        return self.b.slots
+
     def level_sum(self) -> int:
-        return sum(self.b.get(k, 0) for k in ("farm", "fishery", "factory", "bank", "power",
-                                              "specialty", "extract"))
+        b = self.b
+        return sum(b.cap(k) if hasattr(b, "cap") else b.get(k, 0)
+                   for k in ("farm", "fishery", "factory", "bank", "power", "specialty", "extract"))
 
 
 @dataclass

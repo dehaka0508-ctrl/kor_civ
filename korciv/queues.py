@@ -1,7 +1,8 @@
 """지역 작업 예약. 실행 객체를 그대로 옮겨 진행도·납부액·연속 생산을 보존한다."""
 from __future__ import annotations
-from . import config as C, metro as M
+from . import config as C, metro as M, slots as S
 from .state import Project, NEUTRAL
+from .text import josa
 
 
 class QueueMixin:
@@ -21,11 +22,14 @@ class QueueMixin:
     def reserved_level(self, rid, key, border=None, pool=None):
         r = self.regions[rid]
         level = r.lines.get(border, 0) if key == 'line' else r.b.get(key, 0)
+        if key in S.CARD_KEYS:              # 슬롯 카드: 대기열까지 끝난 칸들 가운데 가장 높은 단계(v1.3.8)
+            proj = self.projected_slots(rid)
+            level = max([level] + [c["level"] for t in proj for c in proj[t] if c and c["key"] == key])
         ps = self.local_projects(rid)
         if getattr(self, '_continuing', False):
             ps = ps[:1] if self.queue_region(rid).project else []
         for p in ps:
-            if p.kind != 'build' or p.key != key or p.border != border:
+            if p.kind != 'build' or p.key != key or p.border != border or getattr(p, 'slot', None):
                 continue
             if rid not in self.project_sites(M.center_of(self, rid), p):
                 continue
@@ -136,8 +140,6 @@ class QueueMixin:
                     allowed, reason = self.building_allowed(fid, site, key, o["level"], pool=o.get("pool"))
                     if not allowed:
                         o["ok"], o["why"] = False, reason
-                if not all(self.area_build_ok(s, key, o['level']) for s in sites):
-                    o['ok'], o['why'] = False, C.AREA_SHORTAGE
             elif kind != 'unit' and any(p.kind == kind and p.key == key for p in ps):
                 o['ok'], o['why'] = False, '이미 실행 중이거나 대기열에 예약된 작업입니다.'
             if kind in ('science', 'capital') or (kind == 'econ' and key != 'exchange'):
@@ -146,7 +148,19 @@ class QueueMixin:
                     o['ok'], o['why'] = False, '다른 대기열에 예약된 작업입니다.'
         return opts
 
-    def start_project(self, fid, rid, kind, key, border=None, name=None, site=None, pool=None):
+    @staticmethod
+    def _pick_option(opts):
+        """같은 건물 선택지가 여럿이면(슬롯 카드) 가장 높은 카드의 증축 → 빈 칸 신축 순으로 고른다."""
+        def rank(o):
+            if not o.get('slot'):
+                return (0, 0, 0)
+            new = o['level'] <= 1
+            pref = S.slot_types_for(o['key'])
+            t = pref.index(o['slot'][0]) if o['slot'][0] in pref else 9
+            return (1 if new else 0, -o['level'], t)
+        return sorted(opts, key=lambda o: (not o['ok'], rank(o)))[0]
+
+    def start_project(self, fid, rid, kind, key, border=None, name=None, site=None, pool=None, slot=None):
         if rid not in self.regions or self.regions[rid].owner != fid:
             return False, '내 지역이 아닙니다.'
         r = self.queue_region(rid)
@@ -157,9 +171,11 @@ class QueueMixin:
                 and (pool is None or o.get('pool') == pool)]
         if site and len(opts) > 1:
             opts = [o for o in opts if o.get('site') == site] or opts
+        if slot is not None:
+            opts = [o for o in opts if o.get('slot') and tuple(o['slot']) == tuple(slot)]
         if not opts:
             return False, '선택할 수 없는 항목입니다.'
-        o = opts[0]
+        o = self._pick_option(opts) if len(opts) > 1 else opts[0]
         if not o['ok']:
             return False, o['why']
         if kind == "repair" and self.mods(fid).value("flood_instant"):
@@ -168,13 +184,16 @@ class QueueMixin:
         m = M.of(self, rid)
         self.proj_counter = getattr(self, 'proj_counter', 0) + 1
         label = o['name']
-        if kind == 'build' and key in C.PROD_LEVEL_NAMES and not m:
+        if kind == 'build' and o.get('slot'):
+            label = self.slot_option_label(o.get('site') or rid, o)
+        elif kind == 'build' and key in C.PROD_LEVEL_NAMES and not m:
             label = self.build_label(rid, key, o['level'])
         elif kind == 'annex':
             label = f'편입: {self.info(key).name}'
         p = Project(kind=kind, key=key, level=o['level'], turns=o['turns'], per_turn=o['per_turn'],
                     border=o.get('border'), name=name or label, priority=self.proj_counter,
-                    metro=m['id'] if m else None, site=o.get('site') or rid, pool=o.get('pool'), started=False)
+                    metro=m['id'] if m else None, site=o.get('site') or rid, pool=o.get('pool'), started=False,
+                    slot=tuple(o['slot']) if o.get('slot') else None)
         if r.project:
             r.queue.append(p)
             state = '대기열 추가'
@@ -209,13 +228,17 @@ class QueueMixin:
                 allowed, reason = self.building_allowed(r.owner, s, p.key, p.level, pool=p.pool)
                 if not allowed:
                     why = reason
+                slot = getattr(p, 'slot', None)
+                if slot:
+                    why = self._slot_block(rr, p, tuple(slot)) or why
+                    continue
                 lv = rr.lines.get(p.border, 0) if p.key == 'line' else rr.b.get(p.key, 0)
                 if not p.pool and p.level > lv + 1:
                     why = '이전 단계 건설이 먼저 필요합니다.'
                 elif p.key == 'nuclear' and rr.nuclear_destroyed:
                     why = '지진으로 원전 재건설이 영구 금지된 지역입니다.'
-                elif not self.area_build_ok(s, p.key, p.level, projected=False):
-                    why = C.AREA_SHORTAGE
+                elif not p.pool and p.key in S.CARD_KEYS and lv == 0 and hasattr(rr.b, 'free') and rr.b.free(p.key) is None:
+                    why = '빈 슬롯이 없습니다.'
         elif p.kind == 'unit':
             s = self.regions[p.site or rid]
             if not self.unit_spec(r.owner, p.key)["available"]:
@@ -226,3 +249,26 @@ class QueueMixin:
             why = '과학 시설 위치 조건이 충족되지 않습니다.'
         p.blocked_reason = why
         return not why and self._activate_project(r.id, p)
+
+    def _slot_block(self, rr, p, slot):
+        """슬롯 카드 공사를 지금 진행할 수 없는 이유(없으면 빈 문자열)."""
+        b = rr.b
+        if not b.valid(slot) or p.key not in S.SLOT_KEYS[slot[0]]:
+            return '없는 슬롯입니다.'
+        c = b.card(slot)
+        if p.key == 'nuclear' and rr.nuclear_destroyed:
+            return '지진으로 원전 재건설이 영구 금지된 지역입니다.'
+        if c is None:
+            first = S.max_level(p.key, self.info(rr.id)) if p.key in C.SITE_POWER else 1
+            if p.level > first:
+                return '이전 단계 건설이 먼저 필요합니다.'
+            if p.key in S.UNIQUE_KEYS and b.count(p.key):
+                return f'{josa(self.slot_kind_name(rr.id, p.key, slot[0]), "은/는")} 지역에 하나만 지을 수 있습니다.'
+            return ""
+        if c['key'] != p.key:
+            return f'{S.slot_label(slot)}에 다른 건물이 있습니다.'
+        if p.level > c['level'] + 1:
+            return '이전 단계 건설이 먼저 필요합니다.'
+        if p.level <= c['level']:
+            return '이미 지은 단계입니다.'
+        return ""

@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from korciv.game import Game
 from korciv.state import Settings
-from korciv import config as C, metro as M
+from korciv import config as C, metro as M, slots as S
 from korciv.leaders import POLICIES
 from korciv.progression import TECHS, GREAT_PEOPLE
 import qa_fuzz as Q
@@ -27,7 +27,9 @@ def run(seed, mode, gov, turns):
             g.transfer_region(rid, 0, reason="편입")
         r = g.regions[rid]
         r.pop, r.happy = 12, 20
-        r.b.update(admin=3, edu=4, housing=5, factory=3, bank=3, academy=1, specialty=3 if g.info(rid).specialty else 0)
+        S.GROW_WHEN_FULL = True            # 시험 상황 만들기: 빈 슬롯이 없어도 넣는다
+        r.b.update(admin=3, edu=4, factory=3, bank=3, academy=1, specialty=3 if g.info(rid).specialty else 0)
+        S.GROW_WHEN_FULL = False
     g.player.admin = g.player.sci_points = 1e6
     g.player.money = g.player.res["food"] = 1e8
     for _ in range(5):

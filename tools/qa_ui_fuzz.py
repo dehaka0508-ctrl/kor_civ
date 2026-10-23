@@ -219,7 +219,7 @@ def force_state(app, rng):
     if g and g.player.alive and rng.random() < .10:
         rid = g.player.capital
         if g.regions[rid].owner == g.player_id:
-            g.start_project(g.player_id, rid, 'build', 'housing')
+            g.start_project(g.player_id, rid, 'build', 'farm')
             g.start_units(g.player_id, rid, 'inf', 2)
             g.set_flooded(rid)
             if not g.forecasts:
