@@ -611,7 +611,7 @@ def test_player_color_from_custom_flag():
     g = Game(Settings(seed=3, n_enemies=2, player_flag=custom))
     assert g.player.color == "#0AC81E"
     g = Game(Settings(seed=3, n_enemies=2, player_flag={"preset": "taeguk"}))
-    assert g.player.color == "#2F6FDE"
+    assert g.player.color == "#2B5B84"
 
 
 def test_flag_hsl_roundtrip():

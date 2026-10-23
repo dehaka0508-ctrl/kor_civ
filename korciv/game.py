@@ -78,7 +78,7 @@ def start_gap(world, a, b, min_d=None):
 
 
 def player_color(flag):
-    """플레이어 국가 색: 직접 만든 국기면 배경 색 1, 역사 국기(또는 국기 없음)면 None(기본 파란색 #2F6FDE)."""
+    """플레이어 국가 색: 직접 만든 국기면 배경 색 1, 역사 국기(또는 국기 없음)면 None(기본 쪽빛 #2B5B84)."""
     if not flag or flag.get("preset") or not flag.get("c1"):
         return None
     return "#{:02X}{:02X}{:02X}".format(*(int(v) for v in flag["c1"]))
@@ -163,6 +163,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self._morale: dict[int, float] = {}
         self._visible: dict[int, set] = {}
         self.setup_done = False
+        self.color_schema = K.COLOR_SCHEMA
         self._init_world()
 
     # ------------------------------------------------------------------ 직렬화
@@ -259,6 +260,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             self._expire_capital_claim(f)
         if not self.setup_done:
             self.finalize_setup()
+        if getattr(self, "color_schema", 0) != K.COLOR_SCHEMA:
+            self._migrate_colors()
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
 
     # ------------------------------------------------------------------ 초기화
@@ -287,7 +290,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         ai_starts = (list(st.ai_starts or []) + [None] * n_ai)[:n_ai]
         starts = self._pick_starts(1 + n_ai, [st.player_start] + ai_starts)
         diff = C.DIFFICULTIES[st.difficulty]
-        # 국가 색(v1.3.1): 플레이어 색(국기 배경 색 또는 기본 파랑)과 이미 고른 색들에서 가장 먼 색부터
+        # 국가 색(v1.3.13): 플레이어 기본 쪽빛, AI 번호별 고정 팔레트 순서.
         colors = K.nation_colors(n_ai, player_color(st.player_flag))
         for i in range(1 + n_ai):
             is_player = i == 0
@@ -316,6 +319,19 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                                            neighbors=len({self.regions[n].owner for n in self.world.land_adj[f.capital]
                                                           if self.regions[n].owner not in (NEUTRAL, f.id)}))
         self.finalize_setup()
+
+    def _migrate_colors(self):
+        """기존 저장도 고정 팔레트로 한 번 이관. 국기 사용자 색과 게임 진행 상태는 보존한다."""
+        n_ai = max(1, min(C.MAX_ENEMIES, self.settings.n_enemies))
+        initial = K.nation_colors(n_ai, player_color(getattr(self.player, "flag", None)))
+        for f in self.factions[:n_ai + 1]:
+            f.color = initial[f.id]
+        taken = [f.color for f in self.factions[:n_ai + 1] if f.alive]
+        for f in self.factions[n_ai + 1:]:
+            f.color = K.pick(taken, C.REBEL_COLORS + C.FACTION_COLORS)
+            if f.alive:
+                taken.append(f.color)
+        self.color_schema = K.COLOR_SCHEMA
 
     def _migrate_slots(self, s):
         """예전 세이브(v1.3.7까지: 건물 단계 사전·면적·주거 지구) → 건물 슬롯 카드(v1.3.8).
@@ -5666,8 +5682,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             return type("Neutral", (), {"name": "중립 지역", "id": NEUTRAL})(), True
         nid = len(self.factions)
         info = self.info(rid)
-        # 살아 있는 나라 색과 지도에서 가장 멀리 떨어진 색(v1.3.1: 같은·비슷한 색을 쓰지 않는다)
-        color = K.pick([f.color for f in self.factions if f.alive], C.FACTION_COLORS + C.REBEL_COLORS)
+        # 반란국 전용 팔레트부터 사용. 팔레트 밖의 임의 색은 만들지 않는다(v1.3.13).
+        color = K.pick([f.color for f in self.factions if f.alive], C.REBEL_COLORS + C.FACTION_COLORS)
         taken = {f.leader for f in self.factions if f.alive}
         pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus" and l["key"] not in taken]
         lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "cus"])
