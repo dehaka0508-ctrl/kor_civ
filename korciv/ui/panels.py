@@ -2110,8 +2110,17 @@ PRIO_HOLD_MS = 1000     # 우선순위 ↑↓를 이만큼 누르고 있으면
 PRIO_REPEAT_MS = 70     # 이 간격으로 빠르게 이어서 움직인다
 
 
+def open_region_action(app, rid):
+    """그 지역을 고르고 지역 패널 [행동] 탭을 연다(지도도 그 지역으로)."""
+    app.select(rid)
+    app.left_open, app.left_tab, app.tab = True, "region", "action"
+    app.gui.scroll["actions"] = 0
+    app.map.center_on(rid, zoom=2.0 if app.map.z < 2.0 else None)
+
+
 def draw_priority_list(app, x, y, w, items):
-    """자금 지출 우선순위 목록. 행을 끌어 순서를 바꾼다."""
+    """자금 지출 우선순위 목록. 행을 끌어 순서를 바꾸고, 행을 누르면 그 지역 [행동] 탭으로 간다(v1.3.15).
+    오른쪽 ≡ 를 누르면 그 행을 골라 ↑↓ 로 옮긴다."""
     gui = app.gui
     g = app.game
     t = app.theme
@@ -2203,7 +2212,7 @@ def draw_priority_list(app, x, y, w, items):
             gui.tooltip = ("이 작업을 지출 우선순위 맨 위에 고정합니다(정렬·끌기로 바뀌지 않음). 다시 누르면 해제." if not on
                            else "고정 해제")
         gui.text((row.right - 8, row.centery), "≡", 16, sub, anchor="midright")
-    # 놓기: 움직였으면 순서 변경, 제자리면 그 행을 고른다(↑↓로 이동)
+    # 놓기: 움직였으면 순서 변경, 제자리에서 떼면 클릭 — 행은 그 지역 [행동] 탭으로, ≡ 는 그 행 고르기(↑↓로 이동)
     if drag is not None and not gui.down:
         app.prio_drag = None
         if order != ids:
@@ -2213,7 +2222,13 @@ def draw_priority_list(app, x, y, w, items):
             app.toast(f"우선순위 변경: {app.world.regions[drag].short} → {order.index(drag) + 1}번"
                       + (" · 자동 정렬 해제" if was else ""))
         else:
-            app.prio_sel = None if app.prio_sel == drag else drag
+            row = pygame.Rect(x, top + ids.index(drag) * row_h, w, row_h - 4)
+            if gui.hover(pygame.Rect(row.right - 26, row.y, 26, row.h)):
+                app.prio_sel = None if app.prio_sel == drag else drag
+            elif gui.hover(row):
+                gui.clicked = False
+                open_region_action(app, drag)
+                return top + n * row_h + 4
     sel = getattr(app, "prio_sel", None)
     if sel in ids and drag is None:
         i = ids.index(sel)

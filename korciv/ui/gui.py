@@ -36,6 +36,10 @@ class Gui:
         self._clip_stack: list = []
         self._last_click_time = 0
         self.time = 0
+        # 마우스를 누른 자리(버튼 번호 → (논리 좌표, UI 위였는지)). 클릭은 누른 곳과 뗀 곳이 같은 버튼일 때만
+        # 그 버튼이 눌린 것으로 친다 — 누른 채 끌어 다른 버튼 위에서 떼면 아무것도 눌리지 않는다(v1.3.15)
+        self.press: dict = {}
+        self._press_done: set = set()
 
     # ------------------------------------------------------------ 좌표 변환
     @property
@@ -69,7 +73,11 @@ class Gui:
         self.keys = []
         self.text_events = []
         self.tooltip = None
+        prev_ui = self.ui_rects             # 누른 자리가 UI 위였는지는 지난 프레임에 그린 UI로 판단한다
         self.ui_rects = []
+        for b in self._press_done:          # 지난 프레임에 뗀 버튼의 누른 자리는 지운다
+            self.press.pop(b, None)
+        self._press_done = set()
         self.released_id = None
         self.released = False
         # 포커스된 입력칸이 더는 그려지지 않으면(화면 전환·창 닫힘) 포커스를 푼다.
@@ -83,6 +91,13 @@ class Gui:
         u = UI["u"]
         self.mouse = (int(mx / u), int(my / u))
         for e in events:
+            if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and getattr(e, "button", 0) in (1, 2, 3):
+                if e.type == pygame.MOUSEBUTTONDOWN:
+                    pos = getattr(e, "pos", None)
+                    lp = (int(pos[0] / u), int(pos[1] / u)) if pos else self.mouse
+                    self.press[e.button] = (lp, any(r.collidepoint(lp) for r in prev_ui))
+                else:
+                    self._press_done.add(e.button)
             if e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                 self.clicked = True
                 self.released = True
@@ -132,7 +147,24 @@ class Gui:
         r = pygame.Rect(rect)
         if self._clip_stack and not self._clip_stack[-1].collidepoint(self.mouse):
             return False
-        return r.collidepoint(self.mouse)
+        if not r.collidepoint(self.mouse):
+            return False
+        # 버튼을 뗀 프레임: 누른 자리도 이 안이어야 한다(다른 곳에서 눌러 끌고 와 뗀 것은 클릭이 아님)
+        if self.clicked and not self.pressed_in(r, 1):
+            return False
+        if self.rclicked and not self.pressed_in(r, 3):
+            return False
+        return True
+
+    def pressed_in(self, rect, button=1) -> bool:
+        """이번 누름을 rect 안에서 시작했는가(누른 기록이 없으면 그렇다고 본다)."""
+        p = self.press.get(button)
+        return p is None or pygame.Rect(rect).collidepoint(p[0])
+
+    def press_on_ui(self, button=1) -> bool:
+        """이번 누름을 UI(패널·버튼 등) 위에서 시작했는가 — 지도 끌기·지도 클릭은 지도에서 누른 것만."""
+        p = self.press.get(button)
+        return bool(p and p[1])
 
     # ------------------------------------------------------------ 기본 도형 (논리 좌표)
     def rect(self, color, rect, width=0, radius=0):

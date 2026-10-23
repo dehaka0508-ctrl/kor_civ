@@ -1375,6 +1375,11 @@ class App:
         mv = self.map
         pos = gui.mouse_phys
         over_ui = gui.over_ui(gui.mouse) or not mv.view.collidepoint(pos)
+        # UI에서 눌러 지도 위로 끌고 와 뗀 것은 지도 클릭이 아니다(v1.3.15)
+        if gui.clicked and gui.press_on_ui(1):
+            gui.clicked = False
+        if gui.rclicked and gui.press_on_ui(3):
+            gui.rclicked = False
         if not over_ui and (gui.clicked or gui.rclicked):
             self.mode_popup = None              # 지도를 누르면 세부 메뉴를 닫는다
         self.hover = None if over_ui else mv.pick(pos)
@@ -1385,7 +1390,9 @@ class App:
         buttons = pygame.mouse.get_pressed()
         rel = pygame.mouse.get_rel()
         if buttons[0] or buttons[1]:
-            if not self.dragging and not over_ui:
+            # 지도에서 누른 것만 지도를 끈다(왼쪽 메뉴 등 UI에서 눌러 지도 위로 끌고 와도 지도는 움직이지 않는다)
+            from_ui = gui.press_on_ui(1) if buttons[0] else gui.press_on_ui(2)
+            if not self.dragging and not over_ui and not from_ui:
                 self.dragging = True
                 self.drag_moved = False
             elif self.dragging and (rel[0] or rel[1]):

@@ -1855,3 +1855,103 @@ def test_army_cards_fan_hover_and_pick(app):
     app.select(None)
     frame(app)
     assert app.hand.rects == []                  # 선택을 풀면 카드는 내려간다
+
+
+# ------------------------------------------------------------------ v1.3.15 누른 곳·뗀 곳이 다르면 클릭이 아님, 우선순위 → 지역 행동 탭
+def _rail_tab_rects(app):
+    from korciv.ui import panels
+    from korciv.ui.app import TOP_H
+    out, y = {}, TOP_H + 12
+    for k, label, _ in panels.SIDE_TABS:
+        r = pygame.Rect(8, y, panels.RAIL_W, 22 + len(label.replace("\n", "")) * 19)
+        out[k] = r
+        y = r.bottom + 7
+    return out
+
+
+def test_press_drag_release_on_other_button_is_not_click(app, monkeypatch):
+    """[내정]을 눌러 아래로 끌고 와 [군사]에서 떼면 아무 탭도 열리지 않고 지도도 움직이지 않는다."""
+    _main_game(app)
+    app.left_open, app.left_tab = False, "policy"
+    frame(app)
+    tabs = _rail_tab_rects(app)
+    u = app.gui.u
+    a, b = tabs["nation"].center, tabs["army"].center
+    cx, cy, sel = app.map.cx, app.map.cy, app.sel
+    state = {"p": (int(a[0] * u), int(a[1] * u)), "down": False, "rel": (0, 0)}
+    monkeypatch.setattr(pygame.mouse, "get_pos", lambda: state["p"])
+    monkeypatch.setattr(pygame.mouse, "get_pressed", lambda *a_: (state["down"], False, False))
+    monkeypatch.setattr(pygame.mouse, "get_rel", lambda: state["rel"])
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=state["p"])]); state["down"] = True
+    app.frame()
+    steps = 12
+    for i in range(1, steps + 1):                 # 탭 사이 빈틈(지도 위)을 지나 [군사]까지
+        y = a[1] + (b[1] - a[1]) * i / steps
+        prev = state["p"]
+        state["p"] = (int(a[0] * u), int(y * u))
+        state["rel"] = (state["p"][0] - prev[0], state["p"][1] - prev[1])
+        frame(app)
+    state["down"], state["rel"] = False, (0, 0)
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=state["p"])]); app.frame()
+    assert not app.left_open and app.left_tab == "policy"        # [군사]가 열리지 않는다
+    assert (app.map.cx, app.map.cy) == (cx, cy) and app.sel == sel   # 지도는 끌리지도, 눌리지도 않는다
+    # 같은 버튼에서 누르고 떼면 평소처럼 눌린다
+    _click_at(app, b)
+    assert app.left_open and app.left_tab == "army"
+
+
+def test_map_drag_released_over_button_does_not_press_it(app, monkeypatch):
+    """지도에서 눌러 끌다가 왼쪽 세로 탭 위에서 떼도 그 탭은 눌리지 않는다."""
+    _main_game(app)
+    app.left_open, app.left_tab = False, "policy"
+    frame(app)
+    tab = _rail_tab_rects(app)["diplo"]
+    u = app.gui.u
+    start = (600, 400)
+    monkeypatch.setattr(pygame.mouse, "get_pos", lambda: (int(start[0] * u), int(start[1] * u)))
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(int(start[0] * u), int(start[1] * u)))])
+    app.frame()
+    p = (int(tab.centerx * u), int(tab.centery * u))
+    monkeypatch.setattr(pygame.mouse, "get_pos", lambda: p)
+    frame(app)
+    app.gui.begin([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=p)]); app.frame()
+    assert not app.left_open
+
+
+def test_priority_row_click_opens_region_action_tab(app, monkeypatch):
+    """[내정] 지출 우선순위에서 행을 누르면 그 지역을 고르고 [행동] 탭을 연다(끌기·≡ 고르기는 그대로)."""
+    from korciv.ui import panels
+    g = _main_game(app, seed=4, n_enemies=3)
+    pid = g.player_id
+    near = sorted(g.world.land_adj[g.player.capital])[:2]
+    for r in near:
+        g.transfer_region(r, pid)
+        g.regions[r].resist = None
+    for r in [g.player.capital] + near:
+        assert g.start_project(pid, r, "build", "farm")[0]
+    ids = [r.id for r in g.projects_by_priority(pid)]
+    spots = []
+    real = panels.draw_priority_list
+
+    def spy(app_, x, y, w, items):
+        spots.append((x, y, w))
+        return real(app_, x, y, w, items)
+    monkeypatch.setattr(panels, "draw_priority_list", spy)
+    app.left_open, app.left_tab = True, "nation"
+    frame(app)
+    x, y, w = spots[-1]
+    sh = app.lsize()[1]
+    app.gui.scroll["nation"] = max(0, y + 44 * 2 - (sh - 140))   # 목록이 화면 아래에 있으면 끌어올린다
+    spots.clear()
+    frame(app)
+    x, y, w = spots[-1]
+    row = pygame.Rect(x, y + 44 * 1, w, 40)
+    orig = pygame.mouse.get_pos
+    try:
+        _click_at(app, (row.right - 12, row.centery))           # ≡: 그 행을 고른다(↑↓로 이동)
+        assert app.prio_sel == ids[1] and app.left_tab == "nation"
+        _click_at(app, (row.x + 40, row.centery))               # 행: 그 지역 [행동] 탭
+        assert app.sel == ids[1] and app.left_open and app.left_tab == "region" and app.tab == "action"
+        assert [r.id for r in g.projects_by_priority(pid)] == ids  # 순서는 그대로
+    finally:
+        pygame.mouse.get_pos = orig
