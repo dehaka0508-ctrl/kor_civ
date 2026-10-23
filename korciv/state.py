@@ -39,7 +39,7 @@ class Project:
     # {"nation", "target", "lines": {지역: [경계, ...]}, "cost": {지역: 그 지역 몫 비용}}
     group: Optional[dict] = None
     # 광역시 작업(v1.3.0): 구성 지역 모두가 이 Project 하나를 가리킨다. site = 실제로 짓는 지역(특산물·방어선·
-    # 과학·경제·편입 등), pool = 통합 건물 종류(farm·fishery·factory·bank·power·coal·oil·shelter·aa)
+    # 과학·경제·편입 등), pool = 통합 방어 건물 종류(shelter·aa, v1.3.16부터 생산 건물은 광역 슬롯 카드)
     metro: Optional[int] = None
     site: Optional[str] = None
     pool: Optional[str] = None

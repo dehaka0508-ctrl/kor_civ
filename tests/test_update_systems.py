@@ -266,8 +266,8 @@ def test_metro_queue_shared_and_single_building_reservation():
     from test_metro import _setup
     g, sel = _setup()
     assert g.create_metro(0, 'S002', sel)[0]
-    assert g.start_project(0, sel[1], 'build', 'bank', pool='bank')[0]
-    assert g.start_project(0, sel[2], 'build', 'farm', pool='farm')[0]
+    assert g.start_project(0, sel[1], 'build', 'bank')[0]          # 광역 슬롯 카드(중심)
+    assert g.start_project(0, sel[2], 'build', 'farm')[0]
     center = g.queue_region(sel[2])
     assert len(center.queue) == 1 and not g.regions[sel[1]].queue
     p = center.project
@@ -377,12 +377,11 @@ def test_metro_rebuild_after_uneven_disaster_damage():
     from test_metro import _setup
     g, sel = _setup()
     assert g.create_metro(0,'S002',sel)[0]
-    for rid in sel:
-        g.regions[rid].b['bank'] = 3
-    g.regions[sel[1]].b['bank'] = 1                      # 재해로 한 곳만 크게 깎임(카드는 남음)
-    mean = M.pool_level(g,M.of(g,'S002'),'bank')
-    assert mean == 2
-    assert g.start_project(0,'S002','build','bank',pool='bank')[0]
-    assert g.regions['S002'].project.level == mean + 1
+    cb = g.regions['S002'].b
+    pos = cb.primary('bank')
+    cb.set_card(pos, 1)                                  # 재해로 광역 시장 카드가 크게 깎임(카드는 남음)
+    assert all(g.regions[rid].b['bank'] == 0 for rid in sel[1:])   # 구성 지역 카드는 광역 슬롯에 합쳐져 있다
+    assert g.start_project(0,'S002','build','bank',site='S002',slot=pos)[0]
+    assert g.regions['S002'].project.level == 2
     complete(g)
-    assert all(g.regions[rid].b['bank'] == mean+1 for rid in sel)
+    assert cb.card(pos)['level'] == 2 and all(g.blevel(rid, 'bank') == 2 for rid in sel)

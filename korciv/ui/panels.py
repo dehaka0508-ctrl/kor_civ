@@ -9,6 +9,7 @@ from .. import config as C
 from .. import diplomacy as D
 from .. import metro as M
 from .. import rules as R
+from .. import slots as S
 from ..leaders import GOV_BY_KEY, LEADER_BY_KEY, gov_buff_scale
 from ..state import BUILDING_NAMES, NEUTRAL
 from ..flags import faction_flag
@@ -622,16 +623,19 @@ def draw_action_tab(app, body):
     # 건물 슬롯 카드(v1.3.9: 지역 정보 탭에서 옮김) — 카드를 누르면 아래에 그 칸의 건설·증축 선택지를 펼친다
     from .slot_cards import draw_slot_grid, slot_grid_height, slot_panel_height, expanded_layout, _cells, CARD_H, GAP
     sel = getattr(app, "slot_sel", None)
-    if sel and (sel[0] != rid or not r.b.valid((sel[1], sel[2]))):
+    if sel and (sel[0] != rid or not g.regions[g.slot_site(rid, sel[1])].b.valid((sel[1], sel[2]))):
         sel = app.slot_sel = None
     pooled = [o for o in opts if o["kind"] == "build" and o.get("pool")]
-    metro_slots = [o for o in opts if o["kind"] == "build" and o.get("slot") and mt and o.get("site") not in (None, rid)]
+    # 광역시: 다른 구성 지역의 기타 슬롯(댐·원전·특산물 시설)은 카드 그리드 밖이라 목록으로
+    metro_slots = [o for o in opts if o["kind"] == "build" and o.get("slot") and mt and o["slot"][0] == "etc"
+                   and o.get("site") not in (None, rid)]
     groups = [("편입", [o for o in opts if o["kind"] == "annex"]),
-              ("광역 통합 건물", pooled),
+              ("광역 방어 건물", pooled),
               (f"유닛 생산 · 최근 {g.drafted_turns(rid)}/{C.CONSCRIPT_WINDOW}턴 징집",
                [o for o in opts if o["kind"] == "unit"]),
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and not o.get("slot") and not o.get("pool")
-                              and o["key"] not in C.PROD_BUILDINGS] + metro_slots),
+                              and o["key"] not in C.PROD_BUILDINGS]),
+              ("다른 구성 지역의 기타 슬롯", metro_slots),
               ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
     slot_h = 26 + slot_grid_height(app, rid, w, opts)
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
@@ -650,7 +654,8 @@ def draw_action_tab(app, body):
         app._slot_reveal = None
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
-    yy = section(gui, x, yy, w, f"건물 슬롯 {r.b.used()}/{r.b.total()}칸 · 카드를 눌러 건설·증축")
+    used, total = g.slot_counts(rid)
+    yy = section(gui, x, yy, w, f"{'광역 ' if M.merged(g, rid) else ''}건물 슬롯 {used}/{total}칸 · 카드를 눌러 건설·증축")
     yy = draw_slot_grid(app, x, yy, w, rid, mine=True, select=True, opts=opts)
     money = g.player.money
     for title, lst in groups:
@@ -779,22 +784,20 @@ def _neutral_annex_panel(app, x, y, w, rid):
 
 
 def _metro_header(app, x, y, w, mt):
-    """광역시 행동 탭 머리: 구성 지역·통합 단계·해제(두 번 눌러 확인)."""
+    """광역시 행동 탭 머리: 구성 지역·광역 슬롯 배수·해제(두 번 눌러 확인)."""
     gui, g, t = app.gui, app.game, app.theme
     names = [g.info(r).short for r in mt["members"]]
     y = gui.wrap((x, y), f"지역 {len(names)}곳 하나로 · 중심 {g.info(mt['center']).short} · " + ", ".join(names),
                  w, 11, t.muted) + 2
-    lv = []
-    for pool, key in M.POOLS:
-        el = M.pool_members(g, mt, pool)
-        if el and key in ("farm", "fishery", "factory", "bank", "power", "specialty"):
-            lv.append(f"{M.POOL_NAMES[pool].replace('광역 ', '')} {M.pool_level(g, mt, pool)}")
-    y = gui.wrap((x, y), "통합 단계: " + " · ".join(lv) + f" · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,
+    cb = g.regions[mt["center"]].b
+    mult = " · ".join(f"{S.SLOT_NAMES[t_]} ×{cb.mult_of(t_)}" for t_ in M.MERGE_TYPES if cb.slots.get(t_))
+    y = gui.wrap((x, y), f"광역 슬롯(산출 배수): {mult} · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,
                  t.text) + 4
     armed = getattr(app, "metro_dissolve", None) == mt["id"]
     if gui.button((x, y, w, 26), "광역시 해제 확정" if armed else "광역시 지정 해제", "danger" if armed else "default",
-                  size=12, tooltip="해제하면 건물 단계 = 묶기 전 단계 + 묶은 뒤 올린 단계, 유일 건물은 중심(항구는 해안 지역), "
-                                   "부대는 중심으로. 통합 건물 공사 중이면 50% 환급하고 취소."):
+                  size=12, tooltip="해제하면 구성 지역마다 묶기 전 슬롯 카드로 돌아가고, 묶은 뒤 광역 카드가 오른 단계만큼 "
+                                   "같은 건물 카드가 함께 오릅니다(없던 건물은 빈 칸에). 공항은 중심, 항구는 해안 지역, "
+                                   "부대는 중심으로. 광역 슬롯 공사 중이면 50% 환급하고 취소."):
         if armed:
             app.metro_dissolve = None
             ok, msg = g.dissolve_metro(g.player_id, mt["center"])

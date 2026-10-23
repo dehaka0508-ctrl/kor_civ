@@ -8,8 +8,10 @@ def draw_area(app, x, y, w, rid):
     gui, g, t = app.gui, app.game, app.theme
     area = g.info(rid).area_km2
     dens = g.regions[rid].pop * 10000 / area
-    base = len(g.regions[rid].b.slots.get("base", ()))
-    gui.text((x, y), f'면적 {area:,.1f} km² · 밀도 {dens:,.0f}명/km² · 기본 슬롯 {base}칸', 12, t.muted, max_w=w)
+    site = g.slot_site(rid, "base")                    # 광역시 구성 지역은 중심의 광역 기본 슬롯(v1.3.16)
+    base = len(g.regions[site].b.slots.get("base", ()))
+    label = f"광역 기본 슬롯 {base}칸" if site != rid or g.regions[site].b.mult_of("base") > 1 else f"기본 슬롯 {base}칸"
+    gui.text((x, y), f'면적 {area:,.1f} km² · 밀도 {dens:,.0f}명/km² · {label}', 12, t.muted, max_w=w)
     return y + 20
 
 

@@ -117,8 +117,10 @@ def marginal(g, f, rid, o, ctx, fuel):
     sites = M.pool_members(g, M.of(g, rid), o['pool']) if o.get('pool') else [o.get('site') or rid]
     money = food = admin = science = 0.0
     m = g.mods(f.id)
+    n = o.get('mult', 1)                     # 광역 슬롯 카드(v1.3.16): 구성 지역 수만큼 산출
     for site in sites:
         r = g.regions[site]
+        food0 = food
         old = lv - 1
         if o.get('slot'):
             c = r.b.card(o['slot'])
@@ -154,21 +156,33 @@ def marginal(g, f, rid, o, ctx, fuel):
                 dy *= m.mult('educated_output')
         elif key == 'admin':
             metro = M.of(g, site)
-            new_base = (50 + (100 / len(metro['members']) if f.capital in metro['members'] else 0)
-                        if metro and lv == 5 else C.ADMIN_OUTPUT[min(5, lv)])
-            d = new_base - C.ADMIN_OUTPUT[min(5, old)]
+            if M.is_merged_center(g, site):
+                k = r.b.mult_of('base')
+                new_base = (50 * k + (100 if f.capital in metro['members'] else 0) if lv == 5
+                            else C.ADMIN_OUTPUT[min(5, lv)] * k)
+                d = new_base - C.ADMIN_OUTPUT[min(5, old)] * k
+            else:
+                new_base = (50 + (100 / len(metro['members']) if f.capital in metro['members'] else 0)
+                            if metro and lv == 5 else C.ADMIN_OUTPUT[min(5, lv)])
+                d = new_base - C.ADMIN_OUTPUT[min(5, old)]
             admin += d * m.mult('admin_building_output') * m.mult('admin_output')
         elif key == 'edu':
             metro = M.of(g, site)
-            new_base = (6 * r.pop + (500 / len(metro['members']) if f.capital in metro['members'] else 0)
-                        if metro and lv == 5 else C.EDU_SCIENCE[min(5, lv)] * r.pop)
-            science += (new_base - C.EDU_SCIENCE[min(5, old)] * r.pop) * m.mult('science_edu') * m.mult('science_output') * g.great_person_bonus(site, 'science_mult')
+            if M.is_merged_center(g, site):
+                pop = sum(g.regions[x].pop for x in metro['members'])
+                new_base = (6 * pop + (500 if f.capital in metro['members'] else 0) if lv == 5
+                            else C.EDU_SCIENCE[min(5, lv)] * pop)
+            else:
+                pop = r.pop
+                new_base = (6 * r.pop + (500 / len(metro['members']) if f.capital in metro['members'] else 0)
+                            if metro and lv == 5 else C.EDU_SCIENCE[min(5, lv)] * r.pop)
+            science += (new_base - C.EDU_SCIENCE[min(5, old)] * pop) * m.mult('science_edu') * m.mult('science_output') * g.great_person_bonus(site, 'science_mult')
         elif key in ('hydro', 'nuclear', 'extract', 'power'):
             unit = max(C.MARKET_SELL['elec'], 1100 * max(.05, f.tax)) if fuel['spare'] < 0 else C.MARKET_SELL['elec']
             if key in ('hydro', 'nuclear'):
                 dy = unit * min(lv, getattr(g.info(site), key)) / max(.05, f.tax)
             elif key == 'extract':
-                resource = 'oil' if g.info(site).is_oil else 'coal'
+                resource = 'oil' if 'oil' in M.extract_res(g, site) else 'coal'
                 unit = max(C.MARKET_SELL[resource], unit if fuel['spare'] < 0 else 0)
                 dy = unit * delta / max(.05, f.tax)
             else:
@@ -191,6 +205,9 @@ def marginal(g, f, rid, o, ctx, fuel):
             share = 1 - 1 / m.value('specialty_tithe', 1e9)
             unhappy = sum(g.eff_happy(x) < 5 for x in ctx['regs'])
             dy = 60 * delta * len(g.info(site).specialties) * min(2, .3 + unhappy) * share
+        if key not in ('admin', 'edu'):
+            dy *= n
+            food = food0 + (food - food0) * n
         money += max(0, dy) * _output_mult(g, f, r)
     return money, food, admin, science
 
@@ -317,9 +334,10 @@ def metro_orders(g, f, threat):
             selected.append(max(safe, key=lambda n: (g.regions[n].pop, n)))
             if threat.get(center.id, 0) >= .5 or not M.check(g, f.id, center.id, selected)[0]:
                 continue
-            model = {'members': selected}
-            # 5단계 거점이 평균화로 사라지면 승리·고급 생산의 선택권을 잃는다.
-            if any(any(g.regions[x].b[key] >= 5 for x in selected) and M.pool_level(g, model, key) < 5
+            # 5단계 거점이 광역 슬롯 합병(레벨 합 ÷ 지역 수, v1.3.16)으로 사라지면 승리·고급 생산의 선택권을 잃는다.
+            merged = M.merge_plan(g, selected)["slots"]["base"]
+            if any(any(g.regions[x].b[key] >= 5 for x in selected)
+                   and max((c["level"] for c in merged if c and c["key"] == key), default=0) < 5
                    for key in ('factory', 'bank', 'admin', 'edu')):
                 continue
             if any(threat.get(x, 0) > .2 for x in selected) and f.gov != 'constitutional':

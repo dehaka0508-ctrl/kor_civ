@@ -110,10 +110,12 @@ def policy_reserve(g, f, ctx):
         future += g.office_output(r.id)
         if r.occ or g.resisting(r) or r.flooded:
             continue
-        base = C.ADMIN_OUTPUT[min(5, r.b['admin'])]
+        k = r.b.mult_of('base')                 # 광역 슬롯 시청: 구성 지역 수만큼(v1.3.16)
+        base = C.ADMIN_OUTPUT[min(5, r.b['admin'])] * k
         metro = M.of(g, r.id)
         if metro and r.b['admin'] == 5:
-            base = 50 + (100 / len(metro['members']) if f.capital in metro['members'] else 0)
+            base = (50 * k + (100 if f.capital in metro['members'] else 0) if M.is_merged_center(g, r.id)
+                    else 50 + (100 / len(metro['members']) if f.capital in metro['members'] else 0))
         future += (base * after.mult('admin_building_output') + after.add('admin_each')
                    + (after.add('capital_admin') if r.id == f.capital else 0)
                    + g.great_person_bonus(r.id, 'admin_add')) * after.mult('admin_output')

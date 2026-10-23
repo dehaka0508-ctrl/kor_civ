@@ -130,10 +130,15 @@ class Buildings(dict):
 
     # ---- 피클·복사: 사전 값과 슬롯을 그대로(값을 다시 쓰며 카드를 만들지 않는다)
     def __reduce__(self):
-        return (_restore, (dict(self), self.slots))
+        return (_restore, (dict(self), self.slots, getattr(self, "xmult", None)))
 
     def __copy__(self):
-        return _restore(dict(self), {t: list(v) for t, v in self.slots.items()})
+        return _restore(dict(self), {t: list(v) for t, v in self.slots.items()}, dict(getattr(self, "xmult", None) or {}))
+
+    def mult_of(self, stype) -> int:
+        """광역 슬롯 배수(v1.3.16): 광역시 중심에 모은 카드는 그 슬롯을 가진 구성 지역 수만큼 산출한다(보통 1)."""
+        xm = getattr(self, "xmult", None)
+        return int(xm.get(stype, 1)) if xm else 1
 
     # ---- 조회
     def cards(self, key=None):
@@ -144,14 +149,14 @@ class Buildings(dict):
                     yield t, i, c
 
     def levels(self, key) -> list:
-        """그 건물 카드들의 단계(높은 순)."""
-        return sorted((c["level"] for _, _, c in self.cards(key)), reverse=True)
+        """그 건물 카드들의 단계(높은 순). 광역 슬롯 카드는 배수만큼 되풀이한다(산출 계산용)."""
+        return sorted((c["level"] for t, _, c in self.cards(key) for _ in range(self.mult_of(t))), reverse=True)
 
     def cap(self, key) -> int:
-        """그 건물 카드들의 단계 합(공장·발전소 연료 칸, 농장·어장·채굴 산출)."""
+        """그 건물 카드들의 단계 합(공장·발전소 연료 칸, 농장·어장·채굴 산출, 광역 슬롯은 배수 포함)."""
         if key not in CARD_KEYS:
             return dict.get(self, key, 0)
-        return sum(c["level"] for _, _, c in self.cards(key))
+        return sum(c["level"] * self.mult_of(t) for t, _, c in self.cards(key))
 
     def count(self, key) -> int:
         return sum(1 for _ in self.cards(key))
@@ -276,7 +281,8 @@ class Buildings(dict):
         value = int(value)
         pos = self.primary(key)
         if pos is None:
-            if value > 0 and not self.place(key, value) and GROW_WHEN_FULL:
+            # (광역 슬롯에 합쳐진 구성 지역은 기본 슬롯이 비어 있다 — 시험 도구도 칸을 늘리지 않는다)
+            if value > 0 and not self.place(key, value) and GROW_WHEN_FULL and self.slots.get("base"):
                 stype = slot_types_for(key)[0]
                 self.slots[stype].append(None)
                 self.place(key, value, (stype, len(self.slots[stype]) - 1))
@@ -296,11 +302,34 @@ class Buildings(dict):
         return default
 
 
-def _restore(values, slots):
+def _restore(values, slots, xmult=None):
     b = Buildings.__new__(Buildings)
     dict.update(b, values)
     b.slots = slots
+    if xmult:
+        b.xmult = xmult
     return b
+
+
+def round_half_up(v) -> int:
+    import math
+    return int(math.floor(v + 0.5 + 1e-9))
+
+
+def split_average(total, n) -> list:
+    """광역시 합병 단계(v1.3.16): 레벨 합 ÷ 지역 수를 반올림(하나라도 있으면 최소 1). 평균이 5를 넘으면 5단계 카드
+    하나에 (평균 − 5)를 반올림한 카드를 더 붙인다(예: 4곳 합 3 → [1], 10 → [3], 22 → [5, 1])."""
+    if total <= 0 or n <= 0:
+        return []
+    avg = total / n
+    out = []
+    while avg > 5 + 1e-9:
+        out.append(5)
+        avg -= 5
+    last = round_half_up(avg)
+    if last >= 1:
+        out.append(last)
+    return out or [1]
 
 
 def new(world, rid, values=None) -> Buildings:

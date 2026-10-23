@@ -166,8 +166,8 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
     cards = {(st, i): c for st, i, c in summary}
     picked = getattr(app, "slot_sel", None)
     selected = tuple(picked[1:]) if select and picked and picked[0] == rid else None
-    if selected and not r.b.valid(selected):
-        selected = None
+    if selected and not g.regions[g.slot_site(rid, selected[0])].b.valid(selected):
+        selected = None                         # (광역시 기본·하천·해안 칸은 중심의 광역 슬롯에서 확인)
     opts = g.options(g.player_id, rid) if select and opts is None else opts
     height = slot_panel_height(app, rid, selected, opts) if selected else 0
     layout, y_end, menu = expanded_layout(cells_list, x, y, w, selected, height)
@@ -194,7 +194,9 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
                              + (f"\n공사: {p.name or name}" if p is not None else ""))
             continue
         card = cards[(stype, idx)]
-        p = g.slot_project(rid, (stype, idx)) if r.owner != NEUTRAL else None
+        site = g.slot_site(rid, stype)          # 광역시 기본·하천·해안 슬롯은 중심의 광역 슬롯(v1.3.16)
+        mult = g.regions[site].b.mult_of(stype)
+        p = g.slot_project(site, (stype, idx)) if r.owner != NEUTRAL else None
         if select and picked == (rid, stype, idx):
             gui.rect(t.gold, rect.inflate(6, 6), 3, radius=8)     # 고른 칸
         if card is None:
@@ -203,21 +205,23 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
                 gui.rect(col["accent"], rect, 2, radius=6)
             else:
                 _dashed_rect(gui, col["empty_line"], rect)
-            gui.text((rect.x + 7, rect.y + 5), f"{S.SLOT_NAMES[stype]} 슬롯", 10, col["accent"], "semibold")
+            gui.text((rect.x + 7, rect.y + 5), f"{S.SLOT_NAMES[stype]} 슬롯" + (f" ×{mult}" if mult > 1 else ""), 10,
+                     col["accent"], "semibold")
             hole = holes.get(idx) if stype == "etc" else None
             if p is not None:
-                name = g.card_title(rid, p.key, 1, stype)
+                name = g.card_title(site, p.key, 1, stype)
                 gui.text((rect.centerx, rect.y + 25), f"{name} 신축", 11, t.text, "semibold", anchor="center",
                          max_w=rect.w - 10)
                 _project_badge(app, gui, t, rect, rid, p, col)
             else:
-                label = f"+ {g.slot_kind_name(rid, hole, stype)}" if hole else "+ 빈 슬롯"
+                label = f"+ {g.slot_kind_name(site, hole, stype)}" if hole else "+ 빈 슬롯"
                 gui.text((rect.centerx, rect.y + 31), label, 12 if not hole else 11, col["accent"] if mine else t.muted,
                          "semibold", anchor="center", max_w=rect.w - 8)
             if hov:
-                kinds = [g.slot_kind_name(rid, hole, stype)] if hole else _kinds(g, rid, stype)
+                kinds = [g.slot_kind_name(site, hole, stype)] if hole else _kinds(g, site, stype)
                 hover_tip = (f"{S.slot_label((stype, idx))}: 비어 있음\n"
                              f"지을 수 있는 건물: {', '.join(kinds) or '없음'}"
+                             + (f"\n광역 슬롯: 지으면 구성 지역 {mult}곳만큼 산출(비용도 {mult}배)" if mult > 1 else "")
                              + ("\n누르면 지을 수 있는 건물 목록을 펼칩니다." if mine and select else ""))
                 if mine and select and gui.clicked:
                     gui.clicked = False
@@ -225,17 +229,18 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
             continue
         key, lv = card["key"], card["level"]
         lv_txt = f"Lv.{lv}→{p.level}" if p is not None and p.level > lv else f"Lv.{lv}"
-        _card_frame(gui, rect, col, S.SLOT_NAMES[stype], lv_txt)
-        title = g.card_title(rid, key, lv, stype)
+        _card_frame(gui, rect, col, S.SLOT_NAMES[stype] + (f" ×{mult}" if mult > 1 else ""), lv_txt)
+        title = g.card_title(site, key, lv, stype)
         gui.text((rect.centerx, rect.y + 20), title, 12, col["title"], "bold", anchor="midtop", max_w=rect.w - 8, tip=False)
-        eff = g.card_effect(r.owner if r.owner != NEUTRAL else None, rid, card, stype)
+        eff = g.card_effect(r.owner if r.owner != NEUTRAL else None, site, card, stype)
         if p is not None:                     # 공사 중: 상단 바에 목표 단계(Lv.1→2), 아래에 진행 막대·배지
             _project_badge(app, gui, t, rect, rid, p, col)
         else:
             gui.text((rect.centerx, rect.y + 40), eff, 9, t.muted, anchor="midtop", max_w=rect.w - 6, tip=False)
         if hov:
-            kind = g.slot_kind_name(rid, key, stype)
+            kind = g.slot_kind_name(site, key, stype)
             hover_tip = (f"{S.slot_label((stype, idx))}: {title} ({kind} {lv}단계)\n{eff}"
+                         + (f"\n광역 슬롯: 구성 지역 {mult}곳만큼 산출" if mult > 1 else "")
                          + ("\n장보고 '청해진 해상왕' 무료 항구 — 다른 슬롯을 차지하지 않음" if card.get("free") else "")
                          + (f"\n공사: {p.name}" if p is not None and p.name else "")
                          + ("\n누르면 다음 단계 건설·최대 건설·철거" if mine and select else ""))
@@ -310,14 +315,14 @@ def draw_slot_section(app, x, y, w, rid, mine=False):
     다른 나라·중립 지역은 슬롯 카드를 읽기 전용으로 함께 보여 준다. 다음 y 를 돌려준다."""
     from .panels import draw_chips, section
     gui, g, t = app.gui, app.game, app.theme
-    b = g.regions[rid].b
+    used, total = g.slot_counts(rid)
     if mine:
         y = section(gui, x, y + 6, w, "부존 자원·슬롯 밖 시설")
-        if gui.button((x, y - 2, w, 26), f"건물 슬롯 {b.used()}/{b.total()}칸 — [행동] 탭에서 건설·증축", size=11):
+        if gui.button((x, y - 2, w, 26), f"건물 슬롯 {used}/{total}칸 — [행동] 탭에서 건설·증축", size=11):
             app.left_open, app.left_tab, app.tab = True, "region", "action"
         y += 30
     else:
-        y = section(gui, x, y + 6, w, f"건물 슬롯 및 부존 자원 · {b.used()}/{b.total()}칸")
+        y = section(gui, x, y + 6, w, f"건물 슬롯 및 부존 자원 · {used}/{total}칸")
         y = draw_slot_grid(app, x, y, w, rid)
     res = resource_chips(app, rid)
     fac = facility_chips(app, rid)
@@ -333,6 +338,7 @@ PANEL_ROW = 58
 
 def slot_panel_height(app, rid, slot, opts) -> int:
     g = app.game
+    rid = g.slot_site(rid, slot[0])
     n = len(g.slot_choices(g.player_id, rid, slot, opts))
     card = g.regions[rid].b.card(tuple(slot))
     return 34 + max(1, n) * PANEL_ROW + (34 if card is not None else 0) + 10
@@ -354,17 +360,21 @@ def draw_slot_panel(app, x, y, w, rid, slot, opts):
     slot = tuple(slot)
     stype, idx = slot
     col = slot_colors(t, stype)
+    home = rid
+    rid = g.slot_site(rid, stype)          # 광역 슬롯 카드는 중심 지역에 있다
     r = g.regions[rid]
     card = r.b.card(slot)
+    mult = r.b.mult_of(stype)
     choices = g.slot_choices(pid, rid, slot, opts)
     h = slot_panel_height(app, rid, slot, opts)
     box = pygame.Rect(x, y, w, h)
     gui.rect(mix(t.panel, col["empty"], 0.6), box, radius=6)
     gui.rect(col["accent"], box, 2, radius=6)
+    tag = f"광역 {S.slot_label(slot)} ×{mult}" if mult > 1 else S.slot_label(slot)
     if card is None:
-        head = f"{S.slot_label(slot)} · 빈 슬롯 — 지을 건물을 고르세요"
+        head = f"{tag} · 빈 슬롯 — 지을 건물을 고르세요"
     else:
-        head = f"{S.slot_label(slot)} · {g.card_title(rid, card['key'], card['level'], stype)} {card['level']}단계"
+        head = f"{tag} · {g.card_title(rid, card['key'], card['level'], stype)} {card['level']}단계"
     gui.text((x + 10, y + 8), head, 12, col["accent"] if not t.dark else t.text, "semibold", max_w=w - 46)
     if gui.button((x + w - 32, y + 5, 26, 22), "×", "ghost", size=12, tooltip="접기"):
         app.slot_sel = None
@@ -373,15 +383,13 @@ def draw_slot_panel(app, x, y, w, rid, slot, opts):
     if not choices:
         if card is not None and card["level"] >= g.card_max(rid, card["key"]):
             msg = "최대 단계입니다 · " + g.card_effect(pid, rid, card, stype)
-        elif M_of(g, rid):
-            msg = "광역시 구성 지역: 아래 '광역 통합 건물'로 함께 짓습니다."
         elif g.slot_project(rid, slot) is not None:
             msg = "이 칸에 공사가 잡혀 있습니다(작업 대기열)."
         else:
             msg = "지금 지을 수 있는 건물이 없습니다."
         gui.text((x + 10, yy + 6), msg, 11, t.muted, max_w=w - 20)
         yy += PANEL_ROW
-    busy = r.project is not None
+    busy = g.queue_region(home).project is not None
     for o in choices:
         label = _choice_label(g, rid, o, stype)
         bx = x + w - 140
@@ -395,22 +403,22 @@ def draw_slot_panel(app, x, y, w, rid, slot, opts):
         lab1 = ("추가" if busy else "건설") if first else ("다음 단계" if not busy else "추가")
         if gui.button((bx, yy + 2, 64, 26), lab1, "primary" if o["ok"] else "default", enabled=o["ok"], size=11,
                       tooltip=("작업 대기열에 추가" if busy else None)):
-            ok, msg = g.start_project(pid, rid, "build", o["key"], site=o.get("site"), slot=slot)
+            ok, msg = g.start_project(pid, home, "build", o["key"], site=o.get("site") or rid, slot=slot)
             app.toast(msg, None if ok else t.bad)
             if ok:
                 app.changed()
         if g.can_chain("build", o["key"]) and o["level"] < g.card_max(rid, o["key"]):
             if gui.button((bx + 70, yy + 2, 64, 26), "최대 건설", enabled=o["ok"], size=10,
                           tooltip="완공되면 같은 칸에서 다음 단계를 이어서 짓습니다(마지막 단계까지)"):
-                ok, msg = g.start_project_max(pid, rid, "build", o["key"], site=o.get("site"), slot=slot)
+                ok, msg = g.start_project_max(pid, home, "build", o["key"], site=o.get("site") or rid, slot=slot)
                 app.toast(msg, None if ok else t.bad)
                 if ok:
                     app.changed()
         yy += PANEL_ROW
     if card is not None:
         locked = g.slot_project(rid, slot) is not None
-        gui.text((x + 10, yy + 6), "슬롯 비우기(비용 환급 없음)" if not locked else "공사가 잡힌 칸은 철거할 수 없습니다",
-                 10, t.muted, max_w=w - 100)
+        gui.text((x + 10, yy + 6), ("슬롯 비우기(비용 환급 없음)" + (f" · 광역 카드라 구성 지역 {mult}곳분" if mult > 1 else ""))
+                 if not locked else "공사가 잡힌 칸은 철거할 수 없습니다", 10, t.muted, max_w=w - 100)
         if gui.button((x + w - 74, yy + 1, 64, 26), "철거", size=11, enabled=not locked,
                       tooltip="이 건물을 통째로 철거해 슬롯을 비웁니다."):
             ok, msg = g.demolish_card(pid, rid, slot)
@@ -418,7 +426,3 @@ def draw_slot_panel(app, x, y, w, rid, slot, opts):
             app.changed()
     return y + h + 8
 
-
-def M_of(g, rid):
-    from .. import metro as M
-    return M.of(g, rid)

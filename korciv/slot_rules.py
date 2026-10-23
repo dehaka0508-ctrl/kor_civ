@@ -44,12 +44,19 @@ class SlotMixin:
             return False
         if stype == "etc":                    # 기타 슬롯: 댐·원전·특산물 입지만(항구는 장보고 무료 항구로만)
             return key in S.etc_kinds(info)
-        if key == "extract":
-            return info.is_oil or info.is_coal
+        if key == "extract":                  # 광역 슬롯: 유전·탄전이 있는 구성 지역이 하나라도 있으면
+            return bool(M.extract_res(self, rid))
         return True
 
     def card_max(self, rid, key) -> int:
+        """카드 최대 단계. 광역 슬롯의 농장·어장·공장·시장·발전소·채굴 카드는 6단계까지(광역시 전용)."""
+        if key in C.METRO_L6_KEYS and M.is_merged_center(self, rid):
+            return 6
         return S.max_level(key, self.info(rid))
+
+    def slot_site(self, rid, stype) -> str:
+        """그 슬롯 카드가 있는 지역(광역시 기본·하천·해안 슬롯은 중심, 나머지는 그 지역)."""
+        return M.slot_site(self, rid, stype)
 
     # ------------------------------------------------------------------ 비용
     def card_cost(self, fid, rid, key, lv):
@@ -63,7 +70,9 @@ class SlotMixin:
             spec = C.SINGLE_BUILDINGS[key]
             return (spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * self.building_cost_mult(fid, key),
                     self.build_time(fid, key, spec["turns"], rid, 1))
-        cost = R.prod_building_cost(key, lv, info.power_site) * self.building_cost_mult(fid, key, lv)
+        site = info.power_site or (key == "power" and any(self.info(r).power_site for r in M.slot_regions(self, rid, "base")
+                                                             + M.slot_regions(self, rid, "river") + M.slot_regions(self, rid, "coast")))
+        cost = R.prod_building_cost(key, lv, site) * self.building_cost_mult(fid, key, lv)
         return cost, self.build_time(fid, key, R.prod_building_turns(lv), rid, lv)
 
     # ------------------------------------------------------------------ 선택지
@@ -140,7 +149,7 @@ class SlotMixin:
         if key == "power":
             return "화력발전소"
         if key == "extract":
-            return "정유공장" if self.info(rid).is_oil else "탄광"
+            return "정유공장" if "oil" in M.extract_res(self, rid) else "탄광"
         if key == "port" and stype == "etc":
             return "무료 항구"
         return BUILDING_NAMES.get(key, key)
@@ -183,62 +192,67 @@ class SlotMixin:
 
     # ------------------------------------------------------------------ 산출
     def fish_slot_mult(self, fid, rid, stype) -> float:
-        """어장 카드 배수: 하천 칸 ×0.8, 해안 칸 ×1(해안선 점유 ×1.2), 날씨."""
+        """어장 카드 배수: 하천 칸 ×0.8, 해안 칸 ×1(해안선 점유 ×1.2), 날씨.
+        광역 슬롯은 그 슬롯을 가진 구성 지역들 기준(해안선은 하나라도 점유하면, 날씨는 평균)."""
+        sites = M.slot_regions(self, rid, stype)
         if stype == "river":
             base = C.RIVER_FISH_MULT
         else:
             base = 1.0
-            if fid != NEUTRAL:
-                for s in self.info(rid).seas:
-                    if self.coast_controller(s) == fid:
-                        base = 1 + C.COAST_FISH_BONUS
-                        break
-        return base * self.weather_fish_mult(rid, river=stype == "river")
+            if fid != NEUTRAL and any(self.coast_controller(s) == fid for r in sites for s in self.info(r).seas):
+                base = 1 + C.COAST_FISH_BONUS
+        return base * sum(self.weather_fish_mult(r, river=stype == "river") for r in sites) / len(sites)
 
     def fishery_eff(self, fid, rid) -> float:
-        """어장 카드들의 Σ 단계 × 배수(식량·산출 공통)."""
+        """어장 카드들의 Σ 단계 × 배수(식량·산출 공통). 광역 슬롯 카드는 구성 지역 수만큼(배수)."""
         b = self.regions[rid].b
         if not hasattr(b, "cards"):
             return b.get("fishery", 0) * self.fish_mult(fid, rid)
-        return sum(c["level"] * self.fish_slot_mult(fid, rid, t) for t, _, c in b.cards("fishery"))
+        return sum(c["level"] * b.mult_of(t) * self.fish_slot_mult(fid, rid, t) for t, _, c in b.cards("fishery"))
 
     def extract_amount(self, fid, rr, res=None) -> float:
         """채굴 카드들의 생산(석유는 유전 기본량 + 카드 단계 합, 석탄은 카드 단계 합). 3단계 이상 카드마다 정책 보너스.
         res: "oil"·"coal"(혼돈 판도처럼 둘 다 있으면 따로 센다). 안 주면 그 지역 자원(석유 우선)."""
         info = self.info(rr.id)
         m = self.mods(fid)
-        lv = rr.b.levels("extract") if hasattr(rr.b, "levels") else [rr.b.get("extract", 0)]
+        res = res or ("oil" if info.is_oil or "oil" in M.extract_res(self, rr.id) else "coal")
+        lv = M.extract_levels(self, rr.id, res)          # 광역 채굴 카드는 유전·탄전 구성 지역 비율로 나눈다
         extra = m.add("extract3_extra") * sum(1 for x in lv if x >= 3)
-        res = res or ("oil" if info.is_oil else "coal")
         base = info.oil if res == "oil" else 0
         return (base + sum(lv) + extra) * m.mult("output_extract")
 
     def card_effect(self, fid, rid, card, stype) -> str:
-        """슬롯 카드 아래에 적는 핵심 효과 요약."""
+        """슬롯 카드 아래에 적는 핵심 효과 요약(광역 슬롯 카드는 구성 지역 수 n 배를 합친 값)."""
         key, lv = card["key"], card["level"]
         info = self.info(rid)
         owner = fid if fid is not None else self.regions[rid].owner
         m = self.mods(owner)
+        n = self.regions[rid].b.mult_of(stype) if hasattr(self.regions[rid].b, "mult_of") else 1
         if key == "farm":
             fm = self.farm_mult(owner, rid) if owner != NEUTRAL else 1.0
-            return f"식량+{C.FARM_FOOD * lv * fm * m.mult('food_prod'):.0f} · 산출+{C.FARM_OUTPUT * lv * fm * m.mult('output_prod'):,.0f}"
+            return f"식량+{C.FARM_FOOD * lv * n * fm * m.mult('food_prod'):.0f} · 산출+{C.FARM_OUTPUT * lv * n * fm * m.mult('output_prod'):,.0f}"
         if key == "fishery":
             fm = self.fish_slot_mult(owner, rid, stype)
-            return f"식량+{C.FISH_FOOD * lv * fm * m.mult('food_prod'):.0f} · 산출+{C.FISH_OUTPUT * lv * fm * m.mult('output_prod'):,.0f}"
+            return f"식량+{C.FISH_FOOD * lv * n * fm * m.mult('food_prod'):.0f} · 산출+{C.FISH_OUTPUT * lv * n * fm * m.mult('output_prod'):,.0f}"
         if key == "factory":
-            return f"연료 {lv} · 개당 {R.factory_unit(lv) * m.mult('output_factory') * m.mult('output_prod'):,.0f}"
+            return f"연료 {lv * n} · 개당 {R.factory_unit(lv) * m.mult('output_factory') * m.mult('output_prod'):,.0f}"
         if key == "bank":
-            return f"산출 +{C.BANK_OUTPUT * R.g(lv) * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
+            return f"산출 +{C.BANK_OUTPUT * R.g(lv) * n * m.mult('output_bank') * m.mult('output_prod'):,.0f}"
         if key == "power":
-            return f"연료 {lv} · 석탄당 전기 {self.power_elec(owner, 'coal', lv):g}"
+            return f"연료 {lv * n} · 석탄당 전기 {self.power_elec(owner, 'coal', lv):g}"
         if key in C.SITE_POWER:
             return f"전기 +{min(lv, getattr(info, key))}/턴"
         if key == "extract":
-            return ("석유" if info.is_oil else "석탄") + f" +{lv}/턴"
+            return ("석유" if "oil" in M.extract_res(self, rid) else "석탄") + f" +{lv * n}/턴"
         if key == "admin":
-            return f"행정력 +{C.ADMIN_OUTPUT[max(0, min(5, lv))]:g}"
+            mt = M.merged(self, rid) if n > 1 else None
+            if mt and lv >= 5:
+                cap = owner != NEUTRAL and self.factions[owner].capital in mt["members"]
+                return f"행정력 +{50 * n + (100 if cap else 0):g}"
+            return f"행정력 +{C.ADMIN_OUTPUT[max(0, min(5, lv))] * n:g}"
         if key == "edu":
-            return f"과학력 {C.EDU_SCIENCE[max(0, min(5, lv))]:g}×인구"
+            per = 6 if n > 1 and lv >= 5 else C.EDU_SCIENCE[max(0, min(5, lv))]
+            return f"과학력 {per:g}×인구" + (f"({n}곳)" if n > 1 else "")
         if key == "academy":
             return f"유닛 생산비 −{C.ACADEMY_LOCAL:.0%}"
         if key == "port":
@@ -256,10 +270,21 @@ class SlotMixin:
         return {i: missing.pop(0) for i, c in enumerate(proj) if c is None and missing}
 
     def slot_summary(self, rid) -> list:
-        """[(슬롯 종류, 칸 번호, 카드 또는 None)] 기본 → 하천 → 해안 → 기타 순."""
-        b = self.regions[rid].b
-        return [(t, i, c) for t in S.SLOT_TYPES for i, c in enumerate(b.slots.get(t, ()))]
+        """[(슬롯 종류, 칸 번호, 카드 또는 None)] 기본 → 하천 → 해안 → 기타 순.
+        광역시 구성 지역은 기본·하천·해안이 중심의 광역 슬롯, 기타는 그 지역의 슬롯(v1.3.16)."""
+        out = []
+        for t in S.SLOT_TYPES:
+            b = self.regions[M.slot_site(self, rid, t)].b
+            out += [(t, i, c) for i, c in enumerate(b.slots.get(t, ()))]
+        return out
+
+    def slot_counts(self, rid) -> tuple:
+        """(채운 칸, 전체 칸) — 광역시는 광역 슬롯 + 그 지역 기타 슬롯."""
+        summ = self.slot_summary(rid)
+        return sum(1 for _, _, c in summ if c), len(summ)
 
     def metro_slot_note(self, rid) -> str:
-        m = M.of(self, rid)
-        return f"{m['name']} 통합 건물은 구성 지역의 같은 건물 카드를 함께 올립니다." if m else ""
+        m = M.merged(self, rid)
+        if not m:
+            return ""
+        return f"{m['name']} 광역 슬롯: 기본·하천·해안 카드는 구성 지역 수만큼 산출합니다."

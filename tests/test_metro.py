@@ -7,7 +7,8 @@ from korciv import config as C
 from korciv import diplomacy as D
 from korciv import metro as M
 from korciv import rules as R
-from korciv.state import NEUTRAL
+from korciv import slots as S
+from korciv.state import NEUTRAL, Project
 
 from test_engine import _room, _clear, _neutral_ai, _own, new_game
 
@@ -62,34 +63,105 @@ def test_designation_conditions_and_names():
     assert not M.check(g, 0, "S002", sel)[0]                  # 이미 광역시
 
 
-def test_pooled_levels_output_and_fuel():
-    """농장·공장·탄광은 그 건물 카드를 가진 구성 지역끼리 평균 단계(내림)를 적용(v1.3.8 슬롯) → 산출·연료가
-    '평균 단계 × 가진 지역 수'. 카드가 없는 지역은 끼지 않는다."""
+def _cards(b, stype):
+    return [(c["key"], c["level"]) if c else None for c in b.slots.get(stype, [])]
+
+
+def test_split_average_examples():
+    """v1.3.16 합병 단계: 레벨 합 ÷ 지역 수 반올림(하나라도 있으면 최소 1), 평균 5 초과면 5단계 + 나머지 카드."""
+    assert S.split_average(3, 4) == [1]
+    assert S.split_average(10, 4) == [3]
+    assert S.split_average(22, 4) == [5, 1]
+    assert S.split_average(20, 4) == [5] and S.split_average(21, 4) == [5]
+    assert S.split_average(1, 25) == [1] and S.split_average(0, 4) == []
+
+
+def test_merged_slots_average_and_multiplier():
+    """광역시 기본 슬롯은 늘 6칸(중심에), 건물마다 레벨 합 ÷ 지역 수를 반올림, 산출·연료는 지역 수 배."""
     g, sel = _setup()
-    levels = [5, 4, 5, 4]                                     # 농장 합 18 → 평균 4.5 → 4
-    for r, lv in zip(sel, levels):
+    for r, lv in zip(sel, [5, 4, 5, 4]):                      # 농장 합 18 → 4.5 → 5
         g.regions[r].b["farm"] = lv
-    facs = [5, 3, 0, 2]                                       # 공장을 가진 3곳 합 10 → 평균 3.33 → 3
-    for r, lv in zip(sel, facs):
+    for r, lv in zip(sel, [5, 3, 0, 2]):                      # 공장 합 10 → 2.5 → 3
         g.regions[r].b["factory"] = lv
+    farm_sum = sum(g.regions[r].b.cap("farm") for r in sel)
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
-    assert [g.regions[r].b["farm"] for r in sel] == [4] * 4
-    assert [g.regions[r].b["factory"] for r in sel] == [3, 3, 0, 3]
-    assert sum(g.regions[r].b.cap("factory") for r in sel) == 3 * 3             # 연료 최대 = 3단계 × 가진 지역 수
-    # 하나라도 하천 농장이면 전체가 하천 농장
-    assert any(g.river_farm(r) for r in sel)
-    assert all(g.farm_mult(0, r) == pytest.approx(g.mods(0).mult("output_farm") * C.RIVER_FARM_MULT) for r in sel)
+    cb = g.regions["S002"].b
+    n = len(sel)
+    assert len(cb.slots["base"]) == S.BASE_SLOT_MAX and cb.mult_of("base") == n
+    assert cb["farm"] == S.split_average(farm_sum, n)[0] == 5 and cb["factory"] == 3
+    assert cb["admin"] == 4                                   # 5 + 4 + 4 + 4 = 17 → 4.25 → 4
+    assert all(not g.regions[r].b.slots["base"] and g.regions[r].b["farm"] == 0 for r in sel[1:])
+    assert cb.cap("factory") == 3 * n and cb.cap("farm") == 5 * n          # 연료 칸·농장 산출 = 단계 × 지역 수
+    assert g.admin_output("S002") == pytest.approx(C.ADMIN_OUTPUT[4] * n * g.mods(0).mult("admin_building_output")
+                                                   * g.mods(0).mult("admin_output")
+                                                   + (g.mods(0).add("admin_each") + g.mods(0).add("capital_admin"))
+                                                   * g.mods(0).mult("admin_output"), rel=1e-6)
+    # 다른 구성 지역에서 열어도 같은 광역 슬롯(중심)과 그 지역의 기타 슬롯
+    summ = g.slot_summary(sel[2])
+    assert [c for t, _, c in summ if t == "base"] == cb.slots["base"]
+    assert g.slot_counts(sel[2])[1] == sum(len(cb.slots[t]) for t in M.MERGE_TYPES) + len(g.regions[sel[2]].b.slots["etc"])
 
 
-def test_coal_pool_example():
-    """탄광 2단계 + 3단계 → 광역 탄광 2단계, 석탄 4개(탄전 지역끼리만 평균)."""
+def test_merge_plan_extra_card_only_when_room():
+    """평균이 5를 넘으면 5단계 하나 + (평균 − 5)를 반올림한 카드. 남는 칸이 없으면 더 주지 않는다."""
+    g = new_game(n_enemies=1)
+    sel = [r for r in g.world.order if g.regions[r].owner == NEUTRAL][:4]
+    for r in sel:
+        g.regions[r].__dict__["b"] = S.Buildings({"base": 6})
+    for r, extra in zip(sel, (1, 1, 0, 0)):                   # 농장 합 22 → [5, 1]
+        b = g.regions[r].b
+        b.place("farm", 5)
+        if extra:
+            b.place("farm", extra)
+        b.place("admin", 2)
+    plan = M.merge_plan(g, sel)
+    holder = type("B", (), {"slots": plan["slots"]})()
+    assert _cards(holder, "base") == [("admin", 2), ("farm", 5), ("farm", 1), None, None, None]
+    for r in sel:                                             # 종류가 6가지면 덤 카드는 빠진다
+        b = g.regions[r].b
+        for k in ("edu", "factory", "bank", "academy"):
+            b.place(k, 1)
+    plan = M.merge_plan(g, sel)
+    keys = [c["key"] for c in plan["slots"]["base"]]
+    assert len(keys) == 6 and keys.count("farm") == 1 and plan["slots"]["base"][keys.index("farm")]["level"] == 5
+
+
+def test_merge_plan_river_coast_and_port():
+    """하천·해안 슬롯: 그 슬롯을 가진 구성 지역이 1곳이면 1칸, 2곳 이상이면 2칸, 산출은 그 지역 수 배.
+    항구가 하나라도 있었으면 해안에 항구 칸을 따로."""
+    g = new_game(n_enemies=1)
+    coast = [r for r in g.world.order if g.info(r).coastal][:3]
+    inland = next(r for r in g.world.order if not g.info(r).coastal)
+    sel = coast + [inland]
+    for r in sel:
+        g.regions[r].__dict__["b"] = S.Buildings({"base": 2, "river": 0 if r == coast[2] else 1,
+                                                  "coast": 1 if r in coast else 0})
+    b0 = g.regions[coast[0]].b
+    b0.slots["coast"].append(None)
+    b0.place("port", 1, ("coast", 1))
+    b0.place("fishery", 4, ("coast", 0))
+    g.regions[coast[1]].b.place("fishery", 3, ("coast", 0))
+    g.regions[coast[2]].b.place("power", 2, ("coast", 0))
+    g.regions[inland].b.place("fishery", 2, ("river", 0))
+    plan = M.merge_plan(g, sel)
+    holder = type("B", (), {"slots": plan["slots"]})()
+    assert plan["mult"] == {"base": 4, "river": 3, "coast": 3}
+    assert _cards(holder, "river") == [("fishery", 1), None]                        # 2 ÷ 3 → 1
+    assert _cards(holder, "coast") == [("fishery", 2), ("power", 1), ("port", 1)]  # 7 ÷ 3 → 2, 2 ÷ 3 → 1, 항구 칸
+    one = M.merge_plan(g, [coast[0], coast[2]])
+    assert len(one["slots"]["river"]) == 1 and one["mult"]["river"] == 1           # 하천 지역 1곳 → 1칸
+
+
+def test_merged_extract_coal():
+    """탄광 2단계 + 3단계(2곳) → 합 5 ÷ 2 = 2.5 → 광역 탄광 3단계 ×2 = 석탄 6."""
     g = new_game(n_enemies=1, meet=True)
     _neutral_ai(g, 1)
-    coal = [r for r in g.world.order if g.info(r).is_coal]
+    coal = [r for r in g.world.order if g.info(r).is_coal and not g.info(r).is_oil]
     a = next(r for r in coal if any(n in coal for n in g.world.land_adj[r]))
     b = next(n for n in sorted(g.world.land_adj[a]) if n in coal)
     _own(g, 0, [a, b])
+    _room(g, [a, b])
     for r in (a, b):
         rr = g.regions[r]
         rr.resist, rr.project, rr.happy = None, None, 5
@@ -103,39 +175,57 @@ def test_coal_pool_example():
     g.regions[a].b["extract"], g.regions[b].b["extract"] = 2, 3
     ok, msg = g.create_metro(0, a, [a, b])
     assert ok, msg
-    assert g.regions[a].b["extract"] == 2 and g.regions[b].b["extract"] == 2
-    assert sum(g.regions[r].b["extract"] for r in (a, b)) == 4
+    cb = g.regions[a].b
+    assert cb["extract"] == 3 and cb.mult_of("base") == 2 and g.regions[b].b["extract"] == 0
+    m = g.mods(0)
+    assert g.extract_amount(0, g.regions[a], "coal") == pytest.approx(
+        (3 * 2 + 2 * m.add("extract3_extra")) * m.mult("output_extract"))
+    assert g.extract_amount(0, g.regions[b], "coal") == 0
+    assert g.blevel(b, "extract") == 3 and g.slot_kind_name(a, "extract") == "탄광"
 
 
-def test_metro_slot_build_upgrades_all_and_level6():
+def test_metro_slot_build_and_level6():
     g, sel = _setup()
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
     n = len(sel)
-    opts = g.options(0, sel[1])                              # 어느 구성 지역에서 열어도 광역시 선택지
-    o = next(o for o in opts if o["kind"] == "build" and o["key"] == "bank")
-    lv = M.pool_level(g, M.of(g, "S002"), "bank") + 1
-    assert o["level"] == lv and o["cost"] == pytest.approx(R.prod_building_cost("bank", lv) * n)
-    ok, msg = g.start_project(0, sel[2], "build", "bank")
+    cb = g.regions["S002"].b
+    pos = cb.primary("bank")
+    lv = cb["bank"] + 1
+    o = next(o for o in g.options(0, sel[1]) if o["kind"] == "build" and o["key"] == "bank" and o.get("slot") == pos)
+    assert o["site"] == "S002" and o["mult"] == n and o["level"] == lv
+    assert o["cost"] == pytest.approx(g.card_cost(0, "S002", "bank", lv)[0] * n)
+    assert g.building_effect(0, "S002", o).startswith(f"지역 {n}곳 각각 ")
+    ok, msg = g.start_project(0, sel[2], "build", "bank", site="S002", slot=pos)
     assert ok, msg
     p = g.regions["S002"].project
     assert all(g.regions[r].project is p for r in sel) and len(g.projects_by_priority(0)) == 1
     for _ in range(p.turns):
         g._fund_projects()
         g._phase_projects(("build",))
-    assert all(g.regions[r].b["bank"] == lv for r in sel) and all(g.regions[r].project is None for r in sel)
-    # 6단계는 광역시만: 은행 6단계 산출 = 5단계 × 1.2, 첨단산업단지 연료 1개당 2000 × 1.1·6개까지
-    for r in sel:
-        g.regions[r].b["bank"] = 5
-        g.regions[r].b["factory"] = 5
-    o6 = next(o for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "bank")
-    assert o6["level"] == 6 and "광역 경제 타운" in o6["name"]
+    assert cb["bank"] == lv and all(g.regions[r].project is None for r in sel)
+    assert all(g.regions[r].b["bank"] == 0 and g.blevel(r, "bank") == lv for r in sel[1:])
+    # 6단계는 광역 슬롯 카드만: 은행 6단계 산출 = 5단계 × 1.2, 첨단산업단지 연료 1개당 2000 × 1.1·6개까지
+    cb.set_card(pos, 5)
+    o6 = next(o for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "bank" and o.get("slot") == pos)
+    assert o6["level"] == 6 and g.card_max("S002", "bank") == 6
     assert R.g(6) == pytest.approx(R.g(5) * 1.2)
     assert R.factory_unit(6) == pytest.approx(2200) and R.factory_output(6) == pytest.approx(2200 * 6)
     assert R.region_output(0, 6, 0, 0, 0) == pytest.approx(R.region_output(0, 5, 0, 0, 0) * 1.2)
     plain = new_game(player_start="S002", n_enemies=1)
     plain.regions["S002"].b["bank"] = 5
-    assert not any(o["kind"] == "build" and o["key"] == "bank" for o in plain.options(0, "S002"))
+    assert not any(o["kind"] == "build" and o["key"] == "bank" and o["level"] > 5 for o in plain.options(0, "S002"))
+    # 최대 건설: 같은 광역 칸에서 6단계까지 이어서
+    cb.set_card(pos, 4)
+    ok, msg = g.start_project_max(0, "S002", "build", "bank", site="S002", slot=pos)
+    assert ok, msg
+    for _ in range(200):
+        p = g.regions["S002"].project
+        if p is None:
+            break
+        g._fund_projects()
+        g._phase_projects(("build",))
+    assert cb.card(pos)["level"] == 6
 
 
 def test_metro_units_multiply():
@@ -155,24 +245,53 @@ def test_metro_units_multiply():
 
 
 def test_dissolve_restores_levels_singles_and_armies():
-    """해제: 묶기 전 단계 + (지금 − 묶은 시점 평균). 예) 묶기 전 2, 평균 3, 해제 때 5 → 4."""
+    """해제: 구성 지역마다 묶기 전 카드로 돌아가고, 광역 카드가 오른 만큼 같은 건물 카드가 함께 오른다.
+    예) 농장 2·4·3·3(평균 3) → 광역 농장 3 → 5로 올리고 해제하면 4·5·5·5."""
     g, sel = _setup()
-    farms = [2, 4, 3, 3]                                     # 평균 3
+    farms = [2, 4, 3, 3]
     for r, lv in zip(sel, farms):
         g.regions[r].b["farm"] = lv
-        g.regions[r].b["fishery"] = 5                        # 식량 조건
     g.regions[sel[1]].b["airport"] = 1
+    pre = {r: _cards(g.regions[r].b, "base") for r in sel}
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
     assert all(g.regions[r].b["airport"] == 1 for r in sel)          # 하나라도 있으면 광역시 전체에
-    for r in sel:
-        g.regions[r].b["farm"] = 5                                   # 광역시에서 5단계까지 올림
+    cb = g.regions["S002"].b
+    assert cb["farm"] == 3
+    cb["farm"] = 5                                                   # 광역시에서 5단계까지 올림
     a = g.new_army(0, sel[3], {"inf": 2})
     ok, msg = g.dissolve_metro(0, sel[1])
     assert ok, msg
     assert [g.regions[r].b["farm"] for r in sel] == [min(5, lv + 2) for lv in farms]      # 2 → 4
+    for r in sel:                                                    # 농장 말고는 묶기 전 카드 그대로
+        assert [c for c in _cards(g.regions[r].b, "base") if not c or c[0] != "farm"] == \
+            [c for c in pre[r] if not c or c[0] != "farm"]
+    assert not getattr(cb, "xmult", None) and cb.mult_of("base") == 1
     assert g.regions["S002"].b["airport"] == 1 and sum(g.regions[r].b["airport"] for r in sel) == 1
     assert a.loc == "S002" and all(g.regions[r].metro is None for r in sel)
+
+
+def test_dissolve_new_building_and_shared_project_refund():
+    """묶은 뒤 새로 지은 건물은 해제할 때 그 건물이 없던 구성 지역의 빈 칸에도 생기고(사관학교는 중심에만),
+    광역 슬롯 공사는 50% 환급하고 취소."""
+    g, sel = _setup()
+    ok, _ = g.create_metro(0, "S002", sel)
+    assert ok
+    cb = g.regions["S002"].b
+    e = cb.empty("base")
+    assert len(e) >= 2
+    cb.place("edu", 2, ("base", e[0]))
+    cb.place("academy", 1, ("base", e[1]))
+    ok, msg = g.start_project(0, "S002", "build", "farm", site="S002", slot=cb.primary("farm"))
+    assert ok, msg
+    p = g.regions["S002"].project
+    p.paid = 1000.0
+    money = g.player.money
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok and g.player.money == pytest.approx(money + 1000 * C.PROJECT_REFUND)
+    assert all(g.regions[r].project is None for r in sel)
+    assert all(g.regions[r].b["edu"] == 2 for r in sel if g.regions[r].b.empty("base") or g.regions[r].b["edu"])
+    assert g.regions["S002"].b["academy"] == 1 and all(g.regions[r].b["academy"] == 0 for r in sel[1:])
 
 
 def test_metro_defends_together_and_is_captured_whole():
@@ -235,10 +354,11 @@ def test_exchange_counts_by_metro_size():
     n, cap_ok = M.exchange_weight(g, 0)
     assert n == len(sel) and cap_ok                      # 수도가 든 광역시의 거래소 하나 = 지역 수만큼
     assert g.econ_ready(0, "sez")[0] == (len(sel) >= C.ECON_EXCHANGES)
-    # 금융 권역: 광역 금융 단지(은행 평균 5단계 이상)면 구성 지역 모두가 금융 단지
-    for r in sel:
-        g.regions[r].b["bank"] = 5
+    # 금융 권역: 광역 시장 카드가 5단계(복합 무역 센터)면 구성 지역 모두가 금융 단지
+    g.regions["S002"].b["bank"] = 5
     assert set(sel) <= g.finance_cluster(0)
+    g.player.techs.add("aerospace")
+    assert all(g.science_site_ok(0, r, "budget") for r in sel)          # 과학 '예산 편성'도 어느 구성 지역에서나
 
 
 def test_cancel_and_save_load_keep_metro():
@@ -390,91 +510,70 @@ def test_feasible_population_counts_only_top_25():
     assert not ok and any("인구" in w for w in why)
 
 
-def test_metro_specialty_is_one_pooled_building():
-    """v1.3.0: 특산물 시설도 탄광·정유처럼 하나로 — 특산물이 있는 구성 지역들의 평균 단계, 한 번에 함께 오른다."""
+def test_metro_etc_slots_stay_per_region():
+    """v1.3.16: 기타 슬롯(댐·원전·특산물 시설)은 합치지 않는다 — 지역마다 그대로, 비용도 한 지역 몫."""
     g, _ = _setup()
     d = _own_ring(g, 3)
-    spec = sorted(r for r in d if g.info(r).specialty and r != "S002")[:3]
-    assert len(spec) == 3
-    pick = [r for r in M.auto_pick(g, 0, "S002")]
-    # 특산물 지역 셋이 이어져 들어가도록: 중심에서 그 지역들까지의 길을 넣는다
-    sel = set(pick[:10])
+    spec = sorted(r for r in d if g.info(r).specialty and r != "S002")[:2]
+    assert len(spec) == 2
+    sel = set(M.auto_pick(g, 0, "S002")[:8])
     for r in spec:
-        sel |= {r}
-        path, cur = [r], r
+        sel.add(r)
+        cur = r
         while d[cur] > 0:
             cur = min((n for n in g.world.land_adj[cur] if n in d and d[n] == d[cur] - 1), key=str)
-            path.append(cur)
-        sel |= set(path)
+            sel.add(cur)
     sel = ["S002"] + sorted(sel - {"S002"})
     assert len(sel) <= C.METRO_MAX_REGIONS
-    el = [r for r in sel if g.info(r).specialty]
-    for r in el:
-        g.regions[r].b["specialty"] = 1
-    g.regions[spec[0]].b["specialty"] = 3                 # 3 + 1 + 1 … → 평균(내림)
-    pre = {r: g.regions[r].b["specialty"] for r in el}
-    avg = int(sum(pre.values()) // len(el))
     _room(g, sel)
+    g.regions[spec[0]].b["specialty"] = 3
+    g.regions[spec[1]].b["specialty"] = 1
     ok, msg = g.create_metro(0, "S002", sel)
     assert ok, msg
-    m = M.of(g, "S002")
-    assert M.pool_members(g, m, "specialty") == el
-    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el)
-    assert all(g.regions[r].b["specialty"] == 0 for r in sel if r not in el)
-    # 행동 탭: 지역별 특산물 시설 대신 '광역 특산물 시설' 하나(비용 = 한 지역 비용 × 특산물 지역 수)
-    opts = [o for o in g.options(0, sel[3]) if o["kind"] == "build" and o["key"] == "specialty"]
-    assert len(opts) == 1 and opts[0]["pool"] == "specialty"
+    assert [g.regions[r].b["specialty"] for r in spec] == [3, 1]
+    assert all(any(c and c["key"] == "specialty" for c in g.regions[r].b.slots["etc"]) for r in spec)
+    opts = [o for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "specialty"]
+    assert {o["site"] for o in opts} == {spec[1]} and not any(o.get("mult") for o in opts)
     o = opts[0]
-    assert o["level"] == avg + 1 and o["name"] == f"광역 특산물 시설 {avg + 1}단계"
-    assert o["cost"] == pytest.approx(R.prod_building_cost("specialty", avg + 1) * len(el))
-    eff = g.building_effect(0, "S002", o)
-    assert eff.startswith(f"지역 {len(el)}곳 각각 턴당 {avg + 1}개")
-    assert all(f"「{sp}」" in eff for r in el for sp in g.info(r).specialties)
-    ok, msg = g.start_project_max(0, "S002", "build", "specialty", pool="specialty")
+    assert o["slot"][0] == "etc" and o["cost"] == pytest.approx(g.card_cost(0, spec[1], "specialty", 2)[0])
+    ok, msg = g.start_project(0, "S002", "build", "specialty", site=spec[1], slot=o["slot"])
     assert ok, msg
     p = g.regions["S002"].project
-    assert p.pool == "specialty" and p.chain
     for _ in range(p.turns):
         g._fund_projects()
         g._phase_projects(("build",))
-    assert [g.regions[r].b["specialty"] for r in el] == [avg + 1] * len(el)
-    # 3단계가 끝: 더 올릴 수 없다
-    for r in el:
-        g.regions[r].b["specialty"] = 3
-    assert not any(o["kind"] == "build" and o["key"] == "specialty" for o in g.options(0, "S002"))
-    # 해제: 묶기 전 + (지금 − 묶은 시점 평균), 최대 3단계
+    assert g.regions[spec[1]].b["specialty"] == 2
     ok, _ = g.dissolve_metro(0, "S002")
-    assert ok
-    assert {r: g.regions[r].b["specialty"] for r in el} == {r: min(3, v + 3 - avg) for r, v in pre.items()}
+    assert ok and [g.regions[r].b["specialty"] for r in spec] == [3, 2]
 
 
-def test_migrate_old_save_pools_specialty():
-    """예전 세이브: 특산물 시설이 지역별이던 광역시는 불러올 때 통합 건물로 맞춘다."""
-    g, _ = _setup()
-    d = _own_ring(g, 3)
-    sel = M.auto_pick(g, 0, "S002")
+def test_migrate_legacy_metro_merges_slots():
+    """예전 세이브(v1.3.9까지)의 광역시: 불러오면 광역 슬롯으로 합치고, 예전 통합 건물 공사는 낸 돈을 모두 돌려준다."""
+    import pickle
+    g, sel = _setup()
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
     m = M.of(g, "S002")
-    el = M.pool_members(g, m, "specialty")
-    assert len(el) >= 2
-    del m["merge"]["specialty"]                            # 예전 광역시: 특산물은 통합하지 않았다
-    for r in el:
-        m["pre"][r].pop("specialty", None)
-    levels = [3] + [1] * (len(el) - 1)
-    for r, lv in zip(el, levels):
-        g.regions[r].b["specialty"] = lv
-    M.migrate(g)
-    avg = sum(levels) // len(el)
-    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el) and m["merge"]["specialty"] == avg
-    M.migrate(g)                                           # 두 번 불러도 그대로
-    assert [g.regions[r].b["specialty"] for r in el] == [avg] * len(el)
-    ok, _ = g.dissolve_metro(0, "S002")
-    assert ok and [g.regions[r].b["specialty"] for r in el] == levels     # 해제하면 지역별 단계로 돌아간다
+    M.unmerge(g, m)                                       # 예전 모습: 구성 지역마다 카드, 광역 슬롯 표시 없음
+    for k in ("slot_merge", "pre_slots", "merged"):
+        m.pop(k)
+    m["merge"]["farm"] = 5
+    p = Project(kind="build", key="farm", level=6, turns=10, per_turn=100.0, paid=500.0, metro=m["id"], site="S002",
+                pool="farm")
+    for r in sel:
+        g.regions[r].project = p
+    money = g.player.money
+    g2 = pickle.loads(pickle.dumps(g))
+    m2 = M.of(g2, "S002")
+    assert m2["slot_merge"] and "farm" not in m2["merge"]
+    assert len(g2.regions["S002"].b.slots["base"]) == S.BASE_SLOT_MAX and g2.regions["S002"].b.mult_of("base") == len(sel)
+    assert all(g2.regions[r].project is None for r in sel) and g2.player.money == pytest.approx(money + 500)
+    M.migrate(g2)                                         # 두 번 불러도 그대로
+    assert g2.regions["S002"].b.mult_of("base") == len(sel)
 
 
-def test_metro_max_button_keeps_pool_kind():
-    """[최대]는 고른 통합 건물 종류 그대로: 탄광·정유가 함께 있는 광역시에서 광역 정유공장을 눌렀으면 정유공장."""
+def test_metro_extract_split_by_resource():
+    """광역 채굴 카드: 탄전·유전 구성 지역이 함께 있으면 그 수의 비율로 석탄·석유를 나눠 캔다."""
     g, sel = _setup()
     a, b = sel[1], sel[2]
     real = g.info
@@ -482,16 +581,98 @@ def test_metro_max_button_keeps_pool_kind():
     class _Info:
         def __init__(self, info, coal, oil):
             self._i, self.is_coal, self.is_oil = info, coal, oil
+            self.oil = 0
 
         def __getattr__(self, k):
             return getattr(self._i, k)
     g.info = lambda rid: (_Info(real(rid), True, False) if rid == a else
                           _Info(real(rid), False, True) if rid == b else real(rid))
+    g.regions[a].b["extract"] = 4
+    g.regions[b].b["extract"] = 2                         # 합 6 ÷ 4 = 1.5 → 광역 채굴 2단계 ×4
     ok, msg = g.create_metro(0, "S002", sel)
     assert ok, msg
-    pools = [o["pool"] for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "extract"]
-    assert pools == ["coal", "oil"]
-    ok, msg = g.start_project_max(0, "S002", "build", "extract", pool="oil")
-    assert ok, msg
-    p = g.regions["S002"].project
-    assert p.pool == "oil" and p.chain and "정유" in p.name
+    cb = g.regions["S002"].b
+    assert cb["extract"] == 2 and M.extract_res(g, "S002") == ("oil", "coal")
+    m = g.mods(0)
+    assert g.extract_amount(0, g.regions["S002"], "oil") == pytest.approx(2 * 2 * m.mult("output_extract"))
+    assert g.extract_amount(0, g.regions["S002"], "coal") == pytest.approx(2 * 2 * m.mult("output_extract"))
+    mined = g.energy_mined(0)
+    assert mined["oil"] >= 4 * m.mult("output_extract") - 1e-9 and mined["coal"] >= 4 * m.mult("output_extract") - 1e-9
+    assert g.building_tech("S002", "extract") == ("oil", "coal")
+
+
+def test_metro_action_tab_shows_merged_slots(monkeypatch, tmp_path):
+    """행동 탭(v1.3.16): 광역시 어느 구성 지역을 골라도 중심의 광역 슬롯(×n)과 그 지역의 기타 슬롯을 보여 주고,
+    빈 광역 칸을 누르면 중심에 짓는 선택지(비용 n배)를 펼친다. 지정 창은 합친 슬롯 구성을 미리 보여 준다."""
+    import os
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    pygame = pytest.importorskip("pygame")
+    from korciv.ui import app as appmod, slot_cards as SC, theme
+    monkeypatch.setattr(appmod, "PREFS_PATH", str(tmp_path / "prefs.json"))
+    theme._fonts.clear()
+    theme._text_cache.clear()
+    app = appmod.App(width=1280, height=800)
+    try:
+        g, sel = _setup()
+        app.game, app.world = g, g.world
+        app.reset_ui()
+        app.scene = "main"
+        app.start_metro_pick("S002")                       # 지정 창: 광역 슬롯 미리보기
+        app.metro_pick["sel"] = set(sel[1:])
+        app.gui.begin([])
+        app.frame()
+        assert M.plan_lines(g, "S002", M.preview(g, "S002", sel)["plan"])[0].startswith("기본 6칸 ×4")
+        app.cancel_metro_pick()
+        ok, msg = g.create_metro(0, "S002", sel)
+        assert ok, msg
+        rid = sel[2]
+        app.select(rid)
+        app.left_open, app.left_tab, app.tab = True, "region", "action"
+        app.gui.begin([])
+        app.frame()
+        summary, _, cells = SC._cells(app, rid)
+        cb = g.regions["S002"].b
+        assert [c for t, _, c in summary if t == "base"] == cb.slots["base"]
+        idx = cb.empty("base")[0]
+        layout, _ = SC.grid_layout(cells, 20, 120, 330)
+        rect = dict(layout)[("base", idx)]
+        app.gui.begin([])
+        app.gui.mouse = rect.center
+        app.gui.clicked = True
+        SC.draw_slot_grid(app, 20, 120, 330, rid, mine=True, select=True)
+        assert app.slot_sel == (rid, "base", idx)
+        app.gui.begin([])
+        app.frame()                                          # 펼친 선택지(중심의 광역 칸)
+        choices = g.slot_choices(0, g.slot_site(rid, "base"), ("base", idx), g.options(0, rid))
+        assert choices and all(o["site"] == "S002" for o in choices)
+        assert all(o.get("mult") == len(sel) for o in choices if o["key"] not in C.SINGLE_BUILDINGS)
+        assert SC.slot_panel_height(app, rid, ("base", idx), g.options(0, rid)) > SC.PANEL_ROW * 3
+        for dark in (True, False):
+            app.theme.set_dark(dark)
+            app.gui.begin([])
+            app.frame()
+    finally:
+        theme._fonts.clear()
+        theme._text_cache.clear()
+        pygame.quit()
+
+
+def test_ai_metro_orders_use_merge_plan():
+    """AI 광역시 지정(v1.3.10 AI)도 광역 슬롯 합병 결과로 5단계 거점이 남는지 보고 지정한다."""
+    from korciv import ai_economy as AE
+    g, sel = _setup()
+    f = g.factions[0]
+    f.is_ai = True
+    for r in sel:
+        g.regions[r].b["factory"] = 5
+        g.regions[r].b["bank"] = 5
+        g.regions[r].project, g.regions[r].queue = None, []
+    period = max(4, round(8 / AE.preference(g, 0, "metro")))
+    while g.turn % period != 0:
+        g.turn += 1
+    assert AE.metro_orders(g, f, {})
+    m = M.of(g, "S002")
+    assert m and m["slot_merge"]
+    cb = g.regions["S002"].b
+    assert cb["factory"] == 5 and cb["bank"] == 5 and cb.mult_of("base") == len(m["members"])

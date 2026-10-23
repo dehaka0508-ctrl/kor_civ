@@ -20,6 +20,8 @@ sys.path.insert(0, ROOT)
 
 from korciv import config as C                    # noqa: E402
 from korciv import diplomacy as D                 # noqa: E402
+from korciv import metro as M                     # noqa: E402
+from korciv import slots as S                     # noqa: E402
 from korciv import negotiation as NG              # noqa: E402
 from korciv.game import Game                      # noqa: E402
 from korciv.leaders import GOVERNMENTS, LEADERS   # noqa: E402
@@ -90,6 +92,18 @@ def check(g, where):
             elif len({id(g.regions[x].project) for x in m["members"]}) != 1 and not any(
                     getattr(g.regions[x], "lost_project", None) for x in m["members"]):
                 report("광역시 슬롯 불일치", f"{where} {m['name']}")
+        b = r.b
+        if hasattr(b, "slots"):                       # 광역 슬롯(v1.3.16)
+            mm = M.merged(g, rid)
+            if mm and rid != mm["center"] and any(b.slots.get(t) for t in M.MERGE_TYPES):
+                report("광역 슬롯: 구성 지역에 칸이 남음", f"{where} {rid}")
+            elif mm and rid == mm["center"] and (len(b.slots["base"]) != S.BASE_SLOT_MAX or not getattr(b, "xmult", None)):
+                report("광역 슬롯: 중심 칸 이상", f"{where} {rid} base={len(b.slots['base'])}")
+            elif not mm and (not b.slots.get("base") or getattr(b, "xmult", None)):
+                report("광역 슬롯: 해제 뒤 잔여", f"{where} {rid}")
+            for t, i, c in b.cards():
+                if c["level"] > g.card_max(rid, c["key"]) and c["key"] not in ("hydro", "nuclear"):
+                    report("카드 단계 초과", f"{where} {rid} {t}{i} {c}")
         for fid, o in r.occs.items():
             if o["progress"] > o["need"] + 1:
                 report("점령 진행 초과", f"{where} {rid} {o}")

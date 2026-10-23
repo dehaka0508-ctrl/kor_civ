@@ -32,9 +32,13 @@ class GovernanceMixin:
         f, m = self.factions[r.owner], self.mods(r.owner)
         metro = M.of(self, rid)
         lv = max(0, min(5, r.b.get("admin", 0)))
-        base = C.ADMIN_OUTPUT[lv]
+        n = r.b.mult_of("base") if hasattr(r.b, "mult_of") else 1     # 광역 슬롯 시청: 구성 지역 수만큼(v1.3.16)
+        base = C.ADMIN_OUTPUT[lv] * n
         if metro and lv == 5:
-            base = 50 + 100 / len(metro["members"]) if f.capital in metro["members"] else 50
+            if M.merged(self, rid):
+                base = 50 * n + (100 if f.capital in metro["members"] and n > 1 else 0)
+            else:
+                base = 50 + 100 / len(metro["members"]) if f.capital in metro["members"] else 50
         value = base * m.mult("admin_building_output") + m.add("admin_each")
         if rid == f.capital:
             value += m.add("capital_admin")
@@ -55,11 +59,14 @@ class GovernanceMixin:
             return 0.0
         lv = max(0, min(5, r.b.get("edu", 0)))
         metro = M.of(self, rid)
-        base = C.EDU_SCIENCE[lv] * r.pop
+        pop = r.pop
+        if M.is_merged_center(self, rid):     # 광역 슬롯 연구 건물: 구성 지역 인구 전체(v1.3.16)
+            pop = sum(self.regions[x].pop for x in metro["members"])
+        base = C.EDU_SCIENCE[lv] * pop
         if metro and lv == 5:
-            base = 6 * r.pop
+            base = 6 * pop
             if self.factions[r.owner].capital in metro["members"]:
-                base += 500 / len(metro["members"])
+                base += 500 if M.merged(self, rid) else 500 / len(metro["members"])
         m = self.mods(r.owner)
         return base * m.mult("science_edu") * m.mult("science_output") * self.great_person_bonus(rid, "science_mult")
 
@@ -94,8 +101,7 @@ class GovernanceMixin:
 
     def building_tech(self, rid, key):
         if key == "extract":
-            i = self.info(rid)
-            return tuple(k for k, present in (("oil", i.is_oil), ("coal", i.is_coal)) if present)
+            return M.extract_res(self, rid)          # 광역 슬롯: 구성 지역 전체의 자원
         return (key,) if key in ("farm", "fishery", "factory", "bank", "power") else ()
 
     def building_allowed(self, fid, rid, key, level, pool=None):
@@ -127,7 +133,7 @@ class GovernanceMixin:
                     # 실행 중뿐 아니라 예약도 잡아 동시 4단계 착수 경쟁을 막는다.
                     reserved = any(p.kind == "build" and p.key == "admin" and p.level >= 4
                                    for p in self.local_projects(n))
-                    if other.b.get("admin", 0) >= 4 or reserved:
+                    if self.blevel(n, "admin") >= 4 or reserved:
                         return False, "인접한 자국 지역에 도청 또는 도청 공사가 있습니다."
         return True, ""
 

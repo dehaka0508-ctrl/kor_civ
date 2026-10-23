@@ -2,18 +2,19 @@
 
 지도·소유·부대 위치는 지역 단위 그대로 두고, 그 위에 묶음을 얹는다.
 - 슬롯 1개: 구성 지역 모두가 같은 작업(Project) 하나를 가리킨다.
-- 생산·방어 건물(농장·어장·공장·시장·발전소·특산물 시설·탄광·정유·방공호·대공포): 지을 수 있는 구성 지역들의 평균 단계(내림)를
-  그 지역들에 실제로 적용한다(→ 산출·연료 소비가 '평균 단계 × 지역 수'). 광역시에서 한 단계 올리면 모두 함께 오른다.
-  농장·어장·공장·시장은 6단계까지(광역시 전용).
-- 특산물 시설은 특산물이 있는 구성 지역들끼리 통합(v1.3.0), 방어선만 지역마다 따로(행동 탭에 지역별로 나열).
-- 항구·공항·사관학교: 하나라도 있으면 광역시 전체에 있는 것으로(항구는 해안 지역마다).
+- 방어 건물(방공호·대공포): 구성 지역들의 평균 단계(내림)를 모두에 적용하고 함께 올린다. 방어선만 지역마다 따로.
+- 공항: 하나라도 있으면 광역시 전체에 있는 것으로.
 - 행복도는 중심 값 하나(구성 지역은 같은 값), 특산물 배분·반란 판정도 한 지역처럼.
 - 군 유닛은 하나를 생산하면 지역 수만큼 나온다. 공격받으면 광역시 안의 병력이 함께 방어하고(방어력 ×(1 − 0.02(n − 1))),
   점령되면 통째로 넘어간다(저항 기간이 끝나면 지정 해제).
-- 해제하면 건물 단계 = 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 공항은 중심, 부대는 중심으로.
-- 건물 슬롯(v1.3.8): 슬롯 건물의 통합은 그 건물 카드를 가진 구성 지역끼리(가장 높은 카드의 단계를 함께 올린다).
-  아무도 없으면 그 건물을 꽂을 빈 칸이 있는 구성 지역 모두에 1단계를 새로 짓는다. 항구·사관학교는 슬롯 카드라
-  광역시 전체로 퍼지지 않고 지은 지역에만 있다(사관학교 할인·해군 생산은 광역시 어디에 있어도 된다).
+- 광역 슬롯(v1.3.16): 구성 지역들의 기본·하천·해안 슬롯 카드를 합쳐 중심 지역에 '광역 슬롯'을 만든다.
+  · 기본 슬롯은 늘 6칸. 건물 종류마다 레벨 합 ÷ 지역 수를 반올림(하나라도 있으면 최소 1), 평균이 5를 넘으면
+    5단계 카드 하나 + (평균 − 5)를 반올림한 카드(칸이 남을 때만). 산출은 구성 지역 수만큼(카드 배수).
+  · 하천 슬롯은 하천이 있는 구성 지역이 1곳이면 1칸, 2곳 이상이면 2칸, 산출은 하천이 있는 지역 수만큼.
+  · 해안 슬롯도 같은 방식(바다가 있는 지역 수), 항구가 하나라도 있었으면 항구 칸을 따로 하나 더.
+  · 기타 슬롯(댐·원전·특산물 시설·무료 항구)은 합치지 않고 지역마다 그대로.
+  구성 지역 자신의 기본·하천·해안 카드는 묶는 동안 보관했다가, 해제하면 되돌린 뒤 묶은 뒤 바뀐 단계(광역 카드의
+  레벨 합 변화)를 각 지역의 그 건물 카드에 더한다. 공항은 중심, 부대는 중심으로.
 """
 from __future__ import annotations
 
@@ -24,14 +25,14 @@ from . import rules as R
 from . import slots as S
 from .state import NEUTRAL, Project
 
-# (통합 종류, 건물 키). 탄광·정유는 같은 '채굴 시설' 키지만 지을 수 있는 지역이 달라 따로 묶는다
-POOLS = (("admin", "admin"), ("edu", "edu"), ("farm", "farm"), ("fishery", "fishery"), ("factory", "factory"), ("bank", "bank"),
-         ("power", "power"), ("specialty", "specialty"), ("coal", "extract"), ("oil", "extract"),
-         ("shelter", "shelter"), ("aa", "aa"))
+# (통합 종류, 건물 키): 슬롯을 쓰지 않는 방어 건물만 예전처럼 구성 지역끼리 평균 단계로 통합한다(슬롯 건물은 광역 슬롯)
+POOLS = (("shelter", "shelter"), ("aa", "aa"))
+MERGE_TYPES = ("base", "river", "coast")
+MERGE_FIRST = ("admin", "edu", "academy", "extract")    # 기본 슬롯 6칸이 모자라면 먼저 넣는 건물
 POOL_KEY = dict(POOLS)
 SINGLES = ("port", "airport", "academy")
 SPREAD_SINGLES = ("airport",)        # 광역시 전체로 퍼지는 유일 건물(슬롯 밖). 항구·사관학교는 슬롯 카드(v1.3.8)
-SNAP_KEYS = ("admin", "edu", "farm", "fishery", "factory", "bank", "power", "specialty", "extract", "shelter", "aa") + SINGLES
+SNAP_KEYS = ("shelter", "aa") + SINGLES
 POOL_NAMES = {"admin": "광역시청", "edu": "연구 건물", "farm": "광역 경작지", "fishery": "광역 어장", "factory": "광역 공업 지구", "bank": "광역 시장 지구",
               "power": "광역 발전소", "specialty": "광역 특산물 시설", "coal": "광역 탄광", "oil": "광역 정유공장",
               "shelter": "광역 방공호", "aa": "광역 대공포"}
@@ -75,24 +76,179 @@ def eligible(g, pool, rid) -> bool:
 
 
 def pool_members(g, m, pool) -> list:
-    el = [r for r in m["members"] if eligible(g, pool, r)]
-    key = POOL_KEY[pool]
-    if key not in S.CARD_KEYS:
-        return el
-    # 슬롯 카드(v1.3.8): 그 건물을 가진 구성 지역끼리. 아무도 없으면 빈 칸이 있는 구성 지역들
-    have = [r for r in el if g.regions[r].b.get(key, 0) > 0]
-    if have:
-        return have
-    return [r for r in el if hasattr(g.regions[r].b, "free") and g.regions[r].b.free(key) is not None]
+    return [r for r in m["members"] if eligible(g, pool, r)]
+
+
+def merged(g, rid):
+    """구성 지역 슬롯을 합친 광역시(v1.3.16)면 그 광역시, 아니면 None."""
+    m = of(g, rid)
+    return m if m and m.get("slot_merge") else None
+
+
+def is_merged_center(g, rid) -> bool:
+    m = merged(g, rid)
+    return bool(m) and m["center"] == rid
+
+
+def group(g, m, stype) -> list:
+    """그 종류 슬롯을 가진(묶기 전) 구성 지역."""
+    pre = m.get("pre_slots", {})
+    return [r for r in m["members"] if pre.get(r, {}).get(stype)]
+
+
+def slot_regions(g, rid, stype) -> list:
+    """그 칸의 카드가 대표하는 지역들: 광역 슬롯이면 그 슬롯을 가진 구성 지역, 아니면 그 지역 하나."""
+    m = merged(g, rid)
+    if m and rid == m["center"] and stype in MERGE_TYPES:
+        return group(g, m, stype) or [rid]
+    return [rid]
+
+
+def extract_res(g, rid) -> tuple:
+    """채굴 카드를 지을 수 있는 자원 ("oil", "coal"). 광역 슬롯 중심이면 구성 지역 전체의 자원."""
+    sites = slot_regions(g, rid, "base")
+    return tuple(k for k in ("oil", "coal") if any(getattr(g.info(r), "is_" + k) for r in sites))
+
+
+def extract_levels(g, rid, res) -> list:
+    """그 자원으로 나오는 채굴 카드 단계(배수만큼 되풀이). 광역 채굴 카드는 유전·탄전 구성 지역 수 비율로 나눈다."""
+    b = g.regions[rid].b
+    lv = b.levels("extract") if hasattr(b, "levels") else [b.get("extract", 0)]
+    m = merged(g, rid)
+    if not m or rid != m["center"]:
+        return lv
+    oil = sum(1 for r in m["members"] if g.info(r).is_oil)
+    coal = sum(1 for r in m["members"] if g.info(r).is_coal)
+    if not oil + coal:
+        return []
+    k = S.round_half_up(len(lv) * oil / (oil + coal))
+    return lv[:k] if res == "oil" else lv[k:]
+
+
+# ------------------------------------------------------------------ 광역 슬롯(v1.3.16)
+def _sums(slots) -> dict:
+    """{(슬롯 종류, 건물 키): 카드 레벨 합}(배수 없이)."""
+    out = {}
+    for t in MERGE_TYPES:
+        for c in slots.get(t, []):
+            if c:
+                out[(t, c["key"])] = out.get((t, c["key"]), 0) + c["level"]
+    return out
+
+
+def merge_plan(g, sel) -> dict:
+    """구성 지역들의 기본·하천·해안 카드를 합친 광역 슬롯(지정 미리보기와 지정에 함께 쓴다).
+    {"slots": {종류: [카드 또는 None]}, "mult": {종류: 그 슬롯을 가진 지역 수}}"""
+    bs = {r: g.regions[r].b for r in sel}
+    groups = {"base": list(sel),
+              "river": [r for r in sel if bs[r].slots.get("river")],
+              "coast": [r for r in sel if bs[r].slots.get("coast")]}
+    slots, mult = {}, {}
+    for t in MERGE_TYPES:
+        el = groups[t]
+        n = len(el)
+        size = S.BASE_SLOT_MAX if t == "base" else min(2, n)
+        tot, port = {}, False
+        for r in el:
+            for c in bs[r].slots.get(t, []):
+                if not c:
+                    continue
+                if t == "coast" and c["key"] == "port":
+                    port = True
+                    continue
+                tot[c["key"]] = tot.get(c["key"], 0) + c["level"]
+        lists = {k: S.split_average(v, n) for k, v in tot.items()}
+        main = sorted(lists, key=lambda k: ((0, MERGE_FIRST.index(k), 0, "") if k in MERGE_FIRST
+                                            else (1, -lists[k][0], -tot[k], k)))
+        cards = [{"key": k, "level": lists[k][0]} for k in main]
+        extra = sorted(((k, lv) for k in main for lv in lists[k][1:]), key=lambda kv: (-kv[1], kv[0]))
+        cards += [{"key": k, "level": lv} for k, lv in extra]
+        row = cards[:size] + [None] * max(0, size - len(cards))
+        if t == "coast" and port:
+            row.append({"key": "port", "level": 1})        # 항구가 하나라도 있었으면 항구 칸을 따로
+        slots[t] = row
+        mult[t] = max(1, n)
+    return {"slots": slots, "mult": mult}
+
+
+def merge(g, m):
+    """광역시 지정·예전 세이브: 구성 지역 카드를 보관하고 중심에 광역 슬롯을 만든다."""
+    sel = m["members"]
+    plan = merge_plan(g, sel)
+    m["pre_slots"] = {r: {t: [dict(c) if c else None for c in g.regions[r].b.slots.get(t, [])] for t in MERGE_TYPES}
+                      for r in sel}
+    for r in sel:
+        b = g.regions[r].b
+        for t in MERGE_TYPES:
+            b.slots[t] = []
+        b.__dict__.pop("xmult", None)
+        b.resync()
+    cb = g.regions[m["center"]].b
+    for t in MERGE_TYPES:
+        cb.slots[t] = [dict(c) if c else None for c in plan["slots"][t]]
+    cb.xmult = dict(plan["mult"])
+    cb.resync()
+    m["merged"] = _sums(cb.slots)
+    m["slot_merge"] = True
+
+
+def unmerge(g, m):
+    """해제: 보관한 카드를 되돌리고, 묶은 뒤 광역 카드의 레벨 합이 바뀐 만큼 각 지역의 그 건물 카드에 더한다
+    (예전 '묶기 전 단계 + (지금 단계 − 묶은 시점 단계)'와 같은 규칙. 없던 건물은 빈 칸에 새로)."""
+    sel = [r for r in m["members"] if r in g.regions]
+    center = m["center"]
+    cb = g.regions[center].b
+    now = _sums(cb.slots)
+    base = m.get("merged", {})
+    pre = m.get("pre_slots", {})
+    for r in sel:
+        b = g.regions[r].b
+        if r in pre:
+            for t in MERGE_TYPES:
+                b.slots[t] = [dict(c) if c else None for c in pre[r][t]]
+        b.__dict__.pop("xmult", None)
+        b.resync()
+    for (t, k), d in sorted({tk: now.get(tk, 0) - base.get(tk, 0) for tk in set(now) | set(base)}.items()):
+        if not d or k == "port":
+            continue
+        top = C.PROD_BUILDINGS[k]["max"] if k in C.PROD_BUILDINGS else S.max_level(k)
+        for r in sel:
+            b = g.regions[r].b
+            if not b.slots.get(t) or (k == "extract" and not (g.info(r).is_oil or g.info(r).is_coal)):
+                continue
+            pos = max(((tt, i) for tt, i, c in b.cards(k) if tt == t), key=lambda p: b.card(p)["level"], default=None)
+            if pos is not None:
+                b.set_card(pos, max(0, min(top, b.card(pos)["level"] + d)))
+            elif d > 0 and b.empty(t) and not (k in S.UNIQUE_KEYS and b.count(k)) and (k != "academy" or r == center):
+                b.place(k, min(top, d), (t, b.empty(t)[0]))     # 없던 건물은 빈 칸에 새로(사관학교는 중심에만)
+    had, has = base.get(("coast", "port"), 0) > 0, now.get(("coast", "port"), 0) > 0
+    coast = [r for r in sel if g.regions[r].b.slots.get("coast")]
+    if has and coast and not any(g.regions[r].b.get("port") for r in sel):
+        site = center if center in coast else max(coast, key=lambda r: (g.regions[r].pop, r))
+        b = g.regions[site].b
+        if b.empty("coast"):
+            b.place("port", 1, ("coast", b.empty("coast")[0]))
+    elif had and not has:                                   # 광역 항구가 부서졌다
+        for r in coast:
+            b = g.regions[r].b
+            for tt, i, c in list(b.cards("port")):
+                if tt == "coast":
+                    b.remove((tt, i))
 
 
 def pool_level(g, m, pool) -> int:
     """지을 수 있는 구성 지역들의 평균 단계(내림)."""
     el = pool_members(g, m, pool)
-    if not el:
+    if not el or pool not in POOL_KEY:          # 예전 통합 건물 종류(v1.3.16부터 광역 슬롯 카드)
         return 0
     key = POOL_KEY[pool]
     return int(math.floor(sum(g.regions[r].b[key] for r in el) / len(el) + 1e-9))
+
+
+def slot_site(g, rid, stype) -> str:
+    """그 슬롯 카드가 있는 지역: 광역시의 기본·하천·해안 슬롯은 중심, 기타 슬롯은 그 지역."""
+    m = of(g, rid)
+    return m["center"] if m and stype in MERGE_TYPES else rid
 
 
 def max_level(key) -> int:
@@ -125,17 +281,6 @@ def def_mult(g, rid) -> float:
     if not m or g.mods(g.regions[rid].owner).value("metro_def_exempt"):
         return 1.0
     return max(0.0, 1.0 - C.METRO_DEF_PER_REGION * (len(m["members"]) - 1))
-
-
-def river_farm(g, rid) -> bool:
-    """구성 지역 중 하나라도 하천 농장이면 광역시 농장 전체가 하천 농장."""
-    return any(g.river_farm(r) for r in members(g, rid))
-
-
-def fish_mult(g, fid, rid) -> float:
-    """구성 지역 중 하나라도 바다 어장이면 광역시 어장 전체가 그 배수(가장 좋은 어장 기준)."""
-    el = [r for r in members(g, rid) if g.can_fish(r)] or [rid]
-    return max(g._fish_mult_one(fid, r) for r in el)
 
 
 def label(g, rid) -> str:
@@ -328,7 +473,7 @@ def full_name(g, fid, center, name) -> str:
 
 
 def preview(g, center, sel) -> dict:
-    """지정했을 때의 통합 단계 {통합 종류: (단계, 지역 수)} 와 유일 건물."""
+    """지정했을 때의 광역 슬롯(merge_plan), 방어 건물 통합 단계 {통합 종류: (단계, 지역 수)}, 유일 건물, 멈출 작업."""
     m = {"members": normalize(center, sel)}
     out = {}
     for pool, key in POOLS:
@@ -337,7 +482,32 @@ def preview(g, center, sel) -> dict:
             out[pool] = (pool_level(g, m, pool), len(el))
     singles = {k: any(g.regions[r].b[k] for r in m["members"]) for k in SINGLES}
     stopped = [r for r in m["members"] if g.regions[r].project is not None]
-    return {"pools": out, "singles": singles, "stopped": stopped}
+    return {"plan": merge_plan(g, m["members"]), "pools": out, "singles": singles, "stopped": stopped}
+
+
+def card_short(g, center, key, stype) -> str:
+    if key == "fishery":
+        return "하천 어장" if stype == "river" else "바다 어장"
+    if key == "power":
+        return "화력발전소"
+    if key == "extract":
+        return "채굴 시설"
+    from .state import BUILDING_NAMES
+    return BUILDING_NAMES.get(key, key)
+
+
+def plan_lines(g, center, plan) -> list:
+    """광역 슬롯 구성 글줄: ['기본 6칸 ×4: 행정 3 · 농장 1 · …', …]."""
+    out = []
+    for t in MERGE_TYPES:
+        row = plan["slots"].get(t, [])
+        if not row:
+            continue
+        cards = [f"{card_short(g, center, c['key'], t)} {c['level']}" for c in row if c]
+        empty = sum(1 for c in row if c is None)
+        txt = " · ".join(cards) + (f" · 빈 칸 {empty}" if empty else "") if cards else f"빈 칸 {empty}"
+        out.append(f"{S.SLOT_NAMES[t]} {len(row)}칸 ×{plan['mult'].get(t, 1)}: {txt}")
+    return out
 
 
 def create(g, fid, center, sel, name=None) -> tuple:
@@ -383,6 +553,7 @@ def create(g, fid, center, sel, name=None) -> tuple:
         if any(g.regions[r].b[k] for r in sel):
             for r in sel:
                 g.regions[r].b[k] = 1
+    merge(g, m)                      # 광역 슬롯(v1.3.16): 구성 지역의 기본·하천·해안 카드를 중심에 합친다
     # 행복도는 평균 하나로, 특산물 공급·징집 피로도 중심 기준으로 맞춘다
     regs = [g.regions[r] for r in sel]
     h = sum(r.happy for r in regs) / len(regs)
@@ -438,14 +609,15 @@ def dissolve(g, mid, why="") -> bool:
             if g.regions[r].project is p:
                 g.regions[r].project = None
         site = p.site if p.site in sel else center
-        if p.pool is not None or g.regions[site].owner != owner:
+        merged_slot = bool(getattr(p, "slot", None)) and p.slot[0] in MERGE_TYPES and m.get("slot_merge")
+        if p.pool is not None or merged_slot or g.regions[site].owner != owner:
             if owner != NEUTRAL:
                 refund = p.paid * C.PROJECT_REFUND
                 g.factions[owner].money += refund
         else:
             p.metro = None
             g.regions[site].project = p
-    # 건물: 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 0~최대 단계(6단계는 광역시 전용이라 5단계로)
+    # 방어 건물: 묶기 전 단계 + (지금 단계 − 묶은 시점 평균 단계), 0~최대 단계
     for pool, key in POOLS:
         base = m["merge"].get(pool)
         if base is None:
@@ -455,7 +627,10 @@ def dissolve(g, mid, why="") -> bool:
             rr = g.regions[r]
             pre = m["pre"].get(r, {}).get(key, 0)
             rr.b[key] = max(0, min(top, pre + rr.b[key] - base))
-    # 공항: 중심에. 항구·사관학교는 슬롯 카드라 지은 지역에 그대로(v1.3.8)
+    # 슬롯 카드: 보관한 카드로 되돌리고 묶은 뒤 바뀐 단계를 더한다(6단계는 광역시 전용이라 5단계로)
+    if m.get("slot_merge"):
+        unmerge(g, m)
+    # 공항: 중심에. 항구는 해안 구성 지역에(unmerge)
     for k in SPREAD_SINGLES:
         had = any(g.regions[r].b[k] for r in sel)
         for r in sel:
@@ -490,7 +665,8 @@ def dissolve(g, mid, why="") -> bool:
 
 # ------------------------------------------------------------------ 슬롯(작업)
 def options(g, fid, mid) -> list:
-    """광역시 슬롯에 넣을 수 있는 선택지. 각 선택지에 site(짓는 지역)·pool(통합 건물 종류)이 붙는다."""
+    """광역시 슬롯에 넣을 수 있는 선택지. 각 선택지에 site(짓는 지역)가 붙고, 광역 슬롯 카드는 mult(산출 배수),
+    방공호·대공포 통합은 pool 이 붙는다."""
     m = get(g, mid)
     if m is None:
         return []
@@ -514,7 +690,24 @@ def options(g, fid, mid) -> list:
                      "border": border, "oil": oil, "site": site or center, "pool": pool, "slot": slot})
 
     raw = {r: g.options(fid, r, raw=True) for r in sel}
-    # 통합 건물: 한 단계 올리면 지을 수 있는 구성 지역 모두가 함께 오른다(비용 = 한 지역 비용 × 지역 수)
+    cb = cr.b
+    # 광역 슬롯(v1.3.16): 중심의 기본·하천·해안 카드는 비용 = 한 지역 비용 × 그 슬롯을 가진 지역 수.
+    # 기타 슬롯(댐·원전·특산물)은 지역마다 따로
+    for r in sel:
+        for o in raw[r]:
+            slot = o.get("slot")
+            if o["kind"] != "build" or not slot:
+                continue
+            merged_t = slot[0] in MERGE_TYPES and m.get("slot_merge")
+            if merged_t and r != center:
+                continue
+            # 항구·사관학교는 산출이 없는 유일 건물이라 한 곳 비용 그대로
+            mult = cb.mult_of(slot[0]) if merged_t and o["key"] not in C.SINGLE_BUILDINGS else 1
+            add("build", o["key"], o["name"] if r == center else f"{g.info(r).short} {o['name']}", o["cost"] * mult,
+                o["turns"], o["ok"], o["why"], o["level"], site=r, slot=slot)
+            if mult > 1:
+                opts[-1]["mult"] = mult
+    # 방어 건물 통합: 한 단계 올리면 구성 지역 모두가 함께 오른다(비용 = 한 지역 비용 × 지역 수)
     for pool, key in POOLS:
         el = pool_members(g, m, pool)
         if not el:
@@ -526,8 +719,6 @@ def options(g, fid, mid) -> list:
             if p.kind == 'build' and p.pool == pool:
                 planned.append(max_level(key) if p.chain else p.level)
         lv = max(planned) + 1
-        if key in ("admin", "edu") and lv > (5 if g.factions[fid].capital in sel else 4):
-            continue
         if lv > max_level(key):
             continue
         if key in C.PROD_BUILDINGS:
@@ -543,8 +734,8 @@ def options(g, fid, mid) -> list:
     for r in sel:
         for o in raw[r]:
             k, key = o["kind"], o["key"]
-            if k == "build" and key == "specialty":
-                continue                         # 특산물 시설은 통합 건물로(v1.3.0)
+            if k == "build" and o.get("slot"):
+                continue                         # 슬롯 카드는 위에서
             if k == "build" and key == "line" and o["border"] not in sel:
                 add(k, key, f"{g.info(r).short} {o['name']}", o["cost"], o["turns"], o["ok"], o["why"],
                     o["level"], border=o["border"], site=r)
@@ -552,21 +743,16 @@ def options(g, fid, mid) -> list:
                 seen.add(("annex", key))
                 add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], site=r)
                 opts[-1]["eff_turns"] = o.get("eff_turns", o["turns"])     # 구성 지역 수만큼 줄어든 턴
-            elif k == 'repair' or (k == 'build' and key in C.SITE_POWER):
+            elif k == 'repair':
                 add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
-                    o['ok'], o['why'], o['level'], site=r, slot=o.get('slot'))
-            elif k == 'build' and o.get('slot') and key in ("port", "academy") and o['level'] <= 1 \
-                    and ("single", key) not in seen and not any(g.reserved_level(x, key) for x in sel):
-                seen.add(("single", key))      # 항구·사관학교: 광역시에 하나(빈 칸이 있는 첫 구성 지역에)
-                add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
-                    o['ok'], o['why'], o['level'], site=r, slot=o.get('slot'))
+                    o['ok'], o['why'], o['level'], site=r)
             elif k in ("science", "econ") and (k, key) not in seen:
                 if k == "econ" and key == "exchange" and any("exchange" in g.regions[x].econ for x in sel):
                     continue                     # 증권거래소는 광역시에 하나
                 seen.add((k, key))
                 add(k, key, o["name"] + ("" if r == center else f" ({g.info(r).short})"), o["cost"], o["turns"],
                     o["ok"], o["why"], o["level"], site=r)
-    # 공항: 광역시에 하나도 없을 때만(항구·사관학교는 위에서 슬롯 카드로)
+    # 공항: 광역시에 하나도 없을 때만(항구·사관학교는 광역 슬롯 카드)
     for key in SPREAD_SINGLES:
         spec = C.SINGLE_BUILDINGS[key]
         if any(g.reserved_level(r, key) for r in sel):
@@ -575,7 +761,7 @@ def options(g, fid, mid) -> list:
         add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * g.building_cost_mult(fid, key),
             g.build_time(fid, key, spec["turns"], site, 1), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
-    port = next((r for r in sel if g.projected_buildings(r).get('port') and g.info(r).coastal), None)
+    port = next((r for r in sel if g.info(r).coastal and g.reserved_level(r, 'port')), None)
     for key in C.BUILD_UNITS:
         u = g.unit_spec(fid, key)
         site = center
@@ -638,7 +824,10 @@ def complete(g, f, p):
                 g.regions[r].b[p.key] = 1
             g.event("complete", f"{name} {C.SINGLE_BUILDINGS[p.key]['name']} 완공", region=site, fids=(f.id,))
             return
-        g._complete_project(f, g.regions[site], p)      # 방어선(예전 세이브의 지역별 특산물 시설도): 그 지역에
+        rr = g.regions[site]
+        g._complete_project(f, rr, p)      # 슬롯 카드(광역 슬롯은 중심, 기타 슬롯은 그 지역)·방어선: 그 지역에
+        if getattr(p, "chain", False) and getattr(p, "slot", None):
+            g._chain_next(f, rr, p)
         return
     if p.kind == "unit":
         n = g.leader_units_completed(f.id, site, p.key, len(sel))
@@ -651,20 +840,34 @@ def complete(g, f, p):
 
 
 def migrate(g):
-    """예전 세이브(특산물 시설이 지역별이던 때): 특산물 시설이 지역별이던 광역시를 통합 건물로 맞춘다(불러올 때 한 번)."""
+    """예전 세이브(v1.3.9까지: 생산 건물을 구성 지역끼리 평균 단계로 통합하던 광역시)를 광역 슬롯으로 바꾼다(불러올 때 한 번).
+    통합 건물 공사와 구성 지역의 기본·하천·해안 슬롯 공사는 칸이 바뀌어 낸 돈을 모두 돌려준다."""
     for m in metros(g).values():
-        if "specialty" in m["merge"] or m.get("spec_pooled"):
+        if m.get("slot_merge") or not all(r in g.regions for r in m["members"]):
             continue
-        m["spec_pooled"] = True
-        el = pool_members(g, m, "specialty")
-        if not el:
+        if not all(hasattr(g.regions[r].b, "slots") for r in m["members"]):
             continue
-        for r in el:
-            m["pre"].setdefault(r, {})["specialty"] = g.regions[r].b["specialty"]
-        lv = pool_level(g, m, "specialty")
-        m["merge"]["specialty"] = lv
-        for r in el:
-            g.regions[r].b["specialty"] = lv
+        center = m["center"]
+        cr = g.regions[center]
+        owner = cr.owner
+        for p in list(g.local_projects(center)):
+            stale = p.kind == "build" and ((p.pool is not None and p.pool not in POOL_KEY)
+                                           or (getattr(p, "slot", None) and p.slot[0] in MERGE_TYPES))
+            if not stale:
+                continue
+            if owner != NEUTRAL:
+                g.factions[owner].money += p.paid
+                g.factions[owner].refund += p.paid
+            if cr.project is p:
+                for r in g.regions.values():
+                    if r.project is p:
+                        r.project = None
+            else:
+                cr.queue[:] = [q for q in cr.queue if q is not p]
+        m["merge"] = {k: v for k, v in m.get("merge", {}).items() if k in POOL_KEY}
+        merge(g, m)
+        if cr.project is None and owner != NEUTRAL:
+            g.promote_queue(center)
 
 
 # ------------------------------------------------------------------ 점령·정리

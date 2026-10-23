@@ -204,7 +204,7 @@ def test_special_metro_admin_edu_and_noncenter_capital():
     m = M.of(g, cap)
     assert m["special"] and g.admin_balance(0)[0] == 120
     for rid in sel:
-        g.regions[rid].b["admin"] = g.regions[rid].b["edu"] = 5
+        g.regions[rid].b["admin"] = g.regions[rid].b["edu"] = 5        # 광역 슬롯: 중심의 광역 카드만 바뀐다
     assert g.admin_balance(0)[0] == 50 * 4 + 100
     assert g.science_production(0) == 6 * 104 + 500
     policy(g, "constitutional", 5)
@@ -408,8 +408,9 @@ def test_special_metro_capture_keeps_all_complex_records():
     for rid in sel:
         g.regions[rid].b.update(admin=5, edu=5)
     g.complete_occupation(1, cap)
-    assert all(g.regions[r].lost_gov_complex for r in sel)
+    # 광역 슬롯(v1.3.16): 정부청사·국립연구원은 중심의 광역 카드 하나 — 그 기록도 중심에
+    assert g.regions[cap].lost_gov_complex and g.regions[cap].lost_gov_complex["admin5"]
     assert g.player.capital == temp.id
     g.complete_occupation(0, cap)
     assert g.player.capital == cap
-    assert all(g.regions[r].b["admin"] == g.regions[r].b["edu"] == 5 for r in sel)
+    assert all(g.blevel(r, "admin") == g.blevel(r, "edu") == 5 for r in sel)

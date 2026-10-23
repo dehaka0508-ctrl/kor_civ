@@ -39,7 +39,7 @@ class LeaderRulesMixin:
         limit = self.mods(fid).value("free_coastal_ports", 0)
         b = self.regions[rid].b
         if limit and self.info(rid).coastal and rid not in f.coastal_rewards and len(f.coastal_rewards) < limit \
-                and not b.get("port"):
+                and not b.get("port") and not self.has_port(rid):
             f.coastal_rewards.add(rid)          # 기타 슬롯에 붙여 꽂는다 — 해안 슬롯을 차지하지 않음(v1.3.9)
             b.add_free("port", 1)
 

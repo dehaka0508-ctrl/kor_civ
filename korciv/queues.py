@@ -24,7 +24,12 @@ class QueueMixin:
         level = r.lines.get(border, 0) if key == 'line' else r.b.get(key, 0)
         if key in S.CARD_KEYS:              # 슬롯 카드: 대기열까지 끝난 칸들 가운데 가장 높은 단계(v1.3.8)
             proj = self.projected_slots(rid)
-            level = max([level] + [c["level"] for t in proj for c in proj[t] if c and c["key"] == key])
+            cards = [c for t in proj for c in proj[t] if c]
+            site = M.slot_site(self, rid, "base")
+            if site != rid and (key != "port" or self.info(rid).coastal):     # 광역 슬롯(v1.3.16): 중심의 광역 카드
+                pc = self.projected_slots(site)
+                cards += [c for t in M.MERGE_TYPES for c in pc[t] if c]
+            level = max([level] + [c["level"] for c in cards if c["key"] == key])
         ps = self.local_projects(rid)
         if getattr(self, '_continuing', False):
             ps = ps[:1] if self.queue_region(rid).project else []
@@ -185,6 +190,8 @@ class QueueMixin:
                     if row[s0[1]] is None and 0 <= slot[1] < len(row) and row[slot[1]] is None:
                         exact.append(dict(o, slot=slot))
             opts = exact
+            if site is None and len(opts) > 1 and any(o.get('site') == rid for o in opts):
+                opts = [o for o in opts if o.get('site') == rid]   # 광역시 기타 슬롯: 고른 지역의 칸
         if not opts:
             return False, '선택할 수 없는 항목입니다.'
         o = self._pick_option(opts) if len(opts) > 1 else opts[0]
@@ -255,7 +262,7 @@ class QueueMixin:
             s = self.regions[p.site or rid]
             if not self.unit_spec(r.owner, p.key)["available"]:
                 why = "항공모함 강습단 기술 필요"
-            if C.UNITS[p.key]['kind'] == 'naval' and not s.b.get('port'):
+            if C.UNITS[p.key]['kind'] == 'naval' and not self.has_port(s.id):
                 why = '항구 필요'
         elif p.kind == 'science' and not self.science_site_ok(r.owner, p.site or rid, p.key):
             why = '과학 시설 위치 조건이 충족되지 않습니다.'

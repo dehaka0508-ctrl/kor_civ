@@ -1067,7 +1067,7 @@ def draw_metro_pick(app):
     sw, sh = gui.size()
     w = METRO_PANEL_W
     x0 = sw - w - 12
-    r = pygame.Rect(x0, 56 + 10, w, min(sh - 56 - 110, 640))
+    r = pygame.Rect(x0, 56 + 10, w, min(sh - 56 - 110, 720))
     gui.panel(r, radius=6, ornament=True)
     x, iw = r.x + 18, w - 36
     y = r.y + 14
@@ -1103,12 +1103,14 @@ def draw_metro_pick(app):
         gui.text((x + iw, y), d, 12, t.muted, anchor="topright", max_w=128)
         y += 20
     y += 6
-    parts = [f"{M.POOL_NAMES[p].replace('광역 ', '')} {lv}단계×{n}" for p, (lv, n) in pv["pools"].items() if lv or p in
-             ("farm", "factory", "bank")]
-    parts += [C.SINGLE_BUILDINGS[k]["name"] + " 있음" for k, v in pv["singles"].items() if v]
-    gui.text((x, y), "묶으면 (평균 단계, 소수점 내림)", 12, weight="semibold")
+    gui.text((x, y), "광역 슬롯 (건물마다 레벨 합 ÷ 지역 수, 반올림 · ×n = 산출 배수)", 12, weight="semibold")
     y += 18
-    y = gui.wrap((x, y), " · ".join(parts) or "없음", iw, 11, line_h=16) + 2
+    for line in M.plan_lines(g, center, pv["plan"]):
+        y = gui.wrap((x, y), line, iw, 11, line_h=16) + 2
+    parts = [f"{M.POOL_NAMES[p].replace('광역 ', '')} {lv}단계×{n}" for p, (lv, n) in pv["pools"].items() if lv]
+    parts += ["공항 있음"] if pv["singles"].get("airport") else []
+    if parts:
+        y = gui.wrap((x, y), " · ".join(parts), iw, 11, t.muted, line_h=16) + 2
     y = gui.wrap((x, y), f"방어력 ×{max(0.0, 1 - C.METRO_DEF_PER_REGION * (len(sel) - 1)):.2f} · 유닛 하나 생산 → "
                          f"{len(sel)}개", iw, 11, t.muted, line_h=16) + 6
     gui.text((x, y), "이름 (비우면 " + M.default_name(g, pid, center) + ")", 11, t.muted)
