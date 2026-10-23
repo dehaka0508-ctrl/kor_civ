@@ -12,7 +12,7 @@ from .. import diplomacy as D
 from .. import flags as FL
 from .. import metro as M
 from .. import rules as R
-from ..leaders import GOVERNMENTS, LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_scale
+from ..leaders import LEADERS, LEADER_BY_KEY, LEADER_CATEGORIES, gov_buff_scale
 from ..state import NEUTRAL, Settings
 from .art import draw_flag, draw_portrait, render_flag
 from .theme import hex2rgb, measure, mix
@@ -1003,47 +1003,6 @@ def draw_start_popup(app, rid):
     for k in gui.keys:
         if k.key == pygame.K_ESCAPE:   # Esc: 팝업만 닫고 다른 지역 고르기
             app.pick_popup = None
-
-
-# ------------------------------------------------------------------ 정치체제
-def draw_government(app):
-    from ..progression import POLICIES, POLICY_COMPLETION
-    gui = app.gui
-    t = app.theme
-    r = modal_frame(app, 760, 600, "정치체제를 고르세요")
-    gui.text((r.x + 24, r.y + 52), "잉여 행정력으로 정책 5단계를 해금합니다. 한 번 정하면 바꿀 수 없습니다.", 13, t.muted)
-    y = r.y + 84
-    from ..leaders import banned_govs
-    banned = banned_govs(app.game.player.leader)
-    for gdef in GOVERNMENTS:
-        row = pygame.Rect(r.x + 24, y, r.w - 48, 64)
-        if gdef["key"] in banned:
-            gui.rect(t.panel_alt, row, radius=8)
-            gui.text((row.x + 16, row.y + 10), gdef["name"], 16, t.muted, weight="bold")
-            lead = LEADER_BY_KEY[app.game.player.leader]
-            gui.text((row.x + 16, row.y + 36), f"선택 불가 — {lead['debuff'][0]}", 12, t.bad)
-            y += 70
-            continue
-        hov = gui.hover(row)
-        gui.rect(t.panel_alt if hov else t.panel, row, radius=8)
-        gui.rect(t.border, row, 1, radius=8)
-        gui.text((row.x + 16, row.y + 10), gdef["name"], 16, weight="bold")
-        policies = POLICIES.get(gdef["key"], [])
-        completion = POLICY_COMPLETION.get(gdef["key"])
-        text = "정책 트리 없음" if not policies else " → ".join(p["name"] for p in policies)
-        gui.text((row.x + 16, row.y + 36), text, 11, t.muted, max_w=row.w - 32)
-        if hov and policies:
-            gui.tooltip = "\n".join(f"{i}. {p['name']} (행정력 {p['cost']:,}): {p['description']}"
-                                    for i, p in enumerate(policies, 1))
-            if completion:
-                gui.tooltip += f"\n★ {completion['name']}: {completion['description']}"
-        if hov and gui.clicked:
-            gui.clicked = False
-            app.game.set_player_government(gdef["key"])
-            app.scene = "main"
-            app.changed()
-            app.toast(f"{josa(gdef['name'], '을/를')} 채택했습니다. 첫 턴입니다 — 지역을 눌러 [행동]에서 슬롯을 지정하세요.")
-        y += 70
 
 
 # ------------------------------------------------------------------ 모달 분기

@@ -22,7 +22,6 @@ def new_game(meet=True, **kw):
     """meet: 모든 나라가 서로 조우한 상태로 시작(외교 행동은 조우가 먼저라서)."""
     kw.setdefault("seed", 5)
     g = Game(Settings(**kw))
-    g.set_player_government("philosopher")
     return _meet_all(g) if meet else g
 
 
@@ -114,7 +113,7 @@ def test_kimdj_friendship_backlash():
 def _neutral_ai(g, *fids):
     """시드에 따라 달라지는 AI 지도자·체제 효과를 없앤다."""
     for fid in fids:
-        g.factions[fid].leader, g.factions[fid].gov = "cus", "philosopher"
+        g.factions[fid].leader, g.factions[fid].gov = "cus", None
     g._mods.clear()
 
 
@@ -733,7 +732,7 @@ def test_warmonger_reputation():
 def test_allied_defense_counts_as_defender_weariness():
     g = new_game(n_enemies=3)
     for f in g.factions:
-        f.gov = "philosopher"
+        f.gov = None
     g._mods.clear()
     g.dip.nonaggr[D.pair(1, 2)] = g.turn + 24
     g.dip.alliance[D.pair(1, 2)] = g.turn
@@ -847,12 +846,11 @@ def test_honggildong_no_monarchy():
     assert not picks & {"absolute", "constitutional"}
     g = Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil"))
     g.set_player_government("absolute")
-    assert g.player.gov == "philosopher"
+    assert g.player.gov is None
     assert g.mods(0).add("surprise") == 0
     # 과거 다중 공격 버프는 제거됨. 이제 부유한 나라 상대 공격력 +20%.
     # 같은 턴에 한 국가의 두 지역 이상을 공격하면 공격력 +10%
     g = _meet_all(Game(Settings(seed=5, player_start="S002", n_enemies=1, player_leader="gil")))
-    g.set_player_government("philosopher")
     t1, t2 = sorted(g.world.land_adj["S002"])[:2]
     _own(g, 1, [t1, t2])
     D.declare_war(g, 0, 1)
@@ -2008,7 +2006,7 @@ def test_gift_opinion_follows_income():
     inc = D.gift_income(g, 1)
     assert inc >= g.gdp(1) * C.TAX_DEFAULT * g.factions[1].income_mult - 1e-6
     f = g.factions[1]
-    f.aggression, f.gov = 5.0, "philosopher"            # 5 + 5 = 10 → 세수 1턴분당 +3
+    f.aggression, f.gov = 5.0, None            # 5 + 5 = 10 → 세수 1턴분당 +3
     assert D.gift_rate(g, 1) == pytest.approx(3.0)
     f.last["net"] = -500                               # 적자여도 푼돈 선물로 우호도가 크게 오르지 않는다
     assert D.gift_opinion(g, 1, 5) < 1                  # 예전 버그: +25
@@ -2027,7 +2025,7 @@ def test_gift_opinion_follows_income():
     offer = D.empty_offer()
     offer["give"]["food"] = 100
     assert D.gift_value(g, offer["give"], 0) == pytest.approx(100 * g.sell_price(0, "food") * C.CONTRACT_TURNS)
-    f.aggression, f.gov = 5.0, "philosopher"
+    f.aggression, f.gov = 5.0, None
     op0 = D.opinion(g, 1, 0)
     offer = D.empty_offer()
     offer["give"]["money"] = D.gift_income(g, 1)

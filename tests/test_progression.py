@@ -11,10 +11,11 @@ from korciv.progression import TECHS, GP_POOLS
 from korciv.state import Settings, Project
 
 
-def game(mode="standard", gov="philosopher"):
+def game(mode="standard", gov=None):
     g = Game(Settings(seed=41, mode=mode, player_start="S002", ai_starts=["N001"],
                       n_enemies=1, player_leader="cus", ai_leaders=["cus"]))
-    g.set_player_government(gov)
+    if gov is not None:
+        assert g.set_player_government(gov)[0]
     g.factions[1].is_ai = False
     g.player.money = 1e9
     g.player.admin = g.player.sci_points = 1e6
@@ -50,7 +51,7 @@ def empty(r):
 @pytest.mark.parametrize("mode", C.GAME_MODES)
 def test_initial_admin_edu_layout(mode):
     g = Game(Settings(mode=mode, seed=41, player_start="S002", n_enemies=1))
-    expected = 3 if mode == "standard" else 1
+    expected = 2 if mode == "standard" else 0
     assert g.regions["S002"].b["admin"] == expected
     assert g.player.admin == (g.regions["S002"].pop * 10 if mode == "standard" else 10)
     assert {r.id for r in g.regions.values() if r.b["edu"]} == (set(C.INITIAL_EDU) if mode == "standard" else set())
@@ -89,6 +90,7 @@ def test_admin_deficit_grace_and_recovery_resistance():
     r.resist = None
     policy(g, "constitutional", 1)
     r.b["admin"], g.player.admin = 0, 0
+    own(g, sorted(g.world.land_adj[r.id])[0]).pop = 50  # 집무실보다 소비가 커야 적자
     for _ in range(5):
         g._phase_knowledge(g.player)
     assert not g.player.lawless

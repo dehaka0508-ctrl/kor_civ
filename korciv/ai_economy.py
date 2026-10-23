@@ -17,8 +17,11 @@ def snapshot(g, f, threat=None):
     science = g.science_production(f.id)
     food_prod = sum(g.food_prod(f.id, r) for r in regs if not r.occ and not g.resisting(r))
     food_cons = sum(r.pop for r in regs) * C.FOOD_PER_POP
-    growth = sum(r.pop * max(0, R.pop_growth_rate(g.growth_happy(r), g.density_growth(r.id)))
-                 * f.pop_mult * g.mods(f.id).mult('growth') for r in regs if not r.occ and not g.resisting(r))
+    growth_by = {r.id: r.pop * max(0, R.pop_growth_rate(g.growth_happy(r), g.density_growth(r.id)))
+                 * f.pop_mult * g.mods(f.id).mult('growth') for r in regs if not r.occ and not g.resisting(r)}
+    growth = sum(growth_by.values())
+    office_growth = sum(g.office_output(r.id, r.pop + growth_by.get(r.id, 0) * 8) - g.office_output(r.id) for r in regs)
+    admin_growth = max(0, growth - office_growth / 8)
     enemies = D.enemies(g, f.id)
     # 공개 외교 신호와 기존 시야 기반 정세만 사용한다.
     scan = (f.ai.get('p2') or {}).get('scan', {})
@@ -37,9 +40,9 @@ def snapshot(g, f, threat=None):
                 old = max(0, min(5, p.level - 1))
                 queued_admin += (C.ADMIN_OUTPUT[min(5, p.level)] - C.ADMIN_OUTPUT[old]) / max(1, len(M.members(g, r.id)))
     forecast_cons = cons + growth * 8
-    admin_gap = max(0, forecast_cons * 1.08 - prod - queued_admin)
+    admin_gap = max(0, forecast_cons * 1.08 - prod - queued_admin - office_growth)
     deficit = max(0, cons - prod)
-    admin_keep = deficit * 6 + max(0, growth * 8 - max(0, prod - cons)) * 2
+    admin_keep = deficit * 6 + max(0, admin_growth * 8 - max(0, prod - cons)) * 2
     # 필요할 때 무법 상태를 피할 시간을 번다. 생산이 넉넉하면 정책에 쓸 비축을 묶지 않는다.
     cover = f.admin / max(.001, deficit) if deficit else 999.0
     income = g.leader_tax_revenue(f.id)
@@ -51,7 +54,7 @@ def snapshot(g, f, threat=None):
     money_keep = 200 + upkeep * (5 if enemies or pressure > .7 else 3) + food_keep
     active_science = sum(g.science_per_turn_cost(C.SCIENCE[p.key]['tier']) for p in projects if p.kind == 'science')
     return dict(regs=regs, projects=projects, threat=threat, pressure=pressure, enemies=enemies,
-                horizon=horizon, growth=growth, admin_prod=prod, admin_cons=cons, admin_gap=admin_gap,
+                horizon=horizon, growth=growth, admin_growth=admin_growth, admin_prod=prod, admin_cons=cons, admin_gap=admin_gap,
                 admin_keep=admin_keep, admin_cover=cover, science=science, science_due=active_science,
                 food_prod=food_prod, food_cons=food_cons, food_short=food_short, food_bill=food_bill, income=income,
                 upkeep=upkeep, committed=committed, money_keep=money_keep,

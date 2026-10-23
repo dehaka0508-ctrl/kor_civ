@@ -14,7 +14,7 @@ from ..state import BUILDING_NAMES, NEUTRAL
 from ..flags import faction_flag
 from .art import draw_flag, draw_portrait
 from .theme import fmt_money, hex2rgb, measure, mix
-from ..text import josa
+from ..text import josa, fmt_points
 
 
 # ------------------------------------------------------------------ 유닛 아이콘 (단색 실루엣)
@@ -76,7 +76,8 @@ def kv(gui, x, y, w, k, v, vcol=None):
 # 좌측 세로 탭(위에서부터): 키, 이름, 설명
 SIDE_TABS = (("nation", "내정", "세율·자원 시장·특산물·지출 우선순위"), ("diplo", "외교", "세력별 관계·외교 창"),
              ("army", "군사", "전체 군사 유닛 수·유지비"), ("energy", "자원\n배정", "공장·발전소 연료 배정"),
-             ("progression", "정책\n과학", "행정력·과학력·정책 트리·과학 기술·위인"),
+             ("policy", "정책", "정치체제 선택·정책 트리·위인"),
+             ("science", "과학", "과학 기술·군사 유닛 현대화"),
              ("status", "국가\n현황", "국가 통계·재정·승리 조건 진행"))
 RAIL_W = 44
 
@@ -142,9 +143,9 @@ def draw_side(app, rail, panel_rect):
         draw_energy_tab(app, body)
     elif k == "status":
         draw_nation_status(app, body)
-    elif k == "progression":
+    elif k in ("policy", "science"):
         from .progression import draw_progression_tab
-        draw_progression_tab(app, body)
+        draw_progression_tab(app, body, science=k == "science")
     elif app.tab == "action":
         draw_action_tab(app, body)
     elif app.tab == "army":
@@ -217,7 +218,7 @@ def draw_region_info(app, rect):
         y = kv(gui, x, y, w, "식량 생산", f"{r.food:,.1f} (소비 {r.pop:,.1f})")
         y = kv(gui, x, y, w, "행정력 생산", f"{g.admin_output(node):,.1f} /턴")
         y = kv(gui, x, y, w, "행정력 소비", f"{r.pop * (0.5 if g.resisting(r) else 1):,.1f} /턴")
-        y = kv(gui, x, y, w, "과학력 생산", f"{g.science_output(node):,.1f} /턴")
+        y = kv(gui, x, y, w, "과학력 생산", f"{fmt_points(g.science_output(node))} /턴")
         if r.b["factory"]:
             y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b.cap('factory')}개 투입")
     # 행복도 막대
@@ -619,7 +620,7 @@ def draw_action_tab(app, body):
         y += 36
     opts = g.options(pid, rid)
     # 건물 슬롯 카드(v1.3.9: 지역 정보 탭에서 옮김) — 카드를 누르면 아래에 그 칸의 건설·증축 선택지를 펼친다
-    from .slot_cards import draw_slot_grid, draw_slot_panel, slot_grid_height, slot_panel_height
+    from .slot_cards import draw_slot_grid, slot_grid_height, slot_panel_height, expanded_layout, _cells, CARD_H, GAP
     sel = getattr(app, "slot_sel", None)
     if sel and (sel[0] != rid or not r.b.valid((sel[1], sel[2]))):
         sel = app.slot_sel = None
@@ -632,17 +633,25 @@ def draw_action_tab(app, body):
               ("방어·군사 건물", [o for o in opts if o["kind"] == "build" and not o.get("slot") and not o.get("pool")
                               and o["key"] not in C.PROD_BUILDINGS] + metro_slots),
               ("특수", [o for o in opts if o["kind"] in ("science", "econ", "capital")])]
-    slot_h = 26 + slot_grid_height(app, rid, w) + (slot_panel_height(app, rid, (sel[1], sel[2]), opts) + 8 if sel else 0)
+    slot_h = 26 + slot_grid_height(app, rid, w, opts)
     area = pygame.Rect(body.x, y, body.w, body.bottom - y)
     content = slot_h + sum(28 + sum(60 if o["kind"] in ("build", "science", "econ", "unit") else 44 for o in lst)
                            for _, lst in groups if lst)
+    if sel and getattr(app, "_slot_reveal", None) == sel:
+        _, _, cells = _cells(app, rid)
+        height = slot_panel_height(app, rid, (sel[1], sel[2]), opts)
+        _, _, box = expanded_layout(cells, 0, 26, w, (sel[1], sel[2]), height)
+        if box is not None:
+            off = gui.scroll.get("actions", 0)
+            top = box.y - CARD_H - GAP
+            # 전체 메뉴가 들어가면 최소한만 이동. 긴 메뉴도 선택한 카드와 첫 선택지는 즉시 보인다.
+            if box.bottom > off + area.h:
+                gui.scroll["actions"] = min(top, max(off, box.bottom - area.h))
+        app._slot_reveal = None
     off = gui.begin_scroll("actions", area, content)
     yy = y - off
     yy = section(gui, x, yy, w, f"건물 슬롯 {r.b.used()}/{r.b.total()}칸 · 카드를 눌러 건설·증축")
-    yy = draw_slot_grid(app, x, yy, w, rid, mine=True, select=True)
-    sel = getattr(app, "slot_sel", None)
-    if sel and sel[0] == rid and r.b.valid((sel[1], sel[2])):
-        yy = draw_slot_panel(app, x, yy, w, rid, (sel[1], sel[2]), opts)
+    yy = draw_slot_grid(app, x, yy, w, rid, mine=True, select=True, opts=opts)
     money = g.player.money
     for title, lst in groups:
         if not lst:
@@ -2090,8 +2099,8 @@ def draw_nation_status(app, body):
                      w, 11, t.muted)
         if f.policy_level == 5 and f.gov in POLICY_COMPLETION:
             y = gui.wrap((x, y), "★ " + POLICY_COMPLETION[f.gov]["name"], w, 11, t.good)
-        if gui.button((x, y + 5, w, 28), "정책·과학·위인 관리", size=12):
-            app.left_tab, app.progression_tab = "progression", "policy"
+        if gui.button((x, y + 5, w, 28), "정책·위인 관리", size=12):
+            app.left_tab, app.progression_tab = "policy", "policy"
         y += 38
     app._nation_h = y - y0 + 20
     gui.end_scroll("nation_status", area, app._nation_h)

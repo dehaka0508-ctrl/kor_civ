@@ -23,7 +23,6 @@ def world():
 
 def game(mode="standard", start="S002", **kw):
     g = Game(Settings(mode=mode, n_enemies=1, player_start=start, seed=8, **kw))
-    g.set_player_government("philosopher")
     g.player.money = 10 ** 8
     return g
 
@@ -138,23 +137,17 @@ def test_frontier_and_chaos_start_with_empty_slots():
         caps = {f.capital for f in g.factions}
         for rid, r in g.regions.items():
             keys = {c["key"] for _, _, c in r.b.cards()}
-            allowed = {"admin"} if rid in caps else set()
+            allowed = set()
             if g.info(rid).island == "무연륙 섬":
                 allowed.add("port")
             assert keys <= allowed, (mode, rid, cards(r.b))
 
 
-def test_start_capital_admin(world):
-    g = game(start="S001")                                 # 송파: 구청(2) → 시청(3)
-    assert g.regions["S001"].b["admin"] == 3
-    g = game(start="S041")                                 # 부산 중구(인구 3.6만): 빈 칸에 주민센터
-    b = g.regions["S041"].b
-    assert b["admin"] == 1 and b.count("bank") == 1
-    full = next(rid for rid in world.order if not S.initial(world, rid).empty("base")
-                and not S.initial(world, rid).count("admin"))
-    g = game(start=full)                                   # 빈 칸이 없으면 마지막 기본 슬롯을 바꾼다
-    b = g.regions[full].b
-    assert b.slots["base"][-1] == {"key": "admin", "level": 1}
+def test_start_capital_does_not_add_or_replace_admin(world):
+    for rid in ("S001", "S041", next(x for x in world.order if not S.initial(world, x).empty("base")
+                                   and not S.initial(world, x).count("admin"))):
+        g = game(start=rid)
+        assert cards(g.regions[rid].b) == cards(S.initial(world, rid))
 
 
 # ------------------------------------------------------------------ 산출
@@ -352,7 +345,7 @@ def test_slot_cards_in_action_tab_click_expands_choices(monkeypatch, tmp_path):
         app.gui.begin([])
         app.frame()
         summary, specials, cells = SC._cells(app, rid)
-        assert specials and specials[0][1] == C.SCIENCE["lab"]["name"]       # 기타 아래 금빛 카드
+        assert any(c[1] == C.SCIENCE["lab"]["name"] for c in specials)       # 기타 아래 금빛 카드
         layout, _ = SC.grid_layout(cells, 20, 120, 330)
         rows = {}
         for (st, i), rect in layout:

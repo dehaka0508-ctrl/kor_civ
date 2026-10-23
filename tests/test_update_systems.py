@@ -12,7 +12,6 @@ from korciv.data import load_world
 
 def game(mode='frontier', **kw):
     g = Game(Settings(mode=mode, n_enemies=1, player_start='S002', seed=33, **kw))
-    g.set_player_government('philosopher')
     g.player.money = 10**8
     return g
 
@@ -54,8 +53,8 @@ def test_blank_starts(mode):
     g = game(mode)
     for rid, r in g.regions.items():
         assert r.pop == 1.0
-        assert all(not v for k, v in r.b.items() if k not in ('port', 'admin'))
-        assert r.b['admin'] == (1 if r.id in {f.capital for f in g.factions} else 0)
+        assert all(not v for k, v in r.b.items() if k != 'port')
+        assert r.b['admin'] == 0
         assert not r.lines
         if r.owner == NEUTRAL:
             assert sum(a.units.get('inf', 0) for a in g.armies_at(rid)) == 1

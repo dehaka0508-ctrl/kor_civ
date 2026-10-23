@@ -41,7 +41,6 @@ def test_royal_tithe_is_visible_and_read_only(monkeypatch, tmp_path):
     try:
         app.start_game(Settings(seed=61, player_start="S002", n_enemies=1, player_leader="sej"))
         g = app.game
-        g.set_player_government("philosopher")
         sites = [r for r in g.world.order if g.info(r).specialties and g.regions[r].owner == -1][:3]
         for rid in sites:
             g.transfer_region(rid, 0, reason="편입")

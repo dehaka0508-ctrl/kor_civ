@@ -4,13 +4,31 @@ from __future__ import annotations
 from . import config as C, diplomacy as D, metro as M
 from .state import NEUTRAL
 from .text import josa
+from .leaders import GOV_OFFICES
 
 
 class GovernanceMixin:
+    def office_building(self, rid):
+        """현재 수도의 슬롯 밖 집무실. 소유권·체제·인구에서 매번 계산해 이전 시 중복을 막는다."""
+        r = self.regions[rid]
+        if r.owner == NEUTRAL:
+            return None
+        f = self.factions[r.owner]
+        if not f.alive or f.capital != rid or f.gov not in GOV_OFFICES:
+            return None
+        return dict(name=GOV_OFFICES[f.gov], output=max(30.0, r.pop))
+
+    def office_output(self, rid, population=None):
+        office = self.office_building(rid)
+        if not office:
+            return 0.0
+        return office["output"] if population is None else max(30.0, population)
+
     def admin_output(self, rid):
         r = self.regions[rid]
+        office = self.office_output(rid)
         if r.owner == NEUTRAL or r.occ or self.resisting(r) or r.flooded:
-            return 0.0
+            return office
         f, m = self.factions[r.owner], self.mods(r.owner)
         metro = M.of(self, rid)
         lv = max(0, min(5, r.b.get("admin", 0)))
@@ -21,7 +39,7 @@ class GovernanceMixin:
         if rid == f.capital:
             value += m.add("capital_admin")
         value += self.great_person_bonus(rid, "admin_add")
-        return value * m.mult("admin_output")
+        return value * m.mult("admin_output") + office
 
     def admin_consumption(self, rid):
         r = self.regions[rid]
@@ -155,12 +173,14 @@ class GovernanceMixin:
         if old == NEUTRAL or reason != "점령" or new_owner == NEUTRAL:
             return
         f = self.factions[old]
+        self._expire_capital_claim(f)
         if f.capital in M.members(self, rr.id):
             war = self.dip.wars.get(D.pair(old, new_owner))
             same_capture = (getattr(self, "_metro_capture", False) and f.lost_capital
                             and f.lost_capital["rid"] in M.members(self, rr.id))
-            if not same_capture:
+            if not same_capture and not f.lost_capital:
                 f.lost_capital = {"rid": f.capital, "war_with": new_owner, "turn": self.turn,
+                                  "until": self.turn + C.RESIST_NO_REBEL_TURNS,
                                   "war_start": war.get("start") if war else None}
             if rr.b.get("admin", 0) == 5 or rr.b.get("edu", 0) == 5:
                 if not rr.lost_gov_complex:
@@ -182,11 +202,10 @@ class GovernanceMixin:
         if new_owner == NEUTRAL:
             return
         f = self.factions[new_owner]
+        self._expire_capital_claim(f)
         lost = f.lost_capital
         if reason == "점령" and lost and lost["rid"] == rr.id:
-            war = self.dip.wars.get(D.pair(new_owner, lost["war_with"]))
-            same_war = war is not None and war.get("start") == lost.get("war_start")
-            if same_war or self.turn - lost["turn"] < C.RESIST_NO_REBEL_TURNS:
+            if self.turn < lost.get("until", lost["turn"] + C.RESIST_NO_REBEL_TURNS):
                 self._downgrade_capital(new_owner, f.capital, rr.id)
                 f.capital = rr.id
                 f.lost_capital = None
@@ -206,7 +225,14 @@ class GovernanceMixin:
         if rr.occupied_admin and rr.occupied_admin["fid"] == new_owner:
             rr.occupied_admin = None
 
+    def _expire_capital_claim(self, f):
+        lost = f.lost_capital
+        if lost and self.turn >= lost.get("until", lost["turn"] + C.RESIST_NO_REBEL_TURNS):
+            f.lost_capital = None
+
     def _settle_government_buildings(self):
+        for f in self.factions:
+            self._expire_capital_claim(f)
         for rr in self.regions.values():
             complex_ = rr.lost_gov_complex
             if complex_ and rr.owner != complex_["fid"]:

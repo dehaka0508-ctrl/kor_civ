@@ -23,7 +23,7 @@ def test_progression_panel_clicks_spend_and_unlock(monkeypatch, tmp_path):
         g.regions[g.player.capital].b.update(admin=4, edu=4, academy=1, specialty=3)
         app.select(g.player.capital)
         app.scene, app.modal = "main", None
-        app.left_open, app.left_tab = True, "progression"
+        app.left_open, app.left_tab = True, "policy"
         buttons = []
         real_button = app.gui.button
 
@@ -36,6 +36,8 @@ def test_progression_panel_clicks_spend_and_unlock(monkeypatch, tmp_path):
 
         def click(tab, label):
             buttons.clear()
+            app.left_tab = "science" if tab == "military" else "policy"
+            app.science_tab = "military"
             app.progression_tab = tab
             app.gui.begin([])
             app.frame()
@@ -47,7 +49,7 @@ def test_progression_panel_clicks_spend_and_unlock(monkeypatch, tmp_path):
 
         click("policy", "해금")
         assert g.player.policy_level == 1 and g.player.admin == 9900
-        click("tech", "해금")
+        click("military", "해금")
         assert "inf" in g.player.techs and g.player.sci_points == 9200
         click("people", "초빙")
         assert g.great_people[0]["kind"] == "scientist"

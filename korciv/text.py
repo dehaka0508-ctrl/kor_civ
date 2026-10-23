@@ -64,3 +64,10 @@ def particle(word, pair: str) -> str:
 def josa(word, pair: str) -> str:
     """word 에 받침에 맞는 조사를 붙인 문자열(예: josa("석유", "이/가") → "석유가")."""
     return f"{word}{particle(word, pair)}"
+
+
+def fmt_points(value: float, signed=False) -> str:
+    """표시만 소수 둘째 자리까지. 실제 자원과 생산량은 반올림하지 않는다."""
+    if abs(value) < .005:
+        value = 0.0
+    return format(value, "+,.2f" if signed else ",.2f").rstrip("0").rstrip(".")

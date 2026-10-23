@@ -65,8 +65,6 @@ _LEGACY_GOVERNMENTS = [
     dict(key="fascist", buff_keys=("cost_mil",), name="파시즘", target=9.5,
          buff=("", "군 생산비 −15%"), debuff=("", "모든 AI 시작 우호도 −5"),
          fx={"cost_mil": -0.15, "start_opinion": -5}),
-    dict(key="philosopher", buff_keys=(), name="철인통치", target=None,
-         buff=("", "없음"), debuff=("", "없음"), fx={}),
 ]
 POLICY_COSTS = (100, 250, 500, 900, 1500)
 
@@ -161,6 +159,20 @@ GOVERNMENTS = [
     for g in _LEGACY_GOVERNMENTS
 ]
 GOV_BY_KEY = {g["key"]: g for g in GOVERNMENTS}
+
+GOV_OFFICES = {
+    "absolute": "국왕 집무실", "constitutional": "수상 집무실",
+    "presidential": "대통령 집무실", "parliamentary": "총리 집무실",
+    "socialist": "서기장 집무실", "fascist": "총통 집무실",
+}
+GOV_DESCRIPTIONS = {
+    "absolute": "수도와 왕권을 강화하고 편입·군사 지휘에 집중합니다.",
+    "constitutional": "행복도와 학술·행정을 함께 키우는 군주정입니다.",
+    "presidential": "건설과 인구 성장, 과학 발전에 집중합니다.",
+    "parliamentary": "시장·교역과 외교 협력으로 경제를 키웁니다.",
+    "socialist": "공장·자원·전력과 대규모 생산 기반을 강화합니다.",
+    "fascist": "군사 생산과 전투, 점령을 통한 확장에 집중합니다.",
+}
 
 MULT_KEYS = {
     "cost_air", "cost_naval", "cost_tank", "cost_mil", "cost_line", "cost_factory",
@@ -273,7 +285,7 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
         scores[gov] += sum(pref.get(action, 0) * weight for action, weight in weights.items())
     blocked = set(banned) | banned_govs(leader_key)
     allowed = [key for key in scores if key not in blocked]
-    return max(allowed, key=scores.get) if allowed else "philosopher"
+    return max(allowed, key=scores.get) if allowed else "presidential"
 
 
 # 정치체제 계열 (반란 세력끼리 우호/적대 판정). 계열이 겹치면 '유사'.
@@ -284,7 +296,6 @@ GOV_FAMILIES = {
     "parliamentary": {"민주정"},
     "socialist": {"권위주의"},
     "fascist": {"권위주의"},
-    "philosopher": {"철인"},
 }
 
 

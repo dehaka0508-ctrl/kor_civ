@@ -35,6 +35,16 @@ def ctx(g):
     return E.snapshot(g, g.player)
 
 
+def admin_burden(g, population):
+    """집무실은 수도 인구를 담당하므로 행정 적자는 추가 지역에서 만든다."""
+    rid = next(n for n in g.world.land_adj[g.player.capital] if g.regions[n].owner == -1)
+    g.transfer_region(rid, 0, reason='편입')
+    r = g.regions[rid]
+    r.b.clear_cards()
+    r.pop = population
+    r.resist = None
+
+
 @pytest.mark.parametrize('key', [x['key'] for x in LEADERS])
 def test_every_leader_has_current_finite_preferences(game, key):
     g = game
@@ -54,6 +64,7 @@ def test_administration_reserve_prevents_policy_bankruptcy(game):
     g = game
     r = g.regions[g.player.capital]
     r.pop, g.player.admin, g.player.policy_level = 150, 200, 0
+    admin_burden(g, 150)
     AP.progression_orders(g, g.player, {})
     assert g.player.policy_level == 0 and g.player.admin == 200
     assert ctx(g)['admin_keep'] > 200
@@ -65,11 +76,24 @@ def test_policy_that_solves_admin_deficit_is_evaluated_after_unlock(game):
     g._mods.clear()
     r = g.regions[g.player.capital]
     r.pop = 35
+    admin_burden(g, 35)
     g.player.admin = 110
     before = ctx(g)['admin_keep']
     assert AP.policy_reserve(g, g.player, ctx(g)) < before
     AP.progression_orders(g, g.player, {})
     assert g.player.policy_level == 1 and g.player.admin >= 0
+
+
+def test_capital_growth_includes_matching_office_growth(game):
+    g = game
+    g.regions[g.player.capital].pop = 50
+    development = ctx(g)
+    assert development['growth'] > 0
+    assert development['admin_growth'] == pytest.approx(0)
+    g.player.gov = None
+    g._mods.clear()
+    development = ctx(g)
+    assert development['admin_growth'] == development['growth']
 
 
 def test_science_reserve_covers_actual_remaining_shortfall(game):
@@ -233,6 +257,7 @@ def test_chancellor_kept_while_covering_administration(game):
     assert g.recruit_great_person(0, 'chancellor')[0]
     r.pop = 100
     r.project = Project('econ', 'exchange', turns=15, per_turn=10000)
+    admin_burden(g, 100)
     AP.great_people_orders(g, g.player, {})
     assert any(p['kind'] == 'chancellor' for p in g.great_people)
     assert r.project.turns == 15
@@ -255,6 +280,7 @@ def test_growth_focus_respects_admin_and_food(game):
     g = game
     r = g.regions[g.player.capital]
     r.pop, g.player.admin = 150, 0
+    admin_burden(g, 150)
     AP.focus_orders(g, g.player, {})
     assert not r.pop_focus and r.focus
     assert g.player.ai['development']['admin_gap'] > 0

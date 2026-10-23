@@ -5,6 +5,7 @@ import pygame
 
 from .. import config as C
 from ..leaders import GOV_BY_KEY
+from ..text import fmt_points
 from .theme import mix
 
 
@@ -54,7 +55,7 @@ def draw_balances(app, x, y, w, detailed=True):
            t.bad if f.lawless else t.text)
     if detailed:
         y = kv(gui, x, y, w, "행정력 생산 / 소비", f"{prod:,.1f} / {cons:,.1f}")
-    y = kv(gui, x, y, w, "비축 과학력", f"{f.sci_points:,.0f}  (+{g.science_production(f.id):,.1f}/턴)")
+    y = kv(gui, x, y, w, "비축 과학력", f"{fmt_points(f.sci_points)}  (+{fmt_points(g.science_production(f.id))}/턴)")
     if f.lawless:
         y = gui.wrap((x, y), "무법 상태 · 매 턴 전 지역 행복도 −5. 행정력을 흑자로 전환하세요.", w, 12, t.bad) + 5
     elif f.admin_deficit_turns:
@@ -70,14 +71,18 @@ def _result(app, result):
         app.changed()
 
 
-def draw_progression_tab(app, body):
+def draw_progression_tab(app, body, science=False):
     gui, g, t = app.gui, app.game, app.theme
     x, w = body.x + 14, body.w - 28
     y = draw_balances(app, x, body.y, w, detailed=False) + 5
-    tabs = ("policy", "tech", "people")
-    current = getattr(app, "progression_tab", "policy")
-    index = gui.segmented((x, y, w, 30), ["정책 트리", "과학 기술", "위인"], tabs.index(current), size=12)
-    current = app.progression_tab = tabs[index]
+    tabs = ("tech", "military") if science else ("policy", "people")
+    attr = "science_tab" if science else "progression_tab"
+    current = getattr(app, attr, tabs[0])
+    current = current if current in tabs else tabs[0]
+    index = gui.segmented((x, y, w, 30), ["기술", "군사"] if science else ["정책 트리", "위인"],
+                          tabs.index(current), size=12)
+    current = tabs[index]
+    setattr(app, attr, current)
     y += 40
     area = pygame.Rect(body.x, y, body.w, max(1, body.bottom - y))
     scroll_key = "progression:" + current
@@ -86,8 +91,8 @@ def draw_progression_tab(app, body):
     y0 = y - off
     if current == "policy":
         bottom = draw_policies(app, x, y0, w)
-    elif current == "tech":
-        bottom = draw_technologies(app, x, y0, w)
+    elif current in ("tech", "military"):
+        bottom = draw_technologies(app, x, y0, w, military=current == "military")
     else:
         bottom = draw_great_people(app, x, y0, w)
     heights[current] = bottom - y0 + 8
@@ -98,6 +103,8 @@ def draw_policies(app, x, y, w):
     from ..progression import POLICIES, POLICY_COMPLETION
     from .panels import section
     gui, g, t, f = app.gui, app.game, app.theme, app.game.player
+    if f.gov not in GOV_BY_KEY:
+        return draw_government_cards(app, x, y, w)
     policies = POLICIES.get(f.gov, [])
     y = section(gui, x, y, w, GOV_BY_KEY.get(f.gov, {}).get("name", "체제 미정"))
     y = gui.wrap((x, y), "잉여 행정력으로 순서대로 해금합니다. 해금한 정책의 효과는 모두 누적됩니다.", w, 12, t.muted) + 12
@@ -126,11 +133,41 @@ def draw_policies(app, x, y, w):
     return y
 
 
-def draw_technologies(app, x, y, w):
+def draw_government_cards(app, x, y, w):
+    from ..leaders import GOVERNMENTS, GOV_DESCRIPTIONS, GOV_OFFICES, banned_govs
+    from ..progression import POLICIES, POLICY_COMPLETION
+    from .panels import section
+    gui, g, t, f = app.gui, app.game, app.theme, app.game.player
+    y = section(gui, x, y, w, "정치체제를 고르세요")
+    y = gui.wrap((x, y), "한 번 선택하면 바꿀 수 없습니다. 수도에 집무실이 설치되고 정책 트리가 열립니다.",
+                 w, 12, t.muted) + 12
+    banned = banned_govs(f.leader)
+    for spec in GOVERNMENTS:
+        key = spec["key"]
+        blocked = key in banned
+        box = pygame.Rect(x, y, w, 110)
+        gui.rect(t.panel_alt, box, radius=6)
+        gui.rect(t.border, box, 1, radius=6)
+        gui.text((x + 10, y + 8), spec["name"], 15, t.muted if blocked else t.text, "semibold")
+        gui.wrap((x + 10, y + 35), GOV_DESCRIPTIONS[key], w - 20, 12, t.muted)
+        gui.text((x + 10, y + 88), f"{GOV_OFFICES[key]} · 행정력 +{fmt_points(max(30, g.regions[f.capital].pop))}/턴",
+                 11, t.good if not blocked else t.muted, max_w=w - 20)
+        if gui.button((x + w - 76, y + 7, 66, 25), "선택 불가" if blocked else "채택",
+                      enabled=not blocked, size=11, tooltip="적서차별: 군주정을 선택할 수 없습니다." if blocked else
+                      "\n".join(f"{i}. {p['name']}: {p['description']}" for i, p in enumerate(POLICIES[key], 1))
+                      + "\n★ " + POLICY_COMPLETION[key]["description"]):
+            _result(app, g.set_player_government(key))
+        y += box.h + 10
+    return y
+
+
+def draw_technologies(app, x, y, w, military=False):
     from ..progression import TECHS
     from .panels import section
     gui, g, t, f = app.gui, app.game, app.theme, app.game.player
     for kind, title in (("unit", "군사 유닛 현대화"), ("building", "생산 건물 확장"), ("victory", "과학승리")):
+        if (kind == "unit") != military:
+            continue
         y = section(gui, x, y, w, title)
         for key, tech in TECHS.items():
             if tech["kind"] != kind:

@@ -92,6 +92,9 @@ class App:
         # 전체화면 창이 포커스를 잠깐 잃어도 SDL 이 창을 최소화하지 않게(v1.3.3: 창 모드에서 Alt+Enter 로 전환하면
         # 전환 직후의 무거운 첫 화면 동안 생긴 포커스 이탈로 최소화되던 문제). Alt+Tab 으로 나가도 그대로 둔다
         os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
+        if not pygame.font.get_init():
+            from .theme import reset_font_cache
+            reset_font_cache()
         pygame.init()
         pygame.display.set_caption("한반도의 문명")
         flags = pygame.RESIZABLE
@@ -219,6 +222,7 @@ class App:
         self.rally_pick = None       # 생산 집결지 고르는 중: 지역 ID, 일괄이면 "*"
         self.gp_move_pick = None
         self.progression_tab = "policy"
+        self.science_tab = "tech"
         self.metro_pick = None       # 광역시 지정 중(v1.3.0): {"center", "sel", "name"} — 지도에서 지역을 눌러 고른다
         self.prio_sel = None         # 지출 우선순위에서 고른 행(위·아래 방향키로 이동)
         self.hover = None
@@ -242,7 +246,9 @@ class App:
         self.pick_popup = None
         self.spec_sel = None
         self.visited = set()         # 이번 턴 '다음 지역'으로 확인한 지역
-        self.left_tab = "status"      # 좌측 패널: nation/diplo/army/energy/status(세로 탭), region(지역 선택)
+        self.left_tab = "policy"      # 시작은 정책 트리에서 정치체제를 선택한다.
+        self.slot_sel = None
+        self._slot_reveal = None
         self.prio_drag = None
 
     # ------------------------------------------------------------ 게임 시작·저장
@@ -250,7 +256,7 @@ class App:
         self.game = Game(settings)
         self.world = self.game.world
         self.reset_ui()
-        self.scene = "government"
+        self.scene = "main"
         self.map.z = 1.0
         self.map.center_on(self.game.player.capital, zoom=2.2)
         self.sel = self.game.player.capital
@@ -326,7 +332,9 @@ class App:
         self.world = g.world
         self.modal = None
         self.reset_ui()
-        self.scene = "main" if self.game.setup_done else "government"
+        self.scene = "main"
+        if self.game.player.gov is not None:
+            self.left_tab = "status"
         self.map.center_on(self.game.player.capital, zoom=2.0)
         self.map.invalidate()
         self.toast("불러왔습니다.")
@@ -390,7 +398,7 @@ class App:
             self.draw_pick_start()
         elif self.scene == "pick_ai":
             self.draw_pick_ai()
-        elif self.scene in ("government", "main"):
+        elif self.scene == "main":
             self.draw_main()
         self.gui.draw_tooltip()
 
@@ -499,7 +507,7 @@ class App:
         sw, sh = self.lsize()
         self.set_map_view()
         qty_open = bool(getattr(self, "qty", None))
-        modal_open = self.scene == "government" or self.active_modal() is not None or qty_open
+        modal_open = self.active_modal() is not None or qty_open
         # 우클릭 메뉴 위에 마우스가 있으면 그 아래 버튼(턴 종료 등)은 반응하지 않는다(메뉴가 나중에 그려져도 먼저 눌리지 않게)
         under_ctx = bool(self.ctx_menu) and pygame.Rect(self.ctx_menu[0], (170, 84)).collidepoint(self.gui.mouse)
         # 지도 모드 세부 메뉴(자원·건물·군사)도 마찬가지: 그 아래 좌측 패널(내정 탭 [고정] 등)이 먼저 눌리지 않게(v1.3.0)
@@ -527,10 +535,7 @@ class App:
             self.map_input()
             self.keyboard()
         self.gui.input_enabled = not qty_open
-        if self.scene == "government":
-            modals.draw_government(self)
-        else:
-            modals.draw_active_modal(self)
+        modals.draw_active_modal(self)
         self.gui.input_enabled = True
         if qty_open:
             modals.draw_qty(self)
@@ -1729,7 +1734,9 @@ class App:
     # ------------------------------------------------------------ 턴 종료
     def snapshot(self):
         f = self.game.player
-        return {"money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
+        prod, cons = self.game.admin_balance(f.id)
+        return {"admin": f.admin, "admin_prod": prod, "admin_cons": cons, "admin_net": prod - cons,
+                "science": f.sci_points, "science_prod": self.game.science_production(f.id), "money": f.money, "net": f.last.get("net", 0), "food": f.res["food"], "happy": round(self.game.avg_happiness(f.id)),
                 "weary": round(f.war_weary), "tax": round(f.tax * 100)}
 
     def request_end_turn(self):
@@ -1832,45 +1839,8 @@ class App:
                      anchor='center', max_w=216)
             if gui.hover(br):
                 gui.tooltip = '\n'.join(f'{label}: {tip}' for label, tip in badges)
-        x = sw - 14
-        snap = self.snapshot()
-        highlight = pygame.time.get_ticks() - self.prev_t < 600
-        last = f.last
-        good, bad = (143, 212, 174), (242, 163, 143)
-        hv = snap["happy"]
-        face = "face_happy" if hv > 10 else "face_sad" if hv < -10 else "face_neutral"   # ±10 안은 무표정
-        items = [
-            ("happy", face, "행복도", f"{snap['happy']:+d}", bad if snap["happy"] < 0 else None,
-             f"실질 평균 행복도 {g.avg_happiness(f.id):+.1f} (피로·저항 반영 전 {g.avg_happiness(f.id, effective=False):+.1f})"),
-            ("weary", "swords", "전쟁 피로", f"{snap['weary']:d}", bad if f.war_weary >= 1 else None,
-             f"전쟁 피로도 {f.war_weary:.1f} / {C.WAR_WEARY_MAX:.0f}: 모든 지역 실질 행복도에서 빠집니다.\n"
-             + (f"전쟁 중 턴당 +{D.war_weary_rate(g, f.id):.1f}" if D.enemies(g, f.id)
-                else f"평시 턴당 {C.WAR_WEARY_RECOVERY:.0f} 회복")
-),
-            ("tax", "tax", "세율", f"{snap['tax']}%", None,
-             f"세율 {f.tax * 100:.0f}% · 세수 {last.get('tax', 0):,.0f}/턴\n세율 효과 행복도 {g.tax_happy(f.id, f.tax * 100):+.1f}/턴"),
-            ("food", "rice", "식량", f"{snap['food']:,.0f}", None,
-             f"식량 생산 {last.get('food_prod',0):,.0f} / 소비 {last.get('food_cons',0):,.0f}"
-             + (f"\n기근 {last.get('famine',0)*100:.0f}%" if last.get('famine') else "")),
-            ("net", "coin", "턴당 순수익", f"{snap['net']:+,.0f}", good if snap["net"] >= 0 else bad,
-             f"세수 {last.get('tax',0):,.0f} (세율 {f.tax*100:.0f}%)\n유지비 −{last.get('upkeep',0):,.0f}\n"
-             f"구매 −{last.get('buy',0):,.0f} / 판매 +{last.get('sell',0):,.0f}\nGDP {last.get('gdp',0):,.0f}"),
-            ("money", "coin", "자금(만원)", f"{snap['money']:,.0f}", bad if f.money < 0 else None,
-             f"자금 {fmt_money(f.money)}원\n진행 중 슬롯 턴당 지출 "
-             f"{sum(p.per_turn for p in g.unique_projects(g.regions_of(f.id))):,.0f}"),
-        ]
-        for key, ic, label, val, col, tip in items:
-            vw = max(measure(val, 15, "semibold")[0], measure(label, 10, "semibold")[0]) + 30
-            r = pygame.Rect(x - vw, 6, vw, TOP_H - 14)
-            prev = self.prev_values.get(key)
-            if highlight and prev is not None and self._differs(prev, snap[key]):
-                gui.rect(mix(t.gold, t.indigo, 0.35), r, radius=4)
-            ui_icon(self.screen, ic, gui.P(r.x + 10, r.y + 15), t.gold_lt, 0.85 * u)
-            gui.text((r.x + 23, r.y + 2), val, 15, col or paper, "semibold")
-            gui.text((r.x + 23, r.bottom - 3), label, 10, dim, "semibold", anchor="bottomleft")
-            if gui.hover(r):
-                gui.tooltip = tip
-            x -= vw + 8
+        from .topbar import draw_resources
+        draw_resources(self, sw, paper, dim, (143, 212, 174), (242, 163, 143))
 
     @staticmethod
     def _differs(a, b):

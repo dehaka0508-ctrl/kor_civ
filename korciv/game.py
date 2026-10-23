@@ -21,7 +21,7 @@ from .leader_rules import LeaderRulesMixin
 from .data import DO8, load_world
 from .leaders import LEADER_BY_KEY, GOV_BY_KEY, Mods, ai_pick_government, banned_govs, gov_similar
 from .state import NEUTRAL, Army, Faction, Project, Region, Settings, BUILDING_NAMES, ALL_BUILDINGS
-from .text import josa, particle
+from .text import josa, particle, fmt_points
 
 SUFFIXES = ("구역", "지구", "시", "군", "구")
 
@@ -250,6 +250,15 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self._morale = {}
         self._mods = {}
         self.migrate_leader_state()
+        for f in self.factions:
+            if f.gov not in GOV_BY_KEY:
+                # 삭제된 철인통치 저장: 플레이어는 정책 화면에서 다시 선택한다.
+                f.gov = ai_pick_government(self.rng, f.aggression, 0, 0,
+                                           leader_key=f.leader, banned=banned_govs(f.leader)) if f.is_ai else None
+                f.policy_level = 0
+            self._expire_capital_claim(f)
+        if not self.setup_done:
+            self.finalize_setup()
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
 
     # ------------------------------------------------------------------ 초기화
@@ -306,8 +315,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                                            coastal=self.info(f.capital).coastal,
                                            neighbors=len({self.regions[n].owner for n in self.world.land_adj[f.capital]
                                                           if self.regions[n].owner not in (NEUTRAL, f.id)}))
-        if st.all_ai:
-            self.finalize_setup()
+        self.finalize_setup()
 
     def _migrate_slots(self, s):
         """예전 세이브(v1.3.7까지: 건물 단계 사전·면적·주거 지구) → 건물 슬롯 카드(v1.3.8).
@@ -391,7 +399,6 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         r = self.regions[rid]
         r.owner = f.id
         self.leader_acquired(f.id, rid)
-        self._start_admin(r)
         f.admin = r.pop * 10 if self.settings.mode == "standard" else 10.0
         self._take_garrison(rid, f.id)
         if self.world.regions[rid].island == "무연륙 섬":
@@ -402,22 +409,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             if self.settings.mode == "standard":
                 r.lines[n] = max(r.lines.get(n, 0), C.START_LINE_LEVEL)
 
-    def _start_admin(self, r):
-        """시작 수도의 행정 건물(v1.3.8): 행정 카드가 있으면 +1단계, 없으면 빈 기본 슬롯(없으면 마지막 기본 슬롯을 바꿔)에 1단계."""
-        b = r.b
-        pos = b.primary("admin")
-        if pos is not None:
-            b.set_card(pos, min(5, b.card(pos)["level"] + 1))
-            return
-        if not b.place("admin", 1) and b.slots["base"]:
-            b.remove(("base", len(b.slots["base"]) - 1))
-            b.place("admin", 1, ("base", len(b.slots["base"]) - 1))
-
     def finalize_setup(self):
-        """정치체제 선택 후 호출: 시작 자금·우호도 적용."""
-        for f in self.factions:
-            if f.gov is None:
-                f.gov = "philosopher" if not f.is_ai else "presidential"
+        """시작 자금·인구·우호도는 체제 선택과 분리해 한 번만 적용한다."""
+        if self.setup_done:
+            return
         self._mods.clear()
         for f in self.factions:
             f.money = C.START_MONEY * C.MONEY_SCALE * self.mods(f.id).mult("start_money")
@@ -443,11 +438,24 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self.setup_done = True
 
     def set_player_government(self, gov_key: str):
+        f = self.player
+        if not f.alive:
+            return False, "멸망한 국가는 정치체제를 선택할 수 없습니다."
+        if gov_key not in GOV_BY_KEY:
+            return False, "선택할 수 없는 정치체제입니다."
         if gov_key in banned_govs(self.player.leader):
-            gov_key = "philosopher"              # 고를 수 없는 체제(홍길동 '적서차별')
-        self.factions[self.player_id].gov = gov_key
+            return False, "이 지도자는 해당 정치체제를 선택할 수 없습니다."
+        if f.gov is not None:
+            return False, "정치체제는 한 번 선택하면 바꿀 수 없습니다."
+        before = {(a.id, b.id): D.op_baseline(self, a.id, b.id)
+                  for a in self.factions for b in self.factions
+                  if a.id != b.id and a.is_ai and f.id in (a.id, b.id)}
+        f.gov = gov_key
         self._mods.pop(self.player_id, None)
-        self.finalize_setup()
+        for (a, b), baseline in before.items():
+            D.add_opinion(self, a, b, D.op_baseline(self, a, b) - baseline)
+        self._progression_changed()
+        return True, f"{GOV_BY_KEY[gov_key]['name']} 채택 · {self.office_building(f.capital)['name']} 설치"
 
     # ------------------------------------------------------------------ 기본 조회
     @property
@@ -2380,7 +2388,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 return f"기본 행정력 {base:g}/턴"
             pop = sum(self.regions[x].pop for x in sites)
             base = 6 * pop + 500 if opt.get("pool") and lv == 5 else C.EDU_SCIENCE[lv] * pop
-            return f"기본 과학력 {base:g}/턴"
+            return f"기본 과학력 {fmt_points(base)}/턴"
         if opt.get("pool") and M.of(self, rid):
             el = M.pool_members(self, M.of(self, rid), opt["pool"])
             if el and opt["key"] == "specialty":
@@ -2450,7 +2458,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if key == "admin":
             return f"행정력 {self.admin_output(rid):,.1f}/턴"
         if key == "edu":
-            return f"과학력 {self.science_output(rid):,.1f}/턴"
+            return f"과학력 {fmt_points(self.science_output(rid))}/턴"
         if key in C.SITE_POWER:
             return f'전기 {getattr(info, key)}/턴 · 연료 불필요'
         if key == "farm":
@@ -3436,6 +3444,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             self.transfer_region(rid, fid, reason="임시정부")
             rr = self.regions[rid]
             f.capital = rid
+            f.lost_capital = None
             rr.happy = max(rr.happy, 0.0)
             f.happy_floor_until = self.turn + C.REBEL_HAPPY_FLOOR_TURNS
             self.new_army(fid, rid, {"inf": C.PROVISIONAL_INF})

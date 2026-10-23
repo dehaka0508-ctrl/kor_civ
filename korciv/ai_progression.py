@@ -104,9 +104,10 @@ def policy_reserve(g, f, ctx):
     """행정 산출을 늘리는 정책은 해금한 뒤의 적자와 성장 여유로 비축을 다시 계산한다."""
     if f.policy_level >= 5:
         return ctx['admin_keep']
-    before, after = g.mods(f.id), Mods(f.leader, f.gov, f.policy_level + 1)
+    after = Mods(f.leader, f.gov, f.policy_level + 1)
     future = 0.0
     for r in ctx['regs']:
+        future += g.office_output(r.id)
         if r.occ or g.resisting(r) or r.flooded:
             continue
         base = C.ADMIN_OUTPUT[min(5, r.b['admin'])]
@@ -118,7 +119,7 @@ def policy_reserve(g, f, ctx):
                    + g.great_person_bonus(r.id, 'admin_add')) * after.mult('admin_output')
     if future <= ctx['admin_prod']:
         return ctx['admin_keep']
-    return max(0, ctx['admin_cons'] - future) * 6 + max(0, ctx['growth'] * 8 - max(0, future - ctx['admin_cons'])) * 2
+    return max(0, ctx['admin_cons'] - future) * 6 + max(0, ctx['admin_growth'] * 8 - max(0, future - ctx['admin_cons'])) * 2
 
 
 def progression_orders(g, f, threat, crisis=False):
@@ -246,17 +247,18 @@ def focus_orders(g, f, threat):
         bonus = C.POP_FOCUS_GROWTH * g.growth_scale(r.id) * g.focus_multiplier(f.id)
         people = r.pop * bonus * horizon
         near_people = r.pop * bonus * min(8, horizon)
+        near_admin = max(0, near_people - (g.office_output(r.id, r.pop + near_people) - g.office_output(r.id)))
         income_gain = 30 * people * f.tax * horizon / 2
         focus_income = 30 * r.pop * C.FOCUS_POP_BONUS * g.focus_multiplier(f.id) * f.tax * horizon * preference(g, f.id, 'focus')
         grow = (g.growth_happy(r) >= C.POP_FOCUS_MIN_H + 3 and threat.get(r.id, 0) < .8
-                and not f.lawless and near_people <= min(admin_room, food_room)
+                and not f.lawless and near_admin <= admin_room and near_people <= food_room
                 and r.pop < g.crowd_thresholds(r.id)[0]
                 and income_gain * preference(g, f.id, 'growth') > focus_income * .8)
         # 박정희의 집중 해제 불행을 이익이 작을 때 반복 유발하지 않는다.
         if grow and r.focus and g.mods(f.id).value('focus_release_happy'):
             grow = income_gain > focus_income * 1.5
         if grow:
-            admin_room -= near_people
+            admin_room -= near_admin
             food_room -= near_people
         if r.focus and grow:
             g.release_focus(r)

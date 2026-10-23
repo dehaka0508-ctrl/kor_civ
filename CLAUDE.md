@@ -1,7 +1,7 @@
 # 작업 규칙
 
 - 사용자에게 하는 설명은 모두 한국어로 쓴다.
-- 커밋 후 `main`과 `claude/vibrant-cerf-v4hlfl` 두 브랜치에 푸시한다.
+- 커밋 후 `main`에만 푸시한다(사용자 지시, 2026-10-24).
 
 ## 버전 (korciv/version.py)
 

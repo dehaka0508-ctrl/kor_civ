@@ -16,7 +16,6 @@ def new_game(**kw):
     kw.setdefault("player_start", "S002")
     kw.setdefault("n_enemies", 1)
     g = Game(Settings(**kw))
-    g.set_player_government("philosopher")
     ids = [f.id for f in g.factions]
     for f in g.factions:
         f.met = set(ids) - {f.id}

@@ -31,7 +31,7 @@ def _leader_keys():
 
 def run_game(job):
     """job = (seed, [지도자 n명], turns, flat[, govs]) -> 판 결과 dict.
-    flat 이면 모든 지도자 호전성 5(효과만 비교). govs 이면 AI가 정치체제를 직접 고른다(아니면 전원 철인통치)."""
+    flat 이면 모든 지도자 호전성 5(효과만 비교). govs 이면 AI가 정치체제를 직접 고른다(아니면 전원 체제 미정)."""
     seed, lineup, turns, flat = job[:4]
     govs = job[4] if len(job) > 4 else False
     n_fac = len(lineup)
@@ -44,7 +44,7 @@ def run_game(job):
     from korciv import rules as R
     from korciv.state import Settings
     if not govs:
-        G.ai_pick_government = lambda *a, **k: "philosopher"      # 반란 세력 포함 전원 철인통치
+        G.ai_pick_government = lambda *a, **k: None      # 반란 세력 포함 전원 체제 미정
     from korciv import ai as A
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import leader_tracking as LT
@@ -60,7 +60,7 @@ def run_game(job):
     t0 = time.time()
     g = G.Game(Settings(n_enemies=n_fac - 1, seed=seed, all_ai=True,
                         player_leader=lineup[0], ai_leaders=list(lineup[1:])))
-    assert govs or all(f.gov == "philosopher" for f in g.factions)
+    assert govs or all(f.gov is None for f in g.factions)
     tracker.g = g
     starts = {}
     for f in g.factions:
@@ -195,7 +195,7 @@ def main():
     ap.add_argument("--out", default="leader_runs.jsonl")
     ap.add_argument("--flat-aggr", action="store_true", help="모든 지도자 호전성 5: AI 성향을 빼고 버프·디버프만 비교")
     ap.add_argument("--factions", type=int, default=FACTIONS_PER_GAME, help="판당 세력 수")
-    ap.add_argument("--govs", action="store_true", help="AI가 정치체제를 직접 고른다(기본: 전원 철인통치)")
+    ap.add_argument("--govs", action="store_true", help="AI가 정치체제를 직접 고른다(기본: 전원 체제 미정)")
     ap.add_argument("--report")
     args = ap.parse_args()
     if args.report:

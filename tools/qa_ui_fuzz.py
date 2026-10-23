@@ -213,8 +213,9 @@ def force_state(app, rng):
             g.recruit_great_person(g.player_id, kind, rid)
         app.select(rid)
         app.scene = "main"
-        app.left_open, app.left_tab = True, "progression"
-        app.progression_tab = rng.choice(["policy", "tech", "people"])
+        app.left_open, app.left_tab = True, rng.choice(["policy", "science"])
+        app.progression_tab = rng.choice(["policy", "people"])
+        app.science_tab = rng.choice(["tech", "military"])
         return
     if g and g.player.alive and rng.random() < .10:
         rid = g.player.capital
@@ -240,11 +241,11 @@ def force_state(app, rng):
                                 player_leader=rng.choice(["sej", "cus", "yis", "kim", "ito"]),
                                 player_leader_name="큐에이"))
         if rng.random() < 0.7:
-            app.game.set_player_government(rng.choice(["presidential", "absolute", "socialist", "philosopher"]))
+            app.game.set_player_government(rng.choice(["presidential", "absolute", "socialist", "parliamentary"]))
             app.scene = "main"
         return
-    if app.scene not in ("main", "government"):
-        app.scene = "main" if g.setup_done else "government"
+    if app.scene != "main":
+        app.scene = "main"
     k = rng.random()
     pid = g.player_id
     if rng.random() < 0.15:

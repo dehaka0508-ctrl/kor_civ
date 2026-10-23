@@ -6,6 +6,7 @@ import pygame
 from .. import config as C
 from .. import slots as S
 from ..state import NEUTRAL
+from ..text import fmt_points
 from .theme import measure, mix
 
 # 슬롯 색: (강조·테두리·상단 바, 카드 본문, 빈 슬롯 바탕, 빈 슬롯 테두리)
@@ -51,6 +52,18 @@ def grid_layout(cells, x, y, w):
         out.append(((stype, idx), pygame.Rect(int(x + col * (cw + GAP)), int(row_y), int(cw), CARD_H)))
         col += 1
     return out, (row_y + CARD_H + GAP if out else y)
+
+
+def expanded_layout(cells, x, y, w, selected=None, panel_h=0):
+    """선택한 카드가 있는 줄 바로 아래에 메뉴 공간을 두고 뒷줄만 내린다."""
+    layout, bottom = grid_layout(cells, x, y, w)
+    picked = next((rect for cell, rect in layout if cell == selected), None)
+    if picked is None or not panel_h:
+        return layout, bottom, None
+    box = pygame.Rect(x, picked.bottom + GAP, w, panel_h)
+    offset = panel_h + GAP
+    layout = [(cell, rect.move(0, offset) if rect.y > picked.y else rect) for cell, rect in layout]
+    return layout, bottom + offset, box
 
 
 def _dashed_rect(gui, color, r, dash=5, gap=4):
@@ -99,6 +112,9 @@ def special_cards(app, rid) -> list:
     g = app.game
     r = g.regions[rid]
     out = []
+    office = g.office_building(rid)
+    if office:
+        out.append(("집무실", office["name"], f"행정력 +{fmt_points(office['output'])}/턴", None))
     paused = r.owner != NEUTRAL and g.facility_paused(rid)
     for k in C.SCIENCE_STEPS:
         if k in r.sci:
@@ -125,9 +141,12 @@ def _cells(app, rid):
     return summary, specials, [(st, i) for st, i, _ in summary] + [("gold", k) for k in range(len(specials))]
 
 
-def slot_grid_height(app, rid, w) -> int:
+def slot_grid_height(app, rid, w, opts=None) -> int:
     _, _, cells = _cells(app, rid)
-    _, y_end = grid_layout(cells, 0, 0, w)
+    picked = getattr(app, "slot_sel", None)
+    selected = tuple(picked[1:]) if picked and picked[0] == rid and opts is not None else None
+    height = slot_panel_height(app, rid, selected, opts) if selected else 0
+    _, y_end, _ = expanded_layout(cells, 0, 0, w, selected, height)
     return max(22, y_end + 2)
 
 
@@ -135,17 +154,23 @@ def _select(app, rid, stype, idx):
     """행동 탭: 카드를 누르면 그 칸을 고르고(다시 누르면 접는다) 아래에 건설·증축 선택지를 펼친다."""
     cur = getattr(app, "slot_sel", None)
     app.slot_sel = None if cur == (rid, stype, idx) else (rid, stype, idx)
+    app._slot_reveal = app.slot_sel
 
 
-def draw_slot_grid(app, x, y, w, rid, mine=False, select=False):
+def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
     """슬롯 카드 그리드(기본 → 하천 → 해안 → 기타, 종류마다 새 줄)와 그 아래 과학·경제 금빛 카드. 다음 y.
     select=True(행동 탭): 카드를 누르면 그 칸의 건설·증축 선택지를 펼친다."""
     gui, g, t = app.gui, app.game, app.theme
     r = g.regions[rid]
     summary, specials, cells_list = _cells(app, rid)
     cards = {(st, i): c for st, i, c in summary}
-    layout, y_end = grid_layout(cells_list, x, y, w)
     picked = getattr(app, "slot_sel", None)
+    selected = tuple(picked[1:]) if select and picked and picked[0] == rid else None
+    if selected and not r.b.valid(selected):
+        selected = None
+    opts = g.options(g.player_id, rid) if select and opts is None else opts
+    height = slot_panel_height(app, rid, selected, opts) if selected else 0
+    layout, y_end, menu = expanded_layout(cells_list, x, y, w, selected, height)
     if not layout:
         gui.text((x, y), "건물 슬롯 없음", 12, t.muted)
         return y + 22
@@ -164,7 +189,9 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False):
             else:
                 gui.text((rect.centerx, rect.y + 40), eff, 9, t.muted, anchor="midtop", max_w=rect.w - 6, tip=False)
             if hov:
-                hover_tip = f"{head}승리 시설: {name}\n{eff}" + (f"\n공사: {p.name or name}" if p is not None else "")
+                hover_tip = (f"{name}\n{eff}\n슬롯을 차지하지 않으며 증축할 수 없습니다. 수도를 따라 이전합니다."
+                             if head == "집무실" else f"{head}승리 시설: {name}\n{eff}"
+                             + (f"\n공사: {p.name or name}" if p is not None else ""))
             continue
         card = cards[(stype, idx)]
         p = g.slot_project(rid, (stype, idx)) if r.owner != NEUTRAL else None
@@ -217,6 +244,8 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False):
                 _select(app, rid, stype, idx)
     if hover_tip:
         gui.tooltip = hover_tip
+    if menu is not None:
+        draw_slot_panel(app, menu.x, menu.y, menu.w, rid, selected, opts)
     return y_end + 2
 
 
@@ -256,6 +285,9 @@ def facility_chips(app, rid) -> list:
     g = app.game
     r = g.regions[rid]
     out = []
+    office = g.office_building(rid)
+    if office:
+        out.append(f"{office['name']}(행정력 +{fmt_points(office['output'])}/턴)")
     if r.b.get("airport"):
         out.append("공항")
     if r.b.get("shelter"):

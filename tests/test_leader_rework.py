@@ -13,7 +13,6 @@ from korciv.state import Settings, Project
 def game(key="cus", enemies=1):
     g = Game(Settings(seed=61, player_start="S002", ai_starts=["N001"], n_enemies=enemies,
                       player_leader=key, ai_leaders=["cus"] * enemies, victories=("time",)))
-    g.set_player_government("philosopher")
     g.player.money = g.player.admin = g.player.sci_points = 1e7
     g.player.res["food"] = 1e7
     for f in g.factions:
@@ -462,10 +461,8 @@ def test_border_group_discount_tax_band_and_peace_minimum():
 @pytest.mark.parametrize("mode", C.GAME_MODES)
 def test_initial_population_money_and_scientist_site(mode):
     g = Game(Settings(seed=61, mode=mode, player_start="S002", n_enemies=1, player_leader="onz"))
-    g.set_player_government("philosopher")
     assert g.regions["S002"].pop == pytest.approx((g.info("S002").pop0 if mode == "standard" else 1) * .85)
     g = Game(Settings(seed=61, mode=mode, player_start="S002", n_enemies=1, player_leader="kgu"))
-    g.set_player_government("philosopher")
     assert g.player.money == C.START_MONEY * C.MONEY_SCALE * .9
     leader(g, "sej")
     cap = g.player.capital

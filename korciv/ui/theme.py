@@ -172,6 +172,12 @@ def _needs_fallback(text: str) -> bool:
     return any(is_cjk(ch) for ch in text) and _cjk_font(14) is not None
 
 
+def reset_font_cache():
+    """SDL 글꼴 종료 후 재시작하면 이전 Font 객체는 사용할 수 없다."""
+    _fonts.clear()
+    _text_cache.clear()
+
+
 def measure(text: str, size: int, weight: str = "regular"):
     """글자 폭·높이(논리 좌표)."""
     u = UI["u"]
