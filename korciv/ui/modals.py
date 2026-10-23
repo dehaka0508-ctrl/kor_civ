@@ -1529,7 +1529,7 @@ def draw_rebellion(app):
     rr = g.regions[rid]
     r = modal_frame(app, 560, 300, "반란 발생!")
     info = app.world.regions[rid]
-    gui.text((r.x + 24, r.y + 56), f"{info.name} · 실질 행복도 {g.eff_happy(rr):+.1f} · 인구 {rr.pop:.1f}만", 15,
+    gui.text((r.x + 24, r.y + 56), f"{M.label(g, rid)} · 실질 행복도 {g.eff_happy(rr):+.1f} · 인구 {M.total_pop(g, rid):.1f}만", 15,
              weight="semibold")
     gui.wrap((r.x + 24, r.y + 84), "다른 행동보다 먼저 대응해야 합니다. 진압에 실패하면 이 지역이 수도가 되어 새 국가로 분리독립합니다(건물·인구 계승, 첫 24턴 행복도 0 이상).",
              r.w - 48, 13, t.muted)

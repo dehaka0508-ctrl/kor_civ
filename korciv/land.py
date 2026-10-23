@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
-from . import config as C, rules as R
+from . import config as C, metro as M, rules as R
 
 
 def chaos_world(world, rng):
@@ -49,6 +49,8 @@ def chaos_world(world, rng):
 class LandMixin:
     """면적(v1.3.8): 인구밀도에 따른 성장률에만 쓴다(기본 슬롯 칸 수는 slots.capacity)."""
     def density_growth(self, rid):
+        if getattr(self.regions[rid], "metro", None) is not None:      # 광역시: 인구 합 ÷ 면적 합
+            return R.density_growth_max(M.total_pop(self, rid) * 10000 / M.total_area(self, rid))
         return R.density_growth_max(self.regions[rid].pop * 10000 / self.info(rid).area_km2)
 
     def growth_scale(self, rid):

@@ -101,6 +101,12 @@ def check(g, where):
                 report("광역 슬롯: 중심 칸 이상", f"{where} {rid} base={len(b.slots['base'])}")
             elif not mm and (not b.slots.get("base") or getattr(b, "xmult", None)):
                 report("광역 슬롯: 해제 뒤 잔여", f"{where} {rid}")
+            if mm and rid != mm["center"]:                  # 하나의 지역(v1.3.17): 상태는 중심과 같고 산출은 중심이
+                c = g.regions[mm["center"]]
+                if (r.flooded, r.focus, r.pop_focus) != (c.flooded, c.focus, c.pop_focus):
+                    report("광역시 상태 갈라짐", f"{where} {rid}")
+                if g.calc_output(rid) or g.admin_output(rid) or g.science_output(rid):
+                    report("광역시 구성 지역 산출", f"{where} {rid}")
             for t, i, c in b.cards():
                 if c["level"] > g.card_max(rid, c["key"]) and c["key"] not in ("hydro", "nuclear"):
                     report("카드 단계 초과", f"{where} {rid} {t}{i} {c}")

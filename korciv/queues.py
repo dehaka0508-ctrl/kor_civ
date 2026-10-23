@@ -198,7 +198,8 @@ class QueueMixin:
         if not o['ok']:
             return False, o['why']
         if kind == "repair" and self.mods(fid).value("flood_instant"):
-            self.regions[o.get("site") or rid].flooded = False
+            for x in M.regions(self, o.get("site") or rid):      # 광역시: 광역시 전체
+                x.flooded = False
             return True, "침수 복구 즉시 완료"
         m = M.of(self, rid)
         self.proj_counter = getattr(self, 'proj_counter', 0) + 1

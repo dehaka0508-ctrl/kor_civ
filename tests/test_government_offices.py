@@ -155,6 +155,7 @@ def test_removed_government_save_migrates_without_starting_resources_reset():
 
 
 def test_metro_has_one_office_based_on_its_capital_region_population():
+    """광역시는 하나의 지역(v1.3.17): 수도가 든 광역시의 집무실은 하나, 행정력은 광역시 인구 합으로."""
     g = game()
     assert g.set_player_government("presidential")[0]
     cap = g.player.capital
@@ -165,9 +166,9 @@ def test_metro_has_one_office_based_on_its_capital_region_population():
         r.b["admin"] = 3
         r.b["factory"] = r.b["bank"] = 5
     assert g.create_metro(0, members[1], members)[0]
-    assert g.office_output(cap) == 30
+    assert g.office_output(cap) == 4 * 26
     assert all(g.office_building(rid) is None for rid in members if rid != cap)
-    assert g.admin_balance(0)[0] == 4 * C.ADMIN_OUTPUT[3] + 30
+    assert g.admin_balance(0)[0] == 4 * C.ADMIN_OUTPUT[3] + 4 * 26
 
 
 @pytest.mark.parametrize("number,text", [(0, "0"), (.000012, "0"), (12.34567, "12.35"),

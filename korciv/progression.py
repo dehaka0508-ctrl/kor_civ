@@ -223,7 +223,14 @@ class ProgressionMixin:
     def great_person_bonus(self, rid, key, fid=None):
         rr = self.regions.get(rid)
         owner = fid if fid is not None else (rr.owner if rr else None)
-        people = [gp for gp in self.great_people_at(rid) if gp["owner"] == owner]
+        from . import metro as M
+        if rr is not None and getattr(rr, "metro", None) is not None:
+            if key == "admin_add" and M.is_extra(self, rid):
+                return 0.0                       # 광역시: 더하는 효과는 중심(광역시 전체)에서 한 번
+            sites = set(M.members(self, rid))    # 광역시 어디에 있어도 광역시 전체에(하나의 지역, v1.3.17)
+            people = [gp for gp in self.great_people if gp["loc"] in sites and gp["owner"] == owner]
+        else:
+            people = [gp for gp in self.great_people_at(rid) if gp["owner"] == owner]
         count = lambda kind: sum(gp["kind"] == kind for gp in people)
         bonuses = {"science_mult": 1 + .3 * count("scientist"),
                    "admin_add": 30 * count("chancellor"),

@@ -171,9 +171,9 @@ def draw_region_info(app, rect):
     r = g.regions[node]
     explored = g.is_explored(pid, node) or app.fog_reveal
     visible = g.is_visible(pid, node) or app.fog_reveal
-    gui.text((x, rect.y + 12), info.name, 18, weight="bold", max_w=w - 30)
     mt = M.of(g, node) if visible else None
-    gui.text((x, rect.y + 38), (f"{mt['name']} · 지역 {len(mt['members'])}곳" + (" · 중심" if mt["center"] == node else "")
+    gui.text((x, rect.y + 12), mt["name"] if mt else info.name, 18, weight="bold", max_w=w - 30)
+    gui.text((x, rect.y + 38), (f"광역시 · 지역 {len(mt['members'])}곳 하나로 · 이 칸 {info.short}" + (" (중심)" if mt["center"] == node else "")
                                 + " · " if mt else "")
              + f"{info.rtype} · 조선 {info.do8}도 · {info.ns}" + (f" · {info.island}" if info.island else ""),
              12, t.accent if mt else t.muted, max_w=w)
@@ -206,8 +206,11 @@ def draw_region_info(app, rect):
     y = draw_area(app, x, y, w, node)
     if visible:
         y = draw_status(app, x, y, w, node)
-    y = kv(gui, x, y, w, "인구", f"{r.pop:,.1f}만 명")
-    y_out = r.output if r.owner != NEUTRAL else g.calc_output(node, full=True)
+    regs = M.regions(g, node) if mt else [r]          # 광역시는 하나의 지역: 광역시 전체 합(v1.3.17)
+    hub = M.hub(g, node) if mt else node
+    pop = sum(x.pop for x in regs)
+    y = kv(gui, x, y, w, "인구", f"{pop:,.1f}만 명")
+    y_out = sum(x.output for x in regs) if r.owner != NEUTRAL else g.calc_output(hub, full=True)
     y = kv(gui, x, y, w, "산출(GDP)", f"{y_out:,.0f} /턴")
     val, _ = g.region_value(node)
     vtxt = f"{val} / 10"
@@ -216,12 +219,13 @@ def draw_region_info(app, rect):
     y = kv(gui, x, y, w, "지역 가치", vtxt, t.accent)
     if full:
         y = kv(gui, x, y, w, "세수", f"{y_out * of.tax:,.0f} /턴")
-        y = kv(gui, x, y, w, "식량 생산", f"{r.food:,.1f} (소비 {r.pop:,.1f})")
-        y = kv(gui, x, y, w, "행정력 생산", f"{g.admin_output(node):,.1f} /턴")
-        y = kv(gui, x, y, w, "행정력 소비", f"{r.pop * (0.5 if g.resisting(r) else 1):,.1f} /턴")
-        y = kv(gui, x, y, w, "과학력 생산", f"{fmt_points(g.science_output(node))} /턴")
-        if r.b["factory"]:
-            y = kv(gui, x, y, w, "공장 연료", f"{getattr(r, 'fuel_used', 0)}/{r.b.cap('factory')}개 투입")
+        y = kv(gui, x, y, w, "식량 생산", f"{sum(x.food for x in regs):,.1f} (소비 {pop:,.1f})")
+        y = kv(gui, x, y, w, "행정력 생산", f"{sum(g.admin_output(x.id) for x in regs):,.1f} /턴")
+        y = kv(gui, x, y, w, "행정력 소비", f"{sum(g.admin_consumption(x.id) for x in regs):,.1f} /턴")
+        y = kv(gui, x, y, w, "과학력 생산", f"{fmt_points(sum(g.science_output(x.id) for x in regs))} /턴")
+        hr = g.regions[hub]
+        if hr.b["factory"]:
+            y = kv(gui, x, y, w, "공장 연료", f"{getattr(hr, 'fuel_used', 0)}/{hr.b.cap('factory')}개 투입")
     # 행복도 막대
     if owner != NEUTRAL and visible:
         eh = g.eff_happy(r)
@@ -307,12 +311,14 @@ def draw_region_info(app, rect):
                                  f"기간이 지나면 1단계씩 깎여 지금 주인 것이 됩니다.", w, 11, t.warn) + 4
     if full:
         cp = g.crowd_penalty(r)
-        t1, t2 = g.crowd_thresholds(node)
+        ts = [g.crowd_thresholds(x.id) for x in regs]          # 광역시: 시작 인구 합 기준
+        t1, t2 = sum(a for a, _ in ts), sum(b for _, b in ts)
         y = section(gui, x, y + 6, w, f"과밀 행복도 {cp:+g}" if cp else "과밀 없음")
-        y = draw_chips(gui, x, y, w, [f"인구 {r.pop:.1f} · −2 문턱 {t1:.1f} · −4 문턱 {t2:.1f}"])
+        y = draw_chips(gui, x, y, w, [f"인구 {pop:.1f} · −2 문턱 {t1:.1f} · −4 문턱 {t2:.1f}"])
         sb = g.scenic_bonus(r)
         if sb:
-            src = [app.world.regions[n].scenic for n in app.world.scenic_near[node] if g.regions[n].owner == owner]
+            near = sorted({n for x in regs for n in app.world.scenic_near[x.id]})
+            src = [app.world.regions[n].scenic for n in near if g.regions[n].owner == owner]
             y = section(gui, x, y + 6, w, f"자연경관 행복도 +{sb:g}")
             y = draw_chips(gui, x, y, w, src)
         y = section(gui, x, y + 6, w, f"특산물 공급 {len(r.supplied)}/{C.SPECIALTY_MAX_TYPES}종"
@@ -538,8 +544,8 @@ def draw_action_tab(app, body):
         area = pygame.Rect(body.x, y, body.w, body.bottom - y)
         off = gui.begin_scroll("idle", area, len(idle) * 30)
         yy = y - off
-        for r in sorted(idle, key=lambda r: -r.pop):
-            if gui.button((x, yy, w, 26), f"{app.world.regions[r.id].name} · 인구 {r.pop:.1f}", "ghost", weight="regular"):
+        for r in sorted(idle, key=lambda r: -M.total_pop(g, r.id)):
+            if gui.button((x, yy, w, 26), f"{M.label(g, r.id)} · 인구 {M.total_pop(g, r.id):.1f}", "ghost", weight="regular"):
                 app.select(r.id)
                 app.map.center_on(r.id)
             yy += 30

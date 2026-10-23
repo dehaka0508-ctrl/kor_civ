@@ -1911,9 +1911,11 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return c * (1 - disc)
 
     def region_value(self, rid):
-        """지역 가치 1~10과 점수 구성 {항목: 점수}."""
+        """지역 가치 1~10과 점수 구성 {항목: 점수}. 광역시는 하나의 지역으로(구성 지역을 모두 합쳐, v1.3.17)."""
         rr = self.regions[rid]
         info = self.info(rid)
+        if getattr(rr, "metro", None) is not None:
+            return self._metro_value(rid)
         if self.settings.mode != 'standard':
             parts = {'기본': 1, '특산물': int(bool(info.specialties)),
                      '수력': int(bool(info.hydro)), '원전': 2 * int(bool(info.nuclear)),
@@ -1927,6 +1929,26 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         parts = R.region_value_parts(self.region_output_estimate(rid), rr.pop, levels, singles,
                                      info.oil, info.coal, info.power_self, info.power_site,
                                      rr.b["extract"], len(info.specialties))
+        return R.region_value(sum(parts.values())), parts
+
+    def _metro_value(self, rid):
+        sites = M.members(self, rid)
+        infos = [self.info(x) for x in sites]
+        regs = M.regions(self, rid)
+        if self.settings.mode != 'standard':
+            parts = {'기본': 1, '특산물': int(any(i.specialties for i in infos)),
+                     '수력': int(any(i.hydro for i in infos)), '원전': 2 * int(any(i.nuclear for i in infos)),
+                     '석탄': int(any(i.is_coal for i in infos)), '석유': 2 * int(any(i.is_oil for i in infos)),
+                     '경관': 0.5 * any(i.scenic for i in infos), '하천': 0.2 * any(self.river_farm(x) for x in sites),
+                     '해안': 0.4 * any(i.coastal for i in infos), '슬롯': 0.25 * (S.BASE_SLOT_MAX - 2)}
+            return max(1, min(10, math.floor(sum(parts.values())))), parts
+        hub = self.regions[M.hub(self, rid)]
+        singles = int(any(self.has_port(x) for x in sites)) + sum(int(any(r.b.get(k) for r in regs)) for k in ("airport", "academy"))
+        parts = R.region_value_parts(self.region_output_estimate(rid), M.total_pop(self, rid),
+                                     sum(r.level_sum() for r in regs), singles,
+                                     sum(i.oil for i in infos), sum(i.coal for i in infos),
+                                     sum(i.power_self for i in infos), sum(i.power_site for i in infos),
+                                     hub.b["extract"], sum(len(i.specialties) for i in infos))
         return R.region_value(sum(parts.values())), parts
 
     def neutral_turns(self, fid, rid) -> int:
@@ -3084,18 +3106,23 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         rr = self.regions[rid]
         if rr.flooded:
             return 0.0
+        mt = M.of(self, rid)
+        if mt and mt["center"] != rid:
+            return 0.0                   # 광역시는 하나의 지역(v1.3.17): 중심이 광역시 전체 산출을 낸다
+        sites = mt["members"] if mt else [rid]
         owner = rr.owner if owner is None else owner
         m = self.mods(owner)
+        is_cap = owner != NEUTRAL and self.factions[owner].capital in sites
         phi = None if full else getattr(rr, "fuel_used", 0)
         educated = m.mult("educated_output") if rr.b.get("edu", 0) >= 3 else 1.0
         pop_mult = 1 + C.FOCUS_POP_BONUS * self.focus_multiplier(owner) if self.focus_active(rr) and owner == rr.owner else 1.0
-        if owner != NEUTRAL and rid == self.factions[owner].capital:
+        if is_cap:
             pop_mult *= m.mult("capital_pop_output")
         # 건물 슬롯(v1.3.8): 카드마다 산출을 따로 계산해 더한다(농장·어장은 단계 합, 공장·시장은 카드별)
         b = rr.b
         fish = self.fishery_eff(owner, rid)
         fac = b.levels("factory")
-        y = R.region_output(rr.pop, b.cap("farm"), fish, fac, b.levels("bank"),
+        y = R.region_output(M.total_pop(self, rid) if mt else rr.pop, b.cap("farm"), fish, fac, b.levels("bank"),
                             phi, 1.0,
                             m.mult("output_bank") * educated * self.leader_bank_mult(owner, rid) * (1 + C.EXCHANGE_BANK_BONUS if "exchange" in rr.econ and not self.facility_paused(rr.id) else 1.0),
                             m.mult("output_factory") * educated * (1 + m.add("factory_fuel_output") * (sum(fac) if full else min(sum(fac), getattr(rr, "fuel_used", 0)))),
@@ -3110,19 +3137,20 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if owner != NEUTRAL and owner == rr.owner:
             y *= m.mult("output_money") * self.great_person_bonus(rid, "output_mult")
             y *= R.unhappy_output_mult(rr.happy if ignore_resistance else self.eff_happy(rr))   # 불행한(실질 행복도) 지역은 산출 감소
-            if rid == self.factions[owner].capital:
+            if is_cap:
                 y *= m.mult("capital_money")
                 y *= 1 + C.CAPITAL_OUTPUT_BONUS * m.value("capital_bonus_mult", 1.0)   # 수도 (선왕 '5경 분산': 절반)
             far = m.value("far_output", 0)
-            if far and rid not in self.near_capital(owner):
+            if far and not any(x in self.near_capital(owner) for x in sites):
                 y *= 1 - far                                  # 왕건 '호족 연합': 수도에서 먼 지역
             far = m.value("far_output_gov", 0)
-            if far and rid not in self.near_capital(owner, 3):
+            if far and not any(x in self.near_capital(owner, 3) for x in sites):
                 y *= 1 - far                                  # 전제군주제: 수도에서 3칸 밖 지역
             if self.turn <= m.value("early_output_turns", 0):
                 y *= m.mult("early_output")                   # 김대중 '외환위기 수습': 첫 10턴
             y *= 1 + C.HAEDONG_OUTPUT * self.haedong_steps(owner)   # 발해 선왕 '해동성국'
-        return y * self.leader_output_mult(rid) * (0.9 if self.weather_at(rid, "snow") else 1.0)
+        snow = sum(self.weather_at(x, "snow") for x in sites) / len(sites)      # 광역시: 폭설 맞은 칸 비율만큼
+        return y * self.leader_output_mult(rid) * (1.0 - 0.1 * snow)
 
     def near_capital(self, fid, dist=2) -> set:
         """수도에서 육상 dist칸 이내 지역."""
@@ -3148,11 +3176,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         rr = self.regions[rid]
         if rr.owner != fid:
             return False, "내 지역이 아닙니다."
-        if not on:
-            self.release_focus(rr)
-        rr.focus = bool(on)
-        if on:
-            rr.pop_focus = False             # 집중은 하나만
+        for rr in M.regions(self, rid):     # 광역시는 하나의 지역: 구성 지역 모두
+            if not on:
+                self.release_focus(rr)
+            rr.focus = bool(on)
+            if on:
+                rr.pop_focus = False             # 집중은 하나만
         return True, "생산 집중 " + (f"켬: 인구 산출 +{C.FOCUS_POP_BONUS:.0%}" if on else "끔")
 
     def set_pop_focus(self, fid, rid, on):
@@ -3161,9 +3190,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             return False, "내 지역이 아닙니다."
         if on and self.growth_happy(rr) < C.POP_FOCUS_MIN_H:
             return False, f"행복도(전쟁 피로 제외) {C.POP_FOCUS_MIN_H} 이상에서만 쓸 수 있습니다."
-        rr.pop_focus = bool(on)
-        if on:
-            self.release_focus(rr)
+        for rr in M.regions(self, rid):
+            rr.pop_focus = bool(on)
+            if on:
+                self.release_focus(rr)
         return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH * 100:g}%p" if on else "끔")
 
     def pop_focus_active(self, rr) -> bool:
@@ -3183,14 +3213,21 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if rr.owner != NEUTRAL and self.mods(rr.owner).value("no_crowd"):
             return 0.0
         t1, t2 = self.crowd_thresholds(rr.id)
-        if rr.pop >= t2:
+        pop = rr.pop
+        if getattr(rr, "metro", None) is not None:          # 광역시: 인구 합 ÷ 시작 인구 합 기준
+            ts = [self.crowd_thresholds(x) for x in M.members(self, rr.id)]
+            t1, t2 = sum(a for a, _ in ts), sum(b for _, b in ts)
+            pop = M.total_pop(self, rr.id)
+        if pop >= t2:
             return float(C.CROWD_HAPPY[1])
-        if rr.pop >= t1:
+        if pop >= t1:
             return float(C.CROWD_HAPPY[0])
         return 0.0
 
     def growth_happy(self, rr) -> float:
         """인구 성장 판정용 행복도: 실질 행복도에서 전쟁 피로만 뺀 것(전쟁 피로는 성장에 영향 없음)."""
+        if getattr(rr, "metro", None) is not None:
+            rr = self.regions[M.hub(self, rr.id)]
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
@@ -3201,6 +3238,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return max(C.HAPPY_MIN, min(C.HAPPY_MAX, h))
 
     def region_output_estimate(self, rid):
+        rid = M.hub(self, rid)                 # 광역시는 하나의 지역: 광역시 전체 산출
         rr = self.regions[rid]
         if rr.output > 0 and rr.owner != NEUTRAL:
             return rr.output
@@ -3992,13 +4030,20 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         p = self.bomb_building_probability(a.owner, guns, sum(bombers.values()) > 0)
         if p and self.rng.random() < p:
             hit = self.bomb_targets(tgt)          # 항구·공항·사관학교는 따로(아래 10% 파괴) — v1.3.0: 함포의 항구 우선 파괴 삭제
-            if "observatory" in rr.sci and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
+            obs = next((x for x in M.regions(self, tgt) if "observatory" in x.sci), None)   # 광역시: 광역시 어디든
+            if obs is not None and self.rng.random() < C.OBSERVATORY_BOMB_SHARE:
                 hit = []                          # 천체관측소: 맞으면 파괴(과학승리는 다시 지을 때까지 불가)
-                self._destroy_observatory(rr, a.owner)
+                self._destroy_observatory(obs, a.owner)
                 notes.append("천체관측소 파괴")
             if hit:
                 k = self.rng.choice(hit)
-                if k.startswith("line:"):
+                if isinstance(k, tuple):          # 광역시(하나의 지역): 광역시 전체 건물·바깥 방어선 가운데
+                    x, kind, key = k
+                    M.apply_damage(self, x, kind, key)
+                    nm = (("해안선" if key == "coast" else self.info(key).name) if kind == "lines"
+                          else BUILDING_NAMES.get(key, key))
+                    notes.append(f"방어선({nm}) 1단계 파괴" if kind == "lines" else f"{nm} 1단계 파괴")
+                elif k.startswith("line:"):
                     border = k[5:]
                     rr.lines[border] -= 1
                     nm = "해안선" if border == "coast" else self.info(border).name
@@ -4008,8 +4053,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     notes.append(f"{BUILDING_NAMES.get(k, k)} 1단계 파괴")
         # 1단계가 최대인 건물(항구·공항·사관학교, v1.3.0): 폭격당할 때마다 각각 10% 확률로 파괴
         for k in C.SINGLE_BUILDINGS:
-            if rr.b.get(k, 0) > 0 and self.rng.random() < C.SINGLE_BOMB_DESTROY:
-                rr.b[k] = 0
+            holders = [x for x in M.regions(self, tgt) if x.b.get(k, 0) > 0]      # 광역시: 광역시에 하나
+            if holders and self.rng.random() < C.SINGLE_BOMB_DESTROY:
+                for x in (holders[:1] if k in S.CARD_KEYS else holders):
+                    x.b[k] = 0
                 notes.append(f"{BUILDING_NAMES.get(k, k)} 파괴")
         hr = self.regions[M.center_of(self, tgt)]           # 광역시는 중심(행복도 하나)
         if not hr.bombed:
@@ -4034,7 +4081,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                                 f"({f.name}: 다시 지어야 과학승리 가능).", region=rr.id, fids=(by, f.id))
 
     def bomb_targets(self, rid):
-        """폭격으로 부술 수 있는 건물: 생산 건물·방공호·대공포 키와 'line:경계' 방어선."""
+        """폭격으로 부술 수 있는 건물: 생산 건물·방공호·대공포 키와 'line:경계' 방어선.
+        광역시(하나의 지역)는 광역시 전체 건물·바깥 방어선 [(칸, 'b'|'lines', 키)](v1.3.17)."""
+        if getattr(self.regions[rid], "metro", None) is not None:
+            return M.damage_choices(self, rid, keys=list(C.PROD_BUILDINGS) + ["shelter", "aa"])
         rr = self.regions[rid]
         out = [k for k in list(C.PROD_BUILDINGS) + ["shelter", "aa"] if rr.b.get(k, 0) > 0]
         out += [f"line:{b}" for b, lv in sorted(rr.lines.items()) if lv > 0]
@@ -4478,9 +4528,20 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def _sabotage(self, rr, fid=None) -> str:
         """생산·방어 건물 2단계 파괴와 과학·경제 시설 일시 정지."""
         note = ""
-        if fid is not None and (rr.sci or rr.econ) and self.rng.random() < self.mods(fid).add("sabotage_pause_chance"):
-            rr.facility_off_until = self.turn + 4
+        sites = M.regions(self, rr.id)            # 광역시는 하나의 지역: 광역시 전체 시설·건물(v1.3.17)
+        if fid is not None and any(x.sci or x.econ for x in sites) and self.rng.random() < self.mods(fid).add("sabotage_pause_chance"):
+            for x in sites:
+                x.facility_off_until = self.turn + 4
             note = ", 과학·경제 시설 4턴 정지"
+        if rr.metro is not None:
+            choices = sorted(M.damage_choices(self, rr.id, keys=[k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS)
+                                                                  if k != "line"], lines=False))
+            if not choices:
+                return note
+            ch = self.rng.choice(choices)
+            levels = int(self.mods(fid).value("sabotage_levels", 1)) if fid is not None else 1
+            before, after = M.apply_damage(self, *ch, levels=levels)
+            return f", 의열단 파괴: {BUILDING_NAMES.get(ch[2], ch[2])} {before} → {after}단계" + note
         keys = [k for k in list(C.PROD_BUILDINGS) + list(C.DEF_BUILDINGS)
                 if k in rr.b and k != "line" and rr.b[k] > 0]
         if not keys:
@@ -5114,8 +5175,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if p.kind != "unit":
             rr.unit_chain_count = 0
         if p.kind == "repair":
-            rr.flooded = False
-            text = f"{name} 침수 복구 완료"
+            for x in M.regions(self, rr.id):     # 광역시: 광역시 전체 복구
+                x.flooded = False
+            text = f"{M.label(self, rr.id)} 침수 복구 완료"
         elif p.kind == "build":
             if p.key == "line":
                 rr.lines[p.border] = p.level
@@ -5508,6 +5570,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def eff_happy(self, rr, rebel=False) -> float:
         """실질 행복도 = 행복도(저항 반영) − 전쟁 피로도 − 징집 피로. 산출·인구·사기 판정에 쓴다.
         rebel=True(반란 판정): 선포당한 전쟁에서 쌓인 전쟁 피로는 빼지 않고, 나머지는 ×1.2로 반영한다."""
+        if getattr(rr, "metro", None) is not None:
+            rr = self.regions[M.hub(self, rr.id)]          # 광역시는 하나의 지역(v1.3.17)
         if rr.owner == NEUTRAL:
             return rr.happy
         f = self.factions[rr.owner]
@@ -5531,7 +5595,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """자연경관: 경관 지역과, 그 지역 주인의 인접 지역에 행복도 +5(경관마다)."""
         if rr.owner == NEUTRAL:
             return 0.0
-        return C.SCENIC_HAPPY * self.mods(rr.owner).value("scenic_mult", 1) * sum(1 for n in self.world.scenic_near[rr.id] if self.regions[n].owner == rr.owner)
+        near = {n for x in M.members(self, rr.id) for n in self.world.scenic_near[x]}   # 광역시: 광역시 안·맞닿은 경관
+        return C.SCENIC_HAPPY * self.mods(rr.owner).value("scenic_mult", 1) * sum(1 for n in near if self.regions[n].owner == rr.owner)
 
     def haedong_steps(self, fid) -> float:
         """발해 선왕 '해동성국': 영토가 20곳을 넘을 때마다 1단계(최대 5). 단계마다 전 지역 산출 +2%."""

@@ -10,6 +10,8 @@ import pygame
 
 from .. import config as C
 from .. import diplomacy as D
+from .. import metro as M
+from .. import slots as S
 from ..data import SEA_NAMES, load_world
 from ..game import Game, initial_buildings
 from ..leaders import LEADER_BY_KEY
@@ -704,6 +706,9 @@ class App:
         """세부 모드의 단계(0 = 표시 안 함). 지금 보이지 않는 지역은 게임 시작 시점의 건물 상태로."""
         if visible:
             b = r.b
+            if getattr(r, "metro", None) is not None:      # 광역시: 광역시 전체 건물(광역 카드·공유 건물)
+                g = self.game
+                b = {k: (g.blevel(r.id, k) if k in S.CARD_KEYS and k not in S.ETC_KEYS else v) for k, v in r.b.items()}
         elif self.game and self.game.settings.mode != 'standard':
             b = {key: 0 for key in r.b}
             b['port'] = int(info.island == '무연륙 섬')
@@ -760,7 +765,8 @@ class App:
             h = g.eff_happy(r)                     # 실질 행복도(전쟁 피로·저항 반영)
             return mix(t.happy_mid, t.happy_pos, h / 100) if h >= 0 else mix(t.happy_mid, t.happy_neg, -h / 100)
         if m == "pop":
-            x = min(1.0, math.log10(max(1.0, r.pop)) / 2.1)
+            from .. import metro as M
+            x = min(1.0, math.log10(max(1.0, M.total_pop(g, rid))) / 2.1)      # 광역시: 광역시 인구 합
             return mix((241, 243, 245), (25, 113, 194), x)
         if m in SUB_MODES:
             return self.overlay_color(rid, r, owner, info, visible)
@@ -1366,7 +1372,9 @@ class App:
                     continue
                 if not (g.is_explored(pid, rid) or self.fog_reveal):
                     continue
-                t = render_text(f"{g.regions[rid].pop:.1f}만", 10, self.theme.muted, "semibold")
+                if M.is_extra(g, rid):
+                    continue                     # 광역시: 중심에 광역시 인구 합 하나만
+                t = render_text(f"{M.total_pop(g, rid):.1f}만", 10, self.theme.muted, "semibold")
                 self.screen.blit(t, t.get_rect(center=(x, y + 10 * ui_scale())))
 
     # ------------------------------------------------------------ 지도 입력

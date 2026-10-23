@@ -1,6 +1,6 @@
 """1턴 예보, 계절 기상, 국지 피해와 수확 이력. 모든 난수는 판의 rng를 사용한다."""
 from __future__ import annotations
-from . import config as C, rules as R, slots as S
+from . import config as C, metro as M, rules as R, slots as S
 
 WEATHER = {
     'drought': ('가뭄', (3, 4, 5), (2, 4), '내륙 비하천 농장 식량·산출 −30%'),
@@ -79,6 +79,15 @@ class DisasterMixin:
 
     def _mark_weather_damage(self):
         for rid, r in self.regions.items():
+            if r.metro is not None:
+                if M.is_extra(self, rid):
+                    continue                      # 광역시는 하나의 지역: 구성 지역 어디든 맞으면 광역시 작황 피해
+                sites = M.members(self, rid)
+                if r.b.get('farm') and any(self.weather_at(x, 'cold') or (
+                        self.weather_at(x, 'drought') and not self.info(x).coastal and not self.river_farm(x))
+                        for x in sites):
+                    self.agri_damage(rid)
+                continue
             if r.b.get('farm') and (self.weather_at(rid, 'cold') or
                 (self.weather_at(rid, 'drought') and not self.info(rid).coastal
                  and not self.river_farm(rid))):
@@ -112,12 +121,12 @@ class DisasterMixin:
                             weights=(60, 27, 9, 3, 1))[0])
 
     def agri_damage(self, rid):
-        self.regions[rid].last_agri_damage = self.turn
+        self.regions[M.hub(self, rid)].last_agri_damage = self.turn      # 광역시: 광역시 전체의 작황
 
     def harvest_active(self, rid):
         week = (self.turn - 1) % 48
         start = self.turn - week + 32
-        return 32 <= week < 40 and start > 40 and self.regions[rid].last_agri_damage < start - 40
+        return 32 <= week < 40 and start > 40 and self.regions[M.hub(self, rid)].last_agri_damage < start - 40
 
     def weather_farm_mult(self, rid):
         if self.weather_at(rid, 'cold'):
@@ -132,7 +141,7 @@ class DisasterMixin:
         return 0.7 if river and self.weather_at(rid, 'heat') else 1.0
 
     def weather_happy(self, rid):
-        return (-3 if self.weather_at(rid, 'cold') else 0) - self.regions[rid].fire_scar
+        return (-3 if self.weather_at(rid, 'cold') else 0) - self.regions[M.hub(self, rid)].fire_scar
 
     def self_power(self, rid):
         r, info = self.regions[rid], self.info(rid)
@@ -161,23 +170,29 @@ class DisasterMixin:
     def ignite(self, rid):
         if rid is None or rid in self.fire_burned:
             return
+        rid = M.hub(self, rid)                # 광역시는 하나의 지역: 어느 구성 지역에 붙어도 광역시 전체가 탄다
+        if rid in self.fire_burned:
+            return
         self.fires.add(rid)
-        self.fire_burned.add(rid)
+        self.fire_burned.update(M.members(self, rid))
         r = self.regions[rid]
         r.fire_turns = 0
         r.fire_recovery = 0
         self.agri_damage(rid)
 
     def set_flooded(self, rid):
+        rid = M.hub(self, rid)                # 광역시: 광역시 전체가 침수(복구도 한 번)
         r = self.regions[rid]
         if not r.flooded:
-            r.flooded = True
-            self.event('alert', f'{self.info(rid).name} 침수 — 침수 복구 전까지 모든 생산 중단',
+            for x in M.regions(self, rid):
+                x.flooded = True
+            self.event('alert', f'{M.label(self, rid)} 침수 — 침수 복구 전까지 모든 생산 중단',
                        region=rid, fids=(r.owner,))
         self.agri_damage(rid)
 
     def disaster_damage(self):
         self._mark_weather_damage()
+        self.fires = {M.hub(self, x) for x in self.fires}       # 광역시를 지정하기 전에 붙은 불도 광역시 하나로
         burning = set(self.fires)
         for rid, r in self.regions.items():
             if rid not in burning and r.fire_recovery:
@@ -186,15 +201,20 @@ class DisasterMixin:
         spread = set()
         for rid in sorted(burning):
             r = self.regions[rid]
-            choices = [('b', k) for k, v in r.b.items() if v > 0]
-            choices += [('lines', k) for k, v in r.lines.items() if v > 0]
-            if choices:
-                attr, key = self.rng.choice(choices)
-                getattr(r, attr)[key] -= 1
+            if r.metro is not None:               # 광역시(하나의 지역): 광역시 건물·바깥 방어선 가운데 하나
+                choices = M.damage_choices(self, rid)
+                if choices:
+                    M.apply_damage(self, *self.rng.choice(choices))
+            else:
+                choices = [('b', k) for k, v in r.b.items() if v > 0]
+                choices += [('lines', k) for k, v in r.lines.items() if v > 0]
+                if choices:
+                    attr, key = self.rng.choice(choices)
+                    getattr(r, attr)[key] -= 1
             r.fire_scar += 3
             r.fire_turns += 1
             self.agri_damage(rid)
-            for n in sorted(self.world.land_adj[rid]):
+            for n in sorted(M.outer_adj(self, rid)):
                 if n not in self.fire_burned and self.rng.random() < C.FIRE_SPREAD_CHANCE:
                     spread.add(n)
             if self.rng.random() < C.FIRE_OUT_CHANCE:
@@ -205,6 +225,14 @@ class DisasterMixin:
             self.event('alert', f'{self.info(rid).name} 산불 확산', region=rid, fids=(self.regions[rid].owner,))
         if self.weather and self.weather['kind'] in ('rain', 'typhoon'):
             for rid, r in self.regions.items():
+                if r.metro is not None:
+                    if M.is_extra(self, rid):
+                        continue                  # 광역시는 하나의 지역: 침수 판정도 광역시당 한 번
+                    sites = M.regions(self, rid)
+                    p = C.TYPHOON_FLOOD_CHANCE if any(self.typhoon_danger(x.id) for x in sites) else C.FLOOD_CHANCE
+                    if any(any(x.b.values()) for x in sites) and not r.flooded and self.rng.random() < p:
+                        self.set_flooded(rid)
+                    continue
                 p = C.TYPHOON_FLOOD_CHANCE if self.typhoon_danger(rid) else C.FLOOD_CHANCE
                 if any(r.b.values()) and not r.flooded and self.rng.random() < p:
                     self.set_flooded(rid)
@@ -219,6 +247,9 @@ class DisasterMixin:
                     self._validate_capacity(a)
 
     def apply_quake_tier(self, rid, tier):
+        if self.regions[rid].metro is not None:
+            self._quake_metro(rid, tier)
+            return
         r = self.regions[rid]
         nuke = r.b.primary('nuclear') if hasattr(r.b, 'primary') else None
         nuke_lv = r.b.card(nuke)['level'] if nuke else 0
@@ -250,14 +281,53 @@ class DisasterMixin:
         r.quake_until = self.turn + 1
         self.agri_damage(rid)
 
+    def _quake_metro(self, rid, tier):
+        """광역시(하나의 지역) 지진 피해: 광역시 전체의 카드·건물·바깥 방어선·인구가 한 번에."""
+        rid = M.hub(self, rid)
+        sites = M.regions(self, rid)
+        sel = set(M.members(self, rid))
+
+        def loss(lv):
+            return (int(self.rng.random() < .5) if tier == 5 else 1 if tier == 6 else
+                    self.rng.randint(1, 2) if tier == 7 else 2 if tier == 8 else lv)
+        shared = {}
+        for r in sites:
+            nuke = r.b.primary('nuclear')
+            nuke_lv = r.b.card(nuke)['level'] if nuke else 0
+            for t, i, c in list(r.b.cards()):
+                r.b.set_card((t, i), max(0, c['level'] - loss(c['level'])))
+            for key, lv in list(r.b.items()):
+                if key in S.CARD_KEYS:
+                    continue
+                if key not in shared:                  # 방공호·대공포·공항: 광역시 전체에 같은 값
+                    shared[key] = max(0, lv - loss(lv))
+                r.b[key] = shared[key]
+            for key, lv in list(r.lines.items()):
+                if key not in sel:
+                    r.lines[key] = max(0, lv - loss(lv))
+            r.pop = max(0.1, r.pop * (1 - {5: 0, 6: .0001, 7: .001, 8: .01, 9: .10}[tier]))
+            if nuke and tier == 8:
+                if r.b.card(nuke) is None:
+                    r.b.place('nuclear', nuke_lv, nuke)
+                r.nuclear_off_until = self.turn + 4
+            if self.info(r.id).nuclear and tier == 9:
+                r.nuclear_destroyed = True
+                r.b['nuclear'] = 0
+            if tier == 9:
+                r.sci.clear()
+                r.econ.clear()
+            r.quake_until = self.turn + 1
+        self.agri_damage(rid)
+
     def earthquake(self, epicenter, magnitude):
         tiers = {5: (5,), 6: (6, 5), 7: (7, 6, 5), 8: (8, 7, 5), 9: (9, 8, 6, 5)}[magnitude]
-        seen, layer = set(), {epicenter}
+        # 광역시는 하나의 지역: 지진이 광역시에 닿으면 광역시 전체가 그 강도로 한 번, 다음 고리는 광역시 바깥 이웃
+        seen, layer = set(), {M.hub(self, epicenter)}
         for tier in tiers:
             for rid in sorted(layer):
                 self.apply_quake_tier(rid, tier)
             seen |= layer
-            layer = {n for rid in layer for n in self.world.land_adj[rid]} - seen
+            layer = {M.hub(self, n) for rid in layer for n in M.outer_adj(self, rid)} - seen
         self.disaster_notice = f'{self.info(epicenter).name} 규모 {magnitude} 지진 — {len(seen)}개 지역 피해'
         self.event('alert', self.disaster_notice, region=epicenter, fids=(self.player_id,))
 
@@ -271,6 +341,8 @@ class DisasterMixin:
         return out
 
     def local_disaster_status(self, rid):
+        own = self.regions[rid]
+        rid = M.hub(self, rid)                # 광역시: 광역시 전체의 상태(원전은 구성 지역마다)
         r = self.regions[rid]
         out = []
         if rid in self.fires:
@@ -281,10 +353,12 @@ class DisasterMixin:
             out.append('침수 · 복구 작업 1턴 필요 · 모든 생산 중단')
         if r.quake_until > self.turn:
             out.append(f'지진 피해 · {r.quake_until - self.turn}턴 남음')
-        if r.nuclear_destroyed:
-            out.append('원전 영구 파괴 · 재건설 불가')
-        elif r.nuclear_off_until > self.turn:
-            out.append(f'원전 정지 {r.nuclear_off_until - self.turn}턴 남음')
+        for x in M.regions(self, rid) if own.metro is not None else [own]:
+            where = f' ({self.info(x.id).short})' if own.metro is not None else ''
+            if x.nuclear_destroyed:
+                out.append('원전 영구 파괴 · 재건설 불가' + where)
+            elif x.nuclear_off_until > self.turn:
+                out.append(f'원전 정지 {x.nuclear_off_until - self.turn}턴 남음' + where)
         if self.harvest_active(rid):
             out.append(f'풍년 {(40 - (self.turn - 1) % 48)}턴 남음 · 농장 +30%')
         if self.weather_at(rid, 'typhoon'):

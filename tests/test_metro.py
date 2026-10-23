@@ -676,3 +676,76 @@ def test_ai_metro_orders_use_merge_plan():
     assert m and m["slot_merge"]
     cb = g.regions["S002"].b
     assert cb["factory"] == 5 and cb["bank"] == 5 and cb.mult_of("base") == len(m["members"])
+
+
+def _one_region_metro():
+    g, sel = _setup()
+    ok, msg = g.create_metro(0, "S002", sel)
+    assert ok, msg
+    return g, sel
+
+
+def test_metro_is_one_region_for_output_happiness_value_and_focus():
+    """v1.3.17: 광역시는 지정한 뒤 모든 면에서 하나의 지역 — 산출·행정·과학은 광역시 전체를 한 번에(중심 칸이 대표),
+    행복도·지역 가치·생산 집중은 어느 구성 지역에서 봐도 같다. 해제하면 다시 지역마다."""
+    g, sel = _one_region_metro()
+    pop = sum(g.regions[r].pop for r in sel)
+    assert M.total_pop(g, sel[2]) == pytest.approx(pop)
+    assert all(g.calc_output(r) == 0 for r in sel[1:]) and g.calc_output("S002") > 0
+    assert all(g.admin_output(r) == 0 and g.science_output(r) == 0 for r in sel[1:])
+    assert len({round(g.eff_happy(g.regions[r]), 9) for r in sel}) == 1
+    assert len({g.region_value(r)[0] for r in sel}) == 1
+    assert g.density_growth(sel[3]) == g.density_growth("S002")
+    ok, _ = g.set_focus(0, sel[2], True)
+    assert ok and all(g.regions[r].focus for r in sel)
+    # 위인: 광역시 어디에 있어도 광역시 전체에(더하는 효과는 한 번)
+    g.great_people.append({"id": 999, "kind": "scientist", "owner": 0, "loc": sel[3], "name": "시험"})
+    assert g.great_person_bonus("S002", "science_mult") == pytest.approx(1.3)
+    g.great_people[-1]["kind"] = "chancellor"
+    assert g.great_person_bonus("S002", "admin_add") == 30 and g.great_person_bonus(sel[1], "admin_add") == 0
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok and all(g.calc_output(r) > 0 for r in sel)
+
+
+def test_any_member_hit_hits_the_whole_metro():
+    """구성 지역 어디가 폭격·지진·침수·산불·파괴 공작을 당해도 광역시 전체(광역 카드)에 한 번 일어난다."""
+    g, sel = _one_region_metro()
+    cb = g.regions["S002"].b
+    edge = sel[2]
+    # 폭격: 중심이 아닌 구성 지역을 쳐도 광역 카드가 대상
+    targets = g.bomb_targets(edge)
+    assert ("S002", "b", "farm") in targets
+    D.declare_war(g, 1, 0)
+    a = g.new_army(1, next(n for n in g.world.land_adj[edge] if n not in sel), {"art": 2})
+    g.rng.random = lambda: 0.29
+    g.rng.choice = lambda seq: ("S002", "b", "farm") if ("S002", "b", "farm") in seq else seq[0]
+    farm = cb["farm"]
+    g._bombard(a, edge, {"art": 2})
+    assert cb["farm"] == farm - 1
+    # 의열단(파괴 공작)
+    g.rng.choice = lambda seq: next(c for c in seq if c[0] == "S002" and c[2] == "farm")
+    g._sabotage(g.regions[sel[3]])
+    assert cb["farm"] == farm - 2
+    # 지진: 구성 지역이 진앙이어도 광역시 전체가 한 번(카드마다 1단계)
+    g.rng.random = lambda: 0.0
+    g.earthquake(sel[3], 5)
+    assert cb["farm"] == farm - 3 and all(g.regions[r].quake_until == g.turn + 1 for r in sel)
+    # 침수: 광역시 전체가 침수, 복구는 한 번
+    g.set_flooded(sel[1])
+    assert all(g.regions[r].flooded for r in sel) and g.calc_output("S002") == 0
+    for r in sel:
+        _clear(g, r)
+    reps = [o for o in g.options(0, sel[2]) if o["kind"] == "repair"]
+    assert len(reps) == 1 and reps[0]["site"] == "S002"
+    ok, msg = g.start_project(0, sel[2], "repair", reps[0]["key"])
+    assert ok, msg
+    g._fund_projects()
+    g._phase_projects(("repair",))
+    assert not any(g.regions[r].flooded for r in sel)
+    # 산불: 어느 구성 지역에 붙어도 광역시 하나가 타고, 피해·행복도(흔적)는 광역시 전체
+    g.ignite(sel[1])
+    assert g.fires == {"S002"} and set(sel) <= g.fire_burned
+    before = g.eff_happy(g.regions[sel[3]])
+    g.disaster_damage()
+    assert g.eff_happy(g.regions[sel[3]]) < before
+    assert len({round(g.eff_happy(g.regions[r]), 9) for r in sel}) == 1

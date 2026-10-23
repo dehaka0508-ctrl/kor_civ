@@ -6,8 +6,9 @@ from .. import config as C
 def draw_area(app, x, y, w, rid):
     """면적·인구밀도·기본 슬롯 칸 수(v1.3.8: 면적은 밀도 성장과 슬롯 칸 수에만 쓴다)."""
     gui, g, t = app.gui, app.game, app.theme
-    area = g.info(rid).area_km2
-    dens = g.regions[rid].pop * 10000 / area
+    from .. import metro as M
+    area = M.total_area(g, rid)                        # 광역시는 하나의 지역: 면적·인구 합(v1.3.17)
+    dens = M.total_pop(g, rid) * 10000 / area
     site = g.slot_site(rid, "base")                    # 광역시 구성 지역은 중심의 광역 기본 슬롯(v1.3.16)
     base = len(g.regions[site].b.slots.get("base", ()))
     label = f"광역 기본 슬롯 {base}칸" if site != rid or g.regions[site].b.mult_of("base") > 1 else f"기본 슬롯 {base}칸"

@@ -15,6 +15,8 @@
   · 기타 슬롯(댐·원전·특산물 시설·무료 항구)은 합치지 않고 지역마다 그대로.
   구성 지역 자신의 기본·하천·해안 카드는 묶는 동안 보관했다가, 해제하면 되돌린 뒤 묶은 뒤 바뀐 단계(광역 카드의
   레벨 합 변화)를 각 지역의 그 건물 카드에 더한다. 공항은 중심, 부대는 중심으로.
+- 완전히 하나의 지역(v1.3.17): 산출·행정·과학·행복도 보정·인구 성장·지역 가치·위인 효과는 광역시 전체 한 번(중심 칸이
+  대표), 폭격·파괴 공작·지진·침수·산불·작황 피해는 어느 구성 지역에 일어나도 광역시 전체에 한 번. 해제하면 다시 지역마다.
 """
 from __future__ import annotations
 
@@ -77,6 +79,77 @@ def eligible(g, pool, rid) -> bool:
 
 def pool_members(g, m, pool) -> list:
     return [r for r in m["members"] if eligible(g, pool, r)]
+
+
+# ------------------------------------------------------------------ 하나의 지역(v1.3.17)
+# 광역시는 지정한 뒤 모든 면에서 하나의 지역이다. 지도 칸(구성 지역)은 위치·이동·방어선 경계·영토 수에만 남고,
+# 지역 단위의 상태·판정·산출은 중심 칸(hub)이 광역시 전체를 대신한다. 어느 구성 지역에 일어난 일(폭격·재해·
+# 파괴 공작·침수·산불)도 광역시 전체에 한 번 일어난다. 해제하면 구성 지역마다 다시 따로(가역).
+def hub(g, rid) -> str:
+    """광역시면 중심(광역시 전체를 대신하는 칸), 아니면 그 지역."""
+    return center_of(g, rid)
+
+
+def is_extra(g, rid) -> bool:
+    """광역시의 중심이 아닌 구성 지역: 지역 단위 산출·판정은 중심이 광역시 전체로 맡는다."""
+    m = of(g, rid)
+    return bool(m) and m["center"] != rid
+
+
+def regions(g, rid) -> list:
+    return [g.regions[r] for r in members(g, rid)]
+
+
+def total_pop(g, rid) -> float:
+    return sum(r.pop for r in regions(g, rid))
+
+
+def total_area(g, rid) -> float:
+    return sum(g.info(r).area_km2 for r in members(g, rid))
+
+
+def outer_adj(g, rid) -> set:
+    """광역시(하나의 지역)와 맞닿은 바깥 지역."""
+    sel = set(members(g, rid))
+    return {n for r in sel for n in g.world.land_adj[r]} - sel
+
+
+def damage_choices(g, rid, keys=None, lines=True) -> list:
+    """하나의 지역으로 본 광역시(아니면 그 지역)의 피해 대상 [(칸, 'b'|'lines', 키)].
+    슬롯 카드는 그 카드가 있는 칸(광역 슬롯은 중심, 기타 슬롯은 그 구성 지역), 방공호·대공포·공항처럼
+    광역시 전체에 같은 값인 슬롯 밖 건물은 한 번만, 방어선은 바깥 경계만."""
+    sel = members(g, rid)
+    out, shared = [], set()
+    for x in sel:
+        r = g.regions[x]
+        for k, v in r.b.items():
+            if v <= 0 or (keys is not None and k not in keys):
+                continue
+            if k in S.CARD_KEYS or len(sel) == 1:
+                out.append((x, "b", k))
+            elif k not in shared:
+                shared.add(k)
+                out.append((sel[0], "b", k))
+        if lines:
+            out += [(x, "lines", k) for k, v in sorted(r.lines.items()) if v > 0 and k not in sel]
+    return out
+
+
+def apply_damage(g, x, kind, key, levels=1) -> tuple:
+    """damage_choices 의 한 대상을 levels 단계 깎는다(광역시 전체에 같은 값인 건물은 모든 구성 지역을). (전, 후)"""
+    r = g.regions[x]
+    if kind == "lines":
+        before = r.lines.get(key, 0)
+        r.lines[key] = max(0, before - levels)
+        return before, r.lines[key]
+    before = r.b.get(key, 0)
+    after = max(0, before - levels)
+    if key in S.CARD_KEYS or not of(g, x):
+        r.b[key] = after
+    else:
+        for y in members(g, x):
+            g.regions[y].b[key] = after
+    return before, after
 
 
 def merged(g, rid):
@@ -563,6 +636,12 @@ def create(g, fid, center, sel, name=None) -> tuple:
         r.happy, r.h_delta = h, 0.0
         r.focus = r.pop_focus = False
     c.h_delta = hd
+    # 하나의 지역: 구성 지역 하나라도 침수면 광역시 전체가 침수, 지진·시설 정지는 가장 긴 것으로
+    c.flooded = any(r.flooded for r in regs)
+    c.quake_until = max(r.quake_until for r in regs)
+    c.facility_off_until = max(getattr(r, "facility_off_until", 0) for r in regs)
+    c.fire_scar = max(r.fire_scar for r in regs)
+    c.last_agri_damage = max(r.last_agri_damage for r in regs)
     sync(g, m)
     g.event("info", f"{f.name}: {m['name']} 지정 — {len(sel)}개 지역을 하나로"
             + (f" (진행 중이던 작업 {stopped}건 중단, 50% 환급)" if stopped else ""), region=center, fids=(fid,))
@@ -580,6 +659,13 @@ def sync(g, m):
         rr.supplied = set(c.supplied)
         rr.mil_hist = c.mil_hist
         rr.conscript = c.conscript
+        # 하나의 지역(v1.3.17): 생산·인구 집중, 침수·지진 피해, 시설 정지도 광역시 전체가 같은 상태
+        rr.focus, rr.pop_focus = c.focus, c.pop_focus
+        rr.focus_unrest_until = c.focus_unrest_until
+        rr.flooded = c.flooded
+        rr.quake_until = c.quake_until
+        rr.facility_off_until = c.facility_off_until
+        rr.famine = c.famine
 
 
 # ------------------------------------------------------------------ 해제
@@ -743,9 +829,9 @@ def options(g, fid, mid) -> list:
                 seen.add(("annex", key))
                 add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], site=r)
                 opts[-1]["eff_turns"] = o.get("eff_turns", o["turns"])     # 구성 지역 수만큼 줄어든 턴
-            elif k == 'repair':
-                add(k, key, f"{g.info(r).short} {o['name']}", o['cost'], o['turns'],
-                    o['ok'], o['why'], o['level'], site=r)
+            elif k == 'repair' and ("repair", key) not in seen:
+                seen.add(("repair", key))        # 하나의 지역: 침수 복구도 광역시 전체 한 번
+                add(k, key, o['name'], o['cost'], o['turns'], o['ok'], o['why'], o['level'], site=center)
             elif k in ("science", "econ") and (k, key) not in seen:
                 if k == "econ" and key == "exchange" and any("exchange" in g.regions[x].econ for x in sel):
                     continue                     # 증권거래소는 광역시에 하나

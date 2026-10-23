@@ -4,6 +4,7 @@ from __future__ import annotations
 import pygame
 
 from .. import config as C
+from .. import metro as M
 from ..leaders import GOV_BY_KEY
 from ..text import fmt_points
 from .theme import mix
@@ -150,7 +151,7 @@ def draw_government_cards(app, x, y, w):
         gui.rect(t.border, box, 1, radius=6)
         gui.text((x + 10, y + 8), spec["name"], 15, t.muted if blocked else t.text, "semibold")
         gui.wrap((x + 10, y + 35), GOV_DESCRIPTIONS[key], w - 20, 12, t.muted)
-        gui.text((x + 10, y + 88), f"{GOV_OFFICES[key]} · 행정력 +{fmt_points(max(30, g.regions[f.capital].pop))}/턴",
+        gui.text((x + 10, y + 88), f"{GOV_OFFICES[key]} · 행정력 +{fmt_points(max(30, M.total_pop(g, f.capital)))}/턴",
                  11, t.good if not blocked else t.muted, max_w=w - 20)
         if gui.button((x + w - 76, y + 7, 66, 25), "선택 불가" if blocked else "채택",
                       enabled=not blocked, size=11, tooltip="적서차별: 군주정을 선택할 수 없습니다." if blocked else

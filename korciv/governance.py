@@ -16,7 +16,7 @@ class GovernanceMixin:
         f = self.factions[r.owner]
         if not f.alive or f.capital != rid or f.gov not in GOV_OFFICES:
             return None
-        return dict(name=GOV_OFFICES[f.gov], output=max(30.0, r.pop))
+        return dict(name=GOV_OFFICES[f.gov], output=max(30.0, M.total_pop(self, rid)))   # 광역시 수도: 광역시 인구
 
     def office_output(self, rid, population=None):
         office = self.office_building(rid)
@@ -26,7 +26,13 @@ class GovernanceMixin:
 
     def admin_output(self, rid):
         r = self.regions[rid]
+        mt_ = M.of(self, rid)
+        if mt_ and mt_["center"] != rid:
+            return 0.0               # 광역시는 하나의 지역(v1.3.17): 중심이 광역시 전체 행정력을 낸다
         office = self.office_output(rid)
+        if mt_:                      # 집무실(수도 칸)이 광역시 안이면 중심에서(광역시 인구로)
+            cap = self.factions[r.owner].capital if r.owner != NEUTRAL else None
+            office = self.office_output(cap) if cap in mt_["members"] else 0.0
         if r.owner == NEUTRAL or r.occ or self.resisting(r) or r.flooded:
             return office
         f, m = self.factions[r.owner], self.mods(r.owner)
@@ -40,7 +46,7 @@ class GovernanceMixin:
             else:
                 base = 50 + 100 / len(metro["members"]) if f.capital in metro["members"] else 50
         value = base * m.mult("admin_building_output") + m.add("admin_each")
-        if rid == f.capital:
+        if f.capital in M.members(self, rid):
             value += m.add("capital_admin")
         value += self.great_person_bonus(rid, "admin_add")
         return value * m.mult("admin_output") + office
@@ -55,6 +61,8 @@ class GovernanceMixin:
 
     def science_output(self, rid):
         r = self.regions[rid]
+        if M.is_extra(self, rid):
+            return 0.0               # 광역시: 중심이 광역시 전체 과학력(구성 지역 인구 전체)
         if r.owner == NEUTRAL or r.occ or self.resisting(r) or r.flooded:
             return 0.0
         lv = max(0, min(5, r.b.get("edu", 0)))

@@ -129,12 +129,13 @@ class LeaderRulesMixin:
         if r.owner == NEUTRAL:
             return 1.0
         m = self.mods(r.owner)
-        mult = m.mult("island_output") if self.info(rid).island else 1.0
-        near = {rid} | set(self.world.land_adj[rid])
+        sites = M.members(self, rid)                   # 광역시는 하나의 지역: 구성 지역 전체로 본다(v1.3.17)
+        mult = m.mult("island_output") if any(self.info(x).island for x in sites) else 1.0
+        near = set(sites) | {n for x in sites for n in self.world.land_adj[x]}
         if any(self.regions[x].owner == r.owner and "observatory" in self.regions[x].sci
                and not self.facility_paused(x) for x in near):
             mult *= m.mult("observatory_output")
-        if self.turn < r.suppress_output_until:
+        if self.turn < max(self.regions[x].suppress_output_until for x in sites):
             mult *= m.mult("suppress_output")
         return mult
 
@@ -222,7 +223,8 @@ class LeaderRulesMixin:
 
     def leader_bomb_mult(self, fid, source, target, units):
         value = self.leader_attack_mult(fid, source, target, units, "bombard")
-        if max(self.regions[target].lines.values(), default=0) >= 2:
+        if max((v for x in M.members(self, target) for k, v in self.regions[x].lines.items()
+                if k not in M.members(self, target)), default=0) >= 2:
             value *= self.mods(fid).mult("strong_line_bomb")
         return value
 
