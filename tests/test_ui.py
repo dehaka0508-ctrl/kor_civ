@@ -605,6 +605,120 @@ def test_enemy_nation_slots_and_pick_ai(app):
     assert [f.leader for f in g.factions[2:5]] == s.ai_leaders[1:4]
 
 
+def _start_popup_text(app, monkeypatch, mode, rid):
+    from korciv.ui import modals
+    monkeypatch.setattr(app.setup, "mode", mode)
+    texts = []
+    with monkeypatch.context() as m:
+        m.setattr(app.gui, "text", lambda pos, text, *a, **k: texts.append(text))
+        app.gui.begin([])
+        modals.draw_start_popup(app, rid)
+    return texts
+
+
+@pytest.mark.parametrize("mode", C.GAME_MODES)
+def test_start_popup_population_and_economy_follow_mode(app, monkeypatch, mode):
+    """남원 선택: 모드별 인구·시작 카드와 국가 보정 전 기본 산출이 실제 새 게임과 맞는다."""
+    from korciv.data import load_world
+    from korciv.game import Game
+    w = load_world()
+    rid = next(r for r in w.order if w.regions[r].short == "남원")
+    g = Game(Settings(mode=mode, seed=5, n_enemies=1, player_start=rid, player_leader="cus"))
+    rr = g.regions[rid]
+    texts = _start_popup_text(app, monkeypatch, mode, rid)
+    assert f"{rr.pop:,.1f}만 명" in texts
+    base_output = g.calc_output(rid, owner=NEUTRAL)     # 지역 미리보기: 수도·지도자 효과 적용 전
+    assert f"{base_output:,.0f} /턴" in texts
+    assert f"{base_output * g.player.tax:,.0f} /턴" in texts
+    assert f"{rr.food:,.0f} / {rr.pop:,.0f}" in texts
+    assert f"{rr.food - rr.pop:+,.0f} /턴" in texts
+    if mode == "chaos":
+        assert "건물 슬롯 (혼돈의 강산)" in texts
+    else:
+        assert f"건물 슬롯 {rr.b.total()}칸 ({C.GAME_MODES[mode]})" in texts
+        assert f"빈 슬롯 {rr.b.total() - rr.b.used()}칸" in texts
+    assert any("특산물: 제기" == s for s in texts)       # 혼돈에서도 특산물은 바뀌지 않는다.
+    assert ("[기본] 시장 1" in texts) == (mode == "standard")
+
+
+@pytest.mark.parametrize("mode", ("frontier", "chaos"))
+def test_start_popup_free_island_port_only(app, monkeypatch, mode):
+    """현실의 시작 항구를 개척 모드에 섞지 않고, 무연륙 섬에는 항구와 덤 해안 슬롯을 보인다."""
+    from korciv.data import load_world
+    from korciv.game import Game
+    w = load_world()
+    island = next(r for r in w.order if w.regions[r].coastal and w.regions[r].island == "무연륙 섬")
+    for rid in ("S041", island):
+        g = Game(Settings(mode=mode, seed=5, n_enemies=1, player_start=rid, player_leader="cus"))
+        texts = _start_popup_text(app, monkeypatch, mode, rid)
+        assert ("[해안] 항구 1" in texts) == bool(g.regions[rid].b["port"])
+        assert "시작 병력 보병 1" + (" · 상륙함 1" if rid == island else "") in texts
+        if mode == "frontier":
+            assert f"건물 슬롯 {g.regions[rid].b.total()}칸 (개척시대)" in texts
+        else:
+            assert "빈 해안 슬롯 1칸" in texts          # 무료 항구는 덤 칸을 차지한다.
+
+
+def test_chaos_start_popup_hides_all_randomized_sites(app, monkeypatch):
+    """기존 자료의 유전·탄전·발전소·총 슬롯 수를 노출하거나 미리 추첨하지 않는다."""
+    import random
+    from korciv.data import load_world
+    from korciv.ui import modals
+    w = load_world()
+    selected = {next(r for r in w.order if predicate(w.regions[r]))
+                for predicate in (lambda i: i.oil, lambda i: i.coal, lambda i: i.hydro,
+                                  lambda i: i.nuclear, lambda i: i.power_source and not (i.hydro or i.nuclear))}
+    rng_state = random.getstate()
+    before = dict(w.regions)
+    # 미리보기는 게임 생성이나 혼돈 판도의 난수 추첨을 하지 않는다.
+    def forbidden(*a, **k):
+        pytest.fail("시작 지역 미리보기에서 난수 추첨/게임 생성")
+    monkeypatch.setattr("korciv.game.chaos_world", forbidden)
+    monkeypatch.setattr(modals, "start_from_setup", forbidden)
+    for rid in selected:
+        texts = _start_popup_text(app, monkeypatch, "chaos", rid)
+        assert "지하자원·발전소·추가 슬롯: 시작 시 무작위" in texts
+        assert not any(s.startswith(("정유 석유", "탄광 석탄", "건물 슬롯 "))
+                       and s != "건물 슬롯 (혼돈의 강산)" for s in texts)
+        if w.regions[rid].power_source:
+            from korciv.ui.panels import power_text
+            assert power_text(w.regions[rid]) not in texts
+        assert any(s.startswith("빈 기본 슬롯") for s in texts)
+        if w.regions[rid].specialty:
+            assert "빈 특산물 슬롯 1칸" in texts
+    assert random.getstate() == rng_state and w.regions == before
+
+
+def test_start_popup_mode_switch_after_chaos_game(app, monkeypatch):
+    """이전 혼돈 게임의 자원 배치나 모드 캐시가 새 현실/개척 게임의 미리보기에 남지 않는다."""
+    from korciv.data import load_world
+    from korciv.game import Game
+    w = load_world()
+    g = Game(Settings(mode="chaos", seed=16, n_enemies=1))
+    monkeypatch.setattr(app, "world", g.world)
+    rid = next(r for r in w.order if w.regions[r].oil and not g.info(r).oil)
+    for mode in ("chaos", "frontier", "standard", "chaos", "frontier"):
+        texts = _start_popup_text(app, monkeypatch, mode, rid)
+        assert (f"정유 석유 {w.regions[rid].oil}/턴" in texts) == (mode != "chaos")
+        assert f"{(w.regions[rid].pop0 if mode == 'standard' else 1.0):,.1f}만 명" in texts
+
+
+def test_start_popup_details_stay_above_buttons(app, monkeypatch):
+    """여러 줄 건물·자원·지형 경계가 시작/이전 버튼과 겹치지 않는다."""
+    from korciv.ui import modals
+    texts, buttons = [], []
+    monkeypatch.setattr(app.gui, "text", lambda pos, text, *a, **k: texts.append(pos[1]))
+    monkeypatch.setattr(app.gui, "button", lambda rect, *a, **k: buttons.append(pygame.Rect(rect)) or False)
+    for mode in C.GAME_MODES:
+        monkeypatch.setattr(app.setup, "mode", mode)
+        for rid in ("N132", "S108", "N089", "S153", "N069"):
+            texts.clear()
+            buttons.clear()
+            app.gui.begin([])
+            modals.draw_start_popup(app, rid)
+            assert max(texts) + 18 <= min(b.y for b in buttons), (mode, rid)
+
+
 def test_player_color_from_custom_flag():
     from korciv.game import Game
     custom = {"bg": "solid", "c1": (10, 200, 30), "em": "disc"}

@@ -899,13 +899,14 @@ def josa_euro(word: str) -> str:
 def draw_start_popup(app, rid):
     """지도에서 지역을 고르면 뜨는 시작 정보 팝업."""
     from .. import rules as R
+    from ..data import load_world
     from .mapview import TERRAIN_COLORS
     gui = app.gui
     t = app.theme
-    w = app.world
+    w = load_world()                         # 이전 게임의 혼돈 자원·광역시 판도를 새 게임에 섞지 않는다.
     info = w.regions[rid]
     sw, sh = app.gui.size()
-    ph = min(500, sh - 40)
+    ph = min(550, sh - 40)                   # 여러 줄 슬롯·자원과 지형 설명이 하단 버튼을 덮지 않게.
     r = modal_frame(app, 600, ph)
     x, cw = r.x + 28, r.w - 56
     gui.text((x, r.y + 20), info.name, 22, weight="bold")
@@ -915,9 +916,15 @@ def draw_start_popup(app, rid):
     gui.text((x, r.y + 54), sub, 13, t.muted)
     y = r.y + 86
     from .. import slots as S
-    sb = S.initial(w, rid)                     # 현실 모드 시작 슬롯 카드(v1.3.8)
+    mode = app.setup.mode
+    frontier = mode != "standard"
+    chaos = mode == "chaos"
+    pop = 1.0 if frontier else info.pop0
+    sb = S.new(w, rid) if frontier else S.initial(w, rid)
+    if frontier and S.start_port_bonus(info, mode):
+        S.give_start_port(sb)
     fish = sum(c["level"] * (C.RIVER_FISH_MULT if st == "river" else 1.0) for st, _, c in sb.cards("fishery"))
-    out = R.region_output(info.pop0, sb.cap("farm"), fish, sb.levels("factory"), sb.levels("bank"), False)
+    out = R.region_output(pop, sb.cap("farm"), fish, sb.levels("factory"), sb.levels("bank"), False)
     food = R.food_output(sb.cap("farm"), fish)
     half = (cw - 20) // 2
 
@@ -927,12 +934,12 @@ def draw_start_popup(app, rid):
         gui.text((xx, yy), k, 13, t.muted)
         gui.text((xx + half, yy), v, 13, vc or t.text, "semibold", anchor="topright")
 
-    stat(0, 0, "인구", f"{info.pop0:,.1f}만 명")
+    stat(0, 0, "인구", f"{pop:,.1f}만 명")
     stat(1, 0, "산출(GDP)", f"{out:,.0f} /턴")
     stat(0, 1, "세수(세율 10%)", f"{out * 0.1:,.0f} /턴")
     stat(1, 1, "시작 자금", f"{C.START_MONEY:,}")
-    bal = food - info.pop0
-    stat(0, 2, "식량 생산 / 소비", f"{food:,.0f} / {info.pop0:,.0f}")
+    bal = food - pop
+    stat(0, 2, "식량 생산 / 소비", f"{food:,.0f} / {pop:,.0f}")
     stat(1, 2, "식량 수지", f"{bal:+,.0f} /턴", t.good if bal >= 0 else t.bad)
     y += 3 * 24 + 8
 
@@ -952,23 +959,35 @@ def draw_start_popup(app, rid):
             cx += cwid + 6
         y += 30
 
-    # 현실 모드 시작 슬롯 카드(v1.3.8): [기본] 시청 3 · [해안] 항구 1 … (개척시대·혼돈은 빈 슬롯)
+    # 개척·혼돈은 빈 슬롯(무연륙 섬 항구만 제공). 혼돈의 발전소 입지·기타 슬롯 수는 아직 모른다.
     names = {"admin": "행정", "edu": "연구", "farm": "농장", "factory": "공장", "bank": "시장", "academy": "사관학교",
              "extract": "정유공장" if info.is_oil else "탄광", "fishery": "어장", "power": "화력발전소",
              "hydro": "수력발전소", "nuclear": "원자력발전소", "port": "항구", "specialty": "특산물 시설"}
     blds = [f"[{S.SLOT_NAMES[st]}] {names.get(c['key'], c['key'])} {c['level']}" for st, _, c in sb.cards()]
-    free = sb.total() - sb.used()
-    if free:
-        blds.append(f"빈 슬롯 {free}칸")
-    chips(f"건물 슬롯 {sb.total()}칸 (현실 판도)", blds)
+    if chaos:
+        for st in ("base", "river", "coast"):
+            free = len(sb.empty(st))
+            if free:
+                blds.append(f"빈 {S.SLOT_NAMES[st]} 슬롯 {free}칸")
+        if info.specialty:
+            blds.append("빈 특산물 슬롯 1칸")
+        chips(f"건물 슬롯 ({C.GAME_MODES[mode]})", blds)
+    else:
+        free = sb.total() - sb.used()
+        if free:
+            blds.append(f"빈 슬롯 {free}칸")
+        chips(f"건물 슬롯 {sb.total()}칸 ({C.GAME_MODES[mode]})", blds)
     res = []
-    if info.oil:
-        res.append(f"정유 석유 {info.oil}/턴")
-    if info.coal:
-        res.append(f"탄광 석탄 {info.coal}/턴")
-    if info.power_source:
-        from .panels import power_text
-        res.append(power_text(info))
+    if chaos:
+        res.append("지하자원·발전소·추가 슬롯: 시작 시 무작위")
+    else:
+        if info.oil:
+            res.append(f"정유 석유 {info.oil}/턴")
+        if info.coal:
+            res.append(f"탄광 석탄 {info.coal}/턴")
+        if info.power_source:
+            from .panels import power_text
+            res.append(power_text(info))
     if info.specialty:
         res += [f"특산물: {sp}" for sp in info.specialties]   # 두 종류면 따로 표기
     chips("자원·특산물", res)
