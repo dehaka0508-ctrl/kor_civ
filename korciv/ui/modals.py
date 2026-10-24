@@ -1161,8 +1161,10 @@ def draw_battle(app):
     n_oc = len(bd["outcomes"])
     box_h = 112 + 20 * max(1, min(6, max(len(bd["att_factors"]), len(bd["def_factors"]))))
     cand_h = (34 + 28 * ((len(cands) + 1) // 2)) if cands else 0
+    tile = st.get("tile")
+    dest = app.world.node_name(node) + (f" · {g.info(tile).name} 한 칸을 노림" if tile and tile in g.regions else "")
     r = modal_frame(app, 820, box_h + 124 + cand_h + n_oc * 118 + 76,
-                    f"전투 확인 — {app.world.node_name(army.loc)} → {app.world.node_name(node)}")
+                    f"전투 확인 — {app.world.node_name(army.loc)} → {dest}")
     pv = bd["preview"]
     if can_surprise:
         idx = gui.segmented((r.right - 244, r.y + 18, 220, 30), ["돌격", "기습"], 0 if st["mode"] == "assault" else 1,
@@ -1261,7 +1263,7 @@ def draw_battle(app):
             fight = True
     if fight:
         # 플레이어 전투는 바로 치른다(AI는 턴 종료 때 그대로)
-        ok, msg = g.attack_now(army.id, node, st["mode"], extra=sorted(st.get("extra", ())))
+        ok, msg = g.attack_now(army.id, node, st["mode"], extra=sorted(st.get("extra", ())), tile=st.get("tile"))
         app.attack_mode = st["mode"]
         close(app)
         app.toast(msg, None if ok else t.bad)
@@ -1588,6 +1590,24 @@ def draw_proposal(app):
         if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
             g.pending_proposals.pop(0)
             D.add_opinion(g, fid, g.player_id, -3)
+        return
+    if kind == "surrender":
+        # 반군의 항복 제의(v1.3.21): 모든 군사 유닛을 잃은 반군이 원 국가(플레이어)에게만
+        if not g.can_surrender(fid) or f.rebel_of != g.player_id:
+            g.pending_proposals.pop(0)
+            return
+        n = g.region_count(fid)
+        gui.text((r.x + 44, r.y + 60), f"{josa(f.name, '이/가')} 항복을 청합니다.", 15, weight="semibold")
+        gui.wrap((r.x + 24, r.y + 96), f"모든 병력을 잃은 반군입니다. 수락하면 반군이 차지한 지역 {n}곳이 저항 없이 돌아오고 "
+                 f"반군은 사라집니다(이후 {C.REBEL_CALM_TURNS}턴 동안 반란 확률이 낮아짐). 거절하면 전쟁이 이어지고 "
+                 "반군은 다시 민병대를 모읍니다.", r.w - 48, 12, t.muted)
+        if gui.button((r.x + 24, r.bottom - 64, 220, 44), "항복 수락", "primary"):
+            g.pending_proposals.pop(0)
+            ok, msg = g.rebel_surrender(fid)
+            app.toast(msg if ok else msg, None if ok else t.bad)
+            app.changed()
+        if gui.button((r.right - 244, r.bottom - 64, 220, 44), "거절"):
+            g.pending_proposals.pop(0)
         return
     if kind == "trade" and not D.at_war(g, fid, g.player_id):
         _draw_trade_proposal(app, prop)

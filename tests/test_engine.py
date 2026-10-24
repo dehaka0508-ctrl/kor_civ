@@ -208,7 +208,7 @@ def test_ai_simulation_invariants(seed):
         assert math.isfinite(f.money)
     assert len(g.factions) <= C.MAX_FACTIONS
     for f in g.factions:
-        assert len([c for c in g.factions if c.alive and c.rebel_of == f.id]) <= C.REBEL_MAX_PER_PARENT
+        assert len([c for c in g.factions if c.alive and c.rebel and c.rebel_of == f.id]) <= C.REBEL_MAX_PER_PARENT
 
 
 def _fail_suppression(g, fid, rid):
@@ -231,7 +231,8 @@ def _room(g, rids):
         b.slots["base"] += [None] * max(0, 3 - len(b.empty("base")))
 
 
-def test_rebel_region_becomes_capital_and_inherits_state():
+def test_rebel_region_becomes_rebels_not_a_nation():
+    """v1.3.21: 진압에 실패하면 그 지역은 '반군'이 된다 — 지도자·체제 없음, 민병대 2, 공사 중단, 원 국가와 전쟁."""
     g = new_game(player_start="S002", n_enemies=1)
     near = sorted(g.world.land_adj["S002"])[:3]
     _own(g, 0, near)
@@ -244,11 +245,18 @@ def test_rebel_region_becomes_capital_and_inherits_state():
     g.start_project(0, rid, "build", "farm")
     msg = _fail_suppression(g, 0, rid)
     nf = g.factions[-1]
-    assert "분리독립" in msg
-    assert r.owner == nf.id and nf.capital == rid and nf.rebel_of == 0
-    assert r.pop == pop and r.b == b and not r.sci      # 과학·경제 시설은 빼앗기면 쓸 수 없다(독립은 바로 철거)
-    assert r.project and r.project.key == "farm"
+    assert "들고일어났" in msg and nf.name.endswith("반군")
+    assert r.owner == nf.id and nf.capital == rid and nf.rebel_of == 0 and nf.rebel
+    assert nf.leader == C.REBEL_LEADER and nf.gov is None and g.is_rebel(nf.id)
+    assert r.pop == pop and r.b == b and not r.sci
+    assert r.project is None                             # 반군은 건물을 짓지 못한다
+    assert [a.units for a in g.armies.values() if a.owner == nf.id] == [{"mil": C.REBEL_MILITIA}]
     assert D.at_war(g, 0, nf.id)
+    assert not g.resisting(r) and g.calc_output(rid) > 0  # 저항 없이 바로 산출
+    # 반군은 방어선과 민병대만 고를 수 있다
+    kinds = {(o["kind"], o["key"]) for o in g.options(nf.id, rid)}
+    assert kinds <= {("build", "line"), ("unit", "mil")} and ("unit", "mil") in kinds
+    assert ("unit", "mil") not in {(o["kind"], o["key"]) for o in g.options(0, "S002")}
     # 첫 24턴 행복도 하한 0
     r.h_delta = -500
     g._phase_happiness()
@@ -259,21 +267,27 @@ def test_rebel_region_becomes_capital_and_inherits_state():
     assert r.happy < 0
 
 
-def test_rebel_limit_three_per_parent_and_sibling_opinion():
+def test_one_rebel_per_nation_and_calm_after_suppression():
     g = new_game(player_start="S002", n_enemies=1)
     rids = sorted(g.world.land_adj["S002"])[:5]
     _own(g, 0, rids)
-    govs = ["absolute", "constitutional", "presidential"]
-    made = []
-    for i, rid in enumerate(rids[:3]):
-        _fail_suppression(g, 0, rid)
-        made.append(g.factions[-1])
-        made[-1].gov = govs[i]
-    assert len(g.rebel_children(0)) == 3
+    _fail_suppression(g, 0, rids[0])
+    reb = g.factions[-1]
     n = len(g.factions)
-    msg = _fail_suppression(g, 0, rids[3])
-    assert len(g.factions) == n and "합류" in msg
-    assert g.regions[rids[3]].owner in {f.id for f in made}
+    assert g.active_rebel(0) is reb
+    g.regions[rids[2]].happy = -100
+    assert g.rebellion_chance(0, rids[2]) == 0           # 반군이 있는 동안 새 반란 없음
+    msg = _fail_suppression(g, 0, rids[1])               # 이미 쌓인 반란이 실패해도 새 반군 대신 기존 반군에 합류
+    assert len(g.factions) == n and "차지" in msg and g.regions[rids[1]].owner == reb.id
+    # 반군이 사라지면(진압) 24턴 동안 반란 확률이 0에서 선형으로 회복된다
+    g.eliminate(reb.id, by=0)
+    g.regions[rids[2]].happy = -100
+    assert g.rebellion_chance(0, rids[2]) == 0
+    g.turn += C.REBEL_CALM_TURNS // 2
+    half = g.rebellion_chance(0, rids[2])
+    g.turn += C.REBEL_CALM_TURNS
+    full = g.rebellion_chance(0, rids[2])
+    assert 0 < half < full and half == pytest.approx(full / 2)
 
 
 def test_sibling_opinion_by_government():
@@ -286,8 +300,11 @@ def test_sibling_opinion_by_government():
     _own(g, 0, rids)
     _fail_suppression(g, 0, rids[0])
     a = g.factions[-1]
+    g.declare_independence(a.id)
+    g.turn += C.REBEL_CALM_TURNS
     _fail_suppression(g, 0, rids[1])
     b = g.factions[-1]
+    g.declare_independence(b.id)
     expected = C.REBEL_SIBLING_OPINION if gov_similar(a.gov, b.gov) else -C.REBEL_SIBLING_OPINION
     assert D.opinion(g, b.id, a.id) == expected and D.opinion(g, a.id, b.id) == expected
 
@@ -436,6 +453,36 @@ def test_spending_priority_order():
     g._fund_projects()
     assert g.regions[rids[2]].project.funded
     assert g.regions[rids[0]].project.stalled and g.regions[rids[1]].project.stalled
+
+
+def test_short_top_priority_saves_money_instead_of_cheaper_lower_items():
+    """v1.3.21: 우선순위가 높은 작업에 돈이 모자라면 그보다 싼 아래 작업에도 돈을 쓰지 않고 모은다(플레이어).
+    비용이 들지 않는 작업은 그대로 진행하고, AI는 예전처럼 아래의 싼 작업을 진행한다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    rids = ["S002"] + sorted(g.world.land_adj["S002"])[:2]
+    _own(g, 0, rids[1:])
+    _room(g, rids)
+    ok, _ = g.start_project(0, rids[0], "build", "bank", slot=("base", g.regions[rids[0]].b.empty("base")[0]))
+    assert ok
+    big = g.regions[rids[0]].project
+    big.per_turn *= 10                    # 비싼 상위 작업
+    ok, _ = g.start_project(0, rids[1], "build", "bank", slot=("base", g.regions[rids[1]].b.empty("base")[0]))
+    assert ok
+    small = g.regions[rids[1]].project
+    g.set_priority_order(0, [rids[0], rids[1]])
+    g.player.money = small.per_turn * 3   # 아래 작업은 낼 수 있지만 위 작업은 못 냄
+    money = g.player.money
+    g._fund_projects()
+    assert big.stalled and small.stalled and not small.funded and g.player.money == money
+    assert big.blocked_reason == g.SAVING_SHORT and small.blocked_reason == g.SAVING_WAIT
+    g.player.money = big.per_turn + small.per_turn
+    g._fund_projects()
+    assert big.funded and small.funded and not big.blocked_reason
+    # AI는 예전처럼: 위 작업이 막혀도 아래의 싼 작업을 진행
+    g.player.is_ai = True
+    g.player.money = small.per_turn * 3
+    g._fund_projects()
+    assert big.stalled and small.funded
 
 
 def test_river_fishery_and_coast_bonus():
@@ -1870,8 +1917,9 @@ def test_starts_six_apart_market_upkeep_power_sites():
     k, _ = g.market_buy(0, "elec", 2)
     assert k == 2
     for k, u in C.UNITS.items():
-        if not u.get("science"):
+        if not u.get("science") and not u.get("militia"):
             assert u["upkeep"] / (u["cost"] * u["turns"]) == pytest.approx(5 / 250)
+    assert C.UNITS["mil"]["cost"] == 0 and C.UNITS["mil"]["upkeep"] == 0
     w = g.world
     site = next(r for r in w.order if w.regions[r].power_site)
     assert g.regions[site].b["power"] == 1 and w.regions[site].power_source.startswith("화력(")
@@ -5005,3 +5053,124 @@ def test_annex_of_non_adjacent_target_is_cancelled():
     assert rr.project is None or rr.project.key != tgt
     assert g.player.money == pytest.approx(money + 200.0 * C.PROJECT_REFUND)
     assert any("맞닿지 않아" in e["text"] for e in g.events)
+
+
+# ------------------------------------------------------------------ 반군(v1.3.21)
+def _rebels(n_extra=6):
+    g = new_game(player_start="S002", n_enemies=1)
+    rids = sorted(g.world.land_adj["S002"])[:n_extra]
+    _own(g, 0, rids)
+    _fail_suppression(g, 0, rids[0])
+    return g, g.factions[-1], rids
+
+
+def test_rebels_take_without_resistance_half_admin_no_science_no_diplomacy():
+    g, reb, rids = _rebels()
+    r = g.regions[rids[1]]
+    for a in list(g.armies.values()):
+        if a.loc == rids[1]:
+            g.remove_army(a)
+    g.new_army(reb.id, rids[1], {"mil": 1})
+    g.begin_occupation(reb.id, rids[1])
+    assert r.owner == reb.id and not g.resisting(r) and g.calc_output(rids[1]) > 0
+    assert rids[1] in reb.rebel_taken and g.rebel_hold_count(reb.id) == 2
+    assert g.admin_consumption(rids[1]) == pytest.approx(r.pop * C.REBEL_ADMIN_MULT)
+    assert g.science_output(rids[1]) == 0
+    assert not g.unlock_tech(reb.id, "farm")[0] and not g.unlock_policy(reb.id)[0]
+    assert not g.can_recruit_great_person(reb.id, "general")[0]
+    assert not D.declare_war(g, 1, reb.id)[0] and not D.treaty_check(g, 1, reb.id, "nonaggr")[0]
+    D.make_peace(g, 0, reb.id)
+    assert D.at_war(g, 0, reb.id)                          # 반군과는 강화가 없다
+    assert reb.id not in g.nation_ids() and reb.id in g.alive_ids()
+    # 원 국가가 되찾으면 저항 없이 복구
+    for a in list(g.armies.values()):
+        if a.loc == rids[1]:
+            g.remove_army(a)
+    g.new_army(0, rids[1], {"inf": 1})
+    g.begin_occupation(0, rids[1])
+    assert r.owner == 0 and not g.resisting(r)
+
+
+def test_militia_free_no_conscription_and_only_rebels():
+    g, reb, rids = _rebels()
+    rid = rids[0]
+    ok, _ = g.start_project(reb.id, rid, "unit", "mil")
+    assert ok
+    p = g.regions[rid].project
+    assert p.per_turn == 0 and p.turns == 1 and p.happy_cost == 0
+    g.factions[reb.id].money = 0
+    g._fund_projects()                                     # 비용 0: 돈이 없어도 진행
+    drafted = g._phase_projects(("unit",))
+    assert rid not in drafted
+    assert sum(a.units.get("mil", 0) for a in g.armies.values() if a.owner == reb.id) == C.REBEL_MILITIA + 1
+    assert not g.start_project(0, "S002", "unit", "mil")[0]
+    assert not g.start_project(reb.id, rid, "unit", "inf")[0]
+
+
+def test_rebel_independence_after_holding_four_regions_for_24_turns():
+    g, reb, rids = _rebels()
+    for rid in rids[1:4]:
+        g.transfer_region(rid, reb.id, reason="점령")
+        reb.rebel_taken.add(rid)
+    g.factions[1].leader = "sej"                           # 다른 나라 지도자
+    g._phase_rebels()
+    assert reb.rebel_hold_since == g.turn and g.rebel_independence_left(reb.id) == C.REBEL_INDEP_TURNS
+    g.turn += C.REBEL_INDEP_TURNS - 1
+    g._phase_rebels()
+    assert reb.rebel
+    g.turn += 1
+    g.dialogues.clear()
+    g._phase_rebels()
+    assert not reb.rebel and reb.independent_turn == g.turn and reb.gov in __import__("korciv.leaders").leaders.GOV_BY_KEY
+    seen = {f.leader for f in g.factions if f.id != reb.id} | {g.settings.player_leader}
+    assert reb.leader not in seen and reb.leader != C.REBEL_LEADER
+    assert reb.policy_level == 0 and not reb.techs and not reb.science and reb.sci_points == 0
+    assert ("independence", reb.id) in [(d["kind"], d["fid"]) for d in g.dialogues]
+    assert sum(a.units.get("mil", 0) for a in g.armies.values() if a.owner == reb.id) >= C.REBEL_MILITIA   # 민병대 유지
+    assert not any(o["key"] == "mil" for o in g.options(reb.id, reb.capital))                              # 더 못 만든다
+    assert D.at_war(g, 0, reb.id) and g.rebellion_chance(0, rids[4]) == 0       # 전쟁은 이어지고, 원 국가는 반란 진정
+    # 4곳 아래로 줄면 독립 준비가 무너진다
+    g2, reb2, r2 = _rebels()
+    for rid in r2[1:4]:
+        g2.transfer_region(rid, reb2.id, reason="점령")
+        reb2.rebel_taken.add(rid)
+    g2._phase_rebels()
+    g2.transfer_region(r2[1], 0, reason="점령")
+    g2._phase_rebels()
+    assert reb2.rebel_hold_since is None
+
+
+def test_independence_leader_prefers_nations_the_parent_destroyed():
+    g, reb, rids = _rebels()
+    g.factions[1].leader = "yis"
+    g.eliminate(1, by=0)
+    assert g.independence_leader(0) == "yis"
+    g.declare_independence(reb.id)
+    assert reb.leader == "yis" and reb.leader_name == "이순신"
+
+
+def test_rebels_surrender_when_all_military_units_are_lost():
+    g, reb, rids = _rebels()
+    g.transfer_region(rids[1], reb.id, reason="점령")
+    assert not g.can_surrender(reb.id)
+    for a in list(g.armies.values()):
+        if a.owner == reb.id:
+            g.remove_army(a)
+    assert g.can_surrender(reb.id)
+    ok, _ = g.rebel_surrender(reb.id)
+    assert ok and not reb.alive and g.regions[rids[0]].owner == 0 and g.regions[rids[1]].owner == 0
+    assert not g.resisting(g.regions[rids[0]]) and g.rebellion_chance(0, rids[2]) == 0
+
+
+def test_rebel_ai_builds_militia_and_offers_surrender_to_player():
+    from korciv import ai_rebel
+    g, reb, rids = _rebels()
+    ai_rebel.plan_turn(g, reb.id)
+    assert g.regions[rids[0]].project and g.regions[rids[0]].project.key == "mil"
+    for a in list(g.armies.values()):
+        if a.owner == reb.id:
+            g.remove_army(a)
+    g.regions[rids[0]].project = None
+    g.new_army(0, rids[1], {"inf": 3})
+    ai_rebel.plan_turn(g, reb.id)
+    assert {"from": reb.id, "kind": "surrender"} in g.pending_proposals and reb.alive

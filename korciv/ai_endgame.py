@@ -149,7 +149,7 @@ def victory_estimates(g, fid):
                  for k, fn in ETA.items() if k in g.settings.victories}
     if 'diplomatic' in g.settings.victories:
         cid = D.coalition_of(g, fid)
-        outsiders = set(g.alive_ids()) - (g.dip.coalitions[cid]['members'] if cid is not None else {fid})
+        outsiders = set(g.nation_ids()) - (g.dip.coalitions[cid]['members'] if cid is not None else {fid})
         # 현행 전원 연합 승리: 적대국이 남았을 때 낙관적인 단기 완승으로 계산하지 않는다.
         can = not (g.mods(fid).value('no_alliance') or g.mods(fid).value('no_coalition'))
         close = can and cid is not None and all(D.allied(g, fid, x) and
@@ -195,7 +195,7 @@ def watch(g, f):
         return w
     w["eval"] = g.turn
     mine = best_eta(g, f.id)[1]
-    rivals = {x: best_eta(g, x) for x in g.alive_ids() if x != f.id}
+    rivals = {x: best_eta(g, x) for x in g.nation_ids() if x != f.id}
     leader = min(rivals, key=lambda x: (rivals[x][1], x), default=None)
     lead_eta = rivals[leader][1] if leader is not None else ETA_NONE
     _set_urgency(g, f, w, leader, lead_eta, mine, sprinting=False, kind=None)
@@ -226,7 +226,7 @@ def assess(g, f):
     p3["eval"] = g.turn
     kind = p3["kind"]
     mine = ETA[kind](g, f.id) if kind in ETA else ETA_NONE
-    rivals = {x: best_eta(g, x) for x in g.alive_ids() if x != f.id}
+    rivals = {x: best_eta(g, x) for x in g.nation_ids() if x != f.id}
     leader = min(rivals, key=lambda x: (rivals[x][1], x), default=None)
     lead_eta = rivals[leader][1] if leader is not None else ETA_NONE
     # 경제: 기축통화 하나만 남았으면 경쟁자와 견주지 않고 질주(그것부터 짓고 남는 돈으로 수비·생산 건물)
@@ -407,7 +407,7 @@ def follower_patron(g, f):
 
 def coalition_share(g, fid) -> float:
     """내 연합(없으면 나 혼자)이 생존국 가운데 차지하는 비율: 외교승리 진척."""
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     cid = D.coalition_of(g, fid)
     n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
     return n / max(1, len(alive))
@@ -420,7 +420,7 @@ def recruit(g, f, patron):
     cid = D.coalition_of(g, fid)
     members = g.dip.coalitions[cid]["members"] if cid is not None else {fid, patron}
     best, best_s = None, None
-    for x in g.alive_ids():
+    for x in g.nation_ids():
         if x in members or x in (fid, patron) or g.mods(x).value("no_alliance"):
             continue
         if D.at_war(g, patron, x) or D.at_war(g, fid, x) or D.opinion(g, patron, x) < C.AI_P3_RECRUIT_MIN_OP:

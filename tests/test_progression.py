@@ -407,10 +407,14 @@ def test_special_metro_capture_keeps_all_complex_records():
     assert g.create_metro(0, cap, sel)[0]
     for rid in sel:
         g.regions[rid].b.update(admin=5, edu=5)
+    from korciv import metro as M
+    outside = sorted(n for n in M.base_world(g).land_adj[cap] if n not in sel)[0]
+    g.note_entry(1, cap, outside, cap)                   # 적국 광역시: 수도 칸을 골라 차지(v1.3.21)
     g.complete_occupation(1, cap)
-    # 광역 슬롯(v1.3.16): 정부청사·국립연구원은 중심의 광역 카드 하나 — 그 기록도 중심에
+    # 수도 칸만 넘어가고 광역시는 남는다. 떼어 낸 수도 칸은 정부청사·국립연구원(5단계) 기록을 갖는다
+    assert g.regions[cap].owner == 1 and cap not in M.of(g, sel[1])["members"]
     assert g.regions[cap].lost_gov_complex and g.regions[cap].lost_gov_complex["admin5"]
-    assert g.player.capital == temp.id
-    g.complete_occupation(0, cap)
-    assert g.player.capital == cap
+    assert g.player.capital != cap and g.player.lost_capital["rid"] == cap
+    g.complete_occupation(0, cap)                        # 저항 기간 안에 되찾음: 수도 복귀, 광역시로 원상복구
+    assert g.player.capital == cap and sorted(M.of(g, cap)["members"]) == sorted(sel)
     assert all(g.blevel(r, "admin") == g.blevel(r, "edu") == 5 for r in sel)

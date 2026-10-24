@@ -55,7 +55,7 @@ def test_rebels_use_fixed_palette_without_generating_neon_on_exhaustion():
 def test_actual_rebels_follow_palette_until_exhausted():
     g = new_game(n_enemies=15, player_start='S002')
     for i in range(12):
-        parent = i % 6
+        parent = i                         # 한 국가에 반군은 하나뿐(v1.3.21): 나라마다 하나씩
         rid = next(r.id for r in g.regions.values() if r.owner == -1)
         g.transfer_region(rid, parent, reason='편입')
         rebel, merged = g._spawn_rebel(parent, rid, 30)
@@ -92,7 +92,8 @@ def test_legacy_saved_colors_migrate_once_without_changing_progress_or_rng(custo
     assert copy.factions[4].color == REBELS[0]
     assert (copy.player.money, copy.player.admin, copy.player.sci_points, copy.turn) == (12345, 678.9, 321.2345, 57)
     assert copy.rng.getstate() == before_rng
-    assert pickle.dumps(copy.regions) == before_regions
+    # 바이트 비교는 한 번 풀었다 다시 담은 것끼리(문자열 공유 여부 차이로 바이트가 달라지지 않게)
+    assert pickle.dumps(copy.regions) == pickle.dumps(pickle.loads(before_regions))
     assert copy.color_schema == K.COLOR_SCHEMA
     reloaded = pickle.loads(pickle.dumps(copy))
     assert [f.color for f in reloaded.factions] == [f.color for f in copy.factions]

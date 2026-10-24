@@ -250,11 +250,17 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     setattr(f, attr, v)
             if not hasattr(f, "annex_disband"):     # v1.3.0 전 세이브
                 f.annex_disband = set()
+            for attr, v in (("rebel", False), ("rebel_hold_since", None), ("rebel_calm_turn", -999),
+                            ("independent_turn", None), ("eliminated_by", None)):
+                if not hasattr(f, attr):            # v1.3.21 전 세이브: 예전 반란국은 이미 독립한 나라로 본다
+                    setattr(f, attr, v)
+            if not hasattr(f, "rebel_taken"):
+                f.rebel_taken = set()
         self._morale = {}
         self._mods = {}
         self.migrate_leader_state()
         for f in self.factions:
-            if f.gov not in GOV_BY_KEY:
+            if f.gov not in GOV_BY_KEY and not f.rebel:     # 반군은 정치체제가 없다
                 # 삭제된 철인통치 저장: 플레이어는 정책 화면에서 다시 선택한다.
                 f.gov = ai_pick_government(self.rng, f.aggression, 0, 0,
                                            leader_key=f.leader, banned=banned_govs(f.leader)) if f.is_ai else None
@@ -538,6 +544,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     def alive_ids(self):
         return [f.id for f in self.factions if f.alive]
+
+    def nation_ids(self):
+        """살아 있는 국가(반군 제외, v1.3.21): 외교·승리 판정의 대상."""
+        return [f.id for f in self.factions if f.alive and not getattr(f, "rebel", False)]
 
     def regions_of(self, fid):
         return [r for r in self.regions.values() if r.owner == fid]
@@ -994,9 +1004,11 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 out[v] = "capture"
         return out
 
-    def unload_cargo(self, fleet_id, units=None, target=None):
+    def unload_cargo(self, fleet_id, units=None, target=None, tile=None):
         """[하선]·[이함]: 항구에서는 그 지역에, 바다에서는 맞닿은 해안(landing_targets)에 내린다. 함재기는 항구에
         정박했을 때만 내린다(육상으로만 이동). 바다에서 내린 병력은 이번 턴 더 움직이지 못한다. 반환 (새 부대 목록, 메시지)."""
+        if tile is None and target in self.regions and M.of(self, target) is not None:
+            tile = target
         target = M.node(self, target)
         fl = self.armies.get(fleet_id)
         w = self.world
@@ -1046,10 +1058,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             if kind == "capture":
                 owner = self.regions[target].owner
                 self.__dict__.setdefault("fought_targets", {}).setdefault((fl.owner, owner), set()).add(target)
+                self.note_entry(fl.owner, target, fl.loc, tile)
                 self.begin_occupation(fl.owner, target)
                 self._update_fog()
-                if self.regions[target].owner == fl.owner:
-                    return made, f"상륙: {what} → {josa(name, '을/를')} 차지했습니다."
+                took = next((b.loc for b in made if b.id in self.armies), target)
+                if self.regions[took].owner == fl.owner:
+                    return made, f"상륙: {what} → {josa(self.info(took).name, '을/를')} 차지했습니다."
                 return made, f"상륙: {what} → {name} 점령을 시작했습니다."
             self._update_fog()
             return made, f"상륙: {what} → {name}"
@@ -1236,8 +1250,11 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                    or not any(self.weather_at(n, 'snow') for n in [army.loc] + o.get('path', []))}
         return out
 
-    def order_army(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
-        """move_only: 폭격 대상이 되는 곳도 이동으로만 본다(포병·폭격기 부대 우클릭에서 적 병력이 없는 곳)."""
+    def order_army(self, army_id, target, mode="assault", force_bombard=False, move_only=False, tile=None):
+        """move_only: 폭격 대상이 되는 곳도 이동으로만 본다(포병·폭격기 부대 우클릭에서 적 병력이 없는 곳).
+        tile: 적국 광역시를 공격할 때 차지할 구성 지역(v1.3.21, 없으면 고른 칸이 구성 지역이면 그 칸)."""
+        if tile is None and target in self.regions and M.of(self, target) is not None:
+            tile = target
         target = M.node(self, target)          # 광역시는 한 칸
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
@@ -1277,10 +1294,14 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                                        or self.mods(a.owner).value("no_surprise")):
                 mode = "assault"                 # 기습할 유닛이 없거나 강감찬 '문신의 신중함'이면 돌격
             a.order = {"type": "attack", "target": target, "mode": mode, "path": opt["path"]}
+            if tile is not None and M.of(self, target) is not None:
+                a.order["tile"] = tile
         elif act == "land":
             a.order = {"type": "land", "target": target, "path": opt["path"]}
         else:
             a.order = {"type": "move", "path": opt["path"]}
+            if tile is not None and M.of(self, target) is not None and target in opt["path"]:
+                a.order["tile"] = tile
         return True, {"move": "이동", "attack": "공격", "land": "상륙", "bombard": "폭격"}[act] + " 명령"
 
     # ---- 여러 턴 자동 이동
@@ -1677,7 +1698,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if att_units.get("inf"):
             add(af, self.fx_source(fid, "atk_inf") + " — 보병", m.mult("atk_inf"))
         for a in armies:
-            add(af, LEADER_BY_KEY[self.factions[fid].leader]["name"] + " 지도자 효과",
+            add(af, LEADER_BY_KEY.get(self.factions[fid].leader, {}).get("name", self.factions[fid].leader_name) + " 지도자 효과",
                 self.leader_attack_mult(fid, a.loc, target, a.units, mode))
         if max(rr.lines.values(), default=0) >= 2:
             add(af, self.fx_source(fid, "strong_line_attack"), m.mult("strong_line_attack"))
@@ -2047,7 +2068,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def options(self, fid, rid, raw=False):
         """이 지역 슬롯에 넣을 수 있는 선택지 목록. 광역시 구성 지역이면 광역시 선택지(raw=True 면 그 지역만)."""
         rr = self.regions[rid]
-        if not raw and getattr(rr, "metro", None) is not None:
+        if not raw and getattr(rr, "metro", None) is not None and not self.is_rebel(fid):
             return self.queued_options(fid, rid, M.options(self, fid, rr.metro))
         info = self.info(rid)
         m = self.mods(fid)
@@ -2065,6 +2086,23 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                          "per_turn": cost / turns, "ok": ok, "why": why, "level": level,
                          "border": border, "oil": oil, "slot": slot})
 
+        def lines():
+            borders = sorted(self.world.land_adj[rid]) + (["coast"] if info.coastal else [])
+            for bkey in borders:
+                lv = self.reserved_level(rid, "line", bkey) + 1
+                if lv > 5:
+                    continue
+                nm = "해안선" if bkey == "coast" else self.info(bkey).name
+                add("build", "line", f"방어선({nm})", R.def_building_cost("line", lv) * self.building_cost_mult(fid, "line", lv),
+                    self.build_time(fid, "line", R.def_building_turns(lv), rid, lv), level=lv, border=bkey)
+
+        if self.is_rebel(fid):
+            # 반군(v1.3.21): 건물·과학·경제·편입·천도 없이 방어선과 민병대만
+            lines()
+            for key in C.MILITIA_UNITS:
+                u = self.unit_spec(fid, key)
+                add("unit", key, u["name"], self.unit_cost(fid, rid, key) * u["turns"], self.unit_turns(fid, key))
+            return self.queued_options(fid, rid, opts)
         # 슬롯 건물(v1.3.8): 빈 칸에 1단계 신축, 꽂힌 카드마다 다음 단계 증축
         self.slot_options(fid, rid, add)
         # 특산물 시설·수력·원자력은 기타 슬롯 카드(v1.3.9, 위 slot_options)
@@ -2073,14 +2111,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             if lv <= 5:
                 add("build", key, C.DEF_BUILDINGS[key]["name"], R.def_building_cost(key, lv) * self.building_cost_mult(fid, key, lv),
                     self.build_time(fid, key, R.def_building_turns(lv), rid, lv), level=lv)
-        borders = sorted(self.world.land_adj[rid]) + (["coast"] if info.coastal else [])
-        for bkey in borders:
-            lv = self.reserved_level(rid, "line", bkey) + 1
-            if lv > 5:
-                continue
-            nm = "해안선" if bkey == "coast" else self.info(bkey).name
-            add("build", "line", f"방어선({nm})", R.def_building_cost("line", lv) * self.building_cost_mult(fid, "line", lv),
-                self.build_time(fid, "line", R.def_building_turns(lv), rid, lv), level=lv, border=bkey)
+        lines()
         for key, spec in C.SINGLE_BUILDINGS.items():
             if key in S.CARD_KEYS or self.reserved_level(rid, key):
                 continue                      # 항구·사관학교는 슬롯 카드(위), 공항만 슬롯 밖
@@ -2248,7 +2279,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     def econ_need(self, fid, n) -> int:
         """관계 조건 국가 수: 살아 있는 다른 나라가 적으면 그 과반수까지만 요구."""
-        others = len(self.alive_ids()) - 1
+        others = len(self.nation_ids()) - 1
         return max(0, min(n, others // 2 + 1 if others > 0 else 0))     # 상대가 적으면 과반수
 
     def econ_ready(self, fid, step) -> tuple:
@@ -2350,6 +2381,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def create_metro(self, fid, center, members, name=None):
         """center 를 중심으로 members(중심 포함 가능)를 광역시로 지정. (성공, 메시지)."""
         return M.create(self, fid, center, members, name)
+
+    def annex_to_metro(self, fid, mid, rid):
+        """광역시 편입(v1.3.21): 지정한 광역시에 맞닿은 내 지역 rid 를 지정 조건대로 더한다. (성공, 메시지)."""
+        return M.annex(self, fid, mid, rid)
 
     def dissolve_metro(self, fid, rid):
         """rid 가 속한 광역시 지정 해제(언제든). (성공, 메시지)."""
@@ -3266,8 +3301,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         old = rr.owner
         if old == new_owner:
             return
-        if getattr(rr, "metro", None) is not None and not getattr(self, "_metro_capture", False):
-            M.dissolve(self, rr.metro, "구성 지역이 넘어감")     # 점령이 아닌 이전(할양·거래·독립 등): 먼저 해제
+        # 광역시 구성 지역(v1.3.21): 그 칸만 떨어져 나가고 광역시는 남는다. 저항 기간 안에 원래 주인이 되찾으면 다시 편입
+        back = M.rejoin_target(self, rid, new_owner) if new_owner != NEUTRAL and getattr(rr, "metro", None) is None else None
+        if getattr(rr, "metro", None) is not None:
+            M.detach(self, rid, reason)
         # 해방 반환용 기록(v1.3.0): 전쟁으로 넘어가면 직전 주인과 그 턴을 남긴다(그 나라의 동맹·연합국이
         # LIBERATION_TURNS 안에 되찾으면 돌려준다). 편입·거래·할양·독립 등 전쟁이 아닌 이전은 기록을 지운다
         if reason == "점령" and old != NEUTRAL and new_owner != NEUTRAL:
@@ -3390,6 +3427,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if new_owner != NEUTRAL:
             f = self.factions[new_owner]
             f.explored.add(rid)
+        if back is not None and rr.owner == new_owner and M.get(self, back["id"]) is back:
+            M.rejoin(self, back, rid)            # 수도·정부청사 복구보다 먼저(광역시 전체가 수도권이 되게)
         self._government_after_transfer(rr, old, new_owner, reason)
 
     # ---- 점령된 방어 건물(v1.3.0): 빼앗은 나라가 바로 쓰지 못한다
@@ -3485,6 +3524,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             return                                        # 김구 '임시정부': 멸망 대신 부활
         f.alive = False
         f.eliminated_turn = self.turn
+        f.eliminated_by = by
+        if getattr(f, "rebel", False) and f.rebel_of is not None:
+            self.calm_rebellion(f.rebel_of)               # 반군 소멸(진압): 원 국가 반란 확률 −100%, 24턴 동안 회복
         for r in self.regions.values():
             if r.owner == fid:
                 r.owner = NEUTRAL
@@ -3530,7 +3572,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         f = self.factions[fid]
         if not self.mods(fid).value("provisional_gov") or getattr(f, "provisional_used", False):
             return False
-        hosts = [x for x in self.alive_ids() if x not in (fid, by) and not D.at_war(self, fid, x)]
+        hosts = [x for x in self.nation_ids() if x not in (fid, by) and not D.at_war(self, fid, x)]
         hosts.sort(key=lambda x: (-D.opinion(self, fid, x), x))
         foes = set(D.enemies(self, fid))
         for host in hosts:
@@ -3602,29 +3644,35 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return o if D.allied(self, fid, o) else None
 
     def complete_occupation(self, fid, rid):
-        """점령 완료. 광역시 구성 지역이면 광역시 전체를 함께 차지한다(v1.3.0)."""
+        """점령 완료. 반군이 원 국가의 수도를 차지하면 그 자리에서 독립을 선포한다(v1.3.21)."""
+        old = self.regions[rid].owner
+        cap_fall = (self.is_rebel(fid) and old != NEUTRAL and old == self.factions[fid].rebel_of
+                    and self.factions[old].capital in M.members(self, rid))
+        self._complete_occupation(fid, rid)
+        if cap_fall and self.regions[rid].owner == fid and self.factions[fid].alive:
+            self.declare_independence(fid, f"{self.fname(old)}의 수도 {self.info(rid).name} 점령")
+
+    def _complete_occupation(self, fid, rid):
+        """점령 완료. 적국 광역시(v1.3.21)는 공격한 쪽이 고른(아니면 맞닿은) 구성 지역 한 칸만 차지하고, 광역시는 남는다."""
         m = M.of(self, rid)
         if m is None or self.regions[rid].owner == NEUTRAL:
             return self._complete_occupation_one(fid, rid)
-        self._metro_capture = True
-        try:
-            # 수도를 먼저 넘기더라도 특별시 전체의 5단계 수복 기록을 보존한다.
-            for member in m["members"]:
-                rr = self.regions[member]
-                if rr.owner != fid:
-                    self._government_before_transfer(rr, rr.owner, fid, "점령")
-            for r in [rid] + [x for x in m["members"] if x != rid]:
-                if self.regions[r].owner != fid:
-                    self._complete_occupation_one(fid, r)
-        finally:
-            self._metro_capture = False
-        M.after_capture(self, m["id"], self.regions[rid].owner)
-        # 되찾아 이어 짓는 광역시 공사(과학·경제)는 다시 구성 지역 모두가 가리킨다
-        p = next((self.regions[x].project for x in m["members"] if self.regions[x].project is not None
-                  and self.regions[x].project.metro == m["id"]), None)
-        if p is not None:
-            for x in m["members"]:
-                self.regions[x].project = p
+        sel = list(m["members"])
+        origin, tile = self.__dict__.get("_entry", {}).pop((fid, m["center"]), (None, None))
+        tile = M.entry_tile(self, m["center"], origin, tile if tile in sel else None)
+        self._complete_occupation_one(fid, tile)
+        # 광역시 칸으로 들어온 부대는 차지한 칸으로(광역시는 여전히 적국 땅)
+        for a in self.armies.values():
+            if a.owner == fid and a.loc in sel and a.loc != tile and self.regions[tile].owner == fid:
+                a.loc = tile
+                a.order = None
+        self.sync_general_escorts()
+
+    def note_entry(self, fid, node, origin, tile=None):
+        """fid 의 부대가 origin 에서 적국 광역시 칸(node)으로 들어가거나 공격한다: 차지할 구성 지역 고르기용(v1.3.21)."""
+        if node not in self.regions or M.of(self, node) is None:
+            return
+        self.__dict__.setdefault("_entry", {})[(fid, M.node(self, node))] = (origin, tile)
 
     def _complete_occupation_one(self, fid, rid):
         """점령 완료. 다른 세력에게서 빼앗은 지역은 '저항' 상태로 시작한다(4턴 산출·생산 없음·행복도 −100,
@@ -3645,6 +3693,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if old != NEUTRAL:
             D.add_war_score(self, liberator if liberator is not None else fid, old, rr.pop)
         self.transfer_region(rid, fid)
+        rebel = self.is_rebel(fid) and old != NEUTRAL
+        if rebel:
+            self._rebel_take(self.factions[fid], rid, old)    # 반군: 저항 기간 없이 바로 산출
         if old != NEUTRAL and m.value("capture_infantry"):
             self.add_units(fid, rid, "inf", int(m.value("capture_infantry")))
         lib = (f"{josa(self.fname(liberator), '이/가')} {self.fname(old)}에게서 {josa(self.info(rid).name, '을/를')} 되찾아 "
@@ -3658,6 +3709,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                        f"({self.fname(old)}에게서, 저항 없이 복구).", region=rid, fids=fids)
             return
         rr.happy = max(C.HAPPY_MIN, min(C.HAPPY_MAX, new_h))
+        if rebel:
+            self.event("captured", f"{josa(self.fname(fid), '이/가')} {josa(self.info(rid).name, '을/를')} 차지했습니다 "
+                       f"({self.fname(old)}에게서, 반군은 저항 없음).", region=rid, fids=(fid, old))
+            return
         if old != NEUTRAL:
             half = bool(m.value("wanggeon_occupy"))         # 왕건: 저항·회복 기간 절반
             n_res = C.RESIST_TURNS // 2 if half else C.RESIST_TURNS
@@ -3665,6 +3720,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             rr.resist = {"turn": self.turn, "from": old, "h0": h_before,
                          "resist": n_res,
                          "recover": C.RESIST_RECOVER_TURNS}
+            M.lost_window(self, rid, n_res)          # 광역시에서 떨어져 나온 칸: 이 저항 기간 안에 되찾으면 다시 편입
         if lib:
             self.event("captured", lib + f" (저항 {rr.resist['resist']}턴).", region=rid, fids=fids)
             return
@@ -3683,6 +3739,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self.new_ranking = None
         self._morale = {}
         self._acted = set()
+        self._entry = {}                     # 적국 광역시에 들어간 방향(차지할 구성 지역 고르기, v1.3.21)
         self.post_attack_moves = set()
         # 대응하지 않은 플레이어 반란은 AI 규칙으로 처리
         for rid in list(self.pending_rebellions):
@@ -3727,6 +3784,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self._phase_population()
         self._phase_happiness()
         M.phase(self)                        # 광역시: 점령 뒤 저항이 끝났거나 주인이 갈라진 곳은 해제
+        self._phase_rebels()                 # 반군: 원 국가 지역 4곳 이상을 가진 채 24턴이면 독립 선포
         D.update_turn(self)
         self._update_power()
         self._record_stats()
@@ -3868,6 +3926,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 else:
                     a.order = None
                 return
+            if not w.is_sea(node) and node in self.regions and M.of(self, node) is not None \
+                    and self.hostile(a.owner, self.regions[node].owner) \
+                    and (a.owner, node) not in self.__dict__.get("_entry", {}):
+                self.note_entry(a.owner, node, a.loc, (a.order or {}).get("tile"))   # 적국 광역시: 들어온 쪽 칸
             a.loc = node
             self.sync_general_escorts()
         a.order = None
@@ -4141,10 +4203,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                                                      and D.has_passage(self, fid, o))
 
     # ---- 플레이어 명령 즉시 실행(v1.3.0): 이동·상륙·폭격·빈 땅 점령은 턴 종료를 기다리지 않는다
-    def act_now(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
+    def act_now(self, army_id, target, mode="assault", force_bombard=False, move_only=False, tile=None):
         """플레이어 부대에 명령해 바로 실행한다. 병력이 있는 곳 공격은 전투 확인 창(attack_now)으로.
         한 부대는 한 턴에 한 번 행동한다. 한 턴에 못 가는 곳은 자동 이동: 이번 턴 첫 구간을 바로 가고,
         다음 턴부터는 턴이 시작될 때 이어서 간다. 반환 (성공, 메시지)."""
+        if tile is None and target in self.regions and M.of(self, target) is not None:
+            tile = target                       # 적국 광역시: 고른 구성 지역(v1.3.21)
         target = M.node(self, target)          # 광역시는 한 칸
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
@@ -4162,7 +4226,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if target is None:
             a.order, a.goto = None, None
             return True, "명령 취소"
-        ok, msg = self.order_army(a.id, target, mode, force_bombard, move_only)
+        ok, msg = self.order_army(a.id, target, mode, force_bombard, move_only, tile=tile)
         if not ok or not a.order:
             return ok, msg
         o = a.order
@@ -4201,6 +4265,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             return msg
         tgt = o.get("target") or (o.get("path") or [a.loc])[-1]
         owner0 = self.regions[tgt].owner if tgt in self.regions else None
+        tgt_tiles = set(M.members(self, tgt)) if tgt in self.regions else {tgt}    # 적국 광역시: 차지한 칸은 구성 지역 하나
+        if o.get("tile") is not None:
+            path = list(o.get("path") or [])
+            self.note_entry(fid, tgt, path[-2] if len(path) > 1 else a.loc, o["tile"])
         if t == "attack":                           # 병력이 없는 적 땅: 들어가 점령
             owner = self.regions[tgt].owner
             self.__dict__.setdefault("fought_targets", {}).setdefault((fid, owner), set()).add(tgt)
@@ -4217,14 +4285,18 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         name = w.node_name(a.loc)
         if not w.is_sea(a.loc) and a.domain() == "land":
             rr = self.regions[a.loc]
-            if a.loc == tgt and owner0 not in (None, fid) and rr.owner == fid:
-                return f"{josa(name, '을/를')} 차지했습니다."
+            took = next((t for t in tgt_tiles if t in self.regions and self.regions[t].owner == fid), None)
+            if took is not None and owner0 not in (None, fid):
+                return f"{josa(self.info(took).name, '을/를')} 차지했습니다."
             if fid in rr.occs:
                 return f"{name} 점령을 시작했습니다."
         return f"{josa(name, '으로/로')} 이동했습니다."
 
-    def capture_now(self, army_id, target):
+    def capture_now(self, army_id, target, tile=None):
         """플레이어: 병력이 없는 맞닿은 적국 땅으로 들어가 바로 점령한다(공격처럼 그 턴 행동 끝)."""
+        if tile is None and target in self.regions and M.of(self, target) is not None:
+            tile = target
+        target = M.node(self, target)
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL or self.army_acted(a.id):
             return False, "지금 움직일 수 없는 부대입니다."
@@ -4240,9 +4312,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             self.fought_targets = {}
         self.fought_targets.setdefault((a.owner, old), set()).add(target)
         a.order, a.goto = None, None
+        self.note_entry(a.owner, target, a.loc, tile)
         a.loc = target
         self.sync_general_escorts()
         self.begin_occupation(a.owner, target)
+        target = a.loc if a.id in self.armies else target          # 광역시: 차지한 구성 지역
+        rr = self.regions[target]
         self.fought.add(a.id)
         self._update_fog()
         if rr.owner == a.owner:
@@ -4263,10 +4338,12 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 out.append(a)
         return sorted(out, key=self.army_sort_key)
 
-    def attack_now(self, army_id, target, mode="assault", extra=()):
+    def attack_now(self, army_id, target, mode="assault", extra=(), tile=None):
         """플레이어 부대가 target 을 바로 공격한다(함대 상륙 공격은 해역 경로를 먼저 따라간다).
         extra: 함께 공격할 부대들(v1.3.0) — 한 전투로 합쳐 공격력을 더하고, 여러 방향이면 협공 보너스.
-        반환 (성공 여부, 결과 문장)."""
+        반환 (성공 여부, 결과 문장). tile: 적국 광역시에서 차지할 구성 지역(v1.3.21)."""
+        if tile is None and target in self.regions and M.of(self, target) is not None:
+            tile = target
         target = M.node(self, target)
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
@@ -4292,6 +4369,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     x.loc = node
             x.goto = None
             x.order = {"type": "attack", "target": target, "mode": mode}
+            if x is a and tile is not None:
+                x.order["tile"] = tile
             if self._attack_valid(x, target):
                 attackers.append(x)
             else:
@@ -4301,6 +4380,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 x.order = None
             return False, "지금 바로 공격할 수 없는 곳입니다."
         owner = self.regions[target].owner
+        tiles = list(M.members(self, target))
         if not hasattr(self, "fought"):
             self.fought = set()
         if not hasattr(self, "fought_targets"):
@@ -4316,8 +4396,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 x.order = None
         self._update_fog()
         msg = next((e["text"] for e in self.events[n_ev:] if e["kind"] == "battle"), "전투")
-        if self.regions[target].owner == fid:
-            msg += f" — {self.info(target).name} 차지"
+        took = next((r for r in tiles if self.regions[r].owner == fid), None)
+        if took is not None:
+            msg += f" — {self.info(took).name} 차지"
         elif any(x.owner == fid for x in self.armies_at(target)):
             msg += f" — {self.info(target).name}에 진입"
         return True, msg
@@ -4375,6 +4456,10 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return self.hostile(a.owner, rr.owner) or bool(self.hostile_units_at(a.owner, tgt))
 
     def _ground_battle(self, fid, armies, tgt, mode, all_attackers):
+        if tgt in self.regions and M.of(self, tgt) is not None:
+            # 적국 광역시(v1.3.21): 이기면 공격한 쪽이 고른(없으면 주력이 맞닿은) 구성 지역 한 칸을 차지한다
+            main = next((a for a in armies if (a.order or {}).get("tile")), None) or max(armies, key=lambda a: a.count())
+            self.note_entry(fid, tgt, main.loc, (main.order or {}).get("tile"))
         escorts = [(gp, [a.id for a in armies if a.owner == fid and a.loc == gp["loc"]])
                    for gp in self.great_people if gp["owner"] == fid and gp["kind"] == "general"]
         defenders = self.hostile_units_at(fid, tgt)
@@ -4737,12 +4822,19 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 self._cancel_hijacked(rr, self.regions[p.key].owner)
 
     # ---- 6~7. 슬롯 진행
+    SAVING_SHORT = "자금 부족: 이 작업에 쓸 돈을 모으는 중"
+    SAVING_WAIT = "자금 모으는 중: 우선순위가 더 높은 작업이 먼저"
+
     def _fund_projects(self):
-        """세력마다 우선순위 순서로 이번 턴 비용을 낸다. 모자라면 그 작업은 정지(뒤의 더 싼 작업은 진행 가능)."""
+        """세력마다 우선순위 순서로 이번 턴 비용을 낸다. 모자라면 그 작업은 정지.
+        플레이어(v1.3.21): 상위 작업에 돈이 모자라면 그보다 싼 아래 작업도 돈을 쓰지 않고 정지해 돈을 모은다
+        (비용이 들지 않는 작업은 그대로 진행). AI는 예전처럼 뒤의 더 싼 작업을 진행한다."""
         self.refresh_joint_costs()
         for f in self.factions:
             if not f.alive:
                 continue
+            strict = not f.is_ai
+            saving = False
             self._reserve_food(f)          # 식량 부족이 예상되면 식량 구매가 최우선
             for r in self.regions_of(f.id):
                 if not r.project and not r.queue:
@@ -4751,6 +4843,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             for rr in self.projects_by_priority(f.id):
                 p = rr.project
                 p.funded = False
+                if p.blocked_reason in (self.SAVING_SHORT, self.SAVING_WAIT):
+                    p.blocked_reason = ""
                 if rr.occ and p.group is None:
                     p.stalled = True
                     continue
@@ -4763,8 +4857,14 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     p.stalled = True
                     continue
                 sci = self.science_per_turn_cost(C.SCIENCE[p.key]["tier"]) if p.kind == "science" else 0
+                if saving and p.per_turn > 0:
+                    p.stalled, p.blocked_reason = True, self.SAVING_WAIT     # 위 작업에 쓸 돈을 모은다
+                    continue
                 if f.money < p.per_turn or f.sci_points < sci:
                     p.stalled = True
+                    if f.money < p.per_turn:
+                        p.blocked_reason = self.SAVING_SHORT
+                        saving = saving or strict
                     continue
                 f.money -= p.per_turn
                 f.sci_points -= sci
@@ -4824,8 +4924,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             f = self.factions[rr.owner]
             p.funded = False                 # 묶음 공사는 여러 지역이 같은 작업이라 여기서 한 번만 진행된다
             p.progress += 1
-            if p.kind == "unit":
-                drafted.update(M.members(self, rr.id))
+            if p.kind == "unit" and not C.UNITS.get(p.key, {}).get("militia"):
+                drafted.update(M.members(self, rr.id))       # 민병대는 징집 피로 없음
             if p.progress >= p.turns and p.group is not None:
                 self._complete_line_group(f, p)
                 self.promote_queues()
@@ -5668,8 +5768,31 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return sum(r.pop for r in self.regions_of(fid))
 
     # ---- 12. 반란
+    def is_rebel(self, fid) -> bool:
+        """반군(독립 선포 전)인가. 반군은 국가가 아니다: 지도자·체제·건물·과학·정책·위인·외교가 없다(v1.3.21)."""
+        return (isinstance(fid, int) and 0 <= fid < len(self.factions)
+                and bool(getattr(self.factions[fid], "rebel", False)))
+
+    def active_rebel(self, fid):
+        """fid 에서 일어나 아직 독립하지 않은 반군(없으면 None). 한 국가에 반군은 하나뿐이다."""
+        return next((f for f in self.factions if f.alive and getattr(f, "rebel", False) and f.rebel_of == fid), None)
+
+    def rebel_calm(self, fid) -> float:
+        """반란 확률 배수: 진압 성공·반군 소멸·독립 직후 0(−100%), 24턴 동안 1까지 선형으로 회복."""
+        if not (isinstance(fid, int) and 0 <= fid < len(self.factions)):
+            return 1.0
+        t0 = getattr(self.factions[fid], "rebel_calm_turn", -999)
+        return max(0.0, min(1.0, (self.turn - t0) / C.REBEL_CALM_TURNS))
+
+    def calm_rebellion(self, fid):
+        """진압 성공·반군 소멸·독립: 그 나라의 반란 확률을 −100%로 내렸다가 24턴 동안 회복시킨다."""
+        if isinstance(fid, int) and 0 <= fid < len(self.factions):
+            self.factions[fid].rebel_calm_turn = self.turn
+
     def rebellion_chance(self, fid, rid) -> float:
         rr = self.regions[rid]
+        if self.is_rebel(fid) or self.active_rebel(fid) is not None:
+            return 0.0                        # 반군에는 반란이 없고, 반군이 있는 나라에는 새 반란이 없다
         if self.resist_phase(rr)[0]:
             return 0.0                        # 점령 후 36턴은 반란 없음
         p = R.rebellion_probability(self.rebel_happy(rr) + C.REBEL_THRESHOLD - self.mods(fid).value("rebel_threshold", C.REBEL_THRESHOLD)) * self.mods(fid).mult("rebel_prob")
@@ -5680,16 +5803,18 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             p *= k
         if self.mods(fid).value("capital_unhappy_rebel") and self.eff_happy(self.regions[self.factions[fid].capital]) < 0:
             p *= self.mods(fid).value("capital_unhappy_rebel")
-        return min(1.0, p)
+        return min(1.0, p * self.rebel_calm(fid))
 
     def _phase_rebellion(self):
         from . import ai
         for f in self.factions:
-            if not f.alive:
+            if not f.alive or getattr(f, "rebel", False):
                 continue
             for r in list(self.regions_of(f.id)):
                 if M.center_of(self, r.id) != r.id:
                     continue                      # 광역시는 중심에서 한 번만
+                if r.owner != f.id:
+                    continue                      # 같은 턴에 먼저 일어난 반란으로 넘어간 곳
                 if self.rebel_happy(r) > self.mods(r.owner).value("rebel_threshold", C.REBEL_THRESHOLD):
                     continue
                 if self.rng.random() < self.rebellion_chance(f.id, r.id):
@@ -5737,7 +5862,6 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 return f"{name}: 요구를 들어줄 돈({cost:,.0f})이 부족합니다."
             choice = "suppress"
         p = self.suppress_chance(fid, rid)
-        Rv = rr.pop * 2 * max(0.0, -self.rebel_happy(rr) / 50)
         if self.rng.random() < p:
             rr.happy = min(C.HAPPY_MAX, rr.happy + C.REBEL_SUPPRESS_HAPPY)
             if M.of(self, rid):
@@ -5754,102 +5878,246 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     self.remove_army(a)
             for site in M.members(self, rid):
                 self.regions[site].suppress_output_until = self.turn + int(self.mods(fid).value("suppress_output_turns", 0))
+            self.calm_rebellion(fid)                     # 진압 성공: 반란 확률 −100%, 24턴 동안 회복
             loss_text = "병력 손실 없음" if self.mods(fid).value("suppress_no_loss") else "진압 병력 10% 손실"
-            msg = f"{name}: 반란 진압 성공 (행복도 +5, {loss_text})"
+            msg = f"{name}: 반란 진압 성공 (행복도 +5, {loss_text}, 반란 확률 −100% → {C.REBEL_CALM_TURNS}턴 동안 회복)"
             self.event("rebel", msg, region=rid, fids=(fid,))
             return msg
-        # 진압 실패 → 반란 지역이 독립(그 지역을 수도로 하는 국가)
+        # 진압 실패 → 반란 지역이 반군에게 넘어간다(한 국가에 반군은 하나: 이미 있으면 그 반군에 합류)
         last = len(self.regions_of(fid)) <= 1
-        nf, joined = self._spawn_rebel(fid, rid, Rv, failed_suppression=True)
+        nf, joined = self._spawn_rebel(fid, rid, failed_suppression=True)
         if last:
-            msg = f"{name}: 진압 실패. 마지막 영토가 {josa(nf.name, '으로/로')} 독립해 멸망했습니다."
+            msg = f"{name}: 진압 실패. 마지막 영토를 {josa(nf.name, '이/가')} 차지해 멸망했습니다."
         elif joined:
-            msg = f"{name}: 진압 실패! 기존 반란 세력 {nf.name}에 합류했습니다."
+            msg = f"{name}: 진압 실패! {josa(nf.name, '이/가')} 이 지역도 차지했습니다."
         else:
-            msg = f"{name}: 진압 실패! {josa(nf.name, '으로/로')} 분리독립했습니다."
+            msg = f"{name}: 진압 실패! {josa(nf.name, '이/가')} 들고일어났습니다."
         self.event("rebel", msg, region=rid, fids=(fid, nf.id))
         return msg
 
     def rebel_children(self, fid):
+        """fid 에서 일어난(독립한 나라 포함) 살아 있는 세력."""
         return [f for f in self.factions if f.alive and f.rebel_of == fid]
 
-    def _spawn_rebel(self, fid, rid, Rv, failed_suppression=False):
-        """반란 지역 rid 를 수도로 하는 새 국가. 지역 상태(건물·인구·산출·공사)는 그대로 계승."""
-        rr = self.regions[rid]
-        n_inf = max(1, int(round(Rv / 12))) + int(self.mods(fid).value("rebel_extra_inf", 0))   # 궁예 '관심법'
+    def rebel_militia(self, fid, failed_suppression=False) -> int:
+        """반란 때 반군이 받는 민병대 수: 2(궁예 '관심법': 진압 실패 시 2배)."""
+        n = C.REBEL_MILITIA + int(self.mods(fid).value("rebel_extra_inf", 0))
         if failed_suppression:
-            n_inf *= int(self.mods(fid).value("suppress_fail_mult", 1))
-        if getattr(rr, "metro", None) is not None:
-            M.dissolve(self, rr.metro, "반란")
-        keep_project = (rr.project if rr.project and rr.project.kind in ("build", "unit")
-                        and rr.project.group is None and rr.project.metro is None else None)   # 묶음 공사는 계승하지 않는다
-        siblings = self.rebel_children(fid)
-        if len(siblings) >= C.REBEL_MAX_PER_PARENT or len(self.factions) >= C.MAX_FACTIONS:
-            if siblings:
-                adj = [s for s in siblings if any(self.regions[n].owner == s.id for n in self.world.land_adj[rid])]
-                target = (adj or sorted(siblings, key=lambda s: -self.region_count(s.id)))[0]
-                self.transfer_region(rid, target.id, reason="독립")
-                rr.project = keep_project
-                self.new_army(target.id, rid, {"inf": n_inf})
-                if target.happy_floor_until > self.turn:
-                    rr.happy = max(rr.happy, 0.0)
-                return target, True
+            n *= int(self.mods(fid).value("suppress_fail_mult", 1))
+        return n
+
+    def _rebel_take(self, reb, rid, parent):
+        """반군이 지역을 얻을 때: 저항 기간 없이 산출을 바로 얻고, 원 국가 지역이면 독립 조건에 센다."""
+        rr = self.regions[rid]
+        rr.resist = {"turn": self.turn, "from": parent, "h0": rr.happy, "resist": 0, "recover": 0}
+        if parent == reb.rebel_of:
+            reb.rebel_taken.add(rid)
+
+    def _spawn_rebel(self, fid, rid, Rv=None, failed_suppression=False):
+        """반란 지역 rid 를 차지한 반군. 지역 상태(건물·인구·산출)는 그대로이고, 진행 중이던 공사는 멈춘다
+        (반군은 건물을 짓지 못한다). 이미 반군이 있으면 그 반군이 이 지역도 차지한다."""
+        rr = self.regions[rid]
+        n_mil = self.rebel_militia(fid, failed_suppression)
+        active = self.active_rebel(fid)
+        if active is not None:
+            self.transfer_region(rid, active.id, reason="반란")
+            rr.project = None
+            rr.happy = max(rr.happy, 0.0) if active.happy_floor_until > self.turn else rr.happy
+            self._rebel_take(active, rid, fid)
+            self.new_army(active.id, rid, {"mil": n_mil})
+            return active, True
+        if len(self.factions) >= C.MAX_FACTIONS:
             self.transfer_region(rid, NEUTRAL, reason="독립")
             rr.happy = 0.0
-            self.new_army(NEUTRAL, rid, {"inf": n_inf})
+            self.new_army(NEUTRAL, rid, {"inf": n_mil})
             return type("Neutral", (), {"name": "중립 지역", "id": NEUTRAL})(), True
         nid = len(self.factions)
         info = self.info(rid)
         # 반란국 전용 팔레트부터 사용. 팔레트 밖의 임의 색은 만들지 않는다(v1.3.13).
         color = K.pick([f.color for f in self.factions if f.alive], C.REBEL_COLORS + C.FACTION_COLORS)
-        taken = {f.leader for f in self.factions if f.alive}
-        pool = [l["key"] for l in LEADER_BY_KEY.values() if l["key"] != "cus" and l["key"] not in taken]
-        lk = self.rng.choice(pool or [l for l in LEADER_BY_KEY if l != "cus"])
-        leader = LEADER_BY_KEY[lk]
-        name = faction_name_from(info.short)
-        if any(f.name == name for f in self.factions):
-            name = name[:-1] + " 공화국"
-        f = Faction(id=nid, name=name, color=color, leader=lk, leader_name=leader["name"], gov=None,
-                    is_ai=True, capital=rid, aggression=leader["aggr"], rebel_of=fid)
-        f.gov = ai_pick_government(self.rng, f.aggression, rr.b["factory"], rr.b["bank"], banned=banned_govs(lk), leader_key=lk,
-                                   resources=int(info.is_oil) + int(info.is_coal), coastal=info.coastal,
-                                   neighbors=len({self.regions[n].owner for n in self.world.land_adj[rid]
-                                                  if self.regions[n].owner not in (NEUTRAL, fid)}))
+        name = f"{info.short} 반군"
+        k = 2
+        while any(f.name == name for f in self.factions):
+            name = f"{info.short} 반군 {k}"
+            k += 1
+        f = Faction(id=nid, name=name, color=color, leader=C.REBEL_LEADER, leader_name=C.REBEL_LEADER_NAME, gov=None,
+                    is_ai=True, capital=rid, aggression=5.0, rebel_of=fid, rebel=True)
         diff = C.DIFFICULTIES[self.settings.difficulty]
         f.pop_mult, f.income_mult = diff[1], diff[2]
         f.res = {"food": rr.pop * C.START_FOOD_TURNS, **C.START_RESOURCES}
         f.money = C.START_MONEY * C.MONEY_SCALE
         f.founded_turn = self.turn
         f.happy_floor_until = self.turn + C.REBEL_HAPPY_FLOOR_TURNS
+        f.met.add(fid)
+        self.factions[fid].met.add(nid)
         self.factions.append(f)
-        self.transfer_region(rid, nid, reason="독립")
-        rr.project = keep_project            # 진행 중이던 공사·생산 계승
+        self.transfer_region(rid, nid, reason="반란")
+        rr.project = None                      # 반군은 건물·과학·경제 공사를 하지 않는다
         rr.happy = max(rr.happy, 0.0)
+        self._rebel_take(f, rid, fid)
         f.last = {"gdp": rr.output, "tax": rr.output * f.tax, "upkeep": 0, "net": 0,
                   "food_prod": rr.food, "food_cons": rr.pop}
-        self.new_army(nid, rid, {"inf": n_inf})
+        self.new_army(nid, rid, {"mil": n_mil})
         for other in self.factions:
             if other.id != nid:
                 self.dip.op[(nid, other.id)] = D.op_baseline(self, nid, other.id)
                 if other.is_ai:
                     self.dip.op[(other.id, nid)] = D.op_baseline(self, other.id, nid)
-        # 같은 국가에서 독립한 세력끼리: 체제가 같거나 유사하면 우호, 다르면 적대
-        for sib in siblings:
-            v = C.REBEL_SIBLING_OPINION if gov_similar(f.gov, sib.gov) else -C.REBEL_SIBLING_OPINION
-            self.dip.op[(nid, sib.id)] = v
-            self.dip.op[(sib.id, nid)] = v
-        D._start_war(self, nid, fid, happiness=False)  # 독립 전쟁은 선전포고 행복도 벌칙 없음
+        D._start_war(self, nid, fid, happiness=False)  # 반란 전쟁은 선전포고 행복도 벌칙 없음
         self.dip.op[(nid, fid)] = -100
         if self.factions[fid].is_ai:
             self.dip.op[(fid, nid)] = -100
         if self.mods(fid).value("rebel_ally_enemy"):          # 견훤 '금산사 유폐'
-            foes = [e for e in D.enemies(self, fid) if e != nid and self.factions[e].alive]
+            foes = [e for e in D.enemies(self, fid) if e != nid and self.factions[e].alive and not self.is_rebel(e)]
             if foes:
                 e = max(foes, key=lambda x: self.power.get(x, 0))
                 self.dip.alliance[D.pair(nid, e)] = self.turn
-                self.event("diplo", f"{josa(f.name, '이/가')} {josa(self.fname(e), '와/과')} 동맹을 맺었습니다 "
+                self.event("diplo", f"{josa(f.name, '이/가')} {josa(self.fname(e), '와/과')} 손을 잡았습니다 "
                            f"({self.fx_source(fid, 'rebel_ally_enemy')}).", fids=(nid, e, fid))
         return f, False
+
+    # ---- 반군: 독립·항복
+    def rebel_hold_count(self, fid) -> int:
+        """반군이 지금 가진 원 국가 지역 수(독립 조건)."""
+        f = self.factions[fid]
+        return sum(1 for r in getattr(f, "rebel_taken", ()) if self.regions[r].owner == fid)
+
+    def rebel_independence_left(self, fid):
+        """독립까지 남은 턴(원 국가 지역 4곳 이상을 가진 채 버틴 턴 기준). 아직 4곳이 안 되면 None."""
+        f = self.factions[fid]
+        if f.rebel_hold_since is None:
+            return None
+        return max(0, C.REBEL_INDEP_TURNS - (self.turn - f.rebel_hold_since))
+
+    def _phase_rebels(self):
+        """턴 끝: 반군의 독립 조건(원 국가 지역 4곳 이상을 가진 채 24턴) 판정."""
+        for f in list(self.factions):
+            if not f.alive or not getattr(f, "rebel", False):
+                continue
+            parent = self.factions[f.rebel_of] if f.rebel_of is not None and 0 <= f.rebel_of < len(self.factions) else None
+            if parent is None or not parent.alive:
+                self.declare_independence(f.id, "원 국가가 사라짐")
+                continue
+            if not D.at_war(self, f.id, parent.id):
+                D._start_war(self, f.id, parent.id, happiness=False)     # 반군과 원 국가는 늘 전쟁 중
+            n = self.rebel_hold_count(f.id)
+            if n >= C.REBEL_INDEP_REGIONS:
+                if f.rebel_hold_since is None:
+                    f.rebel_hold_since = self.turn
+                    self.event("rebel", f"{josa(f.name, '이/가')} {parent.name}의 지역 {n}곳을 장악했습니다. "
+                               f"{C.REBEL_INDEP_TURNS}턴을 버티면 독립을 선포합니다.", region=f.capital, fids=(f.id, parent.id))
+                elif self.turn - f.rebel_hold_since >= C.REBEL_INDEP_TURNS:
+                    self.declare_independence(f.id, f"{parent.name}의 지역 {n}곳을 {C.REBEL_INDEP_TURNS}턴 동안 지킴")
+            elif f.rebel_hold_since is not None:
+                f.rebel_hold_since = None
+                self.event("rebel", f"{josa(f.name, '이/가')} 장악한 {parent.name} 지역이 {C.REBEL_INDEP_REGIONS}곳 아래로 "
+                           "줄어 독립 준비가 무너졌습니다.", region=f.capital, fids=(f.id, parent.id))
+
+    def independence_leader(self, parent):
+        """독립국 지도자: 원 국가가 멸망시킨 나라가 있으면 그 지도자들 중 하나, 없으면 이번 판에 나오지 않은 지도자 중 하나."""
+        alive = {x.leader for x in self.factions if x.alive}
+        ok = lambda k: k in LEADER_BY_KEY and k != "cus" and k not in alive
+        fallen = sorted({x.leader for x in self.factions if not x.alive and getattr(x, "eliminated_by", None) == parent
+                         and ok(x.leader)})
+        if fallen:
+            return self.rng.choice(fallen)
+        seen = {x.leader for x in self.factions} | {self.settings.player_leader}
+        fresh = sorted(k for k in LEADER_BY_KEY if ok(k) and k not in seen)
+        if fresh:
+            return self.rng.choice(fresh)
+        rest = sorted(k for k in LEADER_BY_KEY if ok(k))
+        return self.rng.choice(rest) if rest else "cus"
+
+    def declare_independence(self, fid, why=""):
+        """반군이 독립을 선포한다: 지도자 배정, 정치체제 선택, 정책·과학은 시작 시점(0단계·연구 없음),
+        건물·시설·민병대는 그대로(민병대는 더 만들 수 없다). 원 국가와의 전쟁은 이어진다(강화는 외교로)."""
+        f = self.factions[fid]
+        if not f.alive or not getattr(f, "rebel", False):
+            return False
+        parent = f.rebel_of
+        lk = self.independence_leader(parent)
+        lead = LEADER_BY_KEY.get(lk, LEADER_BY_KEY["cus"])
+        old_name = f.name
+        info = self.info(f.capital)
+        name = faction_name_from(info.short)
+        if any(x.name == name for x in self.factions if x.id != fid):
+            name = name[:-1] + " 공화국"
+        k = 2
+        base = name
+        while any(x.name == name for x in self.factions if x.id != fid):
+            name = f"{base} {k}"
+            k += 1
+        f.rebel = False
+        f.independent_turn = self.turn
+        f.rebel_hold_since = None
+        f.name = name
+        f.leader, f.leader_name = lk, lead["name"]
+        f.aggression = lead.get("aggr", 5.0)
+        cap = self.regions[f.capital]
+        f.gov = ai_pick_government(self.rng, f.aggression, cap.b["factory"], cap.b["bank"], banned=banned_govs(lk), leader_key=lk,
+                                   resources=int(info.is_oil) + int(info.is_coal), coastal=info.coastal,
+                                   neighbors=len({self.regions[n].owner for n in self.world.land_adj[f.capital]
+                                                  if self.regions[n].owner not in (NEUTRAL, fid)}))
+        f.policy_level = 0                    # 정책·과학은 게임 시작 때와 같다: 0단계·연구 없음
+        f.techs = set()
+        f.science = []
+        f.sci_points = 0.0
+        f.admin = 0.0
+        f.admin_deficit_turns = 0
+        f.lawless = False
+        f.ai = {}
+        f.founded_turn = self.turn
+        f.happy_floor_until = max(f.happy_floor_until, self.turn + C.REBEL_HAPPY_FLOOR_TURNS)
+        for a in self.armies.values():
+            if a.owner == fid:
+                a.techs = f.techs
+        self._mods.pop(fid, None)
+        if parent is not None and 0 <= parent < len(self.factions):
+            self.calm_rebellion(parent)       # 독립 직후 원 국가의 반란 확률 −100%, 24턴 동안 회복
+        for other in self.factions:
+            if other.id != fid and other.alive:
+                self.dip.op[(fid, other.id)] = D.op_baseline(self, fid, other.id)
+                if other.is_ai and other.id != parent:
+                    self.dip.op[(other.id, fid)] = D.op_baseline(self, other.id, fid)
+        if parent is not None and D.at_war(self, fid, parent):
+            self.dip.op[(fid, parent)] = -100
+        # 같은 국가에서 독립한 나라끼리: 체제가 같거나 비슷하면 우호, 다르면 적대
+        for sib in self.factions:
+            if sib.id != fid and sib.alive and sib.rebel_of == parent and parent is not None and not getattr(sib, "rebel", False):
+                v = C.REBEL_SIBLING_OPINION if gov_similar(f.gov, sib.gov) else -C.REBEL_SIBLING_OPINION
+                self.dip.op[(fid, sib.id)] = v
+                self.dip.op[(sib.id, fid)] = v
+        self.event("independence", f"{josa(old_name, '이/가')} 독립을 선포했습니다: {name} "
+                   f"(지도자 {lead['name']}{', ' + why if why else ''}).", region=f.capital,
+                   fids=(fid,) + ((parent,) if parent is not None else ()))
+        if parent == self.player_id or self.has_met(self.player_id, fid):
+            self.queue_dialogue("independence", fid)
+        return True
+
+    def can_surrender(self, fid) -> bool:
+        """반군의 항복: 모든 군사 유닛을 잃었을 때 원 국가에게만."""
+        f = self.factions[fid] if self.is_rebel(fid) else None
+        if f is None or not f.alive or f.rebel_of is None or not self.factions[f.rebel_of].alive:
+            return False
+        return not any(a.owner == fid and any(k in C.UNITS and C.UNITS[k]["kind"] in ("land", "naval", "air")
+                                              and not C.UNITS[k].get("science") for k in a.units)
+                       for a in self.armies.values())
+
+    def rebel_surrender(self, fid):
+        """반군이 원 국가에 항복: 반군의 모든 지역이 저항 없이 원 국가로 돌아가고 반군은 사라진다."""
+        if not self.can_surrender(fid):
+            return False, "항복할 수 없습니다."
+        f = self.factions[fid]
+        parent = f.rebel_of
+        name = f.name
+        for r in sorted(self.regions_of(fid), key=lambda r: r.id != f.capital):
+            self.transfer_region(r.id, parent, reason="항복")
+        if f.alive:
+            self.eliminate(fid, by=parent)
+        self.calm_rebellion(parent)
+        self.event("rebel", f"{josa(name, '이/가')} {self.fname(parent)}에 항복했습니다. 반군이 차지했던 지역이 모두 돌아왔습니다.",
+                   fids=(parent, fid))
+        return True, f"{name} 항복"
 
     # ------------------------------------------------------------------ 국력·패권
     def _update_power(self):
@@ -5894,7 +6162,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if self.game_over:
             return                          # 이번 턴 기축통화 완공 등으로 이미 끝났다
         st = self.settings
-        alive = self.alive_ids()
+        alive = self.nation_ids()           # 반군은 국가가 아니다(승리 판정에서 뺀다)
         if not self.player.alive and not st.all_ai:
             self.winner = None
             self.game_over = True
@@ -5962,7 +6230,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     def time_scores(self) -> dict:
         """시간 종료 승리 점수: (지역 비율 + GDP 비율 + 인구 비율) / 3 × 100."""
-        alive = self.alive_ids()
+        alive = self.nation_ids()
         regs = {f: self.region_count(f) for f in alive}
         gdp = {f: self.gdp(f) for f in alive}
         pop = {f: self.total_pop(f) for f in alive}

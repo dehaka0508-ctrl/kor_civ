@@ -881,6 +881,10 @@ class App:
             mv.sea_outline(self.screen, self.hover, mix(self.theme.sea_line, self.theme.accent, 0.5), 2)
         if self.hover and self.hover in self.world.regions:
             mv.group_outline(self.screen, self.map_group(self.hover), self.theme.text, 1)
+            army = self.game.armies.get(self.sel_army) if self.game is not None and self.sel_army else None
+            tile = self.metro_attack_tile(army, self.hover) if army else None
+            if tile is not None:                    # 적국 광역시: 이기면 차지할 구성 지역(v1.3.21)
+                mv.outline(self.screen, tile, self.theme.bad, max(2, int(2.5 * u)))
         if self.sel:
             if self.sel in self.world.seas:
                 mv.sea_outline(self.screen, self.sel, self.theme.accent, 3)
@@ -1417,6 +1421,7 @@ class App:
         if not over_ui and (gui.clicked or gui.rclicked):
             self.mode_popup = None              # 지도를 누르면 세부 메뉴를 닫는다
         self.hover = None if over_ui else mv.pick(pos)
+        self.hover_tile = self.hover if self.game is not None and self.hover in self.game.regions else None
         if self.game is not None and not pick_mode and self.hover in self.game.regions:
             from .. import metro as M
             self.hover = M.node(self.game, self.hover)       # 광역시는 한 칸(v1.3.18)
@@ -1541,6 +1546,16 @@ class App:
             return None
         return owner
 
+    def metro_attack_tile(self, army, node):
+        """내 부대로 전쟁 중인 적국 광역시 칸을 가리키면 이기면 차지할 구성 지역(커서 아래 칸이 맞닿아 있으면 그 칸,
+        아니면 맞닿은 칸 중 인구가 많은 곳). 해당 없으면 None(v1.3.21)."""
+        g = self.game
+        if g is None or army is None or army.owner != g.player_id or node not in g.regions or M.of(g, node) is None:
+            return None
+        if not g.hostile(army.owner, g.regions[node].owner):
+            return None
+        return M.entry_tile(g, M.node(g, node), army.loc, getattr(self, "hover_tile", None))
+
     def right_click(self, node, pos):
         if getattr(self, "gp_move_pick", None) is not None:
             self.gp_move_pick = None
@@ -1573,10 +1588,12 @@ class App:
                     return
                 # 전투가 일어나는 공격이면 확인 창(양측 병력·보정·예상 결과)을 먼저 띄운다
                 if not solo and opt and opt["action"] == "attack" and hostile:
-                    self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode})
+                    self.modal = ("battle", {"army": army.id, "node": node, "mode": self.attack_mode,
+                                             "tile": self.metro_attack_tile(army, node)})
                     return
             # 이동·상륙·빈 땅 점령은 바로 실행한다(v1.3.0). 포병·폭격기 부대는 병력이 없는 곳이면 이동
-            ok, msg = g.act_now(army.id, node, self.attack_mode, move_only=solo)
+            ok, msg = g.act_now(army.id, node, self.attack_mode, move_only=solo,
+                                tile=self.metro_attack_tile(army, node))
             self.toast(msg if isinstance(msg, str) else str(msg), None if ok else self.theme.bad)
             if ok:
                 self.flash_t = pygame.time.get_ticks()
@@ -1599,7 +1616,8 @@ class App:
         r = pygame.Rect(pos[0], pos[1], 170, 84)
         g.panel(r)
         g.text((r.x + 12, r.y + 8), self.game.seen_name(fid), 13, weight="bold")
-        if g.button((r.x + 8, r.y + 30, 154, 22), "외교", "ghost", enabled=self.game.has_met(self.game.player_id, fid)):
+        if g.button((r.x + 8, r.y + 30, 154, 22), "외교", "ghost",
+                    enabled=self.game.has_met(self.game.player_id, fid) and not self.game.is_rebel(fid)):
             self.open_diplomacy(fid)
             self.ctx_menu = None
         if g.button((r.x + 8, r.y + 56, 154, 22), "구역 정보", "ghost"):
@@ -1630,6 +1648,9 @@ class App:
         act = opt["action"]
         lines = []
         name = self.world.node_name(node)
+        tile = self.metro_attack_tile(army, node)
+        if tile is not None and act in ("attack", "move"):
+            lines.append(f"적국 광역시: 이기면 {g.info(tile).name} 한 칸만 차지(광역시 병력이 함께 지킴)")
         if act == "move":
             lines.append(f"이동: {name} ({len(opt['path'])}칸)")
             if army.domain() == "naval" and self.world.is_sea(node):
@@ -1814,15 +1835,17 @@ class App:
         shown = 0
         kinds_count = {}
         for e in g.events:
-            if pid not in e["fids"] and e["kind"] not in ("ranking", "victory", "eliminated", "war", "alert"):
+            if pid not in e["fids"] and e["kind"] not in ("ranking", "victory", "eliminated", "war", "alert", "independence"):
                 continue
             text = g.event_for_player(e)
             if text is None:                    # 조우하지 않은 세력끼리의 일
                 continue
             kinds_count[e["kind"]] = kinds_count.get(e["kind"], 0) + 1
             if shown < 6 and e["kind"] in ("battle", "captured", "complete", "rebel", "war", "peace", "eliminated",
-                                             "famine", "capital", "bomb", "victory", "diplo", "info", "alert"):
+                                             "famine", "capital", "bomb", "victory", "diplo", "info", "alert",
+                                             "independence"):
                 col = {"battle": self.theme.bad, "war": self.theme.bad, "rebel": self.theme.warn,
+                       "independence": self.theme.warn,
                        "famine": self.theme.warn, "victory": self.theme.good, "alert": self.theme.bad}.get(e["kind"])
                 self.toast(text, col)
                 shown += 1
@@ -2143,6 +2166,10 @@ class App:
 
     # ------------------------------------------------------------ 외교
     def open_diplomacy(self, fid):
+        if self.game is not None and self.game.is_rebel(fid):
+            from .. import diplomacy as D
+            self.toast(D.REBEL_NO_DIPLO, self.theme.bad)     # 반군과는 외교할 수 없다(v1.3.21)
+            return
         self.dip_state = modals.DiploDraft(fid)
         self.war_confirm = None
         self.modal = ("diplomacy", fid)

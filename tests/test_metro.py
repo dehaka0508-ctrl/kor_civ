@@ -294,33 +294,109 @@ def test_dissolve_new_building_and_shared_project_refund():
     assert g.regions["S002"].b["academy"] == 1 and all(g.regions[r].b["academy"] == 0 for r in sel[1:])
 
 
-def test_metro_defends_together_and_is_captured_whole():
+def _outside(g, sel, tile):
+    """tile 과 (원래 지도에서) 맞닿은 광역시 밖 지역 하나."""
+    return sorted(n for n in M.base_world(g).land_adj[tile] if n not in sel)[0]
+
+
+def test_metro_defends_together_and_loses_only_the_attacked_tile():
+    """v1.3.21: 적국 광역시는 구성 지역 하나를 골라 공격한다. 광역시 병력이 함께 지키고(방어 배수 그대로),
+    이기면 그 칸 하나만 넘어가며 광역시는 남는다(건물 단계 그대로, 지역 수 배수만 다시). 저항 기간 안에
+    되찾으면 원상복구, 지나서 되찾으면 별개의 지역."""
     g, sel = _setup()
     ok, _ = g.create_metro(0, "S002", sel)
     assert ok
     for r in sel:
         _clear(g, r)
-    other = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL and r not in M.distances(g, "S002", 3))
-    _own(g, 0, [other])                                       # 광역시를 잃어도 판이 끝나지 않게
     D.declare_war(g, 1, 0)
     g.new_army(0, sel[0], {"inf": 1})
     edge = sel[-1]
-    # 다른 구성 지역에 있는 병력도 함께 지킨다
     assert g.hostile_units_at(1, edge)
     assert M.def_mult(g, edge) == pytest.approx(1 - 0.02 * (len(sel) - 1))
     for r in sel:
         _clear(g, r)
-    # 지키는 병력이 없으면 들어서는 즉시 광역시 전체를 차지하고, 저항이 끝나면 해제
-    g.new_army(1, edge, {"inf": 1})
-    g.begin_occupation(1, edge)
-    assert all(g.regions[r].owner == 1 for r in sel)
+    cb = g.regions["S002"].b
+    rows = {t: [dict(c) if c else None for c in cb.slots[t]] for t in M.MERGE_TYPES}
+    src = _outside(g, sel, edge)
+    _own(g, 1, [src])
+    _clear(g, src)
+    a = g.new_army(1, src, {"inf": 2})
+    ok, _ = g.order_army(a.id, edge)                      # 구성 지역을 골라 명령(광역시 칸으로 들어간다)
+    assert ok and a.order["path"] == ["S002"] and a.order["tile"] == edge
+    g._phase_move()
+    g._phase_attack()
+    m = M.of(g, "S002")
+    assert g.regions[edge].owner == 1 and a.loc == edge
+    assert all(g.regions[r].owner == 0 for r in sel if r != edge)
+    assert m["members"] == [r for r in sel if r != edge] and g.regions[edge].metro is None
+    assert {t: [dict(c) if c else None for c in cb.slots[t]] for t in M.MERGE_TYPES} == rows   # 광역 카드 단계 그대로
+    assert cb.mult_of("base") == len(sel) - 1                                                # 배수만 다시
+    assert g.regions[edge].b.slots["base"]                                                   # 떼어 낸 칸은 자기 카드
+    assert edge in g.world.land_adj["S002"] and "S002" in g.world.land_adj[edge]
+    # 저항 기간 안에 되찾으면 다시 광역시로(원상복구)
+    g.remove_army(a)
+    b = g.new_army(0, "S002", {"inf": 2})
+    ok, msg = g.act_now(b.id, edge)
+    assert ok and g.regions[edge].owner == 0, msg
     m = M.of(g, edge)
-    assert m is not None and m["owner"] == 1
-    for _ in range(C.RESIST_TURNS + 1):
-        g.end_turn()
-        if M.of(g, edge) is None:
-            break
-    assert M.of(g, edge) is None and all(g.regions[r].metro is None for r in sel)
+    assert m is not None and sorted(m["members"]) == sorted(sel) and cb.mult_of("base") == len(sel)
+    assert {t: [dict(c) if c else None for c in cb.slots[t]] for t in M.MERGE_TYPES} == rows
+    assert not any(g.regions[edge].b.slots.get(t) for t in M.MERGE_TYPES)
+    # 다시 빼앗기고 저항 기간이 지나서 되찾으면 별개의 지역
+    for x in list(g.armies.values()):
+        if x.loc in sel or x.loc == edge:
+            g.remove_army(x)
+    c = g.new_army(1, src, {"inf": 2})
+    g.note_entry(1, "S002", src, edge)
+    g.capture_now(c.id, edge)
+    assert g.regions[edge].owner == 1 and M.of(g, edge) is None
+    g.turn += C.RESIST_TURNS + 1
+    M.phase(g)
+    g.remove_army(c)
+    d = g.new_army(0, "S002", {"inf": 2})
+    g.act_now(d.id, edge)
+    assert g.regions[edge].owner == 0 and M.of(g, edge) is None
+
+
+def test_metro_center_lost_moves_center_and_keeps_metro():
+    g, sel = _one_region_metro()
+    for r in sel:
+        _clear(g, r)
+    other = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL and r not in M.distances(g, "S002", 3))
+    _own(g, 0, [other])
+    cb = g.regions["S002"].b
+    rows = {t: [dict(c) if c else None for c in cb.slots[t]] for t in M.MERGE_TYPES}
+    g.transfer_region("S002", 1)                           # 중심 칸을 잃어도 광역시는 남는다
+    m = M.of(g, sel[1])
+    assert m is not None and "S002" not in m["members"] and m["center"] in sel[1:]
+    nb = g.regions[m["center"]].b
+    assert {t: [dict(c) if c else None for c in nb.slots[t]] for t in M.MERGE_TYPES} == rows
+    assert nb.mult_of("base") == len(sel) - 1
+    assert g.world.land_adj["S002"] and not g.world.land_adj[sel[1]] or m["center"] == sel[1]
+    # 수도를 잃으면 남은 땅으로 천도
+    assert g.player.capital != "S002"
+
+
+def test_metro_post_annex_adds_member_by_designation_rules():
+    """광역시 편입(사후): 맞닿은 내 지역을 지정 조건대로 더한다 — 광역 카드는 레벨 합 ÷ 지역 수로 다시 평균."""
+    g, sel = _setup()
+    ok, _ = g.create_metro(0, "S002", sel[:-1])
+    assert ok
+    m = M.of(g, "S002")
+    new = sel[-1]
+    assert new in M.annex_candidates(g, 0, m["id"])
+    ok, items = M.check_annex(g, 0, m["id"], new)
+    assert ok, items
+    n0 = len(m["members"])
+    ok, msg = g.annex_to_metro(0, m["id"], new)
+    assert ok, msg
+    assert new in m["members"] and g.regions[new].metro == m["id"] and len(m["members"]) == n0 + 1
+    cb = g.regions["S002"].b
+    assert cb.mult_of("base") == n0 + 1 and not g.regions[new].b.slots["base"]
+    assert "S002" in g.world.land_adj.get(next(n for n in M.base_world(g).land_adj[new] if n not in m["members"]), {"S002"})
+    # 해제하면 편입한 지역도 자기 카드를 되찾는다
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok and g.regions[new].b.slots["base"]
 
 
 def test_metro_happiness_specialty_and_rebellion():
@@ -333,7 +409,7 @@ def test_metro_happiness_specialty_and_rebellion():
     g._phase_happiness()
     assert len({round(g.regions[r].happy, 6) for r in sel}) == 1
     assert all(g.regions[r].supplied == c.supplied for r in sel)
-    # 반란은 중심에서만 판정되고, 진압에 실패하면 해제되고 중심이 독립
+    # 반란은 중심에서만 판정되고, 진압에 실패하면 중심 칸만 반군에게 넘어가고 광역시는 남는다(v1.3.21)
     for r in sel:
         g.regions[r].happy = -90
         _clear(g, r)
@@ -342,8 +418,9 @@ def test_metro_happiness_specialty_and_rebellion():
     assert g.pending_rebellions == ["S002"]
     g.rng.random = lambda: 0.999
     g.resolve_rebellion(0, "S002", "suppress")
-    assert all(g.regions[r].metro is None for r in sel)
-    assert g.regions["S002"].owner != 0
+    assert g.regions["S002"].owner != 0 and g.regions["S002"].metro is None
+    m = M.of(g, sel[1])
+    assert m is not None and sorted(m["members"]) == sorted(sel[1:]) and g.is_rebel(g.regions["S002"].owner)
 
 
 def test_exchange_counts_by_metro_size():

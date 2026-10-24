@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import os
 
-KINDS = ("meet", "friend", "war", "denounce", "alliance", "peace", "defeated", "victory")
+KINDS = ("meet", "friend", "war", "denounce", "alliance", "peace", "defeated", "victory", "independence")
 TITLES = {"meet": "첫 만남", "friend": "우호 선언", "war": "전쟁 발발", "denounce": "비난",
-          "alliance": "동맹 체결", "peace": "휴전", "defeated": "멸망", "victory": "패배"}
+          "alliance": "동맹 체결", "peace": "휴전", "defeated": "멸망", "victory": "패배",
+          "independence": "독립 선포"}     # 반군이 독립을 선포하며 배정된 지도자의 첫마디(v1.3.21)
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "leader_lines.json")
 _lines = None
 

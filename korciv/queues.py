@@ -74,7 +74,8 @@ class QueueMixin:
                     p.stalled, p.blocked_reason = True, f'석유 {oil} 필요'
                     return False
                 self.pay_oil(r.owner, oil)
-                p.happy_cost = 0 if self.mods(r.owner).value("unit_happy_free") else C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']]
+                p.happy_cost = (0 if self.mods(r.owner).value("unit_happy_free") or C.UNITS[p.key].get("militia")
+                                else C.UNIT_START_HAPPY[C.UNITS[p.key]['weight']])     # 민병대: 징집 피로 없음
                 r.h_delta += p.happy_cost
             p.started = True
         return True

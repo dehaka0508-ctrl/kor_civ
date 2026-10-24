@@ -33,7 +33,7 @@ def choose_victory_goal(g, f):
     vt = [v for v in ("conquest", "science", "economic", "diplomatic", "time") if v in g.settings.victories]
     if not vt:
         return None
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     n = max(1, len(alive))
     fid = f.id
     aggr = eff_aggression(g, f)
@@ -153,6 +153,10 @@ def plan_turn(g, fid):
     f = g.factions[fid]
     if not f.alive:
         return
+    if getattr(f, "rebel", False):
+        from . import ai_rebel
+        ai_rebel.plan_turn(g, fid)            # 반군: 일반 국가와 다른 AI(v1.3.21)
+        return
     PH.update(g, f)
     p2 = PH.phase(f) >= 2
     if p2:
@@ -235,7 +239,7 @@ def _market(g, f):
 # ------------------------------------------------------------------ 자원·특산물 거래 제의(v0.45.0)
 def trade_partners(g, fid):
     """거래할 만한 상대: 전쟁 중이 아니고 서로 우호도가 AI_TRADE_MIN_OP 이상."""
-    return [x for x in g.alive_ids() if x != fid and not D.at_war(g, fid, x)
+    return [x for x in g.nation_ids() if x != fid and not D.at_war(g, fid, x)
             and g.has_met(fid, x) and g.has_met(x, fid)            # 조우한 나라끼리만
             and D.opinion(g, fid, x) >= C.AI_TRADE_MIN_OP
             and (not g.factions[x].is_ai or D.opinion(g, x, fid) >= C.AI_TRADE_MIN_OP)]
@@ -556,7 +560,7 @@ def war_assessment(g, fid, e):
     f = g.factions[fid]
     info = D.war_info(g, fid, e) or {"turns": 0, "declarer": None, "lost": 0, "gained": 0, "lost_frac": 0.0,
                                      "score": 0.0}
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     # 사기(실질 평균 행복도 −10 이하면 전투력 감소)까지 반영한 전력
     my = g.mil_power(fid) * g.morale(fid) + 0.5 * sum(
         g.mil_power(x) * g.morale(x) for x in alive if x not in (fid, e) and D.at_war(g, x, e) and D.allied(g, x, fid))
@@ -665,11 +669,13 @@ def national_power(g, fid):
 
 def _diplomacy(g, f):
     fid = f.id
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     if f.ai.get("intel_turn") != g.turn:
         update_intel(g, f)                 # 한 턴에 한 번만(기억 감쇠가 두 번 걸리지 않게)
     # 강화: 병력 판단·전선·피로·목표를 종합
     for e in D.enemies(g, fid):
+        if g.is_rebel(e):
+            continue                       # 반군과는 강화가 없다(반군이 항복할 때까지)
         a = war_assessment(g, fid, e)
         if a["desire"] < C.AI_PEACE_SEEK:
             continue
@@ -786,7 +792,7 @@ def _social(g, f):
     """우호 선언·비난. 온건할수록 우호 선언을, 호전적일수록 비난을 자주 쓴다."""
     fid = f.id
     aggr = eff_aggression(g, f)
-    alive = [x for x in g.alive_ids() if x != fid]
+    alive = [x for x in g.nation_ids() if x != fid]
     # 우호 선언: 나를 좋게 보는(또는 적의 적인) 세력과 가까워진다
     p_friend = C.AI_FRIEND_DECL_P * (10 - aggr) / 10 * leader_bias(g, fid, "ally")
     if g.mods(fid).value("tribute"):
@@ -873,7 +879,7 @@ def _consider_war(g, f):
     if p2 is not None and p2.get("posture") == "crisis":
         _p2_block(f, "위기")
         return                               # 위기 중에는 새 전쟁을 벌이지 않는다(경계 중에는 양면 전선 검사로 거른다)
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     aggr = eff_aggression(g, f)
     # 선포하면 전쟁 피로 +15, 전쟁 중 턴당 +0.5: 약 20턴 전쟁 뒤의 실질 행복도를 내다본다
     start_w = (C.WAR_WEARY_START["aggressor"] * g.mods(fid).mult("war_start_weary")
@@ -894,7 +900,7 @@ def _consider_war(g, f):
             o = g.regions[n].owner
             if o == NEUTRAL:
                 can_expand = True
-            elif o != fid:
+            elif o != fid and not g.is_rebel(o):      # 반군은 선전포고 대상이 아니다(v1.3.21)
                 neighbors.add(o)
     by_loc = _armies_by_loc(g)
     my_total = g.mil_power(fid) * g.morale(fid) * (1 - 0.35 * len(my_enemies))    # 다른 전선에 묶인 병력 제외
@@ -1082,7 +1088,7 @@ def _follower_wars(g, f):
         return
     pat_regs = {r.id for r in g.regions_of(pat)}
     cands = []
-    for x in g.alive_ids():
+    for x in g.nation_ids():
         if x in (fid, pat) or D.same_coalition(g, fid, x) or D.at_war(g, fid, x) or D.has_nonaggr(g, fid, x):
             continue
         if D.peace_left(g, fid, x) > 0 or D.peace_left(g, pat, x) > 0:
@@ -1140,7 +1146,7 @@ def _harass_block(g, f, t, urg):
     by_sea = any(v in t_regs for s_ in seas for v in w.seas[s_].coast)
     if not (by_land or by_air or by_sea):
         return "닿지 않음"
-    alive = g.alive_ids()
+    alive = g.nation_ids()
     joint = g.mil_power(fid) * g.morale(fid) + 0.5 * sum(
         g.mil_power(x) for x in alive if x not in (fid, t) and D.at_war(g, x, t))
     their = perceived_power(g, fid, t) * g.morale(t) / (1 + 0.5 * len(D.enemies(g, t)))
@@ -1391,7 +1397,7 @@ def _army_orders(g, f, threat):
                 continue
             if keep > 0:
                 stay = {}
-                for k in ("inf", "art", "tank"):
+                for k in ("inf", "mil", "art", "tank"):
                     t = min(a.units.get(k, 0), keep - sum(stay.values()))
                     if t > 0:
                         stay[k] = t
@@ -1404,7 +1410,7 @@ def _army_orders(g, f, threat):
                 continue
             if keep > 0:
                 stay = {}
-                for k in ("inf", "art", "tank"):
+                for k in ("inf", "mil", "art", "tank"):
                     t = min(a.units.get(k, 0), keep - sum(stay.values()))
                     if t > 0:
                         stay[k] = t
@@ -1620,7 +1626,7 @@ def _art_tactic(g, fid, a) -> bool:
 
 def harassed_by(g, fid) -> list:
     """fid 를 견제 대상으로 삼고 전쟁 중인 나라들."""
-    return [x for x in g.alive_ids() if x != fid and g.factions[x].is_ai and D.at_war(g, x, fid)
+    return [x for x in g.nation_ids() if x != fid and g.factions[x].is_ai and D.at_war(g, x, fid)
             and EG.harass(g, g.factions[x])[0] == fid]
 
 
@@ -2195,7 +2201,7 @@ def _nearest_front(g, fid, start, front, threat):
     return None
 
 
-FRONT_UNITS = ("inf", "tank")        # 전선을 지키는 병종(포병·공군은 지상 방어력 0)
+FRONT_UNITS = ("inf", "mil", "tank")  # 전선을 지키는 병종(포병·공군은 지상 방어력 0)
 
 
 def _front_count(a) -> int:
@@ -2242,7 +2248,7 @@ def _split_front(g, a, n):
     if n <= 0 or n >= a.count():
         return None
     take = {}
-    for k in ("inf", "tank"):
+    for k in ("inf", "mil", "tank"):
         t = min(a.units.get(k, 0), n - sum(take.values()))
         if t > 0:
             take[k] = t

@@ -26,6 +26,12 @@ def unit_icon(surf, key, center, color, s=1.0):
         pygame.draw.circle(surf, color, (x, y - 4 * k), 2.5 * k)
         pygame.draw.polygon(surf, color, [(x - 3 * k, y - 1 * k), (x + 3 * k, y - 1 * k), (x + 2 * k, y + 5 * k),
                                           (x - 2 * k, y + 5 * k)])
+    elif key == "mil":
+        # 민병대: 보병보다 작은 사람 + 비스듬히 든 죽창
+        pygame.draw.circle(surf, color, (x - 1 * k, y - 3 * k), 2.2 * k)
+        pygame.draw.polygon(surf, color, [(x - 3.5 * k, y), (x + 1.5 * k, y), (x + 0.5 * k, y + 5 * k),
+                                          (x - 2.5 * k, y + 5 * k)])
+        pygame.draw.line(surf, color, (x + 1 * k, y + 5 * k), (x + 5 * k, y - 6 * k), max(1, int(1.2 * k)))
     elif key == "art":
         pygame.draw.circle(surf, color, (x - 2 * k, y + 3 * k), 2.5 * k)
         pygame.draw.line(surf, color, (x - 2 * k, y + 2 * k), (x + 5 * k, y - 4 * k), max(1, int(2 * k)))
@@ -591,6 +597,20 @@ def draw_action_tab(app, body):
         if gui.button((x, y, w, 28), "광역자치단체 지정", size=12, enabled=ok_m, tooltip=tip):
             app.start_metro_pick(rid)
         y += 34
+        # 광역시 편입(v1.3.21): 맞닿은 내 광역시에 이 지역을 더한다(지정 조건 그대로)
+        for mid, m_ in sorted(M.metros(g).items()):
+            if m_.get("owner") != pid or rid not in M.annex_candidates(g, pid, mid):
+                continue
+            ok_a, items = M.check_annex(g, pid, mid, rid)
+            tip = ("\n".join(f"{'✓' if o else '✗'} {k}: {d}" for k, o, d in items)
+                   + "\n이 지역의 기본·하천·해안 카드를 광역 슬롯 평균에 더하고, 진행 중이던 작업은 멈춥니다(50% 환급).")
+            if gui.button((x, y, w, 28), f"광역시 편입: {m_['name']}", size=12, enabled=ok_a, tooltip=tip):
+                ok, msg = g.annex_to_metro(pid, mid, rid)
+                app.toast(msg, None if ok else t.bad)
+                if ok:
+                    app.select(rid)
+                app.changed()
+            y += 34
     # 생산 집중: 건설·병력 생산을 하지 않는 동안 인구 산출 +15%
     on = gui.checkbox((x, y, w - 110, 26), f"생산 집중 (인구 산출 +{C.FOCUS_POP_BONUS * g.focus_multiplier(r.owner):.0%})", r.focus, size=13)
     if on != r.focus:
@@ -1619,9 +1639,12 @@ def draw_diplo_tab(app, body):
             continue
         gui.text((x + 52, y + 5), o.name, 13, weight="semibold", max_w=w - 60)
         origin = f" · {g.seen_name(o.rebel_of)}에서 독립" if o.rebel_of is not None else ""
+        if g.is_rebel(o.id):
+            origin = f" · {rebel_status(g, o.id)}"
         decl = " · 우호 선언" if D.declared_friends(g, pid, o.id) and st < 2 else ""
-        gui.text((x + 52, y + 24), f"{o.leader_name} · {D.STAGE_NAMES[st]}{decl} · 우호 {op:+.0f}{origin}", 11,
-                 t.bad if st == -1 else t.muted, max_w=w - 60)
+        line = (f"반군 · {rebel_status(g, o.id)}" if g.is_rebel(o.id)
+                else f"{o.leader_name} · {D.STAGE_NAMES[st]}{decl} · 우호 {op:+.0f}{origin}")
+        gui.text((x + 52, y + 24), line, 11, t.bad if st == -1 else t.muted, max_w=w - 60)
         y += 50
     if not others:
         gui.text((x, y), "다른 세력이 없습니다.", 13, t.muted)
@@ -1661,6 +1684,25 @@ def _reject_from(app):
     return s
 
 
+def rebel_status(g, fid) -> str:
+    """반군 한 줄 요약: 원 국가·장악한 원 국가 지역 수·독립까지 남은 턴(v1.3.21)."""
+    f = g.factions[fid]
+    parent = g.seen_name(f.rebel_of) if f.rebel_of is not None else "?"
+    n = g.rebel_hold_count(fid)
+    left = g.rebel_independence_left(fid)
+    tail = f"독립까지 {left}턴" if left is not None else f"원 국가 지역 {n}/{C.REBEL_INDEP_REGIONS}곳"
+    return f"{parent}의 반군 · {tail}"
+
+
+def rebel_goal(g, fid) -> str:
+    """반군 상세: 독립 조건과 진척."""
+    n = g.rebel_hold_count(fid)
+    left = g.rebel_independence_left(fid)
+    if left is not None:
+        return f"{n}곳 장악 · {left}턴 뒤 독립"
+    return f"{n}/{C.REBEL_INDEP_REGIONS}곳 (또는 수도 점령)"
+
+
 def stage_color(t, st):
     return {-1: t.bad, 3: t.good, 4: t.good}.get(st, t.text if st > 0 else t.muted)
 
@@ -1687,6 +1729,9 @@ def draw_diplo_detail(app, body, fid):
     draw_flag(gui, (x, y, 60, 40), faction_flag(o))
     gui.text((x + 72, y), g.seen_name(fid), 19, weight="bold", max_w=w - 72)
     sub = f"{o.leader_name} · {GOV_BY_KEY.get(o.gov, {}).get('name', '체제 미정')}" if known else g.UNKNOWN_LEADER
+    rebel = g.is_rebel(fid)
+    if rebel and known:
+        sub = f"반군 · {g.seen_name(o.rebel_of)}에서 일어남 · 지도자·체제 없음"
     gui.text((x + 72, y + 25), sub, 12, t.muted, max_w=w - 72)
     y += 52
     # 좌: 초상화(3:4), 우: 수도·관계·우호도
@@ -1708,6 +1753,8 @@ def draw_diplo_detail(app, body, fid):
                 ("우호도 (상대 → 나)", "?", t.muted)]
     if pl:
         rows.append(("강화 불가침", f"{pl}턴 남음", None))
+    if rebel and known:
+        rows.append(("독립(원 국가 지역 4곳 24턴)", rebel_goal(g, fid), t.warn))
     ry = y + 2
     for k, v, vc in rows:
         gui.text((rx, ry), k, 11, t.muted)
@@ -1742,13 +1789,15 @@ def draw_diplo_detail(app, body, fid):
     y += 12
     # 외교 / 선전포고
     bw = (w - 8) / 2
-    unmet_tip = "조우한 적 없는 국가와는 외교할 수 없습니다." if not known else None
-    if gui.button((x, y, bw, 40), "외교", "primary", size=14, enabled=known, tooltip=unmet_tip):
+    unmet_tip = "조우한 적 없는 국가와는 외교할 수 없습니다." if not known else (D.REBEL_NO_DIPLO if rebel else None)
+    if gui.button((x, y, bw, 40), "외교", "primary", size=14, enabled=known and not rebel, tooltip=unmet_tip):
         app.war_confirm = None
         app.open_diplomacy(fid)
-    can_war = st != -1 and not D.has_nonaggr(g, pid, fid) and known
+    can_war = st != -1 and not D.has_nonaggr(g, pid, fid) and known and not rebel
     if not known:
         tip = unmet_tip
+    elif rebel:
+        tip = "이미 전쟁 중입니다(반군과 원 국가)." if st == -1 else D.REBEL_NO_DIPLO
     elif st == -1:
         tip = "이미 전쟁 중입니다."
     elif not can_war:
@@ -1842,7 +1891,7 @@ def draw_victory_progress(app, x, y, w, pid):
     if "economic" in vs:
         y = kv(gui, x, y, w, "경제승리", econ_progress_text(g, pid))
     if "diplomatic" in vs:
-        alive = g.alive_ids()
+        alive = g.nation_ids()
         cid = D.coalition_of(g, pid)
         n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
         y = kv(gui, x, y, w, "외교승리(모두 한 연합)", f"내 연합 {n} / 생존 {len(alive)}개국")
@@ -1924,7 +1973,7 @@ def draw_victory_bars(app, x, y, w, pid):
         head, _, rest = txt.partition(" · ")
         rows.append(("경제", rest, head, g.econ_stage(pid) / max(1, C.ECON_STAGES), (160, 122, 44)))
     if "diplomatic" in vs:
-        alive = g.alive_ids()
+        alive = g.nation_ids()
         cid = D.coalition_of(g, pid)
         n = len(g.dip.coalitions[cid]["members"] & set(alive)) if cid is not None else 1
         rows.append(("외교", "모두 한 연합", f"{n} / {len(alive)}개국", n / max(1, len(alive)), t.jade))

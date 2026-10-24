@@ -232,7 +232,13 @@ class Faction:
     last_seen: dict = field(default_factory=dict)
     ai: dict = field(default_factory=dict)
     rebel_of: Optional[int] = None
+    rebel: bool = False             # 반군(v1.3.21): 독립 선포 전. 국가가 아니다(지도자·체제·건물·과학·외교 없음)
+    rebel_taken: set = field(default_factory=set)   # 반군이 원 국가에게서 차지한 지역(독립 조건: 이 중 지금 가진 곳 수)
+    rebel_hold_since: Optional[int] = None          # 원 국가 지역을 4곳 이상 가진 채 버티기 시작한 턴
+    rebel_calm_turn: int = -999     # (원 국가) 마지막 진압 성공·반군 소멸·독립 턴: 그 뒤 24턴 동안 반란 확률이 회복된다
+    independent_turn: Optional[int] = None          # 반군이 독립을 선포한 턴
     eliminated_turn: Optional[int] = None
+    eliminated_by: Optional[int] = None             # 멸망시킨 세력(독립 지도자 배정용)
     founded_turn: int = 1
     happy_floor_until: int = 0      # 신생 독립국: 이 턴까지 행복도 하한 0
     provisional_used: bool = False  # 김구 '임시정부'를 이미 썼다

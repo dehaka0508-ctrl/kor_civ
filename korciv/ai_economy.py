@@ -509,4 +509,26 @@ def metro_orders(g, f, threat):
             if any(threat.get(x, 0) > .2 for x in selected) and f.gov != 'constitutional':
                 continue
             return g.create_metro(f.id, center.id, selected)[0]
+    return metro_annex_orders(g, f, threat)
+
+
+def metro_annex_orders(g, f, threat):
+    """광역시 편입(v1.3.21): 내 광역시와 맞닿은 안전한 지역을 하나씩 더한다(5단계 광역 카드를 잃지 않을 때만)."""
+    for mid, m in sorted(M.metros(g).items()):
+        if m.get("owner") != f.id or len(m["members"]) >= 8:
+            continue
+        cb = g.regions[m["center"]].b
+        for rid in M.annex_candidates(g, f.id, mid):
+            r = g.regions[rid]
+            if r.project or r.queue or r.sci or r.econ or threat.get(rid, 0) >= .5:
+                continue
+            if any(g.regions[x].owner in D.enemies(g, f.id) for x in g.world.land_adj[rid]):
+                continue
+            rows = M.annex_rows(g, m, rid)
+            lost5 = any(max((c["level"] for c in cb.slots.get("base", []) if c and c["key"] == key), default=0) >= 5
+                        and max((c["level"] for c in rows.get("base", []) if c and c["key"] == key), default=0) < 5
+                        for key in ('factory', 'bank', 'admin', 'edu'))
+            if lost5 or not M.check_annex(g, f.id, mid, rid)[0]:
+                continue
+            return g.annex_to_metro(f.id, mid, rid)[0]
     return False

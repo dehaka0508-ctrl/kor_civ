@@ -62,7 +62,7 @@ def preference(g, fid, action, rid=None, target=None, context=None):
     if leader == 'yis' and action == 'naval' and g.naval_buff_off(fid):
         value = 0.0
     if leader == 'muy' and action in ('war', 'assault'):
-        value += .10 if any(D.allied(g, fid, o) for o in g.alive_ids() if o != fid) else -.18
+        value += .10 if any(D.allied(g, fid, o) for o in g.nation_ids() if o != fid) else -.18
     if leader == 'gcg' and action == 'war' and D.enemies(g, fid):
         value -= .25
     if leader == 'taj' and action == 'annex' and g.region_count(fid) >= 35:

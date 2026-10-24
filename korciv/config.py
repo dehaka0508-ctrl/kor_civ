@@ -228,8 +228,16 @@ REBEL_SUPPRESS_LOSS = 0.10
 REBEL_PAY_GDP = 0.001
 REBEL_THRESHOLD = -50
 REBEL_WEARY_MULT = 1.2      # 반란 판정: (선포한 전쟁의) 전쟁 피로를 ×1.2로 반영
-# 진압 실패 시 반란 지역이 그 지역을 수도로 하는 새 국가로 독립한다(건물·인구·산출·진행 중 공사 계승).
-REBEL_MAX_PER_PARENT = 3   # 한 국가에서 분리독립한 반란 세력(생존) 최대 수. 넘으면 기존 반란 세력에 합류
+# 진압 실패 시 반란 지역은 '반군'이 된다(v1.3.21). 반군은 국가가 아니다: 지도자·정치체제가 없고, 건물·과학·정책·위인·
+# 외교(원 국가에 항복만 가능)를 할 수 없으며 민병대와 방어선만 만든다. 한 국가에 반군은 하나뿐이다.
+REBEL_MAX_PER_PARENT = 1       # 한 국가의 반군(독립 전)은 하나뿐. 반군이 있는 동안 그 나라에는 새 반란이 없다
+REBEL_MILITIA = 2              # 반란 때 주는 민병대(보병 대신)
+REBEL_CALM_TURNS = 24          # 진압 성공·반군 소멸·독립 직후 반란 확률 −100%, 24턴 동안 선형으로 회복
+REBEL_ADMIN_MULT = 0.5         # 반군의 행정력 요구치(식량 요구치는 일반 국가와 같다)
+REBEL_INDEP_REGIONS = 4        # 원 국가 지역을 이만큼 이상 차지한 채
+REBEL_INDEP_TURNS = 24         # 이만큼 버티면(또는 그 전에 원 국가 수도를 점령하면) 독립 선포
+REBEL_LEADER = "rebel"         # 반군 지휘부(지도자 효과·대사 없음)
+REBEL_LEADER_NAME = "반군 지휘부"
 REBEL_HAPPY_FLOOR_TURNS = 24   # 신생 국가는 이 기간 동안 행복도가 0 아래로 내려가지 않는다
 REBEL_SIBLING_OPINION = 40     # 같은 국가에서 독립한 세력끼리: 체제 같거나 유사 +40, 다르면 -40
 MAX_FACTIONS = 30          # 안전장치: 세력 수 상한. 넘으면 독립 지역은 중립이 된다
@@ -242,6 +250,8 @@ UNIT_STAT_SCALE = 10
 UNITS = {
     #        이름      턴당비용 턴 석유 유지 공격 방어 폭격 체력 종류      수송칸
     "inf":  dict(name="보병", cost=250, turns=1, oil=0, upkeep=5, atk=10, df=10, bomb=0, hp=10, kind="land", cargo=1, weight="light"),
+    # 민병대(v1.3.21): 반군만 생산(1턴·비용 0·유지비 0·징집 피로 없음). 독립하면 남은 민병대는 그대로, 더 생산할 수 없다
+    "mil":  dict(name="민병대", cost=0, turns=1, oil=0, upkeep=0, atk=8, df=10, bomb=0, hp=10, kind="land", cargo=1, weight="light", militia=True),
     "art":  dict(name="박격포", cost=400, turns=2, oil=0, upkeep=20, atk=12, df=12, bomb=12, hp=10, kind="land", cargo=2, weight="light"),
     "tank": dict(name="장갑차", cost=600, turns=3, oil=1, upkeep=45, atk=16, df=16, bomb=0, hp=35, kind="land", cargo=4, weight="heavy"),
     "lst":  dict(name="상륙함", cost=500, turns=2, oil=1, upkeep=20, atk=0, df=0, bomb=0, hp=20, kind="naval", capacity=8, weight="heavy"),
@@ -266,13 +276,14 @@ def unit_weight(key):
     return u["cost"] * u["turns"] + 1
 
 
-UNIT_ORDER = ["inf", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "booster", "module", "propellant"]
-BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science")]   # 일반 생산 목록
+UNIT_ORDER = ["inf", "mil", "art", "tank", "lst", "dd", "cv", "ftr", "bmb", "booster", "module", "propellant"]
+BUILD_UNITS = [k for k in UNIT_ORDER if not UNITS[k].get("science") and not UNITS[k].get("militia")]   # 일반 생산 목록
+MILITIA_UNITS = tuple(k for k in UNIT_ORDER if UNITS[k].get("militia"))      # 반군 생산 목록
 NAVAL_AT_SEA_UPKEEP = 2.0
-ASSAULT_UNITS = ("inf", "tank", "lst")
+ASSAULT_UNITS = ("inf", "mil", "tank", "lst")
 NO_GROUND_COMBAT = ("art", "ftr", "bmb")   # 돌격·기습 전투력 0(방어에서도). 포병은 포격, 공군은 폭격·제공으로
 AIR_GROUND_SUPPORT = False                 # 공항 전투기의 지상전 지원 없음
-SURPRISE_UNITS = ("inf", "tank")
+SURPRISE_UNITS = ("inf", "mil", "tank")
 # 포병·폭격기는 같은 병종끼리만 한 부대(v1.3.0): 다른 유닛과 합칠 수 없다(함대 화물칸은 예외).
 # 이 부대로 우클릭하면 적 병력이 있는 곳은 폭격 확인 창, 없는 곳은 이동
 SOLO_UNITS = ("art", "bmb")
@@ -319,7 +330,7 @@ FTR_SUPPORT_RANGE = 2
 FTR_SUPPORT_ATK = 0
 FTR_SUPPORT_DEF = 30
 # 돌격으로 방어측이 입는 피해는 이 순서로 먼저 채운다(전차 > 보병 > 포병 > 공군). 폭격 피해는 모든 부대에 무작위
-ASSAULT_DAMAGE_ORDER = ("tank", "inf", "art", "ftr", "bmb")
+ASSAULT_DAMAGE_ORDER = ("tank", "inf", "mil", "art", "ftr", "bmb")
 # 폭격의 건물 피해: 포병(구축함 함포 포함)이 참여하면 30%, 폭격기 60%, 둘 다 90% 확률로
 # 대상 지역의 생산·방어 건물(방어선 포함) 중 무작위 하나를 1단계 낮춘다.
 BOMB_HIT_GUN = 0.30

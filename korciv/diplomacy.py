@@ -81,6 +81,12 @@ def met(g, a, b) -> bool:
 
 
 NOT_MET = "조우한 적 없는 나라입니다."
+REBEL_NO_DIPLO = "반군과는 외교할 수 없습니다(반군은 모든 병력을 잃었을 때 원 국가에 항복만 할 수 있습니다)."
+
+
+def rebel_involved(g, a, b) -> bool:
+    """둘 중 하나가 반군(독립 선포 전)인가(v1.3.21): 반군은 외교를 하지 못한다."""
+    return any(getattr(g, "is_rebel", lambda x: False)(x) for x in (a, b))
 
 
 def at_war(g, a, b) -> bool:
@@ -196,6 +202,8 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
     _agreed: 이미 동의한 연합 회원(플레이어가 제안을 수락한 경우)."""
     if a == b or at_war(g, a, b) or not g.factions[a].alive or not g.factions[b].alive:
         return False, "이미 전쟁 중이거나 대상이 없습니다."
+    if rebel_involved(g, a, b):
+        return False, REBEL_NO_DIPLO
     if not met(g, a, b):
         return False, NOT_MET
     if has_nonaggr(g, a, b):
@@ -401,6 +409,8 @@ def make_peace(g, a, b, _done=None):
     p = pair(a, b)
     if p not in g.dip.wars or p in done:
         return
+    if rebel_involved(g, a, b):
+        return                       # 반군과는 강화가 없다(항복만)
     done.add(p)
     w = g.dip.wars[p]
     aggr = w.get("aggressor")
@@ -549,6 +559,8 @@ def friendship_check(g, a, b):
     """a 가 b 에게 우호 선언. (가능 여부, 이유). b 가 AI 면 수락 여부까지 판정한다."""
     if a == b or not g.factions[b].alive:
         return False, "대상이 없습니다."
+    if rebel_involved(g, a, b):
+        return False, REBEL_NO_DIPLO
     if not met(g, a, b):
         return False, NOT_MET
     cd = decl_cooldown(g, "friend", a, b)
@@ -641,6 +653,8 @@ def econ_partners(g, fid) -> tuple:
 def denounce_check(g, a, b):
     if a == b or not g.factions[b].alive:
         return False, "대상이 없습니다."
+    if rebel_involved(g, a, b):
+        return False, REBEL_NO_DIPLO
     if not met(g, a, b):
         return False, NOT_MET
     cd = decl_cooldown(g, "denounce", a, b)
@@ -700,6 +714,8 @@ def effects_text(g, effects, viewer=None) -> str:
 # ------------------------------------------------------------------ 조약
 def treaty_check(g, ai, proposer, kind):
     """AI 가 조약 제안을 받을지. (수락 여부, 이유)"""
+    if rebel_involved(g, ai, proposer):
+        return False, REBEL_NO_DIPLO
     if (proposer, ai) in g.dip.rejected:
         return False, "이번 턴에는 다시 제안할 수 없습니다."
     if kind != "peace" and not met(g, ai, proposer):
@@ -767,6 +783,8 @@ def treaty_check(g, ai, proposer, kind):
 
 
 def sign_treaty(g, a, b, kind):
+    if rebel_involved(g, a, b):
+        return False
     if kind == "coalition" and any(g.mods(x).value("no_coalition") for x in (a, b)):
         return False
     p = pair(a, b)
@@ -1050,6 +1068,8 @@ def is_empty(side) -> bool:
 def evaluate_offer(g, ai, proposer, offer):
     """offer: proposer 기준 give(내가 줌)/take(내가 받음). 자원은 턴당 개수(12턴 동안).
     반환: (결과 "accept"/"counter"/"reject", 수정안 또는 None, 설명)"""
+    if rebel_involved(g, ai, proposer):
+        return "reject", None, REBEL_NO_DIPLO
     if (proposer, ai) in g.dip.rejected:
         return "reject", None, "이번 턴에는 다시 제안할 수 없습니다."
     if not met(g, proposer, ai):
@@ -1116,6 +1136,8 @@ def trade_done_opinion(g, a, b, offer=None, n=None):
 
 
 def resource_trade_allowed(g, a, b):
+    if rebel_involved(g, a, b):
+        return False
     return not any(g.mods(fid).value("no_resource_trade") for fid in (a, b))
 
 
@@ -1188,7 +1210,7 @@ def gift_opinion(g, ai, value, giver=None) -> float:
 def ai_gift(g, giver, receiver, amount) -> float:
     """AI 끼리 돈 선물: 보내고, 받는 쪽 우호도를 선물 공식대로 올린다. 오른 우호도를 돌려준다."""
     amount = max(0.0, min(amount, g.factions[giver].money))
-    if amount <= 0 or not met(g, giver, receiver):
+    if amount <= 0 or not met(g, giver, receiver) or rebel_involved(g, giver, receiver):
         return 0.0
     g.factions[giver].money -= amount
     g.factions[receiver].money += amount
@@ -1210,6 +1232,8 @@ def gift_needed(g, receiver, delta, giver=None) -> float:
 
 def respond_offer(g, ai, proposer, offer, execute=True):
     """AI 판정 후 수락이면 실행. (결과, 수정안, 설명)"""
+    if rebel_involved(g, ai, proposer):
+        return "reject", None, REBEL_NO_DIPLO
     res, counter, info = evaluate_offer(g, ai, proposer, offer)
     give, take = offer["give"], offer["take"]
     if res == "accept" and execute:

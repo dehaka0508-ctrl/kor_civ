@@ -251,7 +251,7 @@ def path_scores(g, f, sc, rng=None) -> dict:
     if (g.mods(fid).value("no_alliance") or g.mods(fid).value("no_coalition")):
         diplomatic = 0.0
     else:
-        alive = [x for x in g.alive_ids() if x != fid]
+        alive = [x for x in g.nation_ids() if x != fid]
         friendly = sum(1 for x in alive if D.allied(g, fid, x) or D.opinion(g, x, fid) >= 30) / max(1, len(alive))
         diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2 * (1 + C.AI_P2_POOR_DIP * poor)
     why["diplomatic"] = "우호국 비율"

@@ -85,6 +85,8 @@ class ProgressionMixin:
 
     def unlock_policy(self, fid):
         f = self.factions[fid] if isinstance(fid, int) and 0 <= fid < len(self.factions) else None
+        if f is not None and getattr(f, "rebel", False):
+            return False, "반군은 정책을 해금할 수 없습니다."
         if not f or not f.alive or f.gov not in POLICIES:
             return False, "정책을 해금할 정치체제가 없습니다."
         level = self.policy_level(fid)
@@ -104,6 +106,8 @@ class ProgressionMixin:
         f = self.factions[fid] if isinstance(fid, int) and 0 <= fid < len(self.factions) else None
         if not f or not f.alive or key not in TECHS:
             return False, "연구할 기술이 없습니다."
+        if getattr(f, "rebel", False):
+            return False, "반군은 과학을 연구할 수 없습니다."
         if key in f.techs:
             return False, "이미 해금한 기술입니다."
         spec = TECHS[key]
@@ -151,6 +155,8 @@ class ProgressionMixin:
         f = self.factions[fid] if isinstance(fid, int) and 0 <= fid < len(self.factions) else None
         if not f or not f.alive or kind not in GREAT_PEOPLE:
             return False, "위인을 맞이할 국가 또는 분야가 없습니다."
+        if getattr(f, "rebel", False):
+            return False, "반군은 위인을 맞이할 수 없습니다."
         if kind == "chancellor" and self.mods(fid).value("no_chancellor"):
             return False, "문신 숙청: 위대한 재상 구매 불가"
         rid = rid or f.capital

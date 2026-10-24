@@ -28,6 +28,7 @@ from . import config as C
 from . import rules as R
 from . import slots as S
 from .state import NEUTRAL, Project
+from .text import josa
 
 # (통합 종류, 건물 키): 슬롯을 쓰지 않는 방어 건물만 예전처럼 구성 지역끼리 평균 단계로 통합한다(슬롯 건물은 광역 슬롯)
 POOLS = (("shelter", "shelter"), ("aa", "aa"))
@@ -371,6 +372,22 @@ def _sums(slots) -> dict:
     return out
 
 
+def _row(t, tot, n, port=False) -> list:
+    """광역 슬롯 한 줄: 건물 종류마다 레벨 합 ÷ 지역 수(split_average). 기본 6칸, 하천·해안은 min(2, 지역 수)칸."""
+    size = S.BASE_SLOT_MAX if t == "base" else min(2, n)
+    lists = {k: S.split_average(v, n) for k, v in tot.items()}
+    lists = {k: v for k, v in lists.items() if v}
+    main = sorted(lists, key=lambda k: ((0, MERGE_FIRST.index(k), 0, "") if k in MERGE_FIRST
+                                        else (1, -lists[k][0], -tot[k], k)))
+    cards = [{"key": k, "level": lists[k][0]} for k in main]
+    extra = sorted(((k, lv) for k in main for lv in lists[k][1:]), key=lambda kv: (-kv[1], kv[0]))
+    cards += [{"key": k, "level": lv} for k, lv in extra]
+    row = cards[:size] + [None] * max(0, size - len(cards))
+    if t == "coast" and port:
+        row.append({"key": "port", "level": 1})        # 항구가 하나라도 있었으면 항구 칸을 따로
+    return row
+
+
 def merge_plan(g, sel) -> dict:
     """구성 지역들의 기본·하천·해안 카드를 합친 광역 슬롯(지정 미리보기와 지정에 함께 쓴다).
     {"slots": {종류: [카드 또는 None]}, "mult": {종류: 그 슬롯을 가진 지역 수}}"""
@@ -382,7 +399,6 @@ def merge_plan(g, sel) -> dict:
     for t in MERGE_TYPES:
         el = groups[t]
         n = len(el)
-        size = S.BASE_SLOT_MAX if t == "base" else min(2, n)
         tot, port = {}, False
         for r in el:
             for c in bs[r].slots.get(t, []):
@@ -392,16 +408,7 @@ def merge_plan(g, sel) -> dict:
                     port = True
                     continue
                 tot[c["key"]] = tot.get(c["key"], 0) + c["level"]
-        lists = {k: S.split_average(v, n) for k, v in tot.items()}
-        main = sorted(lists, key=lambda k: ((0, MERGE_FIRST.index(k), 0, "") if k in MERGE_FIRST
-                                            else (1, -lists[k][0], -tot[k], k)))
-        cards = [{"key": k, "level": lists[k][0]} for k in main]
-        extra = sorted(((k, lv) for k in main for lv in lists[k][1:]), key=lambda kv: (-kv[1], kv[0]))
-        cards += [{"key": k, "level": lv} for k, lv in extra]
-        row = cards[:size] + [None] * max(0, size - len(cards))
-        if t == "coast" and port:
-            row.append({"key": "port", "level": 1})        # 항구가 하나라도 있었으면 항구 칸을 따로
-        slots[t] = row
+        slots[t] = _row(t, tot, n, port)
         mult[t] = max(1, n)
     return {"slots": slots, "mult": mult}
 
@@ -561,6 +568,8 @@ def can_center(g, fid, rid) -> tuple:
     rr = g.regions.get(rid)
     if rr is None or rr.owner != fid:
         return False, "내 지역이 아닙니다."
+    if g.is_rebel(fid):
+        return False, "반군은 광역시를 지정할 수 없습니다."
     if getattr(rr, "metro", None) is not None:
         return False, "이미 광역시입니다."
     if rr.occ or g.resisting(rr):
@@ -1147,7 +1156,9 @@ def after_capture(g, mid, new_owner):
 
 
 def phase(g):
-    """턴마다: 주인이 바뀐 광역시는 저항 기간이 끝나면 해제, 주인이 갈라졌거나 없어진 광역시는 해제."""
+    """턴마다: 주인이 바뀐 광역시는 저항 기간이 끝나면 해제, 주인이 갈라졌거나 없어진 광역시는 해제.
+    떨어져 나간 칸의 수복 기한(저항 기간)이 지나면 그 칸은 별개의 지역이 된다(v1.3.21)."""
+    expire_lost(g)
     for mid, m in list(metros(g).items()):
         sel = m["members"]
         owners = {g.regions[r].owner for r in sel if r in g.regions}
@@ -1158,3 +1169,512 @@ def phase(g):
         m["owner"] = owner
         if owner != m["founder"] and not g.resisting(g.regions[m["center"]]):
             dissolve(g, mid, "점령 뒤 저항 기간이 끝남")
+
+
+# ------------------------------------------------------------------ 칸 단위 점령·수복·사후 편입(v1.3.21)
+# 내 광역시와 평시 타국의 광역시는 한 지역이다. 전쟁 중인 적국의 광역시는 묶기 전 구성 지역 하나를 골라 공격한다:
+# 광역시 병력이 모두 함께 지키고(기존 방식), 이겨서 차지하면 그 칸 하나만 넘어가며 광역시는 남는다(건물 단계 그대로,
+# 지역 수 배수만 다시 셈). 중심 칸을 잃으면 다른 구성 지역이 중심이 되고, 광역시가 끊어져도 그대로 둔다.
+# 저항 기간 안에 원래 주인이 되찾으면 다시 광역시로 들어가 원상복구, 그 뒤에 되찾으면 별개의 지역이다.
+def entry_tiles(g, hub, origin) -> list:
+    """origin(육지 칸·해역)에서 들어갈 수 있는 광역시 구성 지역(원래 지도 기준으로 맞닿은 칸)."""
+    m = of(g, hub)
+    sel = list(m["members"]) if m else [hub]
+    bw = base_world(g)
+    if origin is None:
+        return sel
+    if bw.is_sea(origin):
+        return [r for r in sel if origin in bw.regions[r].seas]
+    if origin in bw.land_adj:
+        return [r for r in sel if origin in bw.land_adj[r]]
+    return []
+
+
+def entry_tile(g, hub, origin=None, tile=None) -> str:
+    """적국 광역시를 공격할 때 차지할 칸: 고른 칸이 들어갈 수 있는 칸이면 그 칸, 아니면 맞닿은 칸 중 인구가 많은 곳."""
+    ok = entry_tiles(g, hub, origin) or list(members(g, hub))
+    if tile in ok:
+        return tile
+    return max(ok, key=lambda r: (g.regions[r].pop, r))
+
+
+def _recount(g, m):
+    """구성 지역이 바뀐 뒤 광역 슬롯 배수(그 슬롯을 가진 구성 지역 수)를 다시 센다. 그 슬롯을 가진 지역이 하나도 없으면
+    그 줄의 카드는 잠재워 두었다가(dormant) 다시 생기면 되살린다."""
+    if not m.get("slot_merge"):
+        return
+    cb = g.regions[m["center"]].b
+    pre = m.get("pre_slots", {})
+    dormant = m.setdefault("dormant", {})
+    xm = dict(getattr(cb, "xmult", None) or {})
+    for t in MERGE_TYPES:
+        n = sum(1 for r in m["members"] if pre.get(r, {}).get(t))
+        if n == 0:
+            if cb.slots.get(t):
+                dormant[t] = [dict(c) if c else None for c in cb.slots[t]]
+                cb.slots[t] = []
+            xm[t] = 1
+            continue
+        if not cb.slots.get(t) and dormant.get(t):
+            cb.slots[t] = dormant.pop(t)
+        xm[t] = n
+    cb.xmult = xm
+    cb.resync()
+
+
+def _restore_member_cards(g, m, rid):
+    """떼어 내는 구성 지역 rid: 묶기 전 카드 + 묶은 뒤 광역 카드 레벨 합이 바뀐 만큼(해제와 같은 규칙)."""
+    cb = g.regions[m["center"]].b
+    now = _sums(cb.slots)
+    for t, row in m.get("dormant", {}).items():
+        for c in row:
+            if c:
+                now[(t, c["key"])] = now.get((t, c["key"]), 0) + c["level"]
+    base = m.get("merged", {})
+    b = g.regions[rid].b
+    pre = m.get("pre_slots", {}).get(rid)
+    if pre is None:
+        return
+    for t in MERGE_TYPES:
+        b.slots[t] = [dict(c) if c else None for c in pre.get(t, [])]
+    b.__dict__.pop("xmult", None)
+    b.resync()
+    for (t, k), d in sorted({tk: now.get(tk, 0) - base.get(tk, 0) for tk in set(now) | set(base)}.items()):
+        if not d or k == "port" or not b.slots.get(t):
+            continue
+        if k == "extract" and not (g.info(rid).is_oil or g.info(rid).is_coal):
+            continue
+        top = C.PROD_BUILDINGS[k]["max"] if k in C.PROD_BUILDINGS else S.max_level(k)
+        pos = max(((tt, i) for tt, i, c in b.cards(k) if tt == t), key=lambda p: b.card(p)["level"], default=None)
+        if pos is not None:
+            b.set_card(pos, max(0, min(top, b.card(pos)["level"] + d)))
+        elif d > 0 and b.empty(t) and not (k in S.UNIQUE_KEYS and b.count(k)) and k != "academy":
+            b.place(k, min(top, d), (t, b.empty(t)[0]))
+    b.resync()
+
+
+def _outer(g, sel) -> set:
+    bw = base_world(g)
+    out = {n for r in sel for n in bw.land_adj[r]} - set(sel)
+    if any(bw.regions[r].coastal for r in sel):
+        out.add("coast")
+    return out
+
+
+def detach(g, rid, why="") -> bool:
+    """구성 지역 하나를 광역시에서 떼어 낸다(점령·반란·할양 등). 광역시는 남는다: 광역 슬롯 카드의 단계는 그대로이고
+    지역 수 배수만 다시 센다. 떼어 낸 칸은 묶기 전 자기 카드(+ 묶은 뒤 바뀐 단계)와 방어선을 되찾는다.
+    중심 칸이면 인구가 가장 많은 구성 지역이 새 중심이 된다(이어지지 않아도). 남는 구성 지역이 없으면 해제."""
+    m = of(g, rid)
+    if m is None:
+        return False
+    sel = [r for r in m["members"] if r in g.regions]
+    if len(sel) <= 1:
+        return dissolve(g, m["id"], why)
+    old_center = m["center"]
+    owner = g.regions[old_center].owner
+    rest = [r for r in sel if r != rid]
+    new_center = old_center if old_center != rid else max(rest, key=lambda r: (g.regions[r].pop, r))
+    rr = g.regions[rid]
+    oc, nc = g.regions[old_center], g.regions[new_center]
+    # 1) 작업: 떼어 낸 칸에서 짓던 것(그 칸의 기타 슬롯·과학·경제)은 50% 환급하고 멈춘다. 광역 슬롯 공사·생산은
+    #    광역시에 남고(중심이 바뀌면 새 중심이 짓는다), 대기열도 새 중심으로
+    outer_rest = _outer(g, rest)
+
+    def keeps(q) -> bool:
+        """떼어 낸 뒤에도 광역시가 이어서 지을 작업인가."""
+        if getattr(q, "slot", None) and q.slot[0] in MERGE_TYPES and m.get("slot_merge"):
+            return True                         # 광역 슬롯 카드
+        if q.kind == "build" and q.key == "line":
+            return q.border in outer_rest       # 광역시 바깥 경계 방어선만
+        if q.kind in ("unit", "repair") or getattr(q, "pool", None) is not None or q.key in SPREAD_SINGLES:
+            return True
+        return getattr(q, "site", None) not in (rid, None) and not (q.kind == "capital" and old_center == rid)
+
+    p = shared_project(g, m)
+    refund = 0.0
+    if p is not None:
+        if keeps(p):
+            if p.site == rid:
+                p.site = new_center
+            rr.project = None
+        else:
+            refund += p.paid * C.PROJECT_REFUND
+            for x in sel:
+                if g.regions[x].project is p:
+                    g.regions[x].project = None
+    if old_center == rid:
+        keep = []
+        for q in oc.queue:
+            if not keeps(q):
+                refund += q.paid * C.PROJECT_REFUND
+                continue
+            if getattr(q, "site", None) == rid:
+                q.site = new_center
+            keep.append(q)
+        nc.queue = keep + list(nc.queue)
+        oc.queue = []
+    if refund and owner != NEUTRAL:
+        g.factions[owner].money += refund
+    # 2) 슬롯 카드: 광역 카드는 그대로(중심이 바뀌면 새 중심으로 옮김), 떼어 낸 칸은 자기 카드를 되찾는다
+    rows = {t: oc.b.slots.get(t, []) for t in MERGE_TYPES} if m.get("slot_merge") else None
+    xm = dict(getattr(oc.b, "xmult", None) or {})
+    if rows is not None and old_center == rid:
+        for t in MERGE_TYPES:
+            nc.b.slots[t] = rows[t]
+            oc.b.slots[t] = []
+        nc.b.xmult = xm
+        oc.b.__dict__.pop("xmult", None)
+        nc.b.resync()
+        oc.b.resync()
+    m["center"] = new_center
+    if m.get("slot_merge"):
+        _restore_member_cards(g, m, rid)
+    # 3) 방어선: 광역시의 바깥 경계만 남기고(새로 생긴 경계는 0), 떼어 낸 칸은 묶기 전 방어선 + 바뀐 단계
+    now = dict(oc.lines)
+    base = dict(m.get("merged_lines", {}))
+    pre_l = m.get("pre_lines", {}).get(rid, {})
+    top = C.DEF_BUILDINGS["line"]["max"]
+    mine = {}
+    for k, lv in pre_l.items():
+        mine[k] = max(0, min(top, lv + (now.get(k, 0) - base.get(k, 0) if k not in sel else 0)))
+    rr.lines = {k: v for k, v in mine.items() if v > 0}
+    outer = _outer(g, rest)
+    oc.lines = {}
+    nc.lines = {k: v for k, v in now.items() if k in outer and v > 0}
+    m["merged_lines"] = {k: v for k, v in base.items() if k in outer}
+    # 4) 방공호·대공포는 지금 단계 그대로, 공항은 묶기 전에 있던 칸만(광역시는 그대로)
+    pre_snap = m.get("pre", {}).get(rid, {})
+    for k in SPREAD_SINGLES:
+        rr.b[k] = 1 if pre_snap.get(k) else 0
+    if rr.owner != NEUTRAL and g.factions[rr.owner].capital != rid:
+        for key in ("admin", "edu"):
+            rr.b[key] = min(4, rr.b.get(key, 0))
+    # 5) 부대·위인·집결지: 광역시 칸(옛 중심)에 있던 것은 새 중심으로
+    if old_center != new_center:
+        for a in g.armies.values():
+            if a.loc == old_center:
+                a.loc = new_center
+            if a.goto == old_center:
+                a.goto = new_center
+            o = a.order or {}
+            if o.get("target") == old_center or old_center in o.get("path", ()):
+                a.order = None
+        for gp in getattr(g, "great_people", []):
+            if gp.get("loc") == old_center:
+                gp["loc"] = new_center
+        for x in g.regions.values():
+            if getattr(x, "rally", None) == old_center:
+                x.rally = new_center
+        for f in g.factions:
+            if getattr(f, "rally", None) == old_center:
+                f.rally = new_center
+    # 6) 구성 지역에서 빼고, 저항 기간 안에 되찾으면 원상복구하도록 기록
+    lost = m.setdefault("lost", {})
+    lost[rid] = {"turn": g.turn, "until": g.turn + C.RESIST_TURNS, "owner": owner, "home": old_center == rid,
+                 "pre_slots": m.get("pre_slots", {}).pop(rid, None), "pre_lines": m.get("pre_lines", {}).pop(rid, None),
+                 "pre": m.get("pre", {}).pop(rid, None)}
+    m["members"] = rest
+    rr.metro = None
+    for q in (rr.queue or []):
+        if owner != NEUTRAL:
+            g.factions[owner].money += q.paid * C.PROJECT_REFUND
+    rr.queue = []
+    _recount(g, m)
+    m["special"] = owner != NEUTRAL and g.factions[owner].capital in rest
+    refresh_world(g)
+    sync(g, m)
+    if owner != NEUTRAL:
+        g.event("info", f"{m['name']}: {josa(g.info(rid).name, '이/가')} 떨어져 나갔습니다" + (f"({why})" if why else "")
+                + (f" — 새 중심 {g.info(new_center).name}" if new_center != old_center else "")
+                + f". {C.RESIST_TURNS}턴 안에 되찾으면 다시 광역시로 돌아옵니다.", region=new_center, fids=(owner,))
+    return True
+
+
+def lost_window(g, rid, turns):
+    """방금 떼어 낸 칸의 수복 기한을 그 점령의 저항 기간으로 맞춘다(저항이 없으면 기본 저항 기간)."""
+    for m in metros(g).values():
+        rec = m.get("lost", {}).get(rid)
+        if rec and rec["turn"] == g.turn:
+            rec["until"] = g.turn + (turns if turns > 0 else C.RESIST_TURNS)
+
+
+def rejoin_target(g, rid, new_owner):
+    """rid 를 new_owner 가 되찾을 때 다시 들어갈 광역시(저항 기간 안이면), 없으면 None."""
+    for m in metros(g).values():
+        rec = m.get("lost", {}).get(rid)
+        if rec and m["owner"] == new_owner and rec["owner"] == new_owner and g.turn <= rec["until"] \
+                and all(x in g.regions and g.regions[x].owner == new_owner for x in m["members"]):
+            return m
+    return None
+
+
+def rejoin(g, m, rid) -> bool:
+    """저항 기간 안에 되찾은 칸을 광역시로 되돌린다(원상복구): 광역 슬롯 배수를 다시 세고, 떼어 낼 때 되찾았던 카드는
+    광역 카드로 돌아가며(점령 중에 바뀐 그 칸의 카드는 버린다), 중심이었으면 다시 중심, 방어선은 바깥 경계로 합친다."""
+    rec = m.get("lost", {}).pop(rid, None)
+    if rec is None:
+        return False
+    rr = g.regions[rid]
+    sel = list(m["members"])
+    cur = m["center"]
+    if rec.get("pre_slots") is not None:
+        m.setdefault("pre_slots", {})[rid] = rec["pre_slots"]
+    if rec.get("pre_lines") is not None:
+        m.setdefault("pre_lines", {})[rid] = rec["pre_lines"]
+    if rec.get("pre") is not None:
+        m.setdefault("pre", {})[rid] = rec["pre"]
+    if m.get("slot_merge"):
+        for t in MERGE_TYPES:
+            rr.b.slots[t] = []
+        rr.b.__dict__.pop("xmult", None)
+        rr.b.resync()
+    home = rec.get("home") and m.get("slot_merge")
+    m["members"] = sel + [rid]
+    rr.metro = m["id"]
+    if home:                                   # 옛 중심을 되찾음: 광역 카드·방어선·대기열을 다시 그 칸으로
+        cr = g.regions[cur]
+        for t in MERGE_TYPES:
+            rr.b.slots[t] = cr.b.slots.get(t, [])
+            cr.b.slots[t] = []
+        rr.b.xmult = dict(getattr(cr.b, "xmult", None) or {})
+        cr.b.__dict__.pop("xmult", None)
+        rr.b.resync()
+        cr.b.resync()
+        rr.queue, cr.queue = list(cr.queue), []
+        p = shared_project(g, m)
+        if p is not None and p.site == cur:
+            p.site = rid
+        m["center"] = rid
+    center = m["center"]
+    cg = g.regions[center]
+    lines = dict(g.regions[cur].lines)
+    if cur != center:
+        g.regions[cur].lines = {}
+    for k, lv in rr.lines.items():
+        if k not in m["members"]:
+            lines[k] = max(lines.get(k, 0), lv)
+    outer = _outer(g, m["members"])
+    rr.lines = {}
+    cg.lines = {k: v for k, v in lines.items() if k in outer and v > 0}
+    for k in outer:
+        m.setdefault("merged_lines", {}).setdefault(k, cg.lines.get(k, 0))
+    for pool, key in POOLS:
+        if pool in m.get("merge", {}):
+            rr.b[key] = g.regions[cur].b[key] if cur != rid else rr.b[key]
+            for x in m["members"]:
+                g.regions[x].b[key] = cg.b[key] if x != center else cg.b[key]
+    for k in SPREAD_SINGLES:
+        if any(g.regions[x].b[k] for x in m["members"]):
+            for x in m["members"]:
+                g.regions[x].b[k] = 1
+    p = shared_project(g, m)
+    if rr.project is not None and rr.project is not p and rr.owner != NEUTRAL:
+        g.factions[rr.owner].money += rr.project.paid * C.PROJECT_REFUND
+    for q in rr.queue if not home else ():
+        if rr.owner != NEUTRAL:
+            g.factions[rr.owner].money += q.paid * C.PROJECT_REFUND
+    if not home:
+        rr.queue = []
+    for x in m["members"]:
+        g.regions[x].project = p
+    if cur != center:
+        for a in g.armies.values():
+            if a.loc == cur:
+                a.loc = center
+    _gather(g, m)
+    _recount(g, m)
+    m["special"] = rr.owner != NEUTRAL and g.factions[rr.owner].capital in m["members"]
+    refresh_world(g)
+    sync(g, m)
+    g.event("info", f"{m['name']}: {josa(g.info(rid).name, '을/를')} 저항 기간 안에 되찾아 다시 광역시로 편입했습니다.",
+            region=center, fids=(rr.owner,))
+    return True
+
+
+def expire_lost(g):
+    """수복 기한(저항 기간)이 지난 칸은 별개의 지역이 된다(기록 삭제)."""
+    for m in metros(g).values():
+        lost = m.get("lost")
+        if lost:
+            for r in [r for r, rec in lost.items() if g.turn > rec["until"]]:
+                del lost[r]
+
+
+# ---- 사후 편입: 지정한 광역시에 구성 지역을 더한다(지정 조건을 그대로 따른다)
+def annex_candidates(g, fid, mid) -> list:
+    """광역시 mid 에 편입할 수 있는 내 지역: 광역시가 아니고, 중심에서 육상 3칸 안이며 광역시와 맞닿은 곳."""
+    m = get(g, mid)
+    if m is None or m["owner"] != fid or len(m["members"]) >= C.METRO_MAX_REGIONS:
+        return []
+    bw = base_world(g)
+    dist, frontier = {m["center"]: 0}, [m["center"]]
+    for d in range(1, C.METRO_RANGE + 1):
+        nxt = []
+        for u in frontier:
+            for v in bw.land_adj[u]:
+                if v not in dist:
+                    dist[v] = d
+                    nxt.append(v)
+        frontier = nxt
+    sel = set(m["members"])
+    out = []
+    for r, d in sorted(dist.items(), key=lambda x: (x[1], x[0])):
+        rr = g.regions[r]
+        if r in sel or rr.owner != fid or getattr(rr, "metro", None) is not None or rr.occ or g.resisting(rr):
+            continue
+        if any(n in sel for n in bw.land_adj[r]):
+            out.append(r)
+    return out
+
+
+def check_annex(g, fid, mid, rid) -> tuple:
+    """사후 편입 조건(지정 조건과 같은 기준을 편입한 뒤의 광역시로 본다). (충족 여부, [(항목, 충족, 설명)])"""
+    m = get(g, mid)
+    items = []
+    if m is None:
+        return False, [("광역시", False, "없음")]
+    if g.is_rebel(fid):
+        return False, [("반군", False, "반군은 광역시를 쓸 수 없습니다")]
+    cand = annex_candidates(g, fid, mid)
+    n = len(m["members"]) + 1
+    items.append((f"광역시와 맞닿은 내 지역(중심에서 {C.METRO_RANGE}칸 안)", rid in cand,
+                  "가능" if rid in cand else "고를 수 없는 지역"))
+    items.append((f"구성 지역 {C.METRO_MAX_REGIONS}곳 이하", n <= C.METRO_MAX_REGIONS, f"편입하면 {n}곳"))
+    sel = list(m["members"]) + [rid]
+    regs = [g.regions[r] for r in sel]
+    pop = sum(r.pop for r in regs)
+    need = C.METRO_MIN_POP * g.mods(fid).value("metro_pop_mult", 1)
+    items.append((f"인구 {need:g}만 이상", pop >= need, f"{pop:,.1f}만"))
+    prod = sum(g.admin_output(r.id) for r in regs) + g.admin_output(rid) * 0
+    cons = sum(g.admin_consumption(r.id) for r in regs)
+    items.append(("구성 지역 행정력 흑자", prod > cons, f"{prod:,.1f} / {cons:,.1f}"))
+    np_, nc_ = g.admin_balance(fid)
+    items.append(("국가 행정력 흑자", np_ > nc_, f"{np_:,.1f} / {nc_:,.1f}"))
+    h = (g.regions[m["center"]].happy * len(m["members"]) + g.regions[rid].happy) / n
+    items.append(("평균 행복도 0 이상", h >= 0, f"{h:+.1f}"))
+    return all(it[1] for it in items), items
+
+
+def annex_rows(g, m, rid) -> dict:
+    """사후 편입했을 때의 광역 슬롯 줄 {종류: 줄}(바뀌는 종류만): 지금 광역 카드를 '구성 지역 평균'으로 보고
+    새 지역의 카드를 더해 레벨 합 ÷ 지역 수로 다시 평균한다."""
+    pre = m.get("pre_slots", {})
+    cb = g.regions[m["center"]].b
+    out = {}
+    for t in MERGE_TYPES:
+        mine = g.regions[rid].b.slots.get(t, [])
+        if not mine:
+            continue
+        n_old = sum(1 for r in m["members"] if pre.get(r, {}).get(t))
+        row = cb.slots.get(t) or m.get("dormant", {}).get(t) or []
+        tot, port = {}, False
+        for c in row:
+            if not c:
+                continue
+            if t == "coast" and c["key"] == "port":
+                port = True
+                continue
+            tot[c["key"]] = tot.get(c["key"], 0) + c["level"] * n_old
+        for c in mine:
+            if not c:
+                continue
+            if t == "coast" and c["key"] == "port":
+                port = True
+                continue
+            tot[c["key"]] = tot.get(c["key"], 0) + c["level"]
+        out[t] = _row(t, tot, n_old + 1, port)
+    return out
+
+
+def annex(g, fid, mid, rid) -> tuple:
+    """광역시 사후 편입: rid 의 기본·하천·해안 카드를 광역 슬롯 평균에 더하고(레벨 합 ÷ 지역 수 규칙 그대로),
+    방어선·부대는 광역시 칸으로, 진행 중이던 작업은 지정 때처럼 멈춘다(50% 환급)."""
+    ok, items = check_annex(g, fid, mid, rid)
+    if not ok:
+        return False, " · ".join(f"{k}: {d}" for k, o, d in items if not o)
+    m = get(g, mid)
+    f = g.factions[fid]
+    rr = g.regions[rid]
+    sel = list(m["members"])
+    center = m["center"]
+    cr = g.regions[center]
+    # 작업은 지정 때처럼 멈춘다
+    f.money += sum(q.paid * C.PROJECT_REFUND for q in rr.queue)
+    rr.queue.clear()
+    if rr.project is not None:
+        p = rr.project
+        if p.group is not None:
+            f.money += g._line_group_drop(p, rid) * C.PROJECT_REFUND
+            rr.project = None
+        else:
+            g.cancel_project(fid, rid)
+    # 광역 슬롯: 지금 광역 카드를 '구성 지역 평균'으로 보고 새 지역의 카드를 더해 다시 평균
+    m.setdefault("pre", {})[rid] = {k: rr.b[k] for k in SNAP_KEYS}
+    if m.get("slot_merge"):
+        pre = m.setdefault("pre_slots", {})
+        mine = {t: [dict(c) if c else None for c in rr.b.slots.get(t, [])] for t in MERGE_TYPES}
+        cb = cr.b
+        now0 = _sums(cb.slots)
+        rows = annex_rows(g, m, rid)
+        for t, row in rows.items():
+            m.get("dormant", {}).pop(t, None)
+            cb.slots[t] = row
+        pre[rid] = mine
+        for t in MERGE_TYPES:
+            rr.b.slots[t] = []
+        rr.b.__dict__.pop("xmult", None)
+        rr.b.resync()
+        cb.resync()
+        # 해제 때의 '묶은 뒤 바뀐 단계'가 그대로 남도록 기준 합도 같은 만큼 옮긴다
+        now1 = _sums(cb.slots)
+        base = m.get("merged", {})
+        for tk in set(now0) | set(now1):
+            base[tk] = base.get(tk, 0) + now1.get(tk, 0) - now0.get(tk, 0)
+        m["merged"] = {k: v for k, v in base.items()}
+    # 방공호·대공포: 평균 단계(내림)로 함께
+    for pool, key in POOLS:
+        if pool not in m.get("merge", {}):
+            continue
+        lv0 = cr.b[key]
+        lv = int(math.floor((lv0 * len(sel) + rr.b[key]) / (len(sel) + 1) + 1e-9))
+        m["merge"][pool] += lv - lv0
+        for x in sel + [rid]:
+            g.regions[x].b[key] = lv
+    for k in SPREAD_SINGLES:
+        if rr.b[k] or cr.b[k]:
+            for x in sel + [rid]:
+                g.regions[x].b[k] = 1
+    # 방어선: 새 칸의 바깥 경계 방어선을 광역시 칸으로(이미 있으면 높은 쪽)
+    m.setdefault("pre_lines", {})[rid] = dict(rr.lines)
+    new_sel = sel + [rid]
+    outer = _outer(g, new_sel)
+    lines = dict(cr.lines)
+    for k, lv in rr.lines.items():
+        if k in outer:
+            lines[k] = max(lines.get(k, 0), lv)
+    cr.lines = {k: v for k, v in lines.items() if k in outer and v > 0}
+    ml = m.setdefault("merged_lines", {})
+    for k in outer:
+        ml.setdefault(k, cr.lines.get(k, 0))
+    for k in list(ml):
+        if k not in outer:
+            del ml[k]
+    rr.lines = {}
+    # 행복도: 지역 수로 가중 평균
+    h = (cr.happy * len(sel) + rr.happy) / (len(sel) + 1)
+    m["members"] = new_sel
+    rr.metro = m["id"]
+    rr.focus = rr.pop_focus = False
+    cr.happy = h
+    p = shared_project(g, m)
+    rr.project = p
+    _gather(g, m)
+    _recount(g, m)
+    m["special"] = f.capital in new_sel
+    refresh_world(g)
+    sync(g, m)
+    g.event("info", f"{f.name}: {josa(g.info(rid).name, '을/를')} {m['name']}에 편입 ({len(new_sel)}개 지역)",
+            region=center, fids=(fid,))
+    return True, f"{m['name']}에 {g.info(rid).name} 편입 ({len(new_sel)}개 지역)"
+

@@ -118,6 +118,40 @@ def check(g, where):
                 report("점령 진행 초과", f"{where} {rid} {o}")
     if not getattr(g, "metros", None) and g.world is not getattr(g, "base_world", g.world):
         report("광역시 지도: 광역시 없이 합친 지도", where)
+    for mid, m in getattr(g, "metros", {}).items():         # v1.3.21: 칸 단위 점령·수복·사후 편입
+        if not m["members"] or m["center"] not in m["members"]:
+            report("광역시 중심이 구성 지역 밖", f"{where} {m['name']} center={m['center']}")
+        if any(g.regions[x].metro != mid for x in m["members"]):
+            report("광역시 구성 지역 표시 불일치", f"{where} {m['name']}")
+        if set(m.get("lost", {})) & set(m["members"]):
+            report("떨어져 나간 칸이 구성 지역에", f"{where} {m['name']}")
+        if m.get("slot_merge") and set(m.get("pre_slots", {})) - set(m["members"]):
+            report("광역시 보관 카드 잔여", f"{where} {m['name']} {sorted(set(m['pre_slots']) - set(m['members']))}")
+    active = {}
+    for f in g.factions:                                    # v1.3.21: 반군은 국가가 아니다
+        if not f.alive or not getattr(f, "rebel", False):
+            continue
+        active[f.rebel_of] = active.get(f.rebel_of, 0) + 1
+        if f.gov is not None or f.leader != C.REBEL_LEADER or f.techs or f.policy_level:
+            report("반군에 지도자·체제·과학", f"{where} f{f.id} {f.leader}/{f.gov}")
+        if f.rebel_of is not None and g.factions[f.rebel_of].alive and not D.at_war(g, f.id, f.rebel_of):
+            report("반군이 원 국가와 전쟁 중이 아님", f"{where} f{f.id}")
+        for r in g.regions_of(f.id):
+            for p in ([r.project] if r.project else []) + list(r.queue):
+                if not ((p.kind == "unit" and p.key in C.MILITIA_UNITS) or (p.kind == "build" and p.key == "line")):
+                    report("반군의 정상 국가 행동", f"{where} f{f.id} {r.id} {p.kind}:{p.key}")
+            if getattr(r, "metro", None) is not None:
+                report("반군의 광역시", f"{where} f{f.id} {r.id}")
+        if any(gp["owner"] == f.id for gp in g.great_people):
+            report("반군의 위인", f"{where} f{f.id}")
+    for parent, n in active.items():
+        if n > 1:
+            report("한 나라에 반군 둘 이상", f"{where} f{parent} {n}")
+    for r in g.regions.values():
+        p = r.project
+        if p is not None and p.kind == "unit" and p.key in C.MILITIA_UNITS and r.owner != NEUTRAL \
+                and not getattr(g.factions[r.owner], "rebel", False):
+            report("국가의 민병대 생산", f"{where} {r.id} f{r.owner}")
     for f in g.factions:
         if not finite(f.money):
             report("돈 NaN", f"{where} f{f.id}")
@@ -229,7 +263,12 @@ def player_turn(g, rng):
         g.move_great_person(person["id"], rng.choice(mine))
         if rng.random() < .4:
             g.activate_great_person(person["id"], rng.choice(("project", "science")))
-    # 반란·제안 응답
+    # 반란·제안 응답(가끔 한 지역을 몹시 불행하게 만들어 반란·반군을 일으킨다, v1.3.21)
+    if rng.random() < 0.02 and len(mine) > 3:
+        victim = g.regions[rng.choice([r for r in mine if r != g.player.capital] or mine)]
+        victim.happy = -95.0
+        if rng.random() < 0.5:
+            g._phase_rebellion()
     for rid in list(g.pending_rebellions):
         g.resolve_rebellion(pid, rid, rng.choice(["pay", "tax", "suppress"]))
     for prop in list(g.pending_proposals):
@@ -244,6 +283,8 @@ def player_turn(g, rng):
                                         max(1, int(st["price"] * rng.uniform(0.3, 1.6))))
                     if st["status"] == "open" and rng.random() < 0.5:
                         NG.accept_ai_price(g, st)
+            elif prop["kind"] == "surrender":             # 반군 항복 제의(v1.3.21)
+                g.rebel_surrender(prop["from"])
             elif prop["kind"] != "coalition_war":
                 D.sign_treaty(g, prop["from"], pid, prop["kind"])
         g.pending_proposals.remove(prop)
@@ -364,6 +405,14 @@ def player_turn(g, rng):
                 g.regions[c].b["factory"] = 5
                 g.regions[c].b["bank"] = 5
             g.create_metro(pid, c, sel, rng.choice(["", "시험"]))
+    if rng.random() < 0.05 and mine:                    # 광역시 편입(v1.3.21)
+        from korciv import metro as MT
+        for mid, m in list(getattr(g, "metros", {}).items()):
+            if m.get("owner") == pid:
+                cands = MT.annex_candidates(g, pid, mid)
+                if cands:
+                    g.annex_to_metro(pid, mid, rng.choice(cands))
+                    break
     if rng.random() < 0.03:                              # 지출 우선순위 자동 정렬 켜기/끄기(v1.3.0)
         g.set_priority_mode(pid, rng.choice(list(g.PRIORITY_SORTS) + [None]))
     # v1.3.0 편의 기능: 여러 부대 한 번에 공격, 중립 지역 [편입]/[최대 편입]·자동 해산, 우선순위 고정, 생산 집결지
@@ -375,7 +424,8 @@ def player_turn(g, rng):
             cands = g.attack_candidates(pid, t)
             lead = rng.choice(cands)
             extra = [x.id for x in cands if x.id != lead.id and rng.random() < 0.7] + [rng.choice([999999, lead.id])]
-            g.attack_now(lead.id, t, rng.choice(["assault", "surprise"]), extra=extra)
+            tile = rng.choice(M.members(g, t)) if M.of(g, t) is not None else None   # 적국 광역시: 구성 지역을 골라(v1.3.21)
+            g.attack_now(lead.id, t, rng.choice(["assault", "surprise"]), extra=extra, tile=tile)
     if rng.random() < 0.2:
         neu = sorted({n for r in mine for n in g.world.land_adj[r] if g.regions[n].owner == NEUTRAL})
         if neu:

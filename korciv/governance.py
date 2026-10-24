@@ -53,7 +53,10 @@ class GovernanceMixin:
 
     def admin_consumption(self, rid):
         r = self.regions[rid]
-        return r.pop * (0.5 if self.resisting(r) else 1.0) if r.owner != NEUTRAL else 0.0
+        if r.owner == NEUTRAL:
+            return 0.0
+        k = C.REBEL_ADMIN_MULT if self.is_rebel(r.owner) else 1.0      # 반군: 행정력 요구치 절반(v1.3.21)
+        return r.pop * (0.5 if self.resisting(r) else 1.0) * k
 
     def admin_balance(self, fid):
         regs = self.regions_of(fid)
@@ -63,8 +66,8 @@ class GovernanceMixin:
         r = self.regions[rid]
         if M.is_extra(self, rid):
             return 0.0               # 광역시: 중심이 광역시 전체 과학력(구성 지역 인구 전체)
-        if r.owner == NEUTRAL or r.occ or self.resisting(r) or r.flooded:
-            return 0.0
+        if r.owner == NEUTRAL or r.occ or self.resisting(r) or r.flooded or self.is_rebel(r.owner):
+            return 0.0               # 반군은 연구하지 않는다(v1.3.21)
         lv = max(0, min(5, r.b.get("edu", 0)))
         metro = M.of(self, rid)
         pop = r.pop
