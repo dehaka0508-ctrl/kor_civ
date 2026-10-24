@@ -493,7 +493,8 @@ class MapView:
         self.cy = max(-20, min(BASE_H + 20, self.cy))
 
     def label_screen(self, node):
-        return self.to_screen(*self.label[node])
+        p = self.__dict__.get("label_override", {}).get(node)      # 광역시 칸: 광역시 한가운데(v1.3.18)
+        return self.to_screen(*(p or self.label[node]))
 
     # ------------------------------------------------------------ 선택
     def pick(self, pos):
@@ -848,7 +849,6 @@ class MapView:
             skipped = []
             # 광역시(v1.3.1): 축소 화면(3배 미만)에서는 구성 지역 이름을 빼고 중심의 광역시 표찰만
             m_of = extra.get("metro") or {}
-            m_ctr = extra.get("metro_centers") or set()
             for rid in order:
                 x, y = self.label[rid]
                 px, py = x * s + ox, y * s + oy
@@ -857,8 +857,8 @@ class MapView:
                 name = labels.get(rid)
                 if not name:
                     continue
-                if self.z < 3 and rid in m_of and rid not in m_ctr:
-                    continue
+                if rid in m_of:
+                    continue                        # 광역시(v1.3.18): 구성 지역 이름 대신 광역시 이름 표찰 하나
                 t = halo_text(name, size, color, nhalo)
                 r = t.get_rect(center=(px, py - (6 if self.z >= 4 else 0)))
                 if not free(r.inflate(-2, -2)):

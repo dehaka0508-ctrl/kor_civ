@@ -120,9 +120,9 @@ class App:
         self.theme = Theme()
         self.gui = Gui(self.screen, self.theme)
         self.gui.blur()               # pygame 2는 텍스트 입력(IME)이 기본으로 켜져 있다: 입력칸을 누를 때만 켠다
+        self.game: Game | None = None
         self.world = load_world()
         self.map = MapView(self.world)
-        self.game: Game | None = None
         self.scene = "title"
         self.setup = modals.SetupState()
         self.running = True
@@ -656,10 +656,32 @@ class App:
                 if self.fog_reveal or g.is_visible(pid, m["center"]) or g.regions[m["center"]].owner == pid]
 
     def metro_hidden(self, rid) -> bool:
-        """축소 화면(3배 미만)에서 지도 표시를 빼는 광역시 구성 지역(중심 제외, v1.3.1: 광역시 표찰만 또렷하게)."""
-        if self.map.z >= 3.0:
-            return False
+        """지도 표시를 빼는 광역시 구성 지역(중심 제외): 광역시는 처음부터 한 지역인 것처럼 광역시 칸에만(v1.3.18)."""
         return any(rid in m["members"] and rid != m["center"] for _, m in self.shown_metros())
+
+    @property
+    def world(self):
+        """지금 판의 지도(광역시를 한 칸으로 합친 지도, v1.3.18). 판이 없으면 원래 지도."""
+        g = self.__dict__.get("game")
+        return g.world if g is not None else self.__dict__.get("_world")
+
+    @world.setter
+    def world(self, w):
+        self.__dict__["_world"] = w
+
+    def metro_anchors(self) -> dict:
+        """광역시 칸의 지도 표시 자리: 구성 지역 가운데 광역시 한가운데(면적 가중 중심)에 가장 가까운 지역의 표시 자리."""
+        mv = self.map
+        out = {}
+        for _, m in self.shown_metros():
+            pts = [(mv.label[r], mv.area.get(r, 1.0)) for r in m["members"] if r in mv.label]
+            if not pts:
+                continue
+            tot = sum(a for _, a in pts) or 1.0
+            cx = sum(p[0] * a for p, a in pts) / tot
+            cy = sum(p[1] * a for p, a in pts) / tot
+            out[m["center"]] = min((p for p, _ in pts), key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+        return out
 
     def map_group(self, rid):
         """지도에서 rid 와 함께 하나로 보이는 지역들(광역시면 구성 지역 모두)."""
@@ -717,7 +739,7 @@ class App:
             b = cache.get(info.id)
             if b is None:
                 b = cache[info.id] = initial_buildings(info, self.world)
-        lines = r.lines if visible else {}
+        lines = self.game.regions[M.node(self.game, r.id)].lines if visible and self.game else {}   # 광역시: 광역시 칸의 방어선
         src = info.power_source or ""
         if sub == "specialty":
             return b["specialty"] if info.specialty else 0
@@ -798,6 +820,7 @@ class App:
     # ------------------------------------------------------------ 지도 그리기
     def draw_map(self, pick_mode=False):
         mv = self.map
+        mv.label_override = {} if pick_mode or not self.game else self.metro_anchors()
         busy = 0 if pick_mode or not self.game else hash(frozenset(
             r.id for r in self.game.regions.values() if r.owner == self.game.player_id and r.project))
         key = ("pick", self.setup.start, self.pick_popup, tuple(self.setup.ai_starts[: self.setup.n_enemies])) if pick_mode else (
@@ -835,7 +858,7 @@ class App:
         army = g.armies.get(self.sel_army) if self.sel_army else None
         if army and army.owner == g.player_id and not g.army_acted(army.id):   # 이번 턴 행동한 부대는 범위 없음
             reach = g.reachable(army)
-            box = mv.screen_bbox(reach)
+            box = mv.screen_bbox([p for n in reach for p in (self.map_group(n) if n in g.regions else [n])])
             if box and box.w > 0 and box.h > 0:
                 ov = pygame.Surface(box.size, pygame.SRCALPHA)     # 이동 범위가 걸친 만큼만
                 cols = self.order_colors()
@@ -846,7 +869,8 @@ class App:
                     if self.world.is_sea(node):
                         mv.sea_overlay(ov, node, (*col, 45), origin=box.topleft)
                     else:
-                        mv.fill_overlay(ov, node, (*col, a), origin=box.topleft)
+                        for part in self.map_group(node):       # 광역시 칸은 광역시 전체를 칠한다(v1.3.18)
+                            mv.fill_overlay(ov, part, (*col, a), origin=box.topleft)
                 self.screen.blit(ov, box.topleft)
             if not self.world.is_sea(army.loc):
                 for n in self.world.land_adj[army.loc]:
@@ -1124,8 +1148,9 @@ class App:
             x, y = mv.label_screen(c)
             if not mv.view.collidepoint(x, y):
                 continue
-            t = render_text(m["name"], 11, (247, 241, 227), "bold")
-            box = t.get_rect(center=(x, y + (24 if mv.z >= 2 else 14) * u)).inflate(int(10 * u), int(4 * u))
+            t = render_text(m["name"], 11 if mv.z < 3 else 12, (247, 241, 227), "bold")
+            # 광역시 이름 = 지역 이름(v1.3.18: 구성 지역 이름은 모든 배율에서 뺀다)
+            box = t.get_rect(center=(x, y)).inflate(int(10 * u), int(4 * u))
             pygame.draw.rect(self.screen, col, box, border_radius=int(6 * u))
             pygame.draw.rect(self.screen, (212, 175, 55), box, max(1, int(u)), border_radius=int(6 * u))
             self.screen.blit(t, t.get_rect(center=box.center))
@@ -1138,7 +1163,7 @@ class App:
             if not (f.id == g.player_id or g.is_visible(g.player_id, f.capital) or self.fog_reveal
                     or g.is_explored(g.player_id, f.capital)):
                 continue
-            x, y = self.map.label_screen(f.capital)
+            x, y = self.map.label_screen(M.node(g, f.capital))      # 광역시 수도: 광역시 칸에
             u = ui_scale()
             self.star((x, y - (16 * u if self.map.z >= 2 else 0)), (7 if self.map.z < 2 else 9) * u,
                       mix(self.faction_rgb(f.id), (25, 18, 12), 0.3))
@@ -1375,7 +1400,8 @@ class App:
                 if M.is_extra(g, rid):
                     continue                     # 광역시: 중심에 광역시 인구 합 하나만
                 t = render_text(f"{M.total_pop(g, rid):.1f}만", 10, self.theme.muted, "semibold")
-                self.screen.blit(t, t.get_rect(center=(x, y + 10 * ui_scale())))
+                dy = 20 if M.of(g, rid) else 10                # 광역시 이름 표찰 아래
+                self.screen.blit(t, t.get_rect(center=(x, y + dy * ui_scale())))
 
     # ------------------------------------------------------------ 지도 입력
     def map_input(self, pick_mode=False):
@@ -1391,6 +1417,9 @@ class App:
         if not over_ui and (gui.clicked or gui.rclicked):
             self.mode_popup = None              # 지도를 누르면 세부 메뉴를 닫는다
         self.hover = None if over_ui else mv.pick(pos)
+        if self.game is not None and not pick_mode and self.hover in self.game.regions:
+            from .. import metro as M
+            self.hover = M.node(self.game, self.hover)       # 광역시는 한 칸(v1.3.18)
         if not over_ui and gui.wheel:
             mv.zoom_at(pos, 1.2 ** gui.wheel)
             gui.wheel = 0
@@ -1468,6 +1497,8 @@ class App:
     def select(self, node):
         g = self.game
         prev = self.sel
+        if g is not None and node in g.regions:
+            node = M.node(g, node)                        # 광역시는 한 칸(v1.3.18)
         self.sel = node
         self.split = {}
         if node is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from . import config as C
+from . import metro as M
 from .leaders import POLICIES, POLICY_COSTS, POLICY_COMPLETION
 
 
@@ -246,7 +247,7 @@ class ProgressionMixin:
             return False, "위인은 자국 지역으로만 이동할 수 있습니다."
         if not self.factions[gp["owner"]].alive:
             return False, "멸망한 국가의 위인은 이동할 수 없습니다."
-        gp["loc"] = rid
+        gp["loc"] = M.node(self, rid) if rid in self.regions else rid      # 광역시는 한 칸
         gp.pop("escort", None)
         self._progression_changed()
         return True, f"{gp['name']} 이동"

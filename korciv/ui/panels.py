@@ -173,10 +173,12 @@ def draw_region_info(app, rect):
     visible = g.is_visible(pid, node) or app.fog_reveal
     mt = M.of(g, node) if visible else None
     gui.text((x, rect.y + 12), mt["name"] if mt else info.name, 18, weight="bold", max_w=w - 30)
-    gui.text((x, rect.y + 38), (f"광역시 · 지역 {len(mt['members'])}곳 하나로 · 이 칸 {info.short}" + (" (중심)" if mt["center"] == node else "")
-                                + " · " if mt else "")
-             + f"{info.rtype} · 조선 {info.do8}도 · {info.ns}" + (f" · {info.island}" if info.island else ""),
-             12, t.accent if mt else t.muted, max_w=w)
+    if mt:                                   # 광역시는 처음부터 한 지역인 것처럼(v1.3.18): 구성 지역은 이름만
+        gui.text((x, rect.y + 38), "광역시 · " + "·".join(app.world.regions[r].short for r in mt["members"]),
+                 12, t.accent, max_w=w)
+    else:
+        gui.text((x, rect.y + 38), f"{info.rtype} · 조선 {info.do8}도 · {info.ns}" + (f" · {info.island}" if info.island else ""),
+                 12, t.muted, max_w=w)
     y = rect.y + 62
     owner = r.owner if visible else g.player.last_seen.get(node, r.owner)
     if not explored:
@@ -793,8 +795,7 @@ def _metro_header(app, x, y, w, mt):
     """광역시 행동 탭 머리: 구성 지역·광역 슬롯 배수·해제(두 번 눌러 확인)."""
     gui, g, t = app.gui, app.game, app.theme
     names = [g.info(r).short for r in mt["members"]]
-    y = gui.wrap((x, y), f"지역 {len(names)}곳 하나로 · 중심 {g.info(mt['center']).short} · " + ", ".join(names),
-                 w, 11, t.muted) + 2
+    y = gui.wrap((x, y), f"구성 지역 {len(names)}곳 · " + ", ".join(names), w, 11, t.muted) + 2
     cb = g.regions[mt["center"]].b
     mult = " · ".join(f"{S.SLOT_NAMES[t_]} ×{cb.mult_of(t_)}" for t_ in M.MERGE_TYPES if cb.slots.get(t_))
     y = gui.wrap((x, y), f"광역 슬롯(산출 배수): {mult} · 방어력 ×{M.def_mult(g, mt['center']):.2f}", w, 11,

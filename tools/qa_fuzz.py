@@ -101,6 +101,9 @@ def check(g, where):
                 report("광역 슬롯: 중심 칸 이상", f"{where} {rid} base={len(b.slots['base'])}")
             elif not mm and (not b.slots.get("base") or getattr(b, "xmult", None)):
                 report("광역 슬롯: 해제 뒤 잔여", f"{where} {rid}")
+            if mm and rid != mm["center"] and (g.world.land_adj.get(rid) or r.lines
+                                                or any(a.loc == rid for a in g.armies.values())):
+                report("광역시 지도: 구성 지역 칸이 남음", f"{where} {rid}")   # v1.3.18: 광역시는 한 칸
             if mm and rid != mm["center"]:                  # 하나의 지역(v1.3.17): 상태는 중심과 같고 산출은 중심이
                 c = g.regions[mm["center"]]
                 if (r.flooded, r.focus, r.pop_focus) != (c.flooded, c.focus, c.pop_focus):
@@ -113,6 +116,8 @@ def check(g, where):
         for fid, o in r.occs.items():
             if o["progress"] > o["need"] + 1:
                 report("점령 진행 초과", f"{where} {rid} {o}")
+    if not getattr(g, "metros", None) and g.world is not getattr(g, "base_world", g.world):
+        report("광역시 지도: 광역시 없이 합친 지도", where)
     for f in g.factions:
         if not finite(f.money):
             report("돈 NaN", f"{where} f{f.id}")

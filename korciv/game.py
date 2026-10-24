@@ -131,6 +131,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if self.settings.mode == 'chaos':
             self.world = chaos_world(self.world, self.rng)
             self.world_overrides = self.world.regions
+        self.base_world = self.world        # 원래 지도(광역시를 지정하면 self.world 는 광역시를 한 칸으로 합친 지도)
         self.init_disasters()
         self.great_people = []
         self.spawned_great_people = set()
@@ -170,6 +171,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def __getstate__(self):
         s = dict(self.__dict__)
         s.pop("world", None)
+        s.pop("base_world", None)
         s.pop("_keyv", None)
         s["_mods"] = {}
         s["_morale"] = {}
@@ -263,7 +265,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         if getattr(self, "color_schema", 0) != K.COLOR_SCHEMA:
             self._migrate_colors()
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
+        self.base_world = self.world
         M.migrate(self)                      # v1.3.9 전 세이브: 광역시 통합 건물 → 광역 슬롯(v1.3.16)
+        M.refresh_world(self)                # 광역시를 한 칸으로 합친 지도(v1.3.18)
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -556,6 +560,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     # ------------------------------------------------------------------ 부대
     def new_army(self, owner, loc, units) -> Army:
+        loc = M.node(self, loc)              # 광역시 구성 지역 칸이면 광역시 칸(중심)으로
         a = Army(self.next_army_id, owner, loc, {k: v for k, v in units.items() if v > 0}, {})
         a.techs = self.factions[owner].techs if owner != NEUTRAL else set()
         self.armies[a.id] = a
@@ -699,7 +704,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """rid 에서 만든 육군이 갈 집결지(지역 지정 → 일괄 지정 순). 내 땅이 아니거나 자기 자신이면 None."""
         f = self.factions[fid]
         tgt = getattr(self.regions[rid], "rally", None) or getattr(f, "rally", None)
-        if not tgt or tgt == rid or tgt not in self.regions or not self.friendly_territory(fid, tgt):
+        tgt = M.node(self, tgt) if tgt in self.regions else tgt
+        if not tgt or tgt == M.node(self, rid) or tgt not in self.regions or not self.friendly_territory(fid, tgt):
             return None
         return tgt
 
@@ -707,6 +713,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """rid 의 생산 집결지(target=None 이면 해제). rid=None 이면 일괄 지정(지역별 지정은 지운다)."""
         if target is not None and (target not in self.regions or self.regions[target].owner != fid):
             return False, "집결지는 내 지역만 고를 수 있습니다."
+        target = M.node(self, target) if target is not None else None
         if rid is None:
             f = self.factions[fid]
             f.rally = target
@@ -990,6 +997,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     def unload_cargo(self, fleet_id, units=None, target=None):
         """[하선]·[이함]: 항구에서는 그 지역에, 바다에서는 맞닿은 해안(landing_targets)에 내린다. 함재기는 항구에
         정박했을 때만 내린다(육상으로만 이동). 바다에서 내린 병력은 이번 턴 더 움직이지 못한다. 반환 (새 부대 목록, 메시지)."""
+        target = M.node(self, target)
         fl = self.armies.get(fleet_id)
         w = self.world
         if not fl or fl.domain() != "naval":
@@ -1230,6 +1238,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     def order_army(self, army_id, target, mode="assault", force_bombard=False, move_only=False):
         """move_only: 폭격 대상이 되는 곳도 이동으로만 본다(포병·폭격기 부대 우클릭에서 적 병력이 없는 곳)."""
+        target = M.node(self, target)          # 광역시는 한 칸
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
@@ -1277,6 +1286,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
     # ---- 여러 턴 자동 이동
     def plan_route(self, army, target):
         """army 위치에서 target까지 최단 경로(시작 제외). 중간 지점은 지나갈 수 있는 곳만."""
+        target = M.node(self, target)
         w = self.world
         fid = army.owner
         dom = army.domain()
@@ -1418,6 +1428,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return seen
 
     def _can_bombard(self, a, target):
+        target = M.node(self, target)
         if self.world.is_sea(target) or not self.hostile(a.owner, self.regions[target].owner):
             return False
         return self._bombard_units(a, target) != {}
@@ -2229,7 +2240,8 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 if v not in seen and self.regions[v].owner == fid and self.blevel(v, "bank") >= 5:
                     seen.add(v)
                     stack.append(v)
-        return seen
+        # 광역시(한 칸)는 구성 지역 수만큼 센다(금융 권역 규칙은 그대로)
+        return {r for x in seen for r in M.members(self, x)}
 
     def econ_buildings(self, fid, key) -> list:
         return [r.id for r in self.regions_of(fid) if key in r.econ and not self.facility_paused(r.id)]
@@ -3059,10 +3071,11 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         m = M.merged(self, rid)
         if not m:
             return bool(rr.b.get("port"))
-        if any(c and c["key"] == "port" for c in rr.b.slots.get("etc", ())):
-            return True                                  # 장보고 무료 항구(기타 슬롯)
+        # 광역시는 한 칸(v1.3.18): 광역 해안 슬롯 항구나 구성 지역의 무료 항구(기타 슬롯)가 있으면 광역시 칸이 항구
+        if any(c and c["key"] == "port" for x in m["members"] for c in self.regions[x].b.slots.get("etc", ())):
+            return True
         cb = self.regions[m["center"]].b
-        return bool(self.info(rid).coastal) and any(c and c["key"] == "port" for c in cb.slots.get("coast", ()))
+        return any(c and c["key"] == "port" for c in cb.slots.get("coast", ()))
 
     def can_fish(self, rid) -> bool:
         """바다(해안) 또는 하천(도하 경계) 인접 지역."""
@@ -4132,6 +4145,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """플레이어 부대에 명령해 바로 실행한다. 병력이 있는 곳 공격은 전투 확인 창(attack_now)으로.
         한 부대는 한 턴에 한 번 행동한다. 한 턴에 못 가는 곳은 자동 이동: 이번 턴 첫 구간을 바로 가고,
         다음 턴부터는 턴이 시작될 때 이어서 간다. 반환 (성공, 메시지)."""
+        target = M.node(self, target)          # 광역시는 한 칸
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
@@ -4237,6 +4251,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
 
     def attack_candidates(self, fid, target, exclude=()) -> list:
         """지금 target 을 바로 공격할 수 있는 fid 의 부대(이번 턴 행동하지 않음). 함께 공격할 부대 고르기용."""
+        target = M.node(self, target)
         if target not in self.regions or not self.hostile_units_at(fid, target):
             return []
         out = []
@@ -4252,6 +4267,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         """플레이어 부대가 target 을 바로 공격한다(함대 상륙 공격은 해역 경로를 먼저 따라간다).
         extra: 함께 공격할 부대들(v1.3.0) — 한 전투로 합쳐 공격력을 더하고, 여러 방향이면 협공 보너스.
         반환 (성공 여부, 결과 문장)."""
+        target = M.node(self, target)
         a = self.armies.get(army_id)
         if not a or a.owner == NEUTRAL:
             return False, "부대가 없습니다."
@@ -6001,6 +6017,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         for s in sources:
             vis.add(s)
             vis.update(w.node_neighbors(s))
+        for m in M.metros(self).values():          # 광역시는 한 칸: 광역시 칸이 보이면 구성 지역 칸도 모두
+            if any(r in vis for r in m["members"]):
+                vis.update(m["members"])
         return vis
 
     def queue_dialogue(self, kind, speaker):

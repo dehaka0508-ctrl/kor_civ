@@ -716,7 +716,7 @@ def test_any_member_hit_hits_the_whole_metro():
     targets = g.bomb_targets(edge)
     assert ("S002", "b", "farm") in targets
     D.declare_war(g, 1, 0)
-    a = g.new_army(1, next(n for n in g.world.land_adj[edge] if n not in sel), {"art": 2})
+    a = g.new_army(1, next(n for n in g.base_world.land_adj[edge] if n not in sel), {"art": 2})
     g.rng.random = lambda: 0.29
     g.rng.choice = lambda seq: ("S002", "b", "farm") if ("S002", "b", "farm") in seq else seq[0]
     farm = cb["farm"]
@@ -749,3 +749,48 @@ def test_any_member_hit_hits_the_whole_metro():
     g.disaster_damage()
     assert g.eff_happy(g.regions[sel[3]]) < before
     assert len({round(g.eff_happy(g.regions[r]), 9) for r in sel}) == 1
+
+
+def test_metro_is_one_cell_on_the_map():
+    """v1.3.18: 광역시를 지정하면 지도를 다시 그린 것처럼 광역시가 한 칸 — 바깥 이웃과 바로 맞닿고(구성 지역 칸은
+    그래프에서 빠짐), 부대·방어선·시야도 광역시 칸 하나로. 해제하면 원래 지도와 방어선으로 돌아간다."""
+    import pickle
+    g, sel = _setup()
+    edge = sel[2]
+    base_lines = {n: 2 for n in g.base_world.land_adj[edge] if n not in sel}
+    g.regions[edge].lines = dict(base_lines)
+    a = g.new_army(0, edge, {"inf": 2})
+    ok, msg = g.create_metro(0, "S002", sel)
+    assert ok, msg
+    w = g.world
+    assert w is not g.base_world and a.loc == "S002"
+    outer = {n for r in sel for n in g.base_world.land_adj[r]} - set(sel)
+    assert w.land_adj["S002"] == outer and all(not w.land_adj[r] for r in sel[1:])
+    assert all("S002" in w.land_adj[n] and not (set(sel[1:]) & w.land_adj[n]) for n in outer)
+    assert g.new_army(0, sel[3], {"inf": 1}).loc == "S002"          # 구성 지역 칸에 만들어도 광역시 칸에
+    # 방어선: 광역시의 바깥 경계마다 하나
+    hub = g.regions["S002"]
+    assert all(hub.lines.get(n, 0) >= 2 for n in base_lines) and not g.regions[edge].lines
+    assert {o["border"] for o in g.options(0, sel[1]) if o["key"] == "line"} <= outer | {"coast"}
+    # 이동: 바깥 이웃끼리는 광역시 칸을 지나 두 걸음(원래 지도에서 멀리 떨어진 두 이웃이어도)
+    a1, a2 = sorted(outer)[0], sorted(outer)[-1]
+    _own(g, 0, [a1, a2])
+    for r in ["S002", a1, a2]:
+        for x in list(g.armies_at(r)):
+            if x.owner != 0:
+                g.remove_army(x)            # 시험 판: 넘겨받은 땅에 남은 중립 수비대
+    mover = g.new_army(0, a1, {"inf": 1})
+    route = g.plan_route(mover, a2)
+    assert route and len(route) <= 2 and (len(route) == 1 or route[0] == "S002")
+    assert g.plan_route(mover, sel[3]) == ["S002"] or "S002" in (g.plan_route(mover, sel[3]) or [])
+    # 시야: 광역시 칸이 보이면 구성 지역 칸도 모두
+    assert all(g.is_visible(0, r) for r in sel)
+    # 저장·불러오기 뒤에도 같은 지도
+    g2 = pickle.loads(pickle.dumps(g))
+    assert g2.world.land_adj["S002"] == outer and g2.base_world is not g2.world
+    # 해제: 원래 지도, 방어선은 묶기 전 + 바뀐 만큼
+    hub.lines[sorted(base_lines)[0]] = 3
+    ok, _ = g.dissolve_metro(0, "S002")
+    assert ok and g.world is g.base_world
+    lines = g.regions[edge].lines
+    assert lines[sorted(base_lines)[0]] == 3 and all(lines[n] == 2 for n in sorted(base_lines)[1:])

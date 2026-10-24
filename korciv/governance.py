@@ -212,7 +212,7 @@ class GovernanceMixin:
             if person["kind"] == "general" or not owner.alive or self.regions[owner.capital].owner != owner.id:
                 self.great_people.remove(person)
             else:
-                person["loc"] = owner.capital
+                person["loc"] = M.node(self, owner.capital)
         if new_owner == NEUTRAL:
             return
         f = self.factions[new_owner]

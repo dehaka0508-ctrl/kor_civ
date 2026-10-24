@@ -15,6 +15,8 @@
   · 기타 슬롯(댐·원전·특산물 시설·무료 항구)은 합치지 않고 지역마다 그대로.
   구성 지역 자신의 기본·하천·해안 카드는 묶는 동안 보관했다가, 해제하면 되돌린 뒤 묶은 뒤 바뀐 단계(광역 카드의
   레벨 합 변화)를 각 지역의 그 건물 카드에 더한다. 공항은 중심, 부대는 중심으로.
+- 지도 다시 그리기(v1.3.18): 판의 지도 그래프(g.world)를 광역시가 처음부터 한 칸이었던 지도로 다시 만든다(world_view).
+  부대·위인·집결지는 광역시 칸(중심)으로 모이고 방어선은 바깥 경계마다 하나로. 원래 지도는 g.base_world.
 - 완전히 하나의 지역(v1.3.17): 산출·행정·과학·행복도 보정·인구 성장·지역 가치·위인 효과는 광역시 전체 한 번(중심 칸이
   대표), 폭격·파괴 공작·지진·침수·산불·작황 피해는 어느 구성 지역에 일어나도 광역시 전체에 한 번. 해제하면 다시 지역마다.
 """
@@ -111,7 +113,8 @@ def total_area(g, rid) -> float:
 def outer_adj(g, rid) -> set:
     """광역시(하나의 지역)와 맞닿은 바깥 지역."""
     sel = set(members(g, rid))
-    return {n for r in sel for n in g.world.land_adj[r]} - sel
+    w = base_world(g)
+    return {n for r in sel for n in w.land_adj[r]} - sel
 
 
 def damage_choices(g, rid, keys=None, lines=True) -> list:
@@ -150,6 +153,165 @@ def apply_damage(g, x, kind, key, levels=1) -> tuple:
         for y in members(g, x):
             g.regions[y].b[key] = after
     return before, after
+
+
+# ------------------------------------------------------------------ 지도 다시 그리기(v1.3.18)
+# 광역시를 지정하면 판의 지도 그래프를 '광역시가 처음부터 한 칸이었던 지도'로 다시 만든다(g.world). 중심 칸이 광역시
+# 전체를 대신하는 칸이 되고(바깥 이웃·맞닿은 해역·경계 지형을 모두 가짐), 나머지 구성 지역 칸은 그래프에서 빠진다.
+# 그래서 이동·공격·경로·상륙·시야·AI 판단이 모두 광역시를 한 지역으로 본다. 원래 지도는 g.base_world.
+def base_world(g):
+    return g.__dict__.get("base_world") or g.world
+
+
+def node(g, rid):
+    """지도 그래프의 칸: 광역시 구성 지역이면 중심(광역시 칸), 아니면 그대로(해역 포함)."""
+    return center_of(g, rid) if rid is not None else rid
+
+
+def _terrain_pick(ts):
+    """합쳐진 경계의 지형: 구간이 가장 많은 지형(같으면 지키는 쪽에 유리한 것)."""
+    count = {}
+    for t in ts:
+        k = None if t is None else (t["kind"], t.get("name"))
+        n, best = count.get(k, (0, t))
+        count[k] = (n + 1, best)
+    pick = max(count.values(), key=lambda v: (v[0], -(v[1]["mult"] if v[1] else 1.0)))
+    return pick[1]
+
+
+def world_view(g):
+    """광역시를 한 칸으로 합친 지도(광역시가 없으면 원래 지도)."""
+    import dataclasses
+    base = base_world(g)
+    ms = [m for m in metros(g).values() if m.get("members") and all(r in base.regions for r in m["members"])]
+    if not ms:
+        return base
+    hubs = {r: m["center"] for m in ms for r in m["members"]}
+    groups = {m["center"]: list(m["members"]) for m in ms}
+
+    def N(x):
+        return hubs.get(x, x)
+    v = object.__new__(type(base))
+    v.__dict__.update(base.__dict__)
+    v.__dict__.pop("_air_cache", None)
+    v.base, v.hub_of = base, hubs
+    adj = {}
+    for rid, ns in base.land_adj.items():
+        h = hubs.get(rid)
+        if h is None:
+            adj[rid] = {N(n) for n in ns}
+        elif h == rid:
+            adj[rid] = {N(n) for r in groups[rid] for n in base.land_adj[r]} - {rid}
+        else:
+            adj[rid] = set()                          # 광역시 중심이 아닌 구성 지역 칸: 그래프에서 빠짐
+    v.land_adj = adj
+    regs = dict(base.regions)
+    for h, sel in groups.items():
+        seas = []
+        for r in sel:
+            seas += [s for s in base.regions[r].seas if s not in seas]
+        regs[h] = dataclasses.replace(base.regions[h], seas=tuple(seas), coastal=bool(seas))
+        for r in sel:
+            if r != h and base.regions[r].seas:
+                regs[r] = dataclasses.replace(base.regions[r], seas=())
+    v.regions = regs
+    seas = dict(base.seas)
+    for s in {s for sel in groups.values() for r in sel for s in base.regions[r].seas}:
+        coast = []
+        for c in base.seas[s].coast:
+            if N(c) not in coast:
+                coast.append(N(c))
+        seas[s] = dataclasses.replace(base.seas[s], coast=coast)
+    v.seas = seas
+    links = {}
+    for a in hubs:
+        for b in base.land_adj[a]:
+            if N(a) != N(b):
+                links.setdefault(frozenset((N(a), N(b))), set()).add(frozenset((a, b)))
+    terrain = {k: t for k, t in base.terrain.items() if not (k & hubs.keys())}
+    bridges = {k: b for k, b in base.bridges.items() if not (k & hubs.keys())}
+    for key, ls in links.items():
+        ls = sorted(ls, key=sorted)
+        t = _terrain_pick([base.terrain.get(x) for x in ls])
+        if t is not None:
+            terrain[key] = t
+        names = [base.bridges.get(x) for x in ls]
+        if all(names):
+            bridges[key] = names[0]
+    v.terrain, v.bridges = terrain, bridges
+    v.river_regions = set(base.river_regions) | {h for h, sel in groups.items() if any(r in base.river_regions for r in sel)}
+    v.mountain_regions = set(base.mountain_regions) | {h for h, sel in groups.items()
+                                                       if any(r in base.mountain_regions for r in sel)}
+    v.outer_rivers = set(base.outer_rivers) | {h for h, sel in groups.items() if any(r in base.outer_rivers for r in sel)}
+    return v
+
+
+def refresh_world(g):
+    """광역시를 지정·해제하거나 불러온 뒤 지도 그래프를 다시 만든다."""
+    if "base_world" not in g.__dict__:
+        g.base_world = g.world
+    g.world = world_view(g)
+    for k in ("_near_cap", "_visible"):
+        if isinstance(g.__dict__.get(k), dict):
+            g.__dict__[k].clear()
+
+
+def _gather(g, m):
+    """지정: 구성 지역 칸의 부대·위인·집결지·이동 계획을 광역시 칸(중심)으로."""
+    sel, center = set(m["members"]), m["center"]
+    for a in g.armies.values():
+        if a.loc in sel and a.loc != center:
+            a.loc = center
+        o = a.order or {}
+        if o.get("target") in sel or any(x in sel for x in o.get("path", ())):
+            a.order = None
+        if a.goto in sel:
+            a.goto = center if a.loc != center else None
+    for gp in getattr(g, "great_people", []):
+        if gp.get("loc") in sel:
+            gp["loc"] = center
+    for rr in g.regions.values():
+        if getattr(rr, "rally", None) in sel:
+            rr.rally = center
+    for f in g.factions:
+        if getattr(f, "rally", None) in sel:
+            f.rally = center
+
+
+def _merge_lines(g, m):
+    """지정: 방어선을 광역시의 바깥 경계(이웃 지역·해안선)마다 하나로(가장 높은 단계). 해제 때 되돌린다."""
+    sel = m["members"]
+    m["pre_lines"] = {r: dict(g.regions[r].lines) for r in sel}
+    merged = {}
+    for r in sel:
+        for k, lv in g.regions[r].lines.items():
+            if k not in sel:
+                merged[k] = max(merged.get(k, 0), lv)
+    for r in sel:
+        g.regions[r].lines = {}
+    g.regions[m["center"]].lines = dict(merged)
+    m["merged_lines"] = dict(merged)
+
+
+def _split_lines(g, m):
+    """해제: 구성 지역마다 묶기 전 방어선 + (광역시 경계의 지금 단계 − 묶은 시점 단계)."""
+    sel = [r for r in m["members"] if r in g.regions]
+    pre = m.get("pre_lines")
+    if pre is None:
+        return
+    now = dict(g.regions[m["center"]].lines)
+    base = m.get("merged_lines", {})
+    top = C.DEF_BUILDINGS["line"]["max"]
+    for r in sel:
+        lines = dict(pre.get(r, {}))
+        for k in list(lines):
+            if k not in m["members"]:
+                lines[k] = max(0, min(top, lines[k] + now.get(k, 0) - base.get(k, 0)))
+        for k, lv in now.items():                    # 묶은 뒤 새로 지은 경계
+            if k not in lines and base.get(k, 0) == 0 and lv > 0 and k in (
+                    base_world(g).land_adj[r] if k != "coast" else (("coast",) if base_world(g).regions[r].coastal else ())):
+                lines[k] = lv
+        g.regions[r].lines = {k: v for k, v in lines.items() if v > 0}
 
 
 def merged(g, rid):
@@ -627,6 +789,10 @@ def create(g, fid, center, sel, name=None) -> tuple:
             for r in sel:
                 g.regions[r].b[k] = 1
     merge(g, m)                      # 광역 슬롯(v1.3.16): 구성 지역의 기본·하천·해안 카드를 중심에 합친다
+    _gather(g, m)                    # 지도 다시 그리기(v1.3.18): 부대·위인·집결지는 광역시 칸(중심)으로
+    _merge_lines(g, m)
+    m["map_merged"] = True
+    refresh_world(g)
     # 행복도는 평균 하나로, 특산물 공급·징집 피로도 중심 기준으로 맞춘다
     regs = [g.regions[r] for r in sel]
     h = sum(r.happy for r in regs) / len(regs)
@@ -744,6 +910,12 @@ def dissolve(g, mid, why="") -> bool:
         if rr.owner != NEUTRAL and g.factions[rr.owner].capital != r:
             for key in ("admin", "edu"):
                 rr.b[key] = min(4, rr.b.get(key, 0))
+    if m.get("map_merged"):
+        _split_lines(g, m)                   # 지도: 구성 지역마다 다시 칸으로
+    refresh_world(g)
+    for a in list(g.armies.values()):        # 항구 없는 칸에 남은 함대는 가까운 항구로
+        if a.loc in sel and a.domain() == "naval" and not g.has_port(a.loc):
+            g.teleport_home(a)
     if owner != NEUTRAL:
         g.event("info", f"{m['name']} 지정 해제" + (f" — {why}" if why else ""), region=center, fids=(owner,))
     return True
@@ -822,9 +994,9 @@ def options(g, fid, mid) -> list:
             k, key = o["kind"], o["key"]
             if k == "build" and o.get("slot"):
                 continue                         # 슬롯 카드는 위에서
-            if k == "build" and key == "line" and o["border"] not in sel:
-                add(k, key, f"{g.info(r).short} {o['name']}", o["cost"], o["turns"], o["ok"], o["why"],
-                    o["level"], border=o["border"], site=r)
+            if k == "build" and key == "line" and o["border"] not in sel and r == center:
+                # 광역시 칸(v1.3.18)의 바깥 경계마다 방어선 하나
+                add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], border=o["border"], site=r)
             elif k == "annex" and ("annex", key) not in seen:
                 seen.add(("annex", key))
                 add(k, key, o["name"], o["cost"], o["turns"], o["ok"], o["why"], o["level"], site=r)
@@ -847,7 +1019,8 @@ def options(g, fid, mid) -> list:
         add("build", key, spec["name"], spec["cost"] * C.BUILD_COST_MULT * C.MONEY_SCALE * g.building_cost_mult(fid, key),
             g.build_time(fid, key, spec["turns"], site, 1), level=1, site=site)
     # 군 유닛: 하나를 만들면 지역 수만큼 나온다(해군은 항구가 있는 해안 지역에서)
-    port = next((r for r in sel if g.info(r).coastal and g.reserved_level(r, 'port')), None)
+    # 해군은 광역시 칸(중심)에서: 광역시에 항구(광역 해안 슬롯·무료 항구)가 있거나 짓는 중이면
+    port = center if g.info(center).coastal and any(g.reserved_level(r, 'port') for r in sel) else None
     for key in C.BUILD_UNITS:
         u = g.unit_spec(fid, key)
         site = center
@@ -928,6 +1101,11 @@ def complete(g, f, p):
 def migrate(g):
     """예전 세이브(v1.3.9까지: 생산 건물을 구성 지역끼리 평균 단계로 통합하던 광역시)를 광역 슬롯으로 바꾼다(불러올 때 한 번).
     통합 건물 공사와 구성 지역의 기본·하천·해안 슬롯 공사는 칸이 바뀌어 낸 돈을 모두 돌려준다."""
+    for m in metros(g).values():                 # v1.3.17 전 세이브: 부대·방어선을 광역시 칸으로(지도 다시 그리기)
+        if m.get("slot_merge") and not m.get("map_merged") and all(r in g.regions for r in m["members"]):
+            _gather(g, m)
+            _merge_lines(g, m)
+            m["map_merged"] = True
     for m in metros(g).values():
         if m.get("slot_merge") or not all(r in g.regions for r in m["members"]):
             continue
@@ -952,6 +1130,9 @@ def migrate(g):
                 cr.queue[:] = [q for q in cr.queue if q is not p]
         m["merge"] = {k: v for k, v in m.get("merge", {}).items() if k in POOL_KEY}
         merge(g, m)
+        _gather(g, m)
+        _merge_lines(g, m)
+        m["map_merged"] = True
         if cr.project is None and owner != NEUTRAL:
             g.promote_queue(center)
 
