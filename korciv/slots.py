@@ -8,7 +8,7 @@
 - 방어 건물·공항·과학·경제 시설은 슬롯을 쓰지 않는다.
 
 카드는 {"key": 건물 키, "level": 단계}, 빈 칸은 None. 같은 생산 건물을 여러 칸에 지을 수 있고(행정·연구·
-사관학교·항구·수력·원자력·특산물 시설은 지역에 하나), 산출·연료는 카드마다 따로 계산해 더한다.
+사관학교·항구와 탄광·정유공장(채굴)·수력·원자력·특산물 시설은 지역에 하나, v1.3.24), 산출·연료는 카드마다 따로 계산해 더한다.
 
 지역의 r.b 는 Buildings(사전)다. 슬롯 건물 키의 값은 그 종류 카드 가운데 가장 높은 단계(없으면 0)로, 승리·위인·
 광역시 조건처럼 '○○ n단계 지역'을 볼 때 그대로 쓴다. 슬롯 건물 키에 값을 쓰면 가장 높은 카드의 단계가 바뀌고
@@ -30,10 +30,12 @@ SLOT_KEYS = {
 # 기타 슬롯에 입지마다 한 칸씩 자리가 있는 건물(항구는 장보고 무료 항구만 기타 슬롯에)
 ETC_KEYS = ("hydro", "nuclear", "specialty")
 CARD_KEYS = frozenset(k for keys in SLOT_KEYS.values() for k in keys)
-# 지역에 하나만 지을 수 있는 카드(행정·연구·사관학교·항구, 댐·원전·특산물 시설은 입지가 하나)
-UNIQUE_KEYS = frozenset(("admin", "edu", "academy", "port", "hydro", "nuclear", "specialty"))
+# 자원 입지 건물(v1.3.24): 탄광·정유공장(채굴)·특산물 시설·수력발전소·원전은 지역마다 하나만(광역시는 광역시 전체에 하나)
+RESOURCE_UNIQUE = ("extract", "specialty", "hydro", "nuclear")
+# 지역에 하나만 지을 수 있는 카드(행정·연구·사관학교·항구 + 자원 입지 건물)
+UNIQUE_KEYS = frozenset(("admin", "edu", "academy", "port") + RESOURCE_UNIQUE)
 # 같은 건물을 여러 칸에 지을 수 있는 생산 건물
-STACK_KEYS = ("farm", "fishery", "factory", "bank", "power", "extract")
+STACK_KEYS = ("farm", "fishery", "factory", "bank", "power")
 # 슬롯을 정하지 않고 카드를 꽂을 때(광역시 통합 건물·예전 세이브) 고르는 순서. 항구는 해안 슬롯에만 짓는다
 PREFER = {"fishery": ("coast", "river"), "power": ("river", "coast"), "port": ("coast",)}
 # 면적(km²) 상한 → 기본 슬롯 칸 수. 1,000km² 초과는 6칸
@@ -314,6 +316,19 @@ def _restore(values, slots, xmult=None):
 def round_half_up(v) -> int:
     import math
     return int(math.floor(v + 0.5 + 1e-9))
+
+
+def merge_duplicates(rows, key, top) -> bool:
+    """슬롯 줄 {종류: [카드]}에서 key 카드가 여러 장이면 가장 높은 한 장에 단계를 합쳐(top 까지) 남긴다(v1.3.24 예전 세이브)."""
+    found = [(t, i, c) for t, lst in rows.items() for i, c in enumerate(lst or ()) if c and c.get("key") == key]
+    if len(found) <= 1:
+        return False
+    t0, i0, c0 = max(found, key=lambda x: (x[2]["level"], -SLOT_TYPES.index(x[0]) if x[0] in SLOT_TYPES else 0))
+    c0["level"] = max(c0["level"], min(top, sum(c["level"] for _, _, c in found)))
+    for t, i, c in found:
+        if (t, i) != (t0, i0):
+            rows[t][i] = None
+    return True
 
 
 def split_average(total, n) -> list:

@@ -858,7 +858,10 @@ def _social(g, f):
 
 
 def _friend_blocks(g, fid, target) -> bool:
-    """우호 선언 직후(쿨타임 동안)에는 그 나라에 선전포고하지 않을 확률이 있다(직후 100% → 12턴째 약 50%)."""
+    """우호 상태(우호관계·우호 선언 관계·우호도 > 0)인 나라에는 선전포고하지 않는다(v1.3.24).
+    그 밖에도 우호 선언 직후(쿨타임 동안)에는 선포하지 않을 확률이 있다(직후 100% → 12턴째 약 50%)."""
+    if D.friendly(g, fid, target):
+        return True
     p = D.friend_war_block(g, fid, target)
     return p > 0 and g.rng.random() < p
 
@@ -938,7 +941,9 @@ def _consider_war(g, f):
                 _p2_block(f, why)
                 continue
         op = D.opinion(g, fid, o)
-        thr = war_op_threshold(g, f, o, ratio, can_expand)
+        if D.friendly(g, fid, o):
+            continue                      # 우호 상태인 나라에는 선포하지 않는다(v1.3.24)
+        thr = min(C.AI_WAR_OP_MAX, war_op_threshold(g, f, o, ratio, can_expand))
         if op > thr:
             continue                      # 아직 참을 만하다
         need = (1.5 - 0.07 * aggr - (C.AI_P3_SPRINT_NEED if spr == "conquest" else 0.0)
@@ -1163,8 +1168,8 @@ def coalition_war_consent(g, c, a, b) -> bool:
     """연합 회원 c 가 a 의 b 에 대한 선전포고에 동의하는가: b 와 따로 동맹이 아니고, 나라가 흔들리지 않으며
     (적자·민심·전쟁 피로·위기·이미 전쟁 2곳), b 가 패권국·승리 근접국이거나 c 가 b 를 좋게 보지 않을 때."""
     fc = g.factions[c]
-    if D.allied(g, c, b):
-        return False
+    if D.allied(g, c, b) or D.friendly(g, c, b):
+        return False                          # 대상과 우호 상태면 동의하지 않는다(v1.3.24)
     if (fc.money < 0 or fc.last.get("tax", 0) - fc.last.get("upkeep", 0) < 0 or g.avg_happiness(c) < -20
             or fc.war_weary > 45 or len(D.enemies(g, c)) >= C.AI_MAX_WARS):
         return False
@@ -1936,6 +1941,11 @@ def capital_min_garrison(g, f, threat) -> int:
         if o not in (NEUTRAL, f.id) and (D.at_war(g, f.id, o) or D.opinion(g, f.id, o) <= C.AI_DEF_OP):
             n += 2
             break
+    # v1.3.24: 1페이즈에 수도가 빈 땅(중립)과 내 땅에만 맞닿고 위협도 없으면 1개 덜 남긴다
+    # (남는 병력으로 빈 땅을 점령할 수 있게 — 도심 1지역 나라가 보병을 모두 수도에 묶어 두던 문제)
+    if (f.is_ai and PH.phase(f) == 1 and threat.get(cap, 0) < 0.5
+            and all(g.regions[m].owner in (NEUTRAL, f.id) for m in g.world.land_adj[cap])):
+        n -= 1
     if threat.get(cap, 0) >= 1.0:
         n += 2
     if EG.sprint(f):
@@ -2455,6 +2465,10 @@ def _slots(g, f, threat, military=True):
     desired = max(2, int(len(regs) * (0.8 if at_war else 0.35) * wts.get("military", 1)))
     if f.aggression >= 6 and g.turn > 6:
         desired += 3
+    # v1.3.24: 1페이즈의 작은 나라는 수도 수비대 + 빈 땅 점령조(AI_P1_STRIKE)만큼은 갖춘다(편입할 돈이 없어도 넓힌다)
+    if (f.is_ai and PH.phase(f) == 1 and not at_war and len(regs) <= C.AI_EXPAND_SAVE_REGIONS
+            and any(g.regions[n].owner == NEUTRAL for r in regs for n in g.world.land_adj[r.id])):
+        desired = max(desired, capital_min_garrison(g, f, threat) + C.AI_P1_STRIKE)
     if spr:
         desired = int(desired * (C.AI_P3_SPRINT_MIL_CONQ if spr == "conquest" else C.AI_P3_SPRINT_MIL))
     # 정복 방향(2페이즈 이상): 다른 승리 조건 공사에 돈을 쓰지 않으니 여윳돈만큼 병력·전차·공군을 더 갖춘다
@@ -2720,16 +2734,30 @@ def _slots(g, f, threat, military=True):
     cands.sort(key=lambda c: -c[0])
     used = set()
     f.ai['development_choices'] = [[round(c[0], 3), c[1], c[2], c[3]] for c in cands[:8]]
+    # v1.3.24: 지역이 적은 나라가 이번 턴 예산을 넘는 편입을 몇 턴 안에 모을 수 있으면, 그보다 가치가 낮은 건설로
+    # 하나뿐인 공사 칸과 돈을 쓰지 않고 모은다(도심 1지역 나라가 건물만 짓고 확장하지 못하던 문제)
+    saving = False
+    small = f.is_ai and len(regs) <= C.AI_EXPAND_SAVE_REGIONS
     for candidate in cands:
         u, rid, kind, key, border, per = candidate[:6]
         slot = candidate[6] if len(candidate) > 6 else None
         pool = candidate[7] if len(candidate) > 7 else None
         if rid in used or g.regions[rid].project or u <= 0.05:
             continue
+        if saving and kind == "build" and u < 50:
+            continue
         # 적자인 1페이즈: 재정을 늘리는 생산 건물은 비축(비상금 위)으로도 짓는다
         prod_from_savings = (deficit and kind == "build" and key in C.PROD_PAYBACK_KEYS
                              and f.money - reserve >= per * 3)
-        if per > avail and not (kind == "unit" and f.money > per * 2) and not prod_from_savings:
+        annex_opt = None
+        if kind == "annex" and per > avail:
+            annex_opt = next((o for o in options_by_region.get(rid, ()) if o["kind"] == "annex" and o["key"] == key
+                              and o["ok"]), None)
+        # 편입은 완공까지 낼 돈(잔고 + 순수입)이 되면 이번 턴 예산을 넘어도 착수한다
+        annex_ok = annex_opt is not None and AE.can_finance(g, f, ctx, annex_opt)
+        if per > avail and not (kind == "unit" and f.money > per * 2) and not prod_from_savings and not annex_ok:
+            if annex_opt is not None and small and not saving:
+                saving = _expand_saving_ok(g, f, ctx, annex_opt)
             continue
         if kind == 'annex' and ctx['admin_gap'] > 0:
             tr = g.regions[key]
@@ -2765,6 +2793,17 @@ def _slots(g, f, threat, military=True):
             break
     if f.is_ai and PH.phase(f) >= 2:
         _fill_slots(g, f, [r for r in idle if r.id not in used and not r.project], post, reserve, income, upkeep, spr)
+
+
+def _expand_saving_ok(g, f, ctx, o) -> bool:
+    """편입 착수에 모자란 돈을 순수입으로 AI_EXPAND_SAVE_TURNS 턴 안에 모을 수 있는가(can_finance 와 같은 기준)."""
+    net = ctx['income'] - ctx['upkeep'] - ctx['food_bill'] - ctx['committed']
+    if net <= 0:
+        return False                  # 모일 돈이 없으면 기다리지 않고 재정 건물부터
+    window = min(8, max(1, o['turns']))
+    need = o['per_turn'] * window + min(ctx['money_keep'], max(100, f.money * .25))
+    have = f.money + net * window
+    return (need - have) / net <= C.AI_EXPAND_SAVE_TURNS
 
 
 def _harass_production(g, f, regs, idle, idle_ids, airports, cands, urg, t):

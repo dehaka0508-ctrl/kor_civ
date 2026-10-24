@@ -64,9 +64,9 @@ def test_slot_kinds_allowed_per_slot_type():
     assert set(S.SLOT_KEYS["etc"]) == {"hydro", "nuclear", "specialty", "port"}       # 항구는 장보고 무료 항구만
     for k in ("shelter", "aa", "airport"):
         assert k not in S.CARD_KEYS                         # 슬롯을 쓰지 않는 건물
-    assert {"admin", "edu", "academy", "port", "hydro", "nuclear", "specialty"} <= S.UNIQUE_KEYS
+    assert {"admin", "edu", "academy", "port", "hydro", "nuclear", "specialty", "extract"} <= S.UNIQUE_KEYS
     assert S.slot_types_for("port") == ("coast",)
-    assert set(S.STACK_KEYS) == {"farm", "fishery", "factory", "bank", "power", "extract"}
+    assert set(S.STACK_KEYS) == {"farm", "fishery", "factory", "bank", "power"}     # v1.3.24: 채굴은 지역마다 한 장
 
 
 # ------------------------------------------------------------------ 현실 모드 시작 카드
@@ -432,3 +432,28 @@ def test_v138_save_moves_site_plants_specialty_and_free_port_to_etc():
     assert b.slots["coast"] == [None] and b.slots["etc"][-1] == {"key": "port", "level": 1, "free": True}
     sp = next(r for r in restored.world.order if restored.info(r).specialty)
     assert restored.regions[sp].b["specialty"] == 1 and restored.regions[sp].b.count("specialty") == 1
+
+
+def test_extract_one_card_per_region_and_old_saves_merge():
+    """v1.3.24: 탄광·정유공장(채굴 카드)은 지역마다 한 장 — 빈 칸에 두 번째를 지을 수 없고(증축만),
+    예전 세이브의 여러 장은 불러오면 단계를 합쳐(최대 5단계) 한 장으로."""
+    import pickle
+    from test_engine import new_game, _own, _room
+    g = new_game(n_enemies=1)
+    rid = next(r for r in g.world.order if g.info(r).is_coal and g.regions[r].owner == NEUTRAL)
+    _own(g, 0, [rid])
+    _room(g, [rid])
+    g.player.techs.update(("coal", "oil"))
+    g.player.money = 10 ** 6
+    b = g.regions[rid].b
+    b.clear_cards()
+    b.slots["base"] = [None] * 4
+    assert b.place("extract", 2) and not b.place("extract", 1)
+    builds = [o for o in g.options(0, rid) if o["kind"] == "build" and o["key"] == "extract"]
+    assert builds and all(o["slot"] == b.primary("extract") for o in builds)      # 증축만
+    # 예전 세이브: 채굴 카드 3장 → 합쳐서 한 장(5단계까지)
+    b.slots["base"] = [dict(key="extract", level=2), dict(key="extract", level=2), dict(key="extract", level=3), None]
+    b.resync()
+    g2 = pickle.loads(pickle.dumps(g))
+    b2 = g2.regions[rid].b
+    assert b2.count("extract") == 1 and b2["extract"] == 5 and len(b2.empty("base")) == 3

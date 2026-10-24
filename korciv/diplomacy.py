@@ -54,6 +54,8 @@ def opinion(g, a, b) -> float:
         for val, until in temps.get((a, b), ()):
             if until > g.turn:
                 v += val
+    if pair(a, b) in g.dip.wars:
+        v = min(v, C.OP_WAR_CAP)          # 전쟁 중인 상대를 좋게 보지 않는다(v1.3.24)
     return max(-100.0, min(100.0, v))
 
 
@@ -126,6 +128,12 @@ def has_nonaggr(g, a, b) -> bool:
 
 def is_friend(g, a, b) -> bool:
     return pair(a, b) in g.dip.friends or allied(g, a, b)
+
+
+def friendly(g, a, b) -> bool:
+    """a 가 b 와 우호 상태인가(v1.3.24): 우호관계(자동)·우호 선언 관계·동맹, 또는 a 가 b 를 좋게 본다(우호도 > 0).
+    AI 는 우호 상태인 나라에 선전포고하지 않고 연합 공동 선포에도 동의하지 않는다."""
+    return is_friend(g, a, b) or declared_friends(g, a, b) or opinion(g, a, b) > C.AI_WAR_OP_MAX
 
 
 def stage(g, a, b) -> int:
@@ -238,6 +246,8 @@ def declare_war(g, a, b, reason="선전포고", _joined=None, _role="declare", _
         if c in (a, b):
             continue
         if allied(g, c, b) and not at_war(g, c, a) and (c, a) not in joined and met(g, c, a):
+            if is_friend(g, c, a) or declared_friends(g, c, a):
+                continue                  # 공격국과도 우호관계·우호 선언·동맹이면 참전하지 않는다(v1.3.24)
             _clear_treaties(g, c, a)
             declare_war(g, c, a, reason="동맹 참전으로 선전포고", _joined=joined, _role="ally")
     # 공격측 연합 회원 공동 참전(직접 선포일 때만: 전원 동의를 받았다)
@@ -284,6 +294,8 @@ def _start_war(g, a, b, happiness=True, aggressor=None):
     p = pair(a, b)
     _clear_treaties(g, a, b)
     _dip_attr(g, "declared").pop(p, None)          # 전쟁하면 우호 선언 관계도 끝난다
+    for x, y in ((a, b), (b, a)):                   # 선포한 쪽도 상대를 좋게 보지 않는다(v1.3.24)
+        g.dip.op[(x, y)] = min(g.dip.op.get((x, y), 0.0), C.OP_WAR_CAP)
     _player_dialogue(g, "war", a, b)
     g.dip.wars[p] = {"start": g.turn, "declarer": a, "aggressor": aggressor if happiness else None,
                      "score": {a: 0.0, b: 0.0},
@@ -1314,12 +1326,19 @@ def update_turn(g):
                 if t > 0 and stage(g, a, b) < 2 and not declared_friends(g, a, b):
                     delta -= C.VICTORY_THREAT_OP * t
             base = op_baseline(g, a, b)
+            war = pair(a, b) in d.wars
+            if war:
+                # 전쟁 중(v1.3.24): 증가 요인은 붙지 않고 매 턴 조금씩 나빠지며, 기본값도 상한 아래로 본다
+                delta = min(0.0, delta) + C.OP_AT_WAR
+                base = min(base, C.OP_WAR_CAP)
             current = d.op.get((a, b), base) + delta
             decay = C.OPINION_DECAY
             if current > 0 and current > base:
                 relief = min(g.mods(a).mult("positive_op_decay"), g.mods(b).mult("positive_op_decay"))
                 decay = 1 - (1 - decay) * relief
             v = base + (current - base) * decay
+            if war:
+                v = min(v, C.OP_WAR_CAP)
             d.op[(a, b)] = max(-100.0, min(100.0, v))
     # 우호관계 자동
     for i, a in enumerate(alive):

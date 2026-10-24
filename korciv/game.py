@@ -273,8 +273,45 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             self._migrate_colors()
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
         self.base_world = self.world
+        self._migrate_coast_slots()          # v1.3.24: 해안으로 바뀐 지역(박천)에 해안 슬롯
         M.migrate(self)                      # v1.3.9 전 세이브: 광역시 통합 건물 → 광역 슬롯(v1.3.16)
+        self._migrate_unique_extract()       # v1.3.24: 채굴 카드는 지역마다 한 장
         M.refresh_world(self)                # 광역시를 한 칸으로 합친 지도(v1.3.18)
+
+    def _migrate_unique_extract(self):
+        """v1.3.24: 탄광·정유공장(채굴 카드)은 지역마다 한 장. 예전 세이브에 여러 장이면 단계를 합쳐(최대 단계까지)
+        가장 높은 한 장으로 남긴다. 광역시 해제 때 쓸 구성 지역 보관 카드도 같게."""
+        top = C.PROD_BUILDINGS["extract"]["max"]
+        for rid, r in self.regions.items():
+            b = r.b
+            if not hasattr(b, "slots"):
+                continue
+            before = sum(c["level"] for _, _, c in b.cards("extract"))
+            if S.merge_duplicates(b.slots, "extract", self.card_max(rid, "extract")):
+                b.resync()
+                m = M.of(self, rid)
+                lost = before - sum(c["level"] for _, _, c in b.cards("extract"))
+                if m is not None and m.get("center") == rid and lost > 0 and ("base", "extract") in m.get("merged", {}):
+                    # 해제 때 '지금 − 묶은 시점' 차이만큼 구성 지역에 더하므로, 합치며 잃은 단계는 기준에서도 뺀다
+                    m["merged"][("base", "extract")] = max(0, m["merged"][("base", "extract")] - lost)
+        for m in M.metros(self).values():
+            for rows in m.get("pre_slots", {}).values():
+                S.merge_duplicates(rows, "extract", top)
+
+    def _migrate_coast_slots(self):
+        """지역 데이터에서 해안이 된 지역(v1.3.24 박천)은 예전 세이브에서도 해안 슬롯 한 칸을 갖는다."""
+        for rid, r in self.regions.items():
+            b = r.b
+            if not hasattr(b, "slots") or not self.world.regions[rid].coastal:
+                continue
+            m = M.of(self, rid)
+            if m is not None and m.get("slot_merge"):
+                pre = m.setdefault("pre_slots", {}).setdefault(rid, {})
+                if not pre.get("coast"):
+                    pre["coast"] = [None]           # 광역시 구성 지역: 해제하면 해안 칸이 생긴다
+                continue
+            if not b.slots.get("coast"):
+                b.slots["coast"] = [None]
 
     # ------------------------------------------------------------------ 초기화
     def _init_world(self):
@@ -3245,6 +3282,27 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 self.release_focus(rr)
         return True, "인구 성장 집중 " + (f"켬: 성장률 턴당 +{C.POP_FOCUS_GROWTH * 100:g}%p" if on else "끔")
 
+    def set_focus_all(self, fid, kind, on):
+        """내정 탭 일괄(v1.3.24): 모든 내 지역의 생산 집중(kind="focus") 또는 인구 성장 집중("pop")을 켜거나 끈다.
+        광역시는 한 지역으로 한 번. 인구 성장 집중은 행복도 조건을 못 채운 지역은 건너뛴다. (바뀐 지역 수, 메시지)"""
+        seen, n, skip = set(), 0, 0
+        for rr in self.regions_of(fid):
+            hub = M.hub(self, rr.id)
+            if hub in seen:
+                continue
+            seen.add(hub)
+            cur = rr.focus if kind == "focus" else getattr(rr, "pop_focus", False)
+            if bool(cur) == bool(on):
+                continue
+            ok, _ = (self.set_focus if kind == "focus" else self.set_pop_focus)(fid, rr.id, on)
+            if ok:
+                n += 1
+            else:
+                skip += 1
+        name = "생산 집중" if kind == "focus" else "인구 성장 집중"
+        msg = f"{name} {'켬' if on else '끔'}: {n}곳" + (f" (행복도 조건 미달 {skip}곳 제외)" if skip else "")
+        return n, msg
+
     def pop_focus_active(self, rr) -> bool:
         """건설·병력 생산을 하지 않고 실질 행복도 5 이상일 때만 효과."""
         return (getattr(rr, "pop_focus", False) and (rr.project is None or rr.project.kind == "annex")
@@ -3768,19 +3826,20 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self._phase_guerrilla()
         self.leader_attrition()
         self.evict_trespassers()             # 전쟁이 끝난 나라 땅에 남은 부대는 자국으로
-        # 6. 점령·편입 (먼저 우선순위대로 이번 턴 지출을 정한다)
-        self._fund_projects()
-        self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
-        # 7. 건설·생산 (군 생산에 쓴 지역은 징집 피로 기록)
-        drafted = self._phase_projects(("build", "unit", "science", "econ", "capital", "repair"))
-        self.promote_queues()
-        self._phase_conscription(drafted)
-        # 8~9. 자원, 세수·유지비
+        # 6. 수입 먼저(v1.3.24): 자원·세수(유지비)·행정력·과학력이 들어온 뒤에 지출한다
         for f in self.factions:
             if f.alive:
                 self._phase_resources(f)
                 self._phase_tax(f)
                 self._phase_knowledge(f)
+        # 7. 지출: 우선순위대로 이번 턴 작업 비용을 낸다 → 점령·편입 → 건설·생산(군 생산 지역은 징집 피로 기록)
+        self._fund_projects()
+        self._phase_claims()                 # 무력 점령·편입: 게이지가 함께 차고 먼저 채운 쪽이 차지
+        drafted = self._phase_projects(("build", "unit", "science", "econ", "capital", "repair"))
+        self.promote_queues()
+        self._phase_conscription(drafted)
+        for f in self.factions:
+            self._settle_net(f)              # 지난 턴 순수익(작업 지출 포함)·빚 행복도
         # 10~11. 인구, 행복도
         self._phase_population()
         self._phase_happiness()
@@ -5558,15 +5617,23 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         return seen | {v for u in seen for v in self.world.land_adj[u]}
 
     def _phase_tax(self, f: Faction):
+        """세수·유지비(수입). 턴 종료에서 작업 지출보다 먼저(v1.3.24). 순수익·빚 판정은 지출 뒤 _settle_net."""
         gdp = self.gdp(f.id)
         revenue = self.leader_tax_revenue(f.id)
         up = self.upkeep(f.id)
         f.money += revenue - up
+        f.last.update(gdp=gdp, tax=revenue, upkeep=up)
+        self._settle_net(f)
+
+    def _settle_net(self, f: Faction):
+        """지난 턴 순수익 = 세수 + 시장 판매 + 환급 − 유지비 − 시장 구매 − 작업 지출. 지출을 낸 뒤 자금이 음수면 빚 행복도."""
+        if not f.alive or "tax" not in f.last:
+            return
         spent = sum(f.spend.values())
-        f.last.update(gdp=gdp, tax=revenue, upkeep=up, buy=f.trade_buy, sell=f.trade_sell,
-                      spend=dict(f.spend), refund=f.refund,
-                      net=revenue + f.trade_sell + f.refund - up - f.trade_buy - spent)
-        if f.money < 0:
+        f.last.update(buy=f.trade_buy, sell=f.trade_sell, spend=dict(f.spend), refund=f.refund,
+                      net=f.last["tax"] + f.trade_sell + f.refund - f.last.get("upkeep", 0) - f.trade_buy - spent)
+        if f.money < 0 and not getattr(f, "_debt_turn", None) == self.turn:
+            f._debt_turn = self.turn
             for r in self.regions_of(f.id):
                 r.h_delta += C.DEBT_HAPPY * self.mods(f.id).mult("debt_happy")
 

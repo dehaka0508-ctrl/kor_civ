@@ -211,6 +211,43 @@ def test_research_target_does_not_demolish_only_productive_market(game):
     assert r.b['bank'] == 2
 
 
+def test_small_nation_keeps_only_bank_and_does_not_go_into_deficit(game):
+    """v1.3.24: 지역이 적은 나라는 연구가 0이어도 교육 칸을 위해 유일한 은행을 헐지 않는다
+    (도심 1지역 나라가 은행을 헐고 적자에 빠져 확장을 멈추던 문제). 헐면 적자가 되는 경우도 헐지 않는다."""
+    g = game
+    r = g.regions[g.player.capital]
+    r.b.slots['base'] = [dict(key='bank', level=2), dict(key='admin', level=3)]
+    r.b.resync()
+    c = ctx(g)
+    c.update(science=0, admin_gap=0, admin_cover=999, net=1000)
+    g.turn = 20
+    assert len(c['regs']) <= AI.C.AI_REDEV_SMALL
+    assert not E.redevelop(g, g.player, {}, c)
+    assert r.b['bank'] == 2
+    r.b.slots['base'] = [dict(key='bank', level=2), dict(key='bank', level=1), dict(key='admin', level=3)]
+    r.b.resync()
+    c = ctx(g)
+    c.update(science=0, admin_gap=0, admin_cover=999, net=10)      # 헐면 적자
+    assert not E.redevelop(g, g.player, {}, c)
+    assert r.b['bank'] == 2 and r.b.count('bank') == 2
+
+
+def test_expand_saving_waits_only_when_reachable(game):
+    """v1.3.24: 편입 착수에 모자란 돈을 순수입으로 정해진 턴 안에 모을 수 있을 때만 모은다(적자면 기다리지 않는다)."""
+    g = game
+    f = g.player
+    o = dict(turns=4, per_turn=500)
+    c = ctx(g)
+    c.update(income=300, upkeep=0, food_bill=0, committed=0, money_keep=200)
+    f.money = 1500
+    assert AI._expand_saving_ok(g, f, c, o)          # 2000+375 − (1500+1200) → 곧 모인다
+    c.update(income=10)
+    f.money = 0
+    assert not AI._expand_saving_ok(g, f, c, o)      # 너무 오래 걸린다
+    c.update(income=0, upkeep=5)
+    assert not AI._expand_saving_ok(g, f, c, o)      # 적자: 모일 돈이 없다
+
+
 def test_simultaneous_projects_share_one_cash_budget(game):
     g = game
     c = ctx(g)

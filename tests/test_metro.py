@@ -624,6 +624,38 @@ def test_metro_etc_slots_stay_per_region():
     assert ok and [g.regions[r].b["specialty"] for r in spec] == [3, 2]
 
 
+def test_metro_resource_buildings_one_per_metro():
+    """v1.3.24: 광역시는 하나의 지역 — 특산물 시설·수력발전소·원전은 광역시 전체에 하나만 새로 짓는다
+    (이미 지어 둔 것의 증축은 그대로). 광역 슬롯의 채굴 카드도 한 장."""
+    g, _ = _setup()
+    d = _own_ring(g, 3)
+    spec = sorted(r for r in d if g.info(r).specialty and r != "S002")[:2]
+    sel = set(M.auto_pick(g, 0, "S002")[:8])
+    for r in spec:
+        sel.add(r)
+        cur = r
+        while d[cur] > 0:
+            cur = min((n for n in g.world.land_adj[cur] if n in d and d[n] == d[cur] - 1), key=str)
+            sel.add(cur)
+    sel = ["S002"] + sorted(sel - {"S002"})
+    _room(g, sel)
+    for r in sel:
+        g.regions[r].b["specialty"] = 0
+    g.regions[spec[0]].b["specialty"] = 1
+    ok, msg = g.create_metro(0, "S002", sel)
+    assert ok, msg
+    opts = [o for o in g.options(0, "S002") if o["kind"] == "build" and o["key"] == "specialty"]
+    new = [o for o in opts if o["site"] == spec[1]]
+    up = [o for o in opts if o["site"] == spec[0]]
+    assert new and not any(o["ok"] for o in new) and "하나" in new[0]["why"]
+    assert up and up[0]["ok"] and up[0]["level"] == 2                 # 있던 시설의 증축은 된다
+    assert not g.start_project(0, "S002", "build", "specialty", site=spec[1], slot=new[0]["slot"])[0]
+    # 광역 슬롯 한 줄: 채굴처럼 지역마다 하나뿐인 건물은 평균 단계 한 장(6단계까지)
+    row = M._row("base", {"extract": 22, "farm": 22}, 4)
+    assert [c["level"] for c in row if c and c["key"] == "extract"] == [6]
+    assert [c["level"] for c in row if c and c["key"] == "farm"] == [5, 1]
+
+
 def test_migrate_legacy_metro_merges_slots():
     """예전 세이브(v1.3.9까지)의 광역시: 불러오면 광역 슬롯으로 합치고, 예전 통합 건물 공사는 낸 돈을 모두 돌려준다."""
     import pickle

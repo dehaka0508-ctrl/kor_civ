@@ -376,6 +376,10 @@ def _row(t, tot, n, port=False) -> list:
     """광역 슬롯 한 줄: 건물 종류마다 레벨 합 ÷ 지역 수(split_average). 기본 6칸, 하천·해안은 min(2, 지역 수)칸."""
     size = S.BASE_SLOT_MAX if t == "base" else min(2, n)
     lists = {k: S.split_average(v, n) for k, v in tot.items()}
+    for k in S.UNIQUE_KEYS & set(lists):
+        # 지역마다 하나뿐인 건물은 광역 슬롯에도 한 장(v1.3.24): 평균 단계(채굴은 광역시 6단계까지)
+        top = 6 if k in C.METRO_L6_KEYS else max_level(k)
+        lists[k] = [max(1, min(top, S.round_half_up(tot[k] / max(1, n))))]
     lists = {k: v for k, v in lists.items() if v}
     main = sorted(lists, key=lambda k: ((0, MERGE_FIRST.index(k), 0, "") if k in MERGE_FIRST
                                         else (1, -lists[k][0], -tot[k], k)))
@@ -931,6 +935,11 @@ def dissolve(g, mid, why="") -> bool:
 
 
 # ------------------------------------------------------------------ 슬롯(작업)
+def _has_key(g, rid, key) -> bool:
+    """그 지역에 key 카드가 있거나 대기열까지 끝나면 생기는가."""
+    return any(c and c["key"] == key for t in g.projected_slots(rid).values() for c in t)
+
+
 def options(g, fid, mid) -> list:
     """광역시 슬롯에 넣을 수 있는 선택지. 각 선택지에 site(짓는 지역)가 붙고, 광역 슬롯 카드는 mult(산출 배수),
     방공호·대공포 통합은 pool 이 붙는다."""
@@ -968,6 +977,11 @@ def options(g, fid, mid) -> list:
             merged_t = slot[0] in MERGE_TYPES and m.get("slot_merge")
             if merged_t and r != center:
                 continue
+            if (not merged_t and o["key"] in S.RESOURCE_UNIQUE and o["ok"]
+                    and g.regions[r].b.card(tuple(slot)) is None
+                    and any(_has_key(g, x, o["key"]) for x in sel if x != r)):
+                # 광역시는 하나의 지역(v1.3.24): 특산물 시설·수력발전소·원전은 광역시 전체에 하나만 새로 짓는다
+                o = dict(o, ok=False, why=f"광역시에 이미 {josa(g.building_name(r, o['key']), '이/가')} 있습니다(지역마다 하나)")
             # 항구·사관학교는 산출이 없는 유일 건물이라 한 곳 비용 그대로
             mult = cb.mult_of(slot[0]) if merged_t and o["key"] not in C.SINGLE_BUILDINGS else 1
             add("build", o["key"], o["name"] if r == center else f"{g.info(r).short} {o['name']}", o["cost"] * mult,

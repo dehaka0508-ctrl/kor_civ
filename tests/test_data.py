@@ -1,3 +1,4 @@
+import pytest
 from collections import Counter, deque
 
 from korciv.data import load_world
@@ -48,8 +49,8 @@ def test_sea_coasts():
     w = load_world()
     counts = {s.name: len(s.coast) for s in w.seas.values()}
     # v1.3.0: 지도와 맞춤 — 서한만 +은천·동림 −대안·룡강·안주·송화, 경기만 +판문·파주·검단 −미추홀,
-    # 서해 남부 +서산(천수만), 동한만 +락원, 북동해 +명간
-    assert counts == {"서한만": 23, "경기만": 27, "서해 남부": 17, "남해 서부": 11, "남해 동부": 17,
+    # 서해 남부 +서산(천수만), 동한만 +락원, 북동해 +명간. v1.3.24: 서한만 +박천(청천강 하구의 작은 해변)
+    assert counts == {"서한만": 24, "경기만": 27, "서해 남부": 17, "남해 서부": 11, "남해 동부": 17,
                       "남동해": 8, "영동 해역": 7, "동한만": 15, "북동해": 9, "독도 해역": 1, "제주도 연안": 2}
     assert w.seas["SEA1"].adj == ["SEA2"]
     assert w.seas["SEA4"].adj == ["SEA3", "SEA5", "SEA11"]
@@ -62,6 +63,29 @@ def test_sea_coasts():
     assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("독도새우", "명이")
     # 해안선에 맞춘 해역 모양이 저장되어 있다
     assert set(w.sea_shapes) == set(w.seas)
+    assert w.regions[n["평북 박천군"]].seas == ("SEA1",)
+
+
+def test_inland_regions_do_not_touch_sea_shapes():
+    """지도와 데이터 일치(v1.3.24): '내륙' 지역 다각형이 해역 다각형과 맞닿지 않는다(박천 같은 불일치 방지)."""
+    shapely = pytest.importorskip("shapely")
+    import json
+    import os
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    w = load_world()
+    path = os.path.join(os.path.dirname(__file__), "..", "korciv", "data", "map_geometry.json")
+    d = json.load(open(path, encoding="utf-8"))
+    seas = unary_union([Polygon(p["ext"], p.get("holes", [])).buffer(0) for v in d["seas"].values() for p in v])
+    near = seas.buffer(0.002)
+    bad = []
+    for rid, r in d["regions"].items():
+        if w.regions[rid].coastal:
+            continue
+        poly = unary_union([Polygon(p).buffer(0) for p in r["polys"]])
+        if poly.boundary.intersection(near).length > 0.002:
+            bad.append(w.regions[rid].name)
+    assert not bad
 
 
 def test_cross_border_links():

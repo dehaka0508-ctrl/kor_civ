@@ -522,14 +522,17 @@ def redevelop(g, f, threat, ctx):
             if t != 'base' or card['key'] not in ('bank', 'factory') or card['level'] >= 4:
                 continue
             key, level = card['key'], card['level']
-            if need == 'edu' and ctx['science'] > 0:
+            if need == 'edu' and (ctx['science'] > 0 or len(ctx['regs']) <= C.AI_REDEV_SMALL):
                 # 정상 가동 중인 유일 생산 기반을 연구 목표 비율 때문에 계속 철거하지 않는다.
+                # 지역이 적은 나라는 연구가 0이어도 지킨다(v1.3.24: 1지역 나라가 유일한 은행을 헐고 적자에 빠졌다).
                 if key == 'bank' and r.b.count('bank') < 2:
                     continue
                 if key == 'factory' and r.fuel_used > 0:
                     continue
             loss = (C.BANK_OUTPUT * R.g(level) if key == 'bank' else
                     R.factory_output(level, min(level, r.fuel_used)))
+            if need == 'edu' and ctx['net'] - loss * max(.05, f.tax) <= 0:
+                continue  # 교육 칸을 위해 헐었다가 수지가 적자가 되면 확장·재건 모두 멈춘다(v1.3.24)
             benefit = r.pop if need == 'edu' else 5
             fallback.append((loss / max(1, benefit), r.id, (t, idx), need))
     for _, _, rid, slot, need in sorted(choices):

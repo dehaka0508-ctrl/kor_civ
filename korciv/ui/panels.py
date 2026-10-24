@@ -1584,6 +1584,28 @@ def draw_nation_tab(app, body):
         app.spec_sel = app.sel if app.sel in g.regions and g.regions[app.sel].owner == pid else None
         app.modal = ("specialty", None)
     y += 30
+    # 지역 집중 일괄(v1.3.24): 모든 지역의 생산 집중·인구 성장 집중을 한 번에
+    hubs = {M.hub(g, r.id): r for r in g.regions_of(pid)}
+    n_f = sum(1 for r in hubs.values() if r.focus)
+    n_p = sum(1 for r in hubs.values() if getattr(r, "pop_focus", False))
+    y = section(gui, x, y + 6, w, f"지역 집중 일괄 (생산 {n_f}곳 · 인구 성장 {n_p}곳 / {len(hubs)}곳)")
+    for i, (kind, lab, tip) in enumerate((
+            ("focus", "생산 집중",
+             f"건설·병력 생산을 하지 않는 동안 인구 산출 +{C.FOCUS_POP_BONUS:.0%}. 켜면 그 지역의 인구 성장 집중은 꺼집니다."),
+            ("pop", "인구 성장 집중",
+             f"건설·병력 생산을 하지 않고 행복도 {C.POP_FOCUS_MIN_H} 이상일 때 성장률 +{C.POP_FOCUS_GROWTH * 100:g}%p/턴. "
+             "행복도 조건을 못 채운 지역은 건너뜁니다."))):
+        yy = y + i * 32
+        gui.text((x, yy + 6), lab, 12, t.text, "semibold")
+        if gui.button((x + 112, yy, (w - 112 - 6) / 2, 28), "모두 켜기", size=11, tooltip=tip):
+            _, msg = g.set_focus_all(pid, kind, True)
+            app.toast(msg)
+            app.changed()
+        if gui.button((x + 112 + (w - 112 - 6) / 2 + 6, yy, (w - 112 - 6) / 2, 28), "모두 끄기", size=11):
+            _, msg = g.set_focus_all(pid, kind, False)
+            app.toast(msg)
+            app.changed()
+    y += 70
     # 지출 우선순위 (드래그)
     items = g.projects_by_priority(pid)
     y = section(gui, x, y + 6, w, "지출 우선순위 (드래그, 또는 클릭 후 ↑↓)")

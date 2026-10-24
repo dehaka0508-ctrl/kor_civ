@@ -791,6 +791,43 @@ def test_allied_defense_counts_as_defender_weariness():
     assert g.player.war_weary == pytest.approx(25)            # 선포 15 + 동맹 참전 상대 10
 
 
+def test_no_war_while_friendly_and_wartime_opinion_capped():
+    """v1.3.24: 우호 상태(우호관계·우호 선언 관계·우호도 > 0)인 나라에는 AI 가 선전포고하지 않고,
+    전쟁 중에는 양쪽 우호도가 -20을 넘지 못하며 증가 요인도 붙지 않는다."""
+    from korciv import ai
+    g = new_game(n_enemies=3)
+    _neutral_ai(g, 1, 2, 3)
+    g.dip.op[(1, 2)] = 5.0
+    assert D.friendly(g, 1, 2) and ai._friend_blocks(g, 1, 2)
+    g.dip.op[(1, 2)] = -5.0
+    assert not D.friendly(g, 1, 2)
+    g.dip.friends.add(D.pair(1, 2))
+    assert D.friendly(g, 1, 2) and ai._friend_blocks(g, 1, 2)
+    g.dip.friends.discard(D.pair(1, 2))
+    # 선포한 쪽도 선포 순간 상한 아래로, 전쟁 중엔 임시 우호도·공동의 적이 있어도 상한을 넘지 않는다
+    g.dip.op[(1, 2)], g.dip.op[(2, 1)] = -5.0, 60.0
+    assert D.declare_war(g, 1, 2)[0]
+    assert D.opinion(g, 1, 2) <= C.OP_WAR_CAP and D.opinion(g, 2, 1) <= C.OP_WAR_CAP
+    g.dip.__dict__.setdefault("op_temp", {})[(1, 2)] = [(50.0, g.turn + 10)]
+    assert D.declare_war(g, 1, 3)[0] and D.declare_war(g, 2, 3)[0]     # 공동의 적
+    for _ in range(5):
+        D.update_turn(g)
+        g.turn += 1
+    assert D.opinion(g, 1, 2) <= C.OP_WAR_CAP and g.dip.op[(2, 1)] <= C.OP_WAR_CAP
+
+
+def test_ally_does_not_join_against_friend():
+    """v1.3.24: 방어 동맹이라도 공격국과 우호관계·우호 선언 관계면 자동 참전하지 않는다."""
+    g = new_game(n_enemies=3)
+    for f in g.factions:
+        f.gov = None
+    g._mods.clear()
+    g.dip.alliance[D.pair(1, 2)] = g.turn
+    g.dip.friends.add(D.pair(2, 0))
+    D.declare_war(g, 0, 1)
+    assert D.at_war(g, 0, 1) and not D.at_war(g, 2, 0)
+
+
 def _captured(g, rid, by=0, frm=1):
     _own(g, frm, [rid])
     g.regions[rid].happy = 30.0
@@ -1323,6 +1360,21 @@ def test_ai_keeps_capital_garrison():
     AI._army_orders(g, f, AI.threat_map(g, 0))
     stay = sum(a.count() for a in g.armies_at(cap, 0) if not a.order or a.order.get("type") == "bombard")
     assert need >= 2 and stay >= need
+
+
+def test_p1_capital_garrison_smaller_when_only_neutral_neighbors():
+    """v1.3.24: 1페이즈에 수도가 빈 땅·내 땅에만 맞닿고 위협이 없으면 수도 수비대를 1 덜 남긴다(남는 병력으로 빈 땅 점령)."""
+    from korciv import ai as AI
+    g = new_game(n_enemies=2)
+    _neutral_ai(g, 1, 2)
+    f = g.factions[1]
+    assert all(g.regions[n].owner in (NEUTRAL, 1) for n in g.world.land_adj[f.capital])
+    f.ai["phase"] = 1
+    p1 = AI.capital_min_garrison(g, f, {})
+    f.ai["phase"] = 2
+    assert AI.capital_min_garrison(g, f, {}) == p1 + 1
+    f.ai["phase"] = 1
+    assert AI.capital_min_garrison(g, f, {f.capital: 1.0}) >= p1 + 3      # 위협이 있으면 그대로(+2 포함)
 
 
 def _lead(g, fid, key):
@@ -3174,6 +3226,9 @@ def test_ai_diplomatic_follower_rides_conqueror():
     ai.follower_update(g, f)
     assert ST.state(f)["patron"] == 1 and EG.follower_patron(g, f) == 1
     assert EG.conquest_minded(g, 1)
+    g.dip.op[(0, 2)] = 5.0
+    assert not ai.coalition_war_consent(g, 0, 1, 2)        # v1.3.24: 대상을 좋게 보면(우호 상태) 동의하지 않는다
+    g.dip.op[(0, 2)] = -5.0
     assert ai.coalition_war_consent(g, 0, 1, 2)            # 강국의 전쟁에는 함께한다
     assert ai.loyal(g, 1, 0) and ai.loyal(g, 0, 1)
 
@@ -5174,3 +5229,20 @@ def test_rebel_ai_builds_militia_and_offers_surrender_to_player():
     g.new_army(0, rids[1], {"inf": 3})
     ai_rebel.plan_turn(g, reb.id)
     assert {"from": reb.id, "kind": "surrender"} in g.pending_proposals and reb.alive
+
+
+def test_focus_all_toggles_every_region_once():
+    """내정 탭 일괄 집중(v1.3.24): 모든 지역의 생산 집중·인구 성장 집중을 한 번에 켜고 끈다."""
+    g = new_game(player_start="S002", n_enemies=1)
+    rids = sorted(g.world.land_adj["S002"])[:3]
+    _own(g, 0, rids)
+    for r in g.regions_of(0):
+        r.happy = 20.0
+    n, msg = g.set_focus_all(0, "focus", True)
+    assert n == len(g.regions_of(0)) and all(r.focus for r in g.regions_of(0)) and "켬" in msg
+    g.regions[rids[0]].happy = -50.0                        # 행복도 조건 미달은 건너뛴다
+    n, msg = g.set_focus_all(0, "pop", True)
+    assert n == len(g.regions_of(0)) - 1 and "제외" in msg
+    assert all(r.pop_focus and not r.focus for r in g.regions_of(0) if r.id != rids[0])
+    n, _ = g.set_focus_all(0, "pop", False)
+    assert n == len(g.regions_of(0)) - 1 and not any(r.pop_focus for r in g.regions_of(0))
