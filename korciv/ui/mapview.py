@@ -236,6 +236,9 @@ def dashed(surf, p1, p2, color, width=2, dash=6):
                          (x1 + (x2 - x1) * b, y1 + (y2 - y1) * b), width)
 
 
+BORDER_DRY_MIN = 3.0       # 지형 경계를 켰을 때 그리는 '강 없는 국경' 구간의 최소 길이(지도 좌표)
+
+
 def _off_lines(line, others, near=0.6):
     """선 line 을 others(선 목록)에서 near 보다 먼 꼭짓점 구간들로 나눈다(맞닿는 끝점은 붙여 이어지게)."""
     if not others:
@@ -345,7 +348,9 @@ class MapView:
         # 국경 하천(압록강·두만강)과 겹치지 않는 국경 구간: 지형 경계를 켜면 강이 곧 국경이므로 그 위에는
         # 국경 띠를 깔지 않는다(띠 + 강 테두리가 겹쳐 다른 강보다 두꺼워 보이던 문제)
         outer_rivers = [l for (_, lines, _), o in zip(self.terrain_lines, self.terrain_outer) if o for l in lines]
-        self.border_dry = [piece for b in self.border_lines for piece in _off_lines(b, outer_rivers)]
+        # 강 끝에 붙어 남는 짧은 토막(강과 거의 겹치는 구간)은 버린다: 백두산 부근처럼 강이 없는 국경만 남긴다
+        self.border_dry = [piece for b in self.border_lines for piece in _off_lines(b, outer_rivers)
+                           if float(np.sqrt(((piece[1:] - piece[:-1]) ** 2).sum(axis=1)).sum()) >= BORDER_DRY_MIN]
         # 지역 경계 선분: 두 지역이 함께 쓰는 선분(국경 후보)과 한 지역만 쓰는 선분(해안·바깥 경계)
         seg = {}
         for rid, arr, bbox in self.polys:
@@ -768,7 +773,7 @@ class MapView:
             pts = sp(span)
             if len(pts) >= 2:
                 pygame.draw.lines(surf, border_ink, False, pts, bw)
-        # 나라 국경(중국·러시아, v1.3.0): 옅은 자줏빛 띠 + 일점쇄선. 국경 하천은 그 위에 그린다
+        # 나라 국경(중국·러시아, v1.3.0): 먹빛 일점쇄선(v1.3.19: 자줏빛 띠 없음). 국경 하천은 그 위에 그린다
         border_spans = self.border_dry_span if show_terrain else self.border_span
         if border_spans:
             self._national_border(surf, [sp(span) for span in border_spans], theme, u)
@@ -928,34 +933,9 @@ class MapView:
 
     @staticmethod
     def _national_border(surf, lines, theme, u):
-        """나라 국경: 바깥으로 옅게 번지는 띠 + 먹빛 일점쇄선(지도의 국경 기호)."""
-        w, h = surf.get_size()
-        bwid = max(5, int(8 * u))
-        vis = []
-        for pts in lines:
-            if len(pts) < 2:
-                continue
-            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-            if max(xs) < -bwid or min(xs) > w + bwid or max(ys) < -bwid or min(ys) > h + bwid:
-                continue
-            vis.append((pts, min(xs), min(ys), max(xs), max(ys)))
-        if not vis:
-            return
-        lines = [v[0] for v in vis]
-        x0 = max(0, int(min(v[1] for v in vis)) - bwid)
-        y0 = max(0, int(min(v[2] for v in vis)) - bwid)
-        x1 = min(w, int(max(v[3] for v in vis)) + bwid + 1)
-        y1 = min(h, int(max(v[4] for v in vis)) + bwid + 1)
-        if x1 > x0 and y1 > y0:
-            band = pygame.Surface((x1 - x0, y1 - y0), pygame.SRCALPHA)
-            bc = (128, 70, 104, 80) if not theme.dark else (190, 120, 160, 70)
-            for pts in lines:
-                q = [(x - x0, y - y0) for x, y in pts]
-                pygame.draw.lines(band, bc, False, q, bwid)
-                for p in (q[0], q[-1]):
-                    pygame.draw.circle(band, bc, (int(p[0]), int(p[1])), bwid // 2)
-            surf.blit(band, (x0, y0))
-        ink = (88, 46, 72) if not theme.dark else (205, 160, 190)
+        """나라 국경: 먹빛 일점쇄선(지도의 국경 기호). 자줏빛 띠는 쓰지 않는다(v1.3.19)."""
+        lines = [pts for pts in lines if len(pts) >= 2]
+        ink = (62, 52, 40) if not theme.dark else (176, 166, 150)
         lw = max(1, int(1.6 * u))
         dash, dot, gap = 9 * u, 2 * u, 3.5 * u
         pattern = ((dash, True), (gap, False), (dot, True), (gap, False))
