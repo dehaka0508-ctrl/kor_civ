@@ -1,7 +1,8 @@
 """AI 3페이즈(결승기): 승리까지 남은 턴(ETA)을 서로 비교해 질주할지 정한다.
 
-ETA 는 누구나 볼 수 있는 정보(지역 수·반기 랭킹·과학/경제 단계·GDP)로 어림한다.
-- 과학: (남은 단계 비용 − 모아 둔 돈) ÷ 추정 순수입(GDP × 5%)과 남은 단계 × 15턴 중 긴 쪽
+자국 경로는 지형·선행 건설·지도자별 소요 턴·진행 중 공사·재정과 과학력으로 어림한다.
+상대 순수입은 공개 GDP로 추정하고, 자국 경로 비교에는 실제 유지비·식량비·다른 공사비를 뺀다.
+- 과학: 실제 남은 단계 시간·선행 시설 준비·돈/과학력을 모으는 시간 중 긴 쪽
 - 경제: (남은 단계 비용 − 모아 둔 돈) ÷ 추정 순수입과 남은 단계 최소 턴 중 긴 쪽
 - 정복: 3분의 2까지 남은 지역 ÷ 최근(반기 랭킹 기준) 지역 증가 속도
 내 ETA 가 다른 모든 나라의 가장 빠른 ETA 의 (1 + 20%) 안이면 '가장 유리'로 보고 질주한다(sprint).
@@ -11,7 +12,7 @@ from __future__ import annotations
 import math
 
 from . import config as C
-from . import diplomacy as D
+from . import diplomacy as D, metro as M
 
 ETA_NONE = 999.0
 
@@ -20,27 +21,86 @@ def income_est(g, fid) -> float:
     return max(1.0, g.gdp(fid) * C.AI_P3_NET_RATE)
 
 
-def eta_science(g, fid) -> float:
+def income_available(g, fid) -> float:
+    regs = g.regions_of(fid)
+    f = g.factions[fid]
+    food_short = max(0, sum(r.pop for r in regs) * C.FOOD_PER_POP -
+                     sum(g.food_prod(fid, r) for r in regs if not r.occ and not g.resisting(r)))
+    food_bill = max(0, food_short - f.res.get('food', 0) / 12) * C.MARKET_BUY['food']
+    committed = sum(p.per_turn for p in g.unique_projects(regs) if p.kind not in ('science', 'econ'))
+    return max(1.0, g.leader_tax_revenue(fid) - g.upkeep(fid) - food_bill - committed)
+
+
+def eta_science(g, fid, income=None) -> float:
     if "science" not in g.settings.victories:
         return ETA_NONE
     f = g.factions[fid]
-    rem = [st for st in C.SCIENCE_STEPS if st not in f.science]
+    rem = [st for st in C.SCIENCE_STEPS if st not in f.science or
+           st in C.SCIENCE_UNITS and not g.science_units_alive(fid).get(st)]
     if not rem:
         return 4.0                                        # 유닛을 발사대로 모으기만 하면 된다
-    cost = sum(g.science_step_cost(fid, st) for st in rem) - _paid(g, fid, "science") - max(0.0, f.money)
-    science_cost = sum(round(200 * 1.15 ** C.SCIENCE[st]["tier"]) * g.science_turns(fid) for st in rem)
+    regs = [r for r in g.regions_of(fid) if not M.is_extra(g, r.id)]
+    cost, science_cost, elapsed = 0.0, 0.0, 0.0
+    prep_money = 0.0
+    techs = set()
+    for st in rem:
+        active = next((r.project for r in regs if r.project and r.project.kind == 'science' and r.project.key == st), None)
+        duration = active.remaining if active else g.science_turns(fid, st)
+        cost += active.per_turn * duration if active else g.science_step_cost(fid, st)
+        science_cost += g.science_per_turn_cost(C.SCIENCE[st]['tier']) * duration
+        # 연구소 뒤에 지형/선행 시설을 얻느라 막히는 시간도 센다. 선행 건설은 앞 단계와 병행할 수 있다.
+        if st == 'observatory' and not any(r.id in g.world.mountain_regions for r in regs):
+            return ETA_NONE
+        if st == 'pad' and not any(g.info(r.id).coastal for r in regs):
+            return ETA_NONE
+        if st in ('budget', 'booster', 'module', 'propellant'):
+            key = 'bank' if st == 'budget' else 'extract' if st == 'propellant' else 'factory'
+            candidates = [r for r in regs if st != 'propellant' or g.info(r.id).is_oil]
+            if not candidates:
+                return ETA_NONE
+            # 실제 소유 건물 단계와 대기열을 기준으로 최소 준비 시간을 계산한다.
+            plans = []
+            for r in candidates:
+                level = g.blevel(r.id, key)
+                build_time = build_cost = 0.0
+                for lv in range(level + 1, 6):
+                    money, turns = g.card_cost(fid, r.id, key, lv)
+                    build_time += turns
+                    build_cost += money * r.b.mult_of('base')
+                if level == 0 and not r.b.empty('base'):
+                    build_time += 1
+                queued_time = 0
+                for p in g.local_projects(r.id):
+                    queued_time += p.remaining
+                    if p.kind == 'build' and p.key == key and p.level >= 5:
+                        build_time = min(build_time, queued_time)
+                        build_cost = min(build_cost, sum(q.per_turn * q.remaining for q in g.local_projects(r.id)
+                                                        if q.kind == 'build' and q.key == key))
+                        break
+                plans.append((build_time, build_cost))
+            prep, money = min(plans)
+            # 부스터와 모듈은 같은 공장을 재사용한다.
+            if st != 'module' or 'booster' not in rem:
+                prep_money += money
+            elapsed = max(elapsed, prep)
+            if prep > 0 and key in ('bank', 'factory') and key not in f.techs:
+                techs.add(key)
+            if prep > 0 and key == 'extract':
+                techs.update(t for t in ('oil', 'coal') if any(t in M.extract_res(g, r.id) for r in candidates) and t not in f.techs)
+        elapsed += duration
     if "aerospace" not in f.techs:
-        science_cost += 3500
+        techs.add('aerospace')
+    science_cost += sum(g.tech_cost(fid, key) for key in techs)
     science_wait = max(0.0, science_cost - f.sci_points) / max(1.0, g.science_production(fid))
-    return min(ETA_NONE, max(g.science_turns(fid) * len(rem) + 4,
-                            max(0.0, cost) / income_est(g, fid), science_wait))
+    return min(ETA_NONE, max(elapsed + 4, max(0.0, cost + prep_money - f.money) /
+                            (income_est(g, fid) if income is None else income), science_wait))
 
 
 def _paid(g, fid, kind) -> float:
     return sum(r.project.paid for r in g.regions_of(fid) if r.project and r.project.kind == kind)
 
 
-def eta_econ(g, fid) -> float:
+def eta_econ(g, fid, income=None) -> float:
     if not g.econ_enabled():
         return ETA_NONE
     s = g.econ_stage(fid)
@@ -51,7 +111,7 @@ def eta_econ(g, fid) -> float:
                for k in steps) * C.MONEY_SCALE
     turns = sum(C.ECON[k]["turns"] for k in steps) + (C.AI_P3_CLUSTER_TURNS if s == 0 else 0)
     cost -= _paid(g, fid, "econ") + max(0.0, g.factions[fid].money)
-    return min(ETA_NONE, max(turns, max(0.0, cost) / income_est(g, fid)))
+    return min(ETA_NONE, max(turns, max(0.0, cost) / (income_est(g, fid) if income is None else income)))
 
 
 def region_rate(g, fid) -> float:
@@ -68,6 +128,8 @@ def region_rate(g, fid) -> float:
 
 
 def eta_conquest(g, fid) -> float:
+    if 'conquest' not in g.settings.victories:
+        return ETA_NONE
     need = math.ceil(C.CONQUEST_SHARE * len(g.regions)) - g.region_count(fid)
     if need <= 0:
         return 1.0
@@ -78,6 +140,39 @@ def eta_conquest(g, fid) -> float:
 
 
 ETA = {"science": eta_science, "economic": eta_econ, "conquest": eta_conquest}
+
+
+def victory_estimates(g, fid):
+    """자국 목표 비교: 공개 지형·자국 단계/재정과 현재 외교 관계를 사용한다."""
+    income = income_available(g, fid)
+    estimates = {k: (fn(g, fid, income=income) if k in ('science', 'economic') else fn(g, fid))
+                 for k, fn in ETA.items() if k in g.settings.victories}
+    if 'diplomatic' in g.settings.victories:
+        cid = D.coalition_of(g, fid)
+        outsiders = set(g.alive_ids()) - (g.dip.coalitions[cid]['members'] if cid is not None else {fid})
+        # 현행 전원 연합 승리: 적대국이 남았을 때 낙관적인 단기 완승으로 계산하지 않는다.
+        can = not (g.mods(fid).value('no_alliance') or g.mods(fid).value('no_coalition'))
+        close = can and cid is not None and all(D.allied(g, fid, x) and
+                    D.opinion(g, x, fid) >= D.threshold(g, x, fid, C.COALITION_MIN)
+                    and not g.mods(x).value('no_coalition') for x in outsiders)
+        waits = [max(0, min(g.mods(y).value('coalition_alliance_turns', C.COALITION_ALLIANCE_TURNS)
+                           for y in (fid, x)) - (g.turn - g.dip.alliance.get(D.pair(fid, x), g.turn)))
+                 for x in outsiders] if close else []
+        estimates['diplomatic'] = (1 + max(waits, default=0) + 2 * len(outsiders)) if close else ETA_NONE
+    if 'time' in g.settings.victories:
+        scores = g.time_scores()
+        estimates['time'] = max(1, g.settings.max_turns - g.turn) if scores and max(scores, key=scores.get) == fid else ETA_NONE
+    return estimates
+
+
+def prefer_fastest(scores, estimates):
+    """실행 가능한 가장 빠른 길을 우선한다. 10%/2턴 이내 오차권에서만 성향·조건 점수로 고른다."""
+    viable = {k: e for k, e in estimates.items() if k in scores and scores[k] > 0 and e < ETA_NONE}
+    if not viable:
+        return max(scores, key=scores.get)
+    fastest = min(viable.values())
+    close = [k for k, eta in viable.items() if eta <= fastest + max(2, fastest * .1)]
+    return max(close, key=lambda k: (scores[k], -viable[k]))
 
 
 def best_eta(g, fid):

@@ -81,7 +81,8 @@ def choose_victory_goal(g, f):
                        * leader_bias(g, fid, "ally") if can_ally else -1.0),
         "time": 0.3 + (0.4 * t_prog if top else 0.1 * t_prog),
     }
-    return max(vt, key=lambda v: score[v] + g.rng.uniform(0, 0.25))
+    return EG.prefer_fastest({v: max(.001, score[v]) + g.rng.uniform(0, .1) for v in vt},
+                             EG.victory_estimates(g, fid))
 
 
 def set_strategy(g, f):
@@ -89,7 +90,7 @@ def set_strategy(g, f):
     w = {"military": 0.4 + a / 10, "economy": 1.4 - a / 25, "expansion": 1.2, "defense": 0.6}
     if PH.phase(f) >= 2 and ST.path_of(f):
         f.ai["victory_goal"] = ST.path_of(f)          # 2페이즈: 종합 판단으로 고른 방향
-    elif "victory_goal" not in f.ai or g.turn - f.ai.get("goal_turn", -999) >= C.TURNS_PER_YEAR:
+    elif "victory_goal" not in f.ai or g.turn - f.ai.get("goal_turn", -999) >= C.AI_P2_EVAL_TURNS:
         f.ai["victory_goal"] = choose_victory_goal(g, f)
         f.ai["goal_turn"] = g.turn
     goal = f.ai["victory_goal"]
@@ -2481,8 +2482,10 @@ def _slots(g, f, threat, military=True):
             gain = per_turn * max(0, ctx['horizon'] - t["eff_turns"]) * wts.get("expansion", 1)
             if t["joint"]:   # 거드는 몫은 앞당겨지는 턴만큼만
                 gain *= (t["turns"] - t["eff_turns"]) / max(1, t["turns"])
-            target_need = max(0, tr.pop - C.ADMIN_OUTPUT[min(5, tr.b['admin'])])
-            capacity = 1 / (1 + target_need / max(5, ctx['admin_prod'] - ctx['admin_cons'] + f.admin / 8))
+            future_pop = tr.pop * (1 + AE.population_rate(g, f, tr)) ** min(ctx['admin_window'], t['eff_turns'] + 6)
+            target_need = max(0, future_pop - AE.admin_base(g, f, tr, tr.b['admin']) *
+                              g.mods(fid).mult('admin_building_output') * g.mods(fid).mult('admin_output'))
+            capacity = 1 / (1 + target_need / max(5, ctx['admin_margin'] + max(0, f.admin - ctx['admin_keep']) / 12))
             # 높은 산출·기존 행정 기반이 있는 도시는 부족한 비축만 보고 일률적으로 포기하지 않는다.
             # 확장 뒤 생기는 행정 부담을 유지 비용처럼 가격에 반영한다.
             admin_price = 12 if f.lawless or ctx['admin_cover'] < 6 else 3
@@ -2721,13 +2724,23 @@ def _slots(g, f, threat, military=True):
                              and f.money - reserve >= per * 3)
         if per > avail and not (kind == "unit" and f.money > per * 2) and not prod_from_savings:
             continue
+        if kind == 'annex' and ctx['admin_gap'] > 0:
+            tr = g.regions[key]
+            burden = max(0, tr.pop - AE.admin_base(g, f, tr, tr.b['admin']))
+            room = max(0, ctx['admin_margin']) + max(0, f.admin - ctx['admin_keep']) / 12
+            if burden > max(5, room):
+                continue  # 선행 편입과 성장을 충당할 행정 기반부터 짓고 확장을 재개한다.
         if kind == 'build':
+            if key == 'admin' and u >= 50 and ctx['admin_gap'] <= 0:
+                continue
             actual = [o for o in options_by_region.get(rid, ()) if o['kind'] == kind and o['key'] == key
                       and o['ok'] and (border is None or o.get('border') == border)
                       and (slot is None or o.get('slot') == slot) and (pool is None or o.get('pool') == pool)]
             if not actual:
                 continue
             option = g._pick_option(actual)
+            if AE.slot_factor(g, f, rid, option, ctx) <= 0:
+                continue  # 경제/과학 선행 시설 후보도 자원 예약 슬롯을 우회하지 않는다.
             per = option['per_turn']
             if not AE.can_finance(g, f, ctx, option):
                 continue
@@ -2736,6 +2749,11 @@ def _slots(g, f, threat, military=True):
             used.add(rid)
             avail -= per
             ctx['new_commitments'] = ctx.get('new_commitments', 0) + per
+            if kind == 'annex' or kind == 'build' and key == 'admin':
+                # 같은 턴 여러 편입도 한 행정 예산을 공유한다. 다음 편입은 늘어난 부담을 보고 판단한다.
+                future = AE.snapshot(g, f, threat)
+                for field in ('admin_gap', 'admin_keep', 'admin_cover', 'admin_margin', 'expansion_admin'):
+                    ctx[field] = future[field]
         if avail <= 0:
             break
     if f.is_ai and PH.phase(f) >= 2:
@@ -2860,17 +2878,25 @@ def _fill_slots(g, f, idle, post, reserve, income, upkeep, spr=""):
         r = g.regions[rid]
         if rid in used or r.project or value <= .1:
             continue
+        if key == 'admin' and value >= 50 and ctx['admin_gap'] <= 0:
+            continue
         opts = [o for o in g.options(fid, rid) if o['kind'] == 'build' and o['key'] == key and o['ok']
                 and (slot is None or o.get('slot') == slot) and (pool_key is None or o.get('pool') == pool_key)]
         if not opts:
             continue
         o = g._pick_option(opts)
+        if AE.slot_factor(g, f, rid, o, ctx) <= 0:
+            continue
         if o['cost'] > budget or not AE.can_finance(g, f, ctx, o):
             continue
         if g.start_project(fid, rid, 'build', key, slot=slot, pool=pool_key)[0]:
             used.add(rid)
             budget -= o['cost']
             ctx['new_commitments'] = ctx.get('new_commitments', 0) + o['per_turn']
+            if key == 'admin':
+                future = AE.snapshot(g, f)
+                for field in ('admin_gap', 'admin_keep', 'admin_cover', 'admin_margin', 'expansion_admin'):
+                    ctx[field] = future[field]
 
 
 def _great_people_orders(g, f, threat=None):

@@ -174,6 +174,7 @@ def test_last_slot_is_preserved_for_necessary_admin(game):
     r.b.slots['base'] = [dict(key='bank', level=1), None]
     r.b.resync()
     r.pop, g.player.admin = 50, 0
+    admin_burden(g, 50)  # 수도 자체의 인구는 집무실이 이미 충당한다.
     options = g.options(0, r.id)
     a = next(o for o in options if o['key'] == 'admin' and o['ok'])
     bank = next(o for o in options if o['key'] == 'bank' and o['level'] == 1)
@@ -191,6 +192,7 @@ def test_planned_admin_reduces_pressure_and_redevelopment_preserves_food(game):
     r.b.slots['base'] = [dict(key='farm', level=1), dict(key='bank', level=1)]
     r.b.resync()
     r.pop, g.player.admin, g.player.lawless = 50, 0, True
+    admin_burden(g, 50)
     r.output = 1000
     assert E.redevelop(g, g.player, {}, ctx(g))
     assert r.b['farm'] == 1 and r.b['bank'] == 0 and r.project.key == 'admin'

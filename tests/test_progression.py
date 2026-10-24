@@ -80,7 +80,7 @@ def test_admin_deficit_grace_and_recovery_resistance():
     for turn in range(1, 5):
         g._phase_knowledge(g.player)
         assert g.player.lawless == (turn == 4)
-    assert r.h_delta == -5
+    assert r.h_delta == -3
     r.b["admin"] = 3
     g._phase_knowledge(g.player)
     assert not g.player.lawless and g.player.admin == 20

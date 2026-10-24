@@ -226,10 +226,11 @@ def path_scores(g, f, sc, rng=None) -> dict:
              * (1 - C.AI_P2_POOR_SCI * poor))
     top = bool(rank == 1 and n > 1)
     if top:
-        # GDP 1위: 지역이 적어도 돈으로 군대를 빨리 올릴 수 있다 — 정복과 경제는 같은 조건(둘 중 나은 쪽)에서
-        # 호전성(성격)·진척·정복 감점(강한 적대 이웃·피로·불행)으로 고른다. 과학·외교는 고르지 않는다
+        # 풍부한 재정은 군비 전환에도 쓸 수 있다. 순위로 다른 승리 경로를 배제하지 않는다.
         feas_c = feas_e = max(feas_c, feas_e)
         conquest = fit_c * feas_c * pen_c
+        if f.lawless or development['admin_cover'] < 6:
+            conquest *= .5
         why["conquest"] = f"GDP 1위, 호전성 {a * 10:.0f}" + (", 강한 적대 이웃" if stronger else "")
     economic = fit_e * feas_e
     # 반기 랭킹(공개 정보)에서 나보다 GDP가 높은 나라가 경제 단계도 앞서 있으면: 근소하면 그래도 시도하고,
@@ -254,9 +255,8 @@ def path_scores(g, f, sc, rng=None) -> dict:
         friendly = sum(1 for x in alive if D.allied(g, fid, x) or D.opinion(g, x, fid) >= 30) / max(1, len(alive))
         diplomatic = (0.2 + 0.6 * (1 - a)) * bias("ally") * 0.4 * friendly ** 2 * (1 + C.AI_P2_POOR_DIP * poor)
     why["diplomatic"] = "우호국 비율"
-    if top:
-        science = diplomatic = 0.0
     scores = {"conquest": conquest, "science": science, "economic": economic, "diplomatic": diplomatic}
+    scores = {k: v if k in g.settings.victories else 0.0 for k, v in scores.items()}
     # 남은 턴(ETA): 빨리 끝낼 수 있는 길에 조금 더(300턴보다 짧으면, ×1.0~1.25)
     from . import ai_endgame as EG
     for k in ("conquest", "science", "economic"):
@@ -271,14 +271,42 @@ def choose_path(g, f, sc, reason="정기") -> str:
     s = state(f)
     res = path_scores(g, f, sc, g.rng)
     scores = res["scores"]
-    best = max(PATHS, key=lambda k: scores[k])
+    from . import ai_endgame as EG
+    estimates = EG.victory_estimates(g, f.id)
+    # 시간 승리는 점수 선두가 마지막 턴까지 버티는 경로다. 종료가 가까울 때 다른 경로와 같이 비교한다.
+    if 'time' in estimates:
+        scores['time'] = .3
+    best = EG.prefer_fastest(scores, estimates)
+    s['eta'] = {k: round(v, 1) for k, v in estimates.items()}
     cur = s.get("path")
+    if f.ai.get('phase', 1) >= 3:
+        cur = cur or (f.ai.get('p3') or {}).get('kind')
+        current_eta, next_eta = estimates.get(cur, EG.ETA_NONE), estimates.get(best, EG.ETA_NONE)
+        significant = (best != cur and next_eta < EG.ETA_NONE and
+                       current_eta - next_eta >= max(12, current_eta * .30))
+        pending = s.get('switch_candidate') or {}
+        if significant:
+            if pending.get('path') != best:
+                pending = dict(path=best, last=g.turn, count=1)
+            elif g.turn - pending['last'] >= C.AI_P2_EVAL_TURNS:
+                pending.update(last=g.turn, count=pending['count'] + 1)
+            s['switch_candidate'] = pending
+        else:
+            s.pop('switch_candidate', None)
+        if not significant or pending.get('count', 0) < 2:
+            s.update(path=cur, scores=scores, last_eval=g.turn)
+            return cur  # 결승기: 30%·12턴 이상 빠르다는 예측이 6턴 간격 두 번 일치해야 한다.
+        s.pop('switch_candidate', None)
+    quicker = (estimates.get(best, EG.ETA_NONE) < EG.ETA_NONE and
+               estimates.get(best, EG.ETA_NONE) + max(2, estimates.get(best, EG.ETA_NONE) * .2)
+               < estimates.get(cur, EG.ETA_NONE))
     # 어느 쪽도 유리하지 않으면 자포자기하지 않고 강국에 기대 외교승리를 노린다(동맹을 맺을 수 있는 지도자만)
     other = max(scores[k] for k in ("conquest", "science", "economic"))
     limit = C.AI_P2_HOPELESS * (C.AI_P2_HOPELESS_EXIT if s.get("hopeless") else 1.0)
     # 강국에 기대기로 했으면 최소 48턴은 그대로(관계를 쌓을 시간). 그 뒤 최고점이 문턱×1.25를 넘으면 벗어난다
     committed = s.get("hopeless") and g.turn - s.get("hopeless_turn", -999) < C.AI_P2_HOPELESS_MIN
-    if (other < limit or committed) and not (g.mods(f.id).value("no_alliance") or g.mods(f.id).value("no_coalition")):
+    if (other < limit or committed) and not quicker and 'diplomatic' in g.settings.victories and not (
+            g.mods(f.id).value("no_alliance") or g.mods(f.id).value("no_coalition")):
         if not s.get("hopeless") or cur != "diplomatic":
             log = s.setdefault("log", [])
             log.append([g.turn, cur, "diplomatic", reason, "어느 방향도 유리하지 않음: 강국에 기대 외교"])
@@ -298,11 +326,11 @@ def choose_path(g, f, sc, reason="정기") -> str:
         cur = None                                 # 기댈 이유가 사라졌다: 관성 없이 다시 고른다
     # 바꾼 지 24턴이 안 됐으면 정기 재검토로는 바꾸지 않는다(선전포고를 받았거나 위기면 예외)
     settled = reason == "정기" and g.turn - s.get("path_turn", -99) < C.AI_P2_MIN_DWELL
-    if cur is None or (not settled and (scores[best] >= C.AI_P2_SWITCH * scores.get(cur, 0.0)
+    if cur is None or quicker or cur not in g.settings.victories or (not settled and (scores[best] >= C.AI_P2_SWITCH * scores.get(cur, 0.0)
                                         or scores.get(cur, 0.0) < C.AI_P2_MIN_SCORE)):
         if prev != best:
             log = s.setdefault("log", [])
-            log.append([g.turn, prev, best, reason, res["why"][best]])
+            log.append([g.turn, prev, best, reason, res['why'].get(best, f"예상 승리까지 {estimates.get(best, EG.ETA_NONE):.0f}턴")])
             del log[:-C.AI_P2_LOG]
             s["path_turn"] = g.turn
         cur = best
@@ -381,17 +409,14 @@ def update(g, f, threat=None):
         reason = "선전포고 받음"
     elif s["posture"] == "crisis" and old_posture != "crisis":
         reason = "위기"
-    p3 = (f.ai.get("p3") or {}).get("kind") if f.ai.get("phase", 1) >= 3 else None
-    if p3 and s.get("path") != p3:
-        log = s.setdefault("log", [])
-        log.append([g.turn, s.get("path"), p3, "3페이즈", "결승기: 이 승리 조건에 전념"])
-        del log[:-C.AI_P2_LOG]
-        s["path"], s["path_turn"] = p3, g.turn
     if reason:
-        if p3:
-            s["last_eval"] = g.turn            # 3페이즈: 노리는 승리 조건은 바꾸지 않는다(문턱에서 밀려나면 2페이즈로)
-        else:
-            choose_path(g, f, sc, reason)
+        old = (f.ai.get('p3') or {}).get('kind')
+        path = choose_path(g, f, sc, reason)
+        if f.ai.get('phase', 1) >= 3 and old != path:
+            from . import ai_phase as PH
+            PH._p3_log(g, f, 'exit', old)
+            f.ai.pop('p3', None)
+            f.ai['phase'] = PH._p3_update(g, f, 2, set(sc))
         s["anchor"] = choose_anchor(g, f, sc)
     p = s.get("patron")
     if p is not None and (not g.factions[p].alive or D.at_war(g, f.id, p)):

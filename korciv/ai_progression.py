@@ -121,7 +121,7 @@ def policy_reserve(g, f, ctx):
                    + g.great_person_bonus(r.id, 'admin_add')) * after.mult('admin_output')
     if future <= ctx['admin_prod']:
         return ctx['admin_keep']
-    return max(0, ctx['admin_cons'] - future) * 6 + max(0, ctx['admin_growth'] * 8 - max(0, future - ctx['admin_cons'])) * 2
+    return E.administration_forecast(g, f, ctx['regs'], future, ctx['admin_cons'])['admin_keep']
 
 
 def progression_orders(g, f, threat, crisis=False):
@@ -129,6 +129,8 @@ def progression_orders(g, f, threat, crisis=False):
     regs = ctx['regs']
     if not regs:
         return
+    if E.develop_resources(g, f, threat, ctx):
+        ctx = E.snapshot(g, f, threat)
     E.remember(f, ctx)
     E.redevelop(g, f, threat, ctx)
     people = [p for p in g.great_people if p['owner'] == f.id]
@@ -144,12 +146,9 @@ def progression_orders(g, f, threat, crisis=False):
     if g.rebel_happy(worst) <= -40 / preference(g, f.id, 'artist') and 'artist' not in kinds and not f.lawless:
         if _recruit(g, f, 'artist', worst.id, keep):
             kinds.add('artist')
-    ground = sum(a.count(('land',)) for a in g.armies.values() if a.owner == f.id)
-    if (crisis or ctx['enemies'] and ground >= 8 / preference(g, f.id, 'general')) and 'general' not in kinds:
-        site = max(regs, key=lambda r: (sum(a.count(('land',)) for a in g.armies_at(r.id, f.id))
-                                       * (1 + threat.get(r.id, 0)), r.id)).id
-        if g.armies_at(site, f.id):
-            _recruit(g, f, 'general', site, keep)
+    general = E.general_plan(g, f, ctx)
+    if general['value'] > 0 and general['site'] is not None and 'general' not in kinds:
+        _recruit(g, f, 'general', general['site'], keep)
     for _ in range(5):
         if f.policy_level >= 5:
             break

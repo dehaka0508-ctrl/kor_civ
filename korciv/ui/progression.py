@@ -58,7 +58,7 @@ def draw_balances(app, x, y, w, detailed=True):
         y = kv(gui, x, y, w, "행정력 생산 / 소비", f"{prod:,.1f} / {cons:,.1f}")
     y = kv(gui, x, y, w, "비축 과학력", f"{fmt_points(f.sci_points)}  (+{fmt_points(g.science_production(f.id))}/턴)")
     if f.lawless:
-        y = gui.wrap((x, y), "무법 상태 · 매 턴 전 지역 행복도 −5. 행정력을 흑자로 전환하세요.", w, 12, t.bad) + 5
+        y = gui.wrap((x, y), f"무법 상태 · 매 턴 전 지역 행복도 −{abs(C.LAWLESS_HAPPY):g}. 행정력을 흑자로 전환하세요.", w, 12, t.bad) + 5
     elif f.admin_deficit_turns:
         y = gui.wrap((x, y), f"행정력 고갈·적자 {f.admin_deficit_turns}턴 연속 · 행정 건물을 증축하세요.",
                      w, 11, t.warn) + 5

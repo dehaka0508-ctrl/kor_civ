@@ -974,17 +974,17 @@ def test_ai_builds_defense_on_hostile_border_more_when_rich():
     assert counts[200_000] > 0
 
 
-def test_ai_victory_goal_yearly():
+def test_ai_victory_goal_rechecks_every_six_turns():
     from korciv import ai as AI
     g = new_game(n_enemies=2)
     f = g.factions[1]
     AI.set_strategy(g, f)
     goal, turn = f.ai["victory_goal"], f.ai["goal_turn"]
     assert goal in g.settings.victories
-    g.turn += 12
+    g.turn += C.AI_P2_EVAL_TURNS - 1
     AI.set_strategy(g, f)
-    assert f.ai["goal_turn"] == turn        # 1년이 지나기 전엔 유지
-    g.turn += C.TURNS_PER_YEAR
+    assert f.ai["goal_turn"] == turn
+    g.turn += 1
     AI.set_strategy(g, f)
     assert f.ai["goal_turn"] == g.turn
 
@@ -2604,8 +2604,8 @@ def test_ai_p2_econ_follows_gdp_rank():
     assert "감당 가능" in ST.path_scores(g, f, {})["why"]["economic"]
 
 
-def test_ai_p2_gdp_top_picks_conquest_or_econ_by_aggression():
-    """GDP 1위는 정복과 경제 중 호전성에 맞는 쪽을 고른다(돈으로 군대를 빨리 올릴 수 있다). 과학·외교는 고르지 않는다."""
+def test_ai_p2_gdp_top_keeps_all_victory_paths():
+    """GDP 1위도 과학을 평가한다. 순위는 성향·실현 가능성 평가를 대체하지 않는다."""
     from korciv import ai_strategy as ST
     g = _p2_game()
     f = g.factions[0]
@@ -2619,7 +2619,8 @@ def test_ai_p2_gdp_top_picks_conquest_or_econ_by_aggression():
         return ST.path_scores(g, f, {})["scores"]
     hawk, dove = scores(9), scores(2)
     assert hawk["conquest"] > hawk["economic"] and dove["economic"] > dove["conquest"]
-    assert hawk["science"] == hawk["diplomatic"] == dove["science"] == dove["diplomatic"] == 0
+    assert hawk['science'] > 0 and dove['science'] > 0
+    assert dove['science'] > hawk['science']
     # 2위부터는 예전처럼: 약한 이웃이 없으면 정복은 어렵다
     g.rankings = {g.turn: [{"fid": x.id, "gdp": 500 if x.id == 0 else 1000 if x.id == 1 else 10, "science": 0, "econ": 0}
                            for x in g.factions if x.alive]}
@@ -2917,11 +2918,13 @@ def test_ai_gift_raises_opinion():
 
 def test_ai_p2_hopeless_turns_to_diplomacy_with_strongest(monkeypatch):
     from korciv import ai_strategy as ST
+    from korciv import ai_endgame as EG
     g = _p2_game()
     f = g.factions[0]
     why = {k: "" for k in ST.PATHS}
     low = {"scores": {"conquest": 0.1, "science": 0.15, "economic": 0.12, "diplomatic": 0.0}, "why": why}
     monkeypatch.setattr(ST, "path_scores", lambda *a, **k: low)
+    monkeypatch.setattr(EG, 'victory_estimates', lambda *a: {k: EG.ETA_NONE for k in ST.PATHS})
     for o, n in ((1, 2), (2, 3), (3, 30)):               # 3번이 가장 강하다
         g.new_army(o, g.factions[o].capital, {"inf": n})
     g.settings.fog = 0                                    # 모두 만나 본 것으로
@@ -3057,6 +3060,16 @@ def test_ai_phase3_entry_by_goal():
     assert PH.update(g, f2) == 3 and PH.p3_kind(f2) == "conquest"
 
 
+def _science_final_prerequisites(g, fid, complete=False):
+    """완료 단계만 기록한 가상 상황에도 실제 선행 시설과 과학 유닛을 맞춘다."""
+    oil = next(rid for rid in g.world.order if g.info(rid).is_oil and g.regions[rid].owner == NEUTRAL)
+    _own(g, fid, [oil])
+    g.regions[oil].b['extract'] = 5
+    g.regions[oil].resist = None
+    g.factions[fid].techs.update(('oil', 'coal'))
+    g.new_army(fid, g.factions[fid].capital, {k: 1 for k in C.SCIENCE_UNITS if complete or k != 'propellant'})
+
+
 def test_ai_phase3_sprint_when_ahead():
     """3페이즈: 내 승리 ETA 가 다른 나라 가장 빠른 ETA 의 1.2배 안이면 질주."""
     from korciv import ai_endgame as EG
@@ -3067,11 +3080,14 @@ def test_ai_phase3_sprint_when_ahead():
     f = g.factions[0]
     f.ai.update(phase=3, p3={"kind": "science", "turn": 0})
     f.science = list(C.SCIENCE_STEPS[:6])
+    f.money = 1e8
+    _science_final_prerequisites(g, 0)
     for r in g.regions_of(0):
         r.output = 10 ** 6                              # 돈은 넉넉하다
     p = EG.assess(g, f)
     assert p["eta"] < p["rival_eta"] and p["sprint"] and EG.sprint(f) == "science"
     g.factions[1].science = list(C.SCIENCE_STEPS)          # 남이 훨씬 앞서면 질주하지 않는다
+    _science_final_prerequisites(g, 1, complete=True)
     p["eval"] = -99
     assert not EG.assess(g, f)["sprint"]
 
@@ -3087,6 +3103,7 @@ def test_ai_harass_imminent_winner():
     leader = g.factions[1]
     leader.science = list(C.SCIENCE_STEPS[:6])
     leader.money = 10 ** 8
+    _science_final_prerequisites(g, 1)
     w = EG.watch(g, f)
     assert w["harass"] == 1 and w["urgency"] > 0.5
     assert EG.harass(g, f) == (1, w["urgency"])

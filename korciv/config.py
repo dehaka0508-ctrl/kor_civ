@@ -163,7 +163,7 @@ ADMIN_OUTPUT = (0, 5, 15, 30, 50, 100)
 EDU_SCIENCE = (0, 1, 2, 4, 6, 10)
 INITIAL_EDU = ("S006", "S033", "S044", "S061", "S067", "S109", "S126",
                "S152", "S213", "S228", "N001", "N076", "N150")
-LAWLESS_HAPPY = -5
+LAWLESS_HAPPY = -3
 LAWLESS_TURNS = 4
 DENSITY_BONUS_SCALE_MAX = 10.0
 # 게임모드(v1.3.6: 개척시대를 맨 앞·건국 화면 기본 선택으로, 기본모드 → 현실). 내부 키는 세이브 호환을 위해 그대로
@@ -218,7 +218,7 @@ CONSCRIPT_RECOVER_N = 3
 CONSCRIPT_RECOVERY = 3.0
 UNIT_START_HAPPY = {"light": -0.5, "heavy": -1.0}
 UNIT_DISBAND_HAPPY = {"light": 0.5, "heavy": 1.0}
-FAMINE_HAPPY = -5
+FAMINE_HAPPY = -3
 BOMBED_HAPPY = -2
 REBEL_ACCEPT_HAPPY = 20
 REBEL_SUPPRESS_HAPPY = 5
