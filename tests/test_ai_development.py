@@ -181,7 +181,7 @@ def test_last_slot_is_preserved_for_necessary_admin(game):
     assert E.slot_factor(g, g.player, r.id, a, ctx(g)) > E.slot_factor(g, g.player, r.id, bank, ctx(g))
 
 
-def test_planned_admin_reduces_pressure_and_redevelopment_preserves_food(game):
+def test_planned_admin_reduces_pressure_and_redevelopment_uses_stocked_food(game):
     g = game
     r = g.regions[g.player.capital]
     before = ctx(g)['admin_gap']
@@ -195,7 +195,8 @@ def test_planned_admin_reduces_pressure_and_redevelopment_preserves_food(game):
     admin_burden(g, 50)
     r.output = 1000
     assert E.redevelop(g, g.player, {}, ctx(g))
-    assert r.b['farm'] == 1 and r.b['bank'] == 0 and r.project.key == 'admin'
+    assert r.b['farm'] == 0 and r.b['bank'] == 1 and r.project.key == 'admin'
+    assert g.player.res['food'] >= ctx(g)['food_cons'] * 12
 
 
 def test_research_target_does_not_demolish_only_productive_market(game):

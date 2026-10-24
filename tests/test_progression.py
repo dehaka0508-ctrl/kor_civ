@@ -325,10 +325,11 @@ def test_save_migration_and_invalid_ids():
     assert not loaded.move_great_person(99, "S002")[0]
 
 
-def test_ai_uses_economic_environment_instead_of_aggression():
+def test_ai_uses_environment_and_aggression():
     import random
     from korciv.ai_progression import education_centers, science_reserve, tech_order
-    assert ai_pick_government(random.Random(1), 1, 4, 1, leader_key="cus") == ai_pick_government(random.Random(1), 10, 4, 1, leader_key="cus")
+    assert ai_pick_government(random.Random(1), 1, 0, 0, leader_key="cus") == 'parliamentary'
+    assert ai_pick_government(random.Random(1), 10, 0, 0, leader_key="cus") == 'fascist'
     g = game()
     assert g.player.capital in education_centers(g, 0)
     r = g.regions[g.player.capital]

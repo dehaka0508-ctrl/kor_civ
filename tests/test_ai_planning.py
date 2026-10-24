@@ -109,7 +109,7 @@ def test_science_eta_counts_current_project_progress_and_leader_turns(game):
     f.science = list(C.SCIENCE_STEPS[:6])
     oil = own(g, resource='oil')
     oil.b['extract'] = 5
-    f.techs.update(('aerospace', 'oil', 'coal'))
+    f.techs.update(('aerospace', 'extract'))
     for st in C.SCIENCE_UNITS:
         if st != 'propellant':
             g.new_army(0, f.capital, {st: 1})

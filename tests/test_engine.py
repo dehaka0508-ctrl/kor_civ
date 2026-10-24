@@ -3114,7 +3114,7 @@ def _science_final_prerequisites(g, fid, complete=False):
     _own(g, fid, [oil])
     g.regions[oil].b['extract'] = 5
     g.regions[oil].resist = None
-    g.factions[fid].techs.update(('oil', 'coal'))
+    g.factions[fid].techs.add('extract')
     g.new_army(fid, g.factions[fid].capital, {k: 1 for k in C.SCIENCE_UNITS if complete or k != 'propellant'})
 
 

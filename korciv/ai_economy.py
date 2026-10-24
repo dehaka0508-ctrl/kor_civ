@@ -435,25 +435,91 @@ def can_finance(g, f, ctx, option, additional=0):
     return f.money + net * window - costs - food_cost >= min(ctx['money_keep'], max(100, f.money * .25))
 
 
-def redevelop(g, f, threat, ctx):
-    """필수 행정/교육용 칸이 없을 때만 손실이 낮은 카드를 교체한다. 공사·승리 거점은 건드리지 않는다."""
-    need = 'admin' if ctx['admin_gap'] > 0 and (f.lawless or ctx['admin_cover'] < ctx['admin_window'] + 4) else (
-        'edu' if ctx['science'] < max(12, ctx['admin_cons'] * .6) and g.turn > 16 and ctx['net'] > 0 else None)
-    if need is None:
+def victory_project_allowed(g, f, rid, kind, key):
+    """승리 공사는 기본 한 건. 전액 현금 여유와 과학력 완충분이 있는 경우만 병행한다."""
+    if not f.is_ai:
+        return True
+    ctx = snapshot(g, f)
+    projects = list({id(p): p for r in ctx['regs'] for p in g.local_projects(r.id)}.values())
+    active = [p for p in projects if p.kind in ('science', 'econ') and p.remaining > 0]
+    if not active:
+        return True
+    options = [o for o in g.options(f.id, rid) if o['kind'] == kind and o['key'] == key and o['ok']]
+    if not options:
         return False
-    choices = []
+    option = options[0]
+    due = sum(p.per_turn * p.remaining for p in projects) + option['cost']
+    cash_keep = ctx['money_keep'] + 12 * (ctx['upkeep'] + ctx['food_bill'])
+    if f.money - cash_keep < due * 1.25:
+        return False
+    science = [(g.science_per_turn_cost(C.SCIENCE[p.key]['tier']), p.remaining)
+               for p in active if p.kind == 'science']
+    if kind == 'science':
+        science.append((g.science_per_turn_cost(C.SCIENCE[key]['tier']), option['turns']))
+    peak = sum(points for points, _ in science)
+    shortfall = max((sum(points * min(t, turns) for points, turns in science) - ctx['science'] * t
+                     for t in {turns for _, turns in science}), default=0)
+    return f.sci_points >= 1.5 * max(0, shortfall) + peak * 4
+
+
+def _replace_for_development(g, f, r, slot, need):
+    """검사 후 교체하고, 예상 밖 착수 거절이면 원래 카드·연료 배정을 복원한다."""
+    card, energy = dict(r.b.card(slot)), dict(r.energy)
+    if not g.demolish_card(f.id, r.id, slot)[0]:
+        return False
+    ok = g.start_project(f.id, r.id, 'build', need, slot=slot)[0]
+    if not ok:
+        r.b.place(card['key'], card['level'], slot)
+        r.energy = energy
+    else:
+        f.ai['last_redevelopment'] = [g.turn, r.id, need, True]
+    return ok
+
+
+def redevelop(g, f, threat, ctx):
+    """만석 지역의 행정 부족·인구 40만 이상 연구/시장 부재는 가장 낮은 농장부터 교체한다."""
+    if g.order_frozen(f.id):
+        return False
+    legacy_need = 'admin' if ctx['admin_gap'] > 0 and (f.lawless or ctx['admin_cover'] < ctx['admin_window'] + 4) else (
+        'edu' if ctx['science'] < max(12, ctx['admin_cons'] * .6) and g.turn > 16 and ctx['net'] > 0 else None)
+    choices, fallback = [], []
     for r in ctx['regs']:
         if resource_missing(g, r.id):
             continue  # 필수 행정·교육 재개발도 채굴 예정지 대신 다른 지역에서 한다.
-        if r.project or r.queue or r.occ or g.resisting(r) or r.metro is not None or r.b[need] or r.b.empty('base'):
+        if M.is_extra(g, r.id) or r.project or r.queue or r.occ or g.resisting(r) or r.flooded or r.b.empty('base'):
             continue
-        if threat.get(r.id, 0) >= 1 or r.sci or r.econ:
+        if threat.get(r.id, 0) >= 1:
+            continue
+        admin_need = ctx['admin_gap'] > 0 and not r.b['admin'] and (
+            f.lawless or sum(g.admin_consumption(x) for x in M.members(g, r.id)) > g.admin_output(r.id))
+        city = M.total_pop(g, r.id) >= 40
+        need = ('admin' if admin_need else 'edu' if city and not r.b['edu'] else
+                'bank' if city and not r.b['bank'] else legacy_need)
+        if need is None or r.b[need] or not g.building_allowed(f.id, r.id, need, 1)[0]:
             continue
         cost, turns = g.card_cost(f.id, r.id, need, 1)
+        cost *= r.b.mult_of('base')
         if not can_finance(g, f, ctx, dict(turns=turns, per_turn=cost / turns)):
             continue
+        farms = [(c['level'], t, idx) for t, idx, c in r.b.cards('farm') if t == 'base']
+        if farms:
+            level, t, idx = min(farms)
+            loss = C.FARM_FOOD * level * r.b.mult_of(t) * g.farm_mult(f.id, r.id) * g.mods(f.id).mult('food_prod')
+            window = max(12, turns)
+            food_needed = max(0, ctx['food_cons'] - ctx['food_prod'] + loss) * window
+            food_bill = max(0, food_needed - f.res.get('food', 0)) * C.MARKET_BUY['food']
+            committed = sum(p.per_turn * min(window, p.remaining) for p in ctx['projects'])
+            lost_tax = C.FARM_OUTPUT * level * r.b.mult_of(t) * g.farm_mult(f.id, r.id) * _output_mult(g, f, r) * f.tax
+            safe_food = (food_needed <= f.res.get('food', 0) or f.auto_food) and (
+                f.money + (ctx['income'] - lost_tax - ctx['upkeep']) * window - committed - cost - food_bill >= ctx['money_keep'])
+            if safe_food:
+                priority = 0 if need == 'admin' else 1 if need == 'edu' else 2
+                choices.append((priority, level, r.id, (t, idx), need))
+        # 기존 민생 복구의 저손실 생산 카드 대체는 유지하되 농장 교체가 가능하면 농장부터 쓴다.
+        if city or need == 'bank' or r.metro is not None or r.sci or r.econ:
+            continue
         for t, idx, card in r.b.cards():
-            if t != 'base' or card['key'] not in ('bank', 'farm', 'factory') or card['level'] >= 4:
+            if t != 'base' or card['key'] not in ('bank', 'factory') or card['level'] >= 4:
                 continue
             key, level = card['key'], card['level']
             if need == 'edu' and ctx['science'] > 0:
@@ -462,18 +528,16 @@ def redevelop(g, f, threat, ctx):
                     continue
                 if key == 'factory' and r.fuel_used > 0:
                     continue
-            if key == 'farm' and ctx['food_prod'] - C.FARM_FOOD * level < ctx['food_cons'] * 1.1:
-                continue
             loss = (C.BANK_OUTPUT * R.g(level) if key == 'bank' else
-                    C.FARM_OUTPUT * level if key == 'farm' else
                     R.factory_output(level, min(level, r.fuel_used)))
             benefit = r.pop if need == 'edu' else 5
-            choices.append((loss / max(1, benefit), r.id, (t, idx)))
-    for _, rid, slot in sorted(choices):
-        if g.demolish_card(f.id, rid, slot)[0]:
-            ok = g.start_project(f.id, rid, 'build', need, slot=slot)[0]
-            f.ai['last_redevelopment'] = [g.turn, rid, need, bool(ok)]
-            return ok
+            fallback.append((loss / max(1, benefit), r.id, (t, idx), need))
+    for _, _, rid, slot, need in sorted(choices):
+        if _replace_for_development(g, f, g.regions[rid], slot, need):
+            return True
+    for _, rid, slot, need in sorted(fallback):
+        if _replace_for_development(g, f, g.regions[rid], slot, need):
+            return True
     return False
 
 

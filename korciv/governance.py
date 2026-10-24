@@ -112,7 +112,7 @@ class GovernanceMixin:
 
     def building_tech(self, rid, key):
         if key == "extract":
-            return M.extract_res(self, rid)          # 광역 슬롯: 구성 지역 전체의 자원
+            return ("extract",) if M.extract_res(self, rid) else ()
         return (key,) if key in ("farm", "fishery", "factory", "bank", "power") else ()
 
     def building_allowed(self, fid, rid, key, level, pool=None):
@@ -125,7 +125,7 @@ class GovernanceMixin:
         if key == "nuclear" and self.settings.mode != "standard" and "power" not in f.techs:
             return False, "대용량 전력망 기술 필요"
         if level >= 4:
-            techs = (pool,) if pool in ("oil", "coal") else self.building_tech(rid, key)
+            techs = ("extract",) if key == 'extract' and pool in ("oil", "coal") else self.building_tech(rid, key)
             if any(tech not in f.techs for tech in techs):
                 return False, "4단계 이상 증축 기술 필요"
         if key not in ("admin", "edu"):

@@ -29,7 +29,7 @@ def _setup(n_extra=3, **kw):
         rr.pop = min(rr.pop, 45) if r != g.player.capital else rr.pop
     g.regions["S002"].b["factory"] = 5
     g.regions[nb[0]].b["bank"] = 5
-    g.player.techs.update(("farm", "fishery", "factory", "bank", "coal", "oil", "power"))
+    g.player.techs.update(("farm", "fishery", "factory", "bank", "extract", "power"))
     g.player.money = 10 ** 7
     return g, sel
 
@@ -675,7 +675,7 @@ def test_metro_extract_split_by_resource():
     assert g.extract_amount(0, g.regions["S002"], "coal") == pytest.approx(2 * 2 * m.mult("output_extract"))
     mined = g.energy_mined(0)
     assert mined["oil"] >= 4 * m.mult("output_extract") - 1e-9 and mined["coal"] >= 4 * m.mult("output_extract") - 1e-9
-    assert g.building_tech("S002", "extract") == ("oil", "coal")
+    assert g.building_tech("S002", "extract") == ("extract",)
 
 
 def test_metro_action_tab_shows_merged_slots(monkeypatch, tmp_path):

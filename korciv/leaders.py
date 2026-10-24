@@ -251,26 +251,54 @@ def banned_govs(leader_key: str) -> set:
     return set()
 
 
-def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=(),
-                       *, leader_key="cus", resources=0, coastal=False, neighbors=0) -> str:
-    """지도자의 효과와 시작 권역 산업·자원·해안·이웃 환경의 시너지.
+def _government_policy_value(m, aggression, resources):
+    """정책 적용 전후의 효용. 실제 배수·부호와 사용할 수 없는 혜택을 구별한다."""
+    war = .25 + .75 * aggression / 10
+    happy_need = 1 + min(1, max(0, m.value('capital_unhappy_rebel', 1) - 1) * .4
+                        + m.value('minority_rule', 0) + abs(m.value('focus_release_happy', 0)) * .1)
+    food_need = 1 + max(0, 1 - m.mult('food_prod')) * 2
+    factory = m.mult('output_factory') * (1 + 3 * m.add('factory_fuel_output'))
+    bank = m.mult('output_bank') * (1 + m.value('city_bank_output', 0))
+    food = m.mult('output_farm') * m.mult('food_prod')
+    build = m.mult('cost_build') * (.5 * m.mult('cost_factory') + .5 * m.mult('cost_admin')
+             + .3 * m.mult('cost_extract') + .3 * m.mult('cost_edu_low'))
+    time = m.mult('build_time_all') * m.mult('build_time_prod') * m.mult('build_time_industry')
+    attack = m.mult('atk_land') * m.mult('combat_all') * m.mult('atk_assault') * m.mult('inf_wave')
+    value = 3 * bank + 3 * factory + 2 * food * food_need
+    value += 2 * m.mult('science_output') * m.mult('science_edu') + 2 * m.mult('admin_output') * m.mult('admin_building_output')
+    value += .06 * m.add('admin_each') + .015 * m.add('capital_admin') - 1.2 * build - .8 * time
+    value += happy_need * (2 * m.add('happy_turn') + .025 * m.add('effective_happy')
+                          + .08 * m.add('lawless_grace') + .02 * (-50 - m.value('rebel_threshold', -50)))
+    value += war * (2 * attack - .8 * m.mult('cost_mil') - .4 * m.mult('upkeep_mil') * m.mult('upkeep_land')
+                    - .5 * m.mult('war_weary_rate') * (1 + m.value('no_allies_weary', 0))
+                    - .3 * m.mult('war_start_weary') - .06 * m.add('resist_turns'))
+    diplomacy_need = 1 + abs(m.value('no_allies_atk', 0)) * 2
+    value += diplomacy_need * (.3 * m.mult('gift_opinion') - .02 * m.add('treaty_threshold'))
+    if not m.value('no_resource_trade'):
+        value += .3 * m.mult('trade_opinion')
+    if not m.value('no_coalition'):
+        value += .01 * (24 - m.value('coalition_alliance_turns', 24))
+    if not m.value('no_academy'):
+        value -= .2 * war * m.mult('cost_academy')
+    if not m.value('no_chancellor'):
+        value -= .2 * m.mult('gp_chancellor_cost')
+    value -= .2 * m.mult('gp_scientist_cost') + .1 * m.mult('gp_artist_cost')
+    value += .15 * resources * m.add('extract3_extra') - .06 * m.add('science_unit_turns')
+    return value
 
-    aggression 인자는 이전 호출/세이브 호환을 위해 받지만 체제 점수에는 사용하지 않는다.
-    """
-    fx = LEADER_BY_KEY.get(leader_key, {}).get("fx", {})
-    scores = {key: rng.random() * .1 for key in POLICIES}
-    scores["absolute"] += .10 * max(0, neighbors) + .25 * bool(fx.get("capital_bonus_mult"))
-    scores["constitutional"] += .22 * max(0, neighbors) + .5 * bool(fx.get("happy_turn"))
-    scores["presidential"] += .15 * (factory_level + bank_level) + .8 * bool(fx.get("build_time_prod"))
-    scores["parliamentary"] += .35 * bank_level + .45 * bool(coastal) + .6 * bool(fx.get("output_bank"))
-    scores["parliamentary"] += .5 * any(k in fx for k in ("trade_m", "market_sell", "ai_opinion_turn", "port_bank"))
-    scores["socialist"] += .35 * factory_level + .45 * resources
-    scores["socialist"] += .65 * any(k in fx for k in ("output_factory", "build_time_factory", "output_farm", "food_prod"))
-    scores["fascist"] += .12 * max(0, neighbors) + .25 * resources
-    scores["fascist"] += .6 * any(k in fx for k in ("cost_mil", "atk_assault", "atk_inf", "bomb_art", "naval_power", "inf_wave"))
-    scores["constitutional"] += .6 * any(k in fx for k in ("science_turns", "war_start_weary", "tax_over10"))
-    scores["absolute"] += .5 * any(k in fx for k in ("occ_time", "occupied_happy_extra", "far_output"))
-    # 새 지도자 행동 선호와 실제 정책 트리를 연결한다. 호전성 자체로 체제를 정하지 않는다.
+
+def ai_government_scores(aggression, factory_level, bank_level, *, leader_key='cus', resources=0,
+                         coastal=False, neighbors=0):
+    """환경 기본 편차를 20% 줄이고 호전성·지도자 선호·실제 정책 시너지를 합산한다."""
+    aggression = max(0, min(10, aggression))
+    factory_level, bank_level = max(0, min(6, factory_level)), max(0, min(6, bank_level))
+    resources, neighbors = max(0, min(2, resources)), max(0, min(8, neighbors))
+    environment = dict(absolute=.10 * neighbors, constitutional=.22 * neighbors,
+                       presidential=.15 * (factory_level + bank_level),
+                       parliamentary=.35 * bank_level + .45 * bool(coastal),
+                       socialist=.35 * factory_level + .45 * resources,
+                       fascist=.12 * neighbors + .25 * resources)
+    scores = {key: 1 + .8 * value for key, value in environment.items()}
     from .ai_personality import PROFILES
     pref = PROFILES.get(leader_key, {})
     synergy = {
@@ -281,8 +309,25 @@ def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: i
         'socialist': {'factory': 1.5, 'power': 1, 'extract': 1, 'farm': 1},
         'fascist': {'inf': 1, 'tank': 1, 'art': 1, 'general': 1, 'war': 1},
     }
+    leader_base = _government_policy_value(Mods(leader_key, None), aggression, resources)
+    neutral_base = _government_policy_value(Mods('cus', None), aggression, resources)
     for gov, weights in synergy.items():
-        scores[gov] += sum(pref.get(action, 0) * weight for action, weight in weights.items())
+        scores[gov] += .8 * sum(pref.get(action, 0) * weight for action, weight in weights.items())
+        scores[gov] += .4 * (1 - abs(aggression - GOV_BY_KEY[gov]['target']) / 10)
+        interaction = 0.0
+        for level, weight in ((1, .4), (3, .35), (5, .25)):
+            gain = _government_policy_value(Mods(leader_key, gov, level), aggression, resources) - leader_base
+            ordinary = _government_policy_value(Mods('cus', gov, level), aggression, resources) - neutral_base
+            interaction += weight * (gain - ordinary)
+        scores[gov] += max(-.6, min(.6, interaction))
+    return scores
+
+
+def ai_pick_government(rng, aggression: float, factory_level: int, bank_level: int, banned=(),
+                       *, leader_key="cus", resources=0, coastal=False, neighbors=0) -> str:
+    scores = ai_government_scores(aggression, factory_level, bank_level, leader_key=leader_key,
+                                 resources=resources, coastal=coastal, neighbors=neighbors)
+    scores = {key: value + rng.uniform(-.04, .04) for key, value in scores.items()}
     blocked = set(banned) | banned_govs(leader_key)
     allowed = [key for key in scores if key not in blocked]
     return max(allowed, key=scores.get) if allowed else "presidential"

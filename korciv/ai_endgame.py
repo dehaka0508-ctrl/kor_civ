@@ -85,8 +85,8 @@ def eta_science(g, fid, income=None) -> float:
             elapsed = max(elapsed, prep)
             if prep > 0 and key in ('bank', 'factory') and key not in f.techs:
                 techs.add(key)
-            if prep > 0 and key == 'extract':
-                techs.update(t for t in ('oil', 'coal') if any(t in M.extract_res(g, r.id) for r in candidates) and t not in f.techs)
+            if prep > 0 and key == 'extract' and 'extract' not in f.techs:
+                techs.add('extract')
         elapsed += duration
     if "aerospace" not in f.techs:
         techs.add('aerospace')

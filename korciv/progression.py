@@ -13,16 +13,15 @@ TECHS = {
     "art": dict(name="자주포 체계", cost=1200, kind="unit", description="자주포: 공18/방18/폭20/체12"),
     "tank": dict(name="주력전차 개발", cost=1800, kind="unit", description="전차: 공25/방25/체55"),
     "lst": dict(name="대형 수송선 건조", cost=1000, kind="unit", description="수송선: 수송14/체35"),
-    "dd": dict(name="이지스 전투체계", cost=2200, kind="unit", description="이지스함: 공30/방30/폭30/체75"),
-    "cv": dict(name="항공모함 강습단", cost=3000, kind="unit", description="항공모함 생산 해금: 함재기6/체100"),
+    "dd": dict(name="이지스 전투체계", cost=1400, kind="unit", description="이지스함: 공30/방30/폭30/체75"),
+    "cv": dict(name="항공모함 강습단", cost=2000, kind="unit", description="항공모함 생산 해금: 함재기6/체100"),
     "ftr": dict(name="초음속 전투기", cost=2000, kind="unit", description="전투기: 방35/요격35/체35"),
     "bmb": dict(name="스텔스 항법", cost=2800, kind="unit", description="스텔스폭격기: 폭55/체30, 요격 피해 -40%"),
     "farm": dict(name="현대 농업", cost=1000, kind="building", description="농장 4~5단계, 광역시 6단계 해금"),
     "fishery": dict(name="원양·양식 수산업", cost=1000, kind="building", description="어장 4~5단계, 광역시 6단계 해금"),
     "factory": dict(name="스마트 공정", cost=2000, kind="building", description="공장 4~5단계, 광역시 6단계 해금"),
     "bank": dict(name="현대 금융·유통", cost=1800, kind="building", description="시장 4~5단계, 광역시 6단계 해금"),
-    "coal": dict(name="심부 채광 기술", cost=1500, kind="building", description="탄광 4~5단계 해금"),
-    "oil": dict(name="고도 정유 공정", cost=1800, kind="building", description="정유공장 4~5단계 해금"),
+    "extract": dict(name="자원 채굴 고도화", cost=1500, kind="building", description="탄광·정유공장 4~5단계, 광역시 6단계 해금"),
     "power": dict(name="대용량 전력망", cost=1800, kind="building", description="화력 4~5단계, 원자력발전소 건설 해금"),
     "aerospace": dict(name="우주항공공학", cost=3500, kind="victory", description="항공우주연구소 및 과학승리 해금"),
 }
@@ -80,6 +79,13 @@ GREAT_PEOPLE = {
 
 
 class ProgressionMixin:
+    @staticmethod
+    def migrate_resource_techs(techs):
+        """옛 기술 하나라도 배웠으면 통합 기술을 계승한다. 재고·포인트를 소급 변경하지 않는다."""
+        if techs.intersection(('coal', 'oil')):
+            techs.difference_update(('coal', 'oil'))
+            techs.add('extract')
+
     def policy_level(self, fid):
         return max(0, min(5, int(getattr(self.factions[fid], "policy_level", 0))))
 

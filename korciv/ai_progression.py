@@ -60,16 +60,16 @@ def tech_scores(g, f, ctx=None):
             action = key if key in ('inf', 'art', 'tank') else 'naval' if key in ('lst', 'dd', 'cv') else 'air'
             benefit *= preference(g, f.id, action) * preference(g, f.id, 'tech_military')
         elif spec['kind'] == 'building':
-            building = 'extract' if key in ('oil', 'coal') else key
-            eligible = [r for r in regs if (key != 'oil' or g.info(r.id).is_oil)
-                        and (key != 'coal' or g.info(r.id).is_coal)]
+            building = key
+            eligible = [r for r in regs if key != 'extract' or M.extract_res(g, r.id)]
             high = sum(sum(lv >= 3 for lv in r.b.levels(building)) for r in eligible)
             benefit = high * (4 if building in ('bank', 'factory') else 2)
             if key in ('farm', 'fishery') and ctx['food_short'] > 0:
                 benefit *= 2
             if key == 'power' and any(g.info(r.id).nuclear and not r.b['nuclear'] for r in regs):
                 benefit += 2
-            if goal == 'science' and key in ('factory', 'bank', 'oil'):
+            if goal == 'science' and (key in ('factory', 'bank') or
+                                     key == 'extract' and any('oil' in M.extract_res(g, r.id) for r in eligible)):
                 benefit += 3 if high else 1
             if key == 'bank' and not enemies:
                 benefit += .5

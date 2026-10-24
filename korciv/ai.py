@@ -1900,7 +1900,7 @@ def _econ_orders(g, f, regs, idle, cands, threat, income, upkeep, bias):
             sites = [r for r in sites if r.id == cap] or ([] if len(ex) + len(ex_busy) >= C.ECON_EXCHANGES - 1 else sites)
         if sites:
             best = min(sites, key=lambda r: (threat.get(r.id, 0), -r.pop))
-            if g.start_project(fid, best.id, "econ", step)[0]:
+            if AE.victory_project_allowed(g, f, best.id, 'econ', step) and g.start_project(fid, best.id, "econ", step)[0]:
                 if spr:
                     best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
                 break                                 # 큰 공사는 한 턴에 하나씩
@@ -2693,7 +2693,8 @@ def _slots(g, f, threat, military=True):
                 # 위협이 적고 수도에 가까운 곳(유닛은 발사대까지 옮겨야 한다)
                 dist = g.world.distances_from(f.capital, 30)
                 best = min(sites, key=lambda r: (threat.get(r.id, 0), dist.get(r.id, 99)))
-                if g.start_project(fid, best.id, "science", step)[0] and spr == "science":
+                if (AE.victory_project_allowed(g, f, best.id, 'science', step)
+                        and g.start_project(fid, best.id, "science", step)[0] and spr == "science"):
                     best.project.priority = -1        # 질주: 승리 조건 공사에 돈을 먼저
             elif step == "propellant":
                 # 정유공장 5단계 지역이 없으면 석유 지역의 정유공장을 가장 높은 곳부터 올린다

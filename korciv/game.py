@@ -197,6 +197,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                     setattr(f, attr, value)
             if "techs" not in f.__dict__:
                 f.techs = set()
+            self.migrate_resource_techs(f.techs)
         self._migrate_slots(s)
         for r in self.regions.values():   # 이전 버전 세이브 호환
             if not hasattr(r, 'queue'):
