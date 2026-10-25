@@ -457,3 +457,18 @@ def test_extract_one_card_per_region_and_old_saves_merge():
     g2 = pickle.loads(pickle.dumps(g))
     b2 = g2.regions[rid].b
     assert b2.count("extract") == 1 and b2["extract"] == 5 and len(b2.empty("base")) == 3
+
+
+def test_new_specialty_site_gets_etc_slot_in_old_saves():
+    """v1.3.26: 경산 삽살개처럼 자료에 특산물 입지가 새로 생기면, 새 판(현실)은 특산물 시설 1단계로 시작하고
+    예전 세이브는 불러올 때 빈 기타 슬롯이 생겨 지을 수 있다."""
+    from test_engine import new_game
+    g = new_game(n_enemies=1)
+    rid = g.world.name_to_id["경북 경산시"]
+    assert g.info(rid).specialties == ("삽살개",)
+    b = g.regions[rid].b
+    assert b["specialty"] == 1 and len(b.slots["etc"]) == 1
+    b.slots["etc"] = []                            # 예전 세이브: 기타 슬롯 없음
+    b.resync()
+    g2 = pickle.loads(pickle.dumps(g))
+    assert g2.regions[rid].b.slots["etc"] == [None]

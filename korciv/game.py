@@ -274,6 +274,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self.enforce_solo()                  # v1.3.0 전 세이브: 포병·폭격기가 섞인 부대를 병종별로 나눈다
         self.base_world = self.world
         self._migrate_coast_slots()          # v1.3.24: 해안으로 바뀐 지역(박천)에 해안 슬롯
+        self._migrate_etc_slots()            # v1.3.26: 입지가 늘어난 지역(경산 삽살개)에 기타 슬롯
         M.migrate(self)                      # v1.3.9 전 세이브: 광역시 통합 건물 → 광역 슬롯(v1.3.16)
         self._migrate_unique_extract()       # v1.3.24: 채굴 카드는 지역마다 한 장
         self.drop_stale_annex()              # v1.3.25: 이미 차지한 지역의 대기 편입 정리
@@ -298,6 +299,19 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         for m in M.metros(self).values():
             for rows in m.get("pre_slots", {}).values():
                 S.merge_duplicates(rows, "extract", top)
+
+    def _migrate_etc_slots(self):
+        """지역 자료에 특산물·댐·원전 입지가 새로 생기면(v1.3.26 경산 삽살개) 예전 세이브에도 빈 기타 슬롯을 붙인다.
+        장보고 무료 항구 칸(맨 뒤)보다 앞에 넣는다. 기타 슬롯은 광역시에서도 지역마다 따로다."""
+        for rid, r in self.regions.items():
+            b = r.b
+            if not hasattr(b, "slots") or "etc" not in b.slots:
+                continue
+            row = b.slots["etc"]
+            need = len(S.etc_kinds(self.info(rid))) - sum(1 for c in row if not (c and c.get("free")))
+            if need > 0:
+                at = next((i for i, c in enumerate(row) if c and c.get("free")), len(row))
+                row[at:at] = [None] * need
 
     def _migrate_coast_slots(self):
         """지역 데이터에서 해안이 된 지역(v1.3.24 박천)은 예전 세이브에서도 해안 슬롯 한 칸을 갖는다."""

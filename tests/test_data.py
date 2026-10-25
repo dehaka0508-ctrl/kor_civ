@@ -61,6 +61,7 @@ def test_sea_coasts():
     assert w.regions[n["경북 울진군"]].seas == ("SEA7",) and w.regions[n["경북 영덕군"]].seas == ("SEA6",)
     assert w.regions[n["함남 단천시"]].seas == ("SEA8",) and w.regions[n["함북 성진시"]].seas == ("SEA9",)
     assert w.regions[w.name_to_id["경북 울릉군"]].specialties == ("독도새우", "명이")
+    assert w.regions[w.name_to_id["경북 경산시"]].specialties == ("삽살개",)      # v1.3.26
     # 해안선에 맞춘 해역 모양이 저장되어 있다
     assert set(w.sea_shapes) == set(w.seas)
     assert w.regions[n["평북 박천군"]].seas == ("SEA1",)
