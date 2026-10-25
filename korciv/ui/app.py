@@ -13,7 +13,7 @@ from .. import diplomacy as D
 from .. import metro as M
 from .. import slots as S
 from ..data import SEA_NAMES, load_world
-from ..game import Game, initial_buildings
+from ..game import Game
 from ..leaders import LEADER_BY_KEY
 from ..state import NEUTRAL, Army, Settings
 from ..version import VERSION, compatible
@@ -725,28 +725,24 @@ class App:
         return next(x for x in SUB_MODES[mode] if x[0] == key)
 
     def overlay_level(self, sub, r, info, visible):
-        """세부 모드의 단계(0 = 표시 안 함). 지금 보이지 않는 지역은 게임 시작 시점의 건물 상태로."""
-        if visible:
+        """세부 모드의 단계(0 = 표시 안 함). 지금 보이지 않는 지역은 기억한 건물(v1.3.25: 마지막으로 본 모습,
+        본 적 없으면 게임 시작 시점)로."""
+        view = None if visible or not self.game else self.game.building_view(self.game.player_id, r.id)
+        if view is not None:
+            b, lines = view["levels"], view.get("lines", {})
+        else:
             b = r.b
             if getattr(r, "metro", None) is not None:      # 광역시: 광역시 전체 건물(광역 카드·공유 건물)
                 g = self.game
                 b = {k: (g.blevel(r.id, k) if k in S.CARD_KEYS and k not in S.ETC_KEYS else v) for k, v in r.b.items()}
-        elif self.game and self.game.settings.mode != 'standard':
-            b = {key: 0 for key in r.b}
-            b['port'] = int(info.island == '무연륙 섬')
-        else:
-            cache = self.__dict__.setdefault("_init_b", {})
-            b = cache.get(info.id)
-            if b is None:
-                b = cache[info.id] = initial_buildings(info, self.world)
-        lines = self.game.regions[M.node(self.game, r.id)].lines if visible and self.game else {}   # 광역시: 광역시 칸의 방어선
+            lines = self.game.regions[M.node(self.game, r.id)].lines if self.game else {}   # 광역시: 광역시 칸의 방어선
         src = info.power_source or ""
         if sub == "specialty":
-            return b["specialty"] if info.specialty else 0
+            return b.get("specialty", 0) if info.specialty else 0
         if sub == "coal":
-            return (b["extract"] or 0.3) if info.is_coal else 0      # 탄광 없는 탄전은 아주 연하게
+            return (b.get("extract", 0) or 0.3) if info.is_coal else 0      # 탄광 없는 탄전은 아주 연하게
         if sub == "oil":
-            return info.oil + b["extract"] if info.is_oil else 0
+            return info.oil + b.get("extract", 0) if info.is_oil else 0
         if sub == "scenic":
             return 1 if info.scenic else 0
         if sub == "dam":
@@ -754,7 +750,7 @@ class App:
         if sub == "nuclear":
             return info.nuclear
         if sub == "power":
-            return b["power"]                      # 화력발전소 카드(댐·원전은 자원 탭에서)
+            return b.get("power", 0)                      # 화력발전소 카드(댐·원전은 자원 탭에서)
         if sub == "line":
             return max(lines.values(), default=0)
         return b.get(sub, 0)

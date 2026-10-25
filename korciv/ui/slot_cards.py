@@ -106,12 +106,20 @@ def _card_frame(gui, rect, col, left, right):
         gui.text((head.right - 6, head.y + 1), right, 10, col["head_text"], "semibold", anchor="topright")
 
 
-def special_cards(app, rid) -> list:
+def special_cards(app, rid, view=None) -> list:
     """기타 슬롯 아래 금빛 카드: 이 지역의 과학·경제승리 시설과 짓는 중인 과학·경제 공사.
-    [(머리, 이름, 효과, 공사 또는 None)]"""
+    [(머리, 이름, 효과, 공사 또는 None)]. view(안개 속 기억, v1.3.25)면 기억한 시설만(공사·집무실 없음)."""
     g = app.game
     r = g.regions[rid]
     out = []
+    if view is not None:
+        for k in C.SCIENCE_STEPS:
+            if k in view.get("sci", ()):
+                out.append(("과학", C.SCIENCE[k]["name"], f"과학 {C.SCIENCE_STEPS.index(k) + 1}단계", None))
+        for k in C.ECON_STEPS:
+            if k in view.get("econ", ()):
+                out.append(("경제", C.ECON[k]["name"], f"경제 {C.ECON_STEPS.index(k) + 2}단계", None))
+        return out
     office = g.office_building(rid)
     if office:
         out.append(("집무실", office["name"], f"행정력 +{fmt_points(office['output'])}/턴", None))
@@ -134,10 +142,15 @@ def special_cards(app, rid) -> list:
     return out
 
 
-def _cells(app, rid):
+def _view_summary(view) -> list:
+    """기억한 건물 모습의 슬롯 [(종류, 칸, 카드)](v1.3.25)."""
+    return [(t, i, c) for t in S.SLOT_TYPES for i, c in enumerate(view["slots"].get(t, ()))]
+
+
+def _cells(app, rid, view=None):
     g = app.game
-    summary = g.slot_summary(rid)
-    specials = special_cards(app, rid)
+    summary = g.slot_summary(rid) if view is None else _view_summary(view)
+    specials = special_cards(app, rid, view)
     return summary, specials, [(st, i) for st, i, _ in summary] + [("gold", k) for k in range(len(specials))]
 
 
@@ -157,12 +170,15 @@ def _select(app, rid, stype, idx):
     app._slot_reveal = app.slot_sel
 
 
-def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
+def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None, view=None):
     """슬롯 카드 그리드(기본 → 하천 → 해안 → 기타, 종류마다 새 줄)와 그 아래 과학·경제 금빛 카드. 다음 y.
-    select=True(행동 탭): 카드를 누르면 그 칸의 건설·증축 선택지를 펼친다."""
+    select=True(행동 탭): 카드를 누르면 그 칸의 건설·증축 선택지를 펼친다.
+    view(v1.3.25): 안개 속 지역의 기억(마지막으로 본 모습·시작 시점) — 읽기 전용, 공사 표시 없음."""
     gui, g, t = app.gui, app.game, app.theme
     r = g.regions[rid]
-    summary, specials, cells_list = _cells(app, rid)
+    if view is not None:
+        mine = select = False
+    summary, specials, cells_list = _cells(app, rid, view)
     cards = {(st, i): c for st, i, c in summary}
     picked = getattr(app, "slot_sel", None)
     selected = tuple(picked[1:]) if select and picked and picked[0] == rid else None
@@ -174,7 +190,12 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
     if not layout:
         gui.text((x, y), "건물 슬롯 없음", 12, t.muted)
         return y + 22
-    holes = g.etc_placeholders(rid)
+    if view is None:
+        holes = g.etc_placeholders(rid)
+    else:                                       # 기억: 입지에 있는데 기억 속에 없는 댐·원전·특산물 시설
+        have = {c["key"] for c in view["slots"].get("etc", ()) if c}
+        missing = [k for k in S.etc_kinds(g.info(rid)) if k not in have]
+        holes = {i: missing.pop(0) for i, c in enumerate(view["slots"].get("etc", ())) if c is None and missing}
     hover_tip = None
     for (stype, idx), rect in layout:
         col = slot_colors(t, stype)
@@ -194,9 +215,12 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
                              + (f"\n공사: {p.name or name}" if p is not None else ""))
             continue
         card = cards[(stype, idx)]
-        site = g.slot_site(rid, stype)          # 광역시 기본·하천·해안 슬롯은 중심의 광역 슬롯(v1.3.16)
-        mult = g.regions[site].b.mult_of(stype)
-        p = g.slot_project(site, (stype, idx)) if r.owner != NEUTRAL else None
+        if view is None:
+            site = g.slot_site(rid, stype)      # 광역시 기본·하천·해안 슬롯은 중심의 광역 슬롯(v1.3.16)
+            mult = g.regions[site].b.mult_of(stype)
+            p = g.slot_project(site, (stype, idx)) if r.owner != NEUTRAL else None
+        else:                                   # 기억(v1.3.25): 그때의 배수, 공사는 모른다
+            site, mult, p = rid, view["mult"].get(stype, 1), None
         if select and picked == (rid, stype, idx):
             gui.rect(t.gold, rect.inflate(6, 6), 3, radius=8)     # 고른 칸
         if card is None:
@@ -232,7 +256,7 @@ def draw_slot_grid(app, x, y, w, rid, mine=False, select=False, opts=None):
         _card_frame(gui, rect, col, S.SLOT_NAMES[stype] + (f" ×{mult}" if mult > 1 else ""), lv_txt)
         title = g.card_title(site, key, lv, stype)
         gui.text((rect.centerx, rect.y + 20), title, 12, col["title"], "bold", anchor="midtop", max_w=rect.w - 8, tip=False)
-        eff = g.card_effect(r.owner if r.owner != NEUTRAL else None, site, card, stype)
+        eff = g.card_effect(r.owner if r.owner != NEUTRAL and view is None else None, site, card, stype)
         if p is not None:                     # 공사 중: 상단 바에 목표 단계(Lv.1→2), 아래에 진행 막대·배지
             _project_badge(app, gui, t, rect, rid, p, col)
         else:
@@ -262,16 +286,18 @@ def _kinds(g, rid, stype) -> list:
     return out
 
 
-def resource_chips(app, rid) -> list:
-    """부존 자원·특산물·경관."""
+def resource_chips(app, rid, view=None) -> list:
+    """부존 자원·특산물·경관. view(안개 속 기억, v1.3.25)면 채굴량도 기억한 채굴 카드로."""
     g = app.game
     info = app.world.regions[rid]
     r = g.regions[rid]
     out = []
+    ext = r.b.cap('extract') if view is None else sum(
+        c["level"] * view["mult"].get(t, 1) for t, _, c in _view_summary(view) if c and c["key"] == "extract")
     if info.is_oil:
-        out.append(f"유전(원유 {info.oil + r.b.cap('extract'):g})")
+        out.append(f"유전(원유 {info.oil + ext:g})")
     if info.is_coal:
-        out.append(f"탄전{info.coal_field}(석탄 {r.b.cap('extract'):g})")
+        out.append(f"탄전{info.coal_field}(석탄 {ext:g})")
     if info.power_source:
         src = info.power_source
         kind = "수력" if info.hydro else "원전" if info.nuclear else "화력"
@@ -285,21 +311,23 @@ def resource_chips(app, rid) -> list:
     return out
 
 
-def facility_chips(app, rid) -> list:
-    """슬롯을 쓰지 않는 특수·방어·승리 시설."""
+def facility_chips(app, rid, view=None) -> list:
+    """슬롯을 쓰지 않는 특수·방어·승리 시설. view(안개 속 기억, v1.3.25)면 기억한 시설·방어선."""
     g = app.game
     r = g.regions[rid]
     out = []
-    office = g.office_building(rid)
+    office = g.office_building(rid) if view is None else None
     if office:
         out.append(f"{office['name']}(행정력 +{fmt_points(office['output'])}/턴)")
-    if r.b.get("airport"):
+    lv_of = (lambda k: r.b.get(k, 0)) if view is None else (lambda k: view["levels"].get(k, 0))
+    if lv_of("airport"):
         out.append("공항")
-    if r.b.get("shelter"):
-        out.append(f"방공호 {r.b['shelter']}")
-    if r.b.get("aa"):
-        out.append(f"대공포 {r.b['aa']}")
-    lines = [(bk, lv) for bk, lv in sorted(r.lines.items()) if lv]
+    if lv_of("shelter"):
+        out.append(f"방공호 {lv_of('shelter')}")
+    if lv_of("aa"):
+        out.append(f"대공포 {lv_of('aa')}")
+    src = r.lines if view is None else view.get("lines", {})
+    lines = [(bk, lv) for bk, lv in sorted(src.items()) if lv]
     if len(lines) <= 2:
         for bk, lv in lines:
             nm = "해안" if bk == "coast" else app.world.regions[bk].short
@@ -310,12 +338,18 @@ def facility_chips(app, rid) -> list:
     return out                              # 과학·경제 시설은 기타 슬롯 아래 금빛 카드(v1.3.9)
 
 
-def draw_slot_section(app, x, y, w, rid, mine=False):
+def draw_slot_section(app, x, y, w, rid, mine=False, view=None):
     """지역 정보 탭(v1.3.9): 내 지역은 부존 자원·슬롯 밖 시설 칩만(건물 슬롯 카드는 [행동] 탭),
-    다른 나라·중립 지역은 슬롯 카드를 읽기 전용으로 함께 보여 준다. 다음 y 를 돌려준다."""
+    다른 나라·중립 지역은 슬롯 카드를 읽기 전용으로 함께 보여 준다. 다음 y 를 돌려준다.
+    view(v1.3.25): 안개 속 지역은 지금 건물 대신 기억(마지막으로 본 모습, 본 적 없으면 시작 시점)."""
     from .panels import draw_chips, section
     gui, g, t = app.gui, app.game, app.theme
-    used, total = g.slot_counts(rid)
+    if view is None:
+        used, total = g.slot_counts(rid)
+    else:
+        summ = _view_summary(view)
+        used, total = sum(1 for _, _, c in summ if c), len(summ)
+        mine = False
     if mine:
         y = section(gui, x, y + 6, w, "부존 자원·슬롯 밖 시설")
         if gui.button((x, y - 2, w, 26), f"건물 슬롯 {used}/{total}칸 — [행동] 탭에서 건설·증축", size=11):
@@ -323,9 +357,13 @@ def draw_slot_section(app, x, y, w, rid, mine=False):
         y += 30
     else:
         y = section(gui, x, y + 6, w, f"건물 슬롯 및 부존 자원 · {used}/{total}칸")
-        y = draw_slot_grid(app, x, y, w, rid)
-    res = resource_chips(app, rid)
-    fac = facility_chips(app, rid)
+        if view is not None:
+            when = (f"턴 {view['turn']}에 마지막으로 본 모습" if view.get("turn") is not None
+                    else "본 적 없음 — 게임 시작 때 모습")
+            y = gui.wrap((x, y - 2), f"시야 밖: {when}(지금 건물·공사는 알 수 없음)", w, 11, t.muted) + 4
+        y = draw_slot_grid(app, x, y, w, rid, view=view)
+    res = resource_chips(app, rid, view)
+    fac = facility_chips(app, rid, view)
     if res:
         y = draw_chips(gui, x, y, w, res)
     if fac:

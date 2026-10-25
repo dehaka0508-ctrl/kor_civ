@@ -230,6 +230,7 @@ class Faction:
     science: list = field(default_factory=list)     # 완료한 과학 단계(C.SCIENCE_STEPS 순서)
     explored: set = field(default_factory=set)
     last_seen: dict = field(default_factory=dict)
+    seen_b: dict = field(default_factory=dict)     # 건물 기억(v1.3.25, 플레이어): 지역 → 마지막으로 본 건물 모습
     ai: dict = field(default_factory=dict)
     rebel_of: Optional[int] = None
     rebel: bool = False             # 반군(v1.3.21): 독립 선포 전. 국가가 아니다(지도자·체제·건물·과학·외교 없음)

@@ -84,6 +84,15 @@ class QueueMixin:
         r = self.queue_region(rid)
         if r.owner == NEUTRAL or r.project or not r.queue:
             return
+        # 대상이 이미 누군가의 땅이 된 편입은 꺼내지 않고 버린다(v1.3.25)
+        while r.queue and r.queue[0].kind == "annex" and r.queue[0].key in self.regions \
+                and self.regions[r.queue[0].key].owner != NEUTRAL:
+            q = r.queue.pop(0)
+            if q.paid:
+                self.factions[r.owner].money += q.paid
+                self.factions[r.owner].refund += q.paid
+        if not r.queue:
+            return
         p = r.queue.pop(0)
         p.funded = False
         self._set_active(r.id, p)

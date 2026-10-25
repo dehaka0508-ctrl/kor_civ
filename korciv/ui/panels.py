@@ -305,8 +305,9 @@ def draw_region_info(app, rect):
                          w, 12, t.warn) + 4
     # 건물 슬롯 및 부존 자원(v1.3.8): 슬롯 카드 그리드 + 슬롯 밖 시설·자원 칩
     from .slot_cards import draw_slot_section
-    y = draw_slot_section(app, x, y, w, node, mine=owner == pid and visible)
-    ld = getattr(r, "lost_def", None)
+    view = None if visible else g.building_view(pid, node)       # 안개 속: 건물은 기억으로(v1.3.25)
+    y = draw_slot_section(app, x, y, w, node, mine=owner == pid and visible, view=view)
+    ld = getattr(r, "lost_def", None) if view is None else None
     if ld:
         parts = []
         if ld["lines"]:
@@ -1547,14 +1548,17 @@ def draw_nation_tab(app, body):
             app.changed()
     y += 36
     cons = max(1.0, last.get("food_cons", 1))
+    due = g.food_contract_due(pid)               # 판매 계약분은 먼저 떼어 비축에 남긴다(v1.3.25)
+    surplus = max(0.0, surplus - due)
     desc = {"store": "잉여분을 비축합니다.",
             "sell": f"잉여분을 모두 개당 {g.sell_price(pid, 'food'):,.0f}에 팝니다 (약 +{surplus * g.sell_price(pid, 'food'):,.0f}/턴).",
             "ration": f"밀도 400명/km² 기준 +{min(C.FOOD_RATION_MAX, surplus / cons) * C.POP_FOCUS_GROWTH * 100:.2f}%p/턴 "
                       f"· 지역 밀도에 따라 최대 10배."}[mode]
-    gui.text((x, y), desc, 11, t.muted, max_w=w)
-    y += 20
-    # 비축 식량 판매: 슬라이더로 양을 정해 시장 판매가로 판다
-    stock_f = int(f.res.get("food", 0))
+    if due and mode != "store":
+        desc = f"판매 계약분 {due:,}개를 먼저 남기고 " + desc
+    y = gui.wrap((x, y), desc, w, 11, t.muted) + 4
+    # 비축 식량 판매: 슬라이더로 양을 정해 시장 판매가로 판다(판매 계약분은 빼고)
+    stock_f = int(max(0, f.res.get("food", 0) - due))
     amt = max(0, min(int(getattr(app, "food_sell_amt", 0)), stock_f))
     price = g.sell_price(pid, "food")
     gui.text((x, y + 2), "비축 식량 판매", 12, t.text, "semibold")

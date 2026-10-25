@@ -1377,6 +1377,38 @@ def test_p1_capital_garrison_smaller_when_only_neutral_neighbors():
     assert AI.capital_min_garrison(g, f, {f.capital: 1.0}) >= p1 + 3      # 위협이 있으면 그대로(+2 포함)
 
 
+def test_fogged_buildings_show_memory_not_live():
+    """v1.3.25: 안개 속 지역의 건물은 지금 상태가 아니라 기억 — 본 적 없으면 게임 시작 때 모습,
+    보였다가 시야에서 벗어나면 마지막으로 본 모습. 시야 안이면 지금 상태(None)."""
+    g = new_game(player_start="S002", n_enemies=1, fog=1)
+    pid = g.player_id
+    far = next(r for r in g.world.order if g.regions[r].owner == NEUTRAL and not g.is_visible(pid, r)
+               and g.regions[r].b.empty("base"))
+    v0 = g.building_view(pid, far)
+    assert v0 is not None and v0["turn"] is None                 # 본 적 없음: 시작 시점
+    start = [c and dict(c) for c in v0["slots"]["base"]]
+    b = g.regions[far].b
+    b.place("bank", 3, ("base", b.empty("base")[0]))
+    v1 = g.building_view(pid, far)
+    assert v1["slots"]["base"] == start and v1["levels"].get("bank", 0) < 3   # 바뀐 건물은 보이지 않는다
+    # 부대를 보내 시야에 들어오면 지금 상태, 떠나면 그때 본 모습을 기억
+    a = g.new_army(pid, far, {"inf": 1})
+    g._update_fog()
+    assert g.building_view(pid, far) is None
+    g.turn += 3
+    g._update_fog()
+    g.remove_army(a)
+    g._update_fog()
+    v2 = g.building_view(pid, far)
+    assert v2 is not None and v2["turn"] == g.turn and v2["levels"]["bank"] == 3
+    b.place("factory", 2, ("base", b.empty("base")[0])) if b.empty("base") else None
+    assert g.building_view(pid, far)["levels"].get("factory", 0) == v2["levels"].get("factory", 0)
+    # 내 지역은 늘 지금 상태, 안개가 없으면 모두 지금 상태
+    assert g.building_view(pid, "S002") is None
+    g2 = new_game(player_start="S002", n_enemies=1, fog=0)
+    assert all(g2.building_view(pid, r) is None for r in list(g2.regions)[:50])
+
+
 def _lead(g, fid, key):
     g.factions[fid].leader = key
     g._mods.pop(fid, None)
@@ -3394,6 +3426,30 @@ def test_resource_trade_is_12_turn_contract():
         assert g.factions[1].res["coal"] == 2 and g.player.res["coal"] == 3
     g.end_turn()
     assert not D.contracts_between(g, 0, 1) and g.factions[1].res["coal"] == 0   # 12턴이 지나면 끝
+
+
+def test_food_contract_taken_before_surplus_sale_or_ration():
+    """v1.3.25: 식량 판매 계약분은 잉여 식량 판매·배급보다 먼저 떼어 비축에 남긴다
+    (예전: 잉여를 다 팔거나 배급해 비축이 0이라 '식량 0/3개만 오갔습니다'). 비축 식량 판매도 계약분은 빼고."""
+    for mode in ("sell", "ration"):
+        g = new_game(player_start="S002", n_enemies=1)
+        _neutral_ai(g, 1)
+        f = g.player
+        f.res["food"] = 3
+        g.set_food_mode(0, mode)
+        D.add_contract(g, 0, 1, "food", 3)
+        assert g.food_contract_due(0) == 3
+        for r in g.regions_of(0):                      # 잉여 식량이 넉넉한 시험 나라
+            r.b["farm"] = 5
+        g.events.clear()
+        for _ in range(3):
+            g.end_turn()
+            c = D.contracts_between(g, 0, 1)[0]
+            assert c["last_q"] == 3, (mode, c)
+        assert not any("개만 오갔습니다" in e["text"] for e in g.events)
+        f.res["food"] = 10
+        q, _ = g.market_sell(0, "food", 10 ** 6)
+        assert q == 7 and f.res["food"] == 3            # 비축 식량 판매도 다음 턴 계약분은 남긴다
 
 
 def test_trade_accept_raises_both_opinions_by_count():

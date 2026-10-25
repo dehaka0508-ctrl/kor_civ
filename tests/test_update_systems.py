@@ -104,6 +104,33 @@ def test_queue_levels_paid_swap_cancel_and_national_list():
     assert restored.regions[r.id].project.level == 2
 
 
+def test_queued_annex_dropped_when_target_taken():
+    """v1.3.25: 대기열의 편입 작업은 대상이 이미 내 땅(다른 지역의 편입 완료·점령)이나 남의 땅이 되면 바로 빠진다.
+    예전 세이브의 남은 대기 편입도 불러오면 정리된다."""
+    g = game()
+    r = g.regions['S002']
+    tgts = sorted(n for n in g.world.land_adj['S002'] if g.regions[n].owner == NEUTRAL)[:2]
+    assert g.start_project(0, r.id, 'build', 'bank')[0]
+    for t in tgts:
+        assert g.start_project(0, r.id, 'annex', t)[0]
+    assert [p.key for p in r.queue if p.kind == 'annex'] == tgts
+    r.queue[0].paid = 120.0
+    money = g.player.money
+    g.transfer_region(tgts[0], 0, '편입')              # 다른 지역의 편입이 먼저 끝났다
+    assert [p.key for p in r.queue if p.kind == 'annex'] == tgts[1:]
+    assert g.player.money == money + 120.0           # 미리 낸 돈은 전액 환급
+    # 예전 세이브: 이미 차지한 대상의 대기 편입이 남아 있으면 불러올 때 정리
+    from korciv.state import Project
+    r.queue.append(Project('annex', tgts[0], turns=3))
+    g2 = pickle.loads(pickle.dumps(g))
+    assert [p.key for p in g2.regions['S002'].queue if p.kind == 'annex'] == tgts[1:]
+    # 앞 작업이 끝나 대기열을 올릴 때도 이미 차지한 대상은 건너뛴다
+    r.queue.insert(0, Project('annex', tgts[0], turns=3))
+    r.project = None
+    g.promote_queue('S002')
+    assert r.project is not None and r.project.key == tgts[1]
+
+
 def test_chain_and_repeat_finish_before_next_queue():
     g = game()
     r = g.regions['S002']

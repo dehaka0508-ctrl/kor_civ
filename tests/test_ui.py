@@ -2069,3 +2069,20 @@ def test_priority_row_click_opens_region_action_tab(app, monkeypatch):
         assert [r.id for r in g.projects_by_priority(pid)] == ids  # 순서는 그대로
     finally:
         pygame.mouse.get_pos = orig
+
+
+def test_fogged_region_info_draws_memory(app):
+    """v1.3.25: 안개 속 지역의 지역 정보 탭은 기억한 건물(시작 시점·마지막으로 본 모습)을 그린다."""
+    app.start_game(Settings(seed=6, n_enemies=2, fog=1))
+    app.game.set_player_government("presidential")
+    app.scene = "main"
+    g = app.game
+    far = next(r for r in g.world.order if not g.is_visible(g.player_id, r))
+    assert g.building_view(g.player_id, far) is not None
+    app.select(far)
+    app.left_open, app.left_tab = True, "region"
+    frame(app)
+    for key in ("building", "military", "resource"):            # 건물·군사·자원 지도도 기억으로 칠한다
+        app.mode = key
+        app.changed()
+        frame(app)

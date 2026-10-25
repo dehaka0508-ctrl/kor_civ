@@ -276,6 +276,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         self._migrate_coast_slots()          # v1.3.24: 해안으로 바뀐 지역(박천)에 해안 슬롯
         M.migrate(self)                      # v1.3.9 전 세이브: 광역시 통합 건물 → 광역 슬롯(v1.3.16)
         self._migrate_unique_extract()       # v1.3.24: 채굴 카드는 지역마다 한 장
+        self.drop_stale_annex()              # v1.3.25: 이미 차지한 지역의 대기 편입 정리
         M.refresh_world(self)                # 광역시를 한 칸으로 합친 지도(v1.3.18)
 
     def _migrate_unique_extract(self):
@@ -314,15 +315,22 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 b.slots["coast"] = [None]
 
     # ------------------------------------------------------------------ 초기화
+    def _start_b(self, rid, w=None):
+        """게임 모드의 시작 건물(지역 자료 기준). 개척시대·혼돈의 강산은 모든 슬롯이 빈 상태(무연륙 섬은 항구만)."""
+        w = w or getattr(self, "base_world", None) or self.world
+        info = w.regions[rid]
+        frontier = self.settings.mode != 'standard'
+        b = S.new(w, rid) if frontier else initial_buildings(info, w)
+        if frontier and S.start_port_bonus(info, self.settings.mode):
+            S.give_start_port(b)                  # 무연륙 섬 항구: 해안 슬롯 1칸을 더 만들어(v1.3.9)
+        return b
+
     def _init_world(self):
         w = self.world
         for rid in w.order:
             info = w.regions[rid]
             frontier = self.settings.mode != 'standard'
-            # 개척시대·혼돈의 강산은 모든 슬롯이 빈 상태로 시작(무연륙 섬은 항구만)
-            b = S.new(w, rid) if frontier else initial_buildings(info, w)
-            if frontier and S.start_port_bonus(info, self.settings.mode):
-                S.give_start_port(b)                  # 무연륙 섬 항구: 해안 슬롯 1칸을 더 만들어(v1.3.9)
+            b = self._start_b(rid, w)
             pop = 1.0 if frontier else info.pop0
             self.regions[rid] = Region(id=rid, owner=NEUTRAL, pop=pop, b=b)
             self.new_army(NEUTRAL, rid, {"inf": 1 if frontier else neutral_garrison(pop)})
@@ -2833,9 +2841,16 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         f.trade_buy += spent
         return bought, spent
 
+    def food_contract_due(self, fid) -> int:
+        """다음 턴 판매 계약으로 보낼 식량(v1.3.25): 잉여 식량 판매·배급과 비축 식량 판매보다 먼저 남겨 둔다."""
+        return sum(int(c["n"]) for c in D.contracts(self)
+                   if c["res"] == "food" and c["from"] == fid and c["left"] > 0
+                   and self.factions[c["to"]].alive and not D.at_war(self, fid, c["to"]))
+
     def market_sell(self, fid, res, qty):
         f = self.factions[fid]
-        q = int(min(qty, math.floor(f.res.get(res, 0))))
+        have = f.res.get(res, 0) - (self.food_contract_due(fid) if res == "food" else 0)   # 계약분은 팔지 않는다
+        q = int(min(qty, math.floor(have)))
         if q <= 0:
             return 0, 0.0
         gain = q * self.sell_price(fid, res)
@@ -3444,6 +3459,7 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 p = other.project
                 if p and p.kind == "annex" and p.key == rid and other.owner not in (NEUTRAL, new_owner):
                     self._cancel_hijacked(other, new_owner)
+            self.drop_stale_annex(rid)            # 대기열에 남은 같은 대상 편입도 뺀다(v1.3.25)
             for by in prev_occs:
                 if by in (NEUTRAL, new_owner):
                     continue
@@ -4954,6 +4970,27 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
             if short < 0:
                 self.market_buy(f.id, "food", math.ceil(-short))
 
+    def drop_stale_annex(self, target=None) -> int:
+        """대상이 더는 중립이 아닌(편입 완료·점령·다른 세력이 차지) 대기 편입 작업을 모든 대기열에서 뺀다(v1.3.25).
+        낸 돈이 있으면 전액 돌려준다. 뺀 작업 수."""
+        n = 0
+        for rr in self.regions.values():
+            if not rr.queue:
+                continue
+            keep = []
+            for p in rr.queue:
+                tgt = self.regions.get(p.key) if p.kind == "annex" else None
+                if tgt is not None and (target is None or p.key == target) and tgt.owner != NEUTRAL:
+                    if p.paid and rr.owner != NEUTRAL:
+                        f = self.factions[rr.owner]
+                        f.money += p.paid
+                        f.refund += p.paid
+                    n += 1
+                else:
+                    keep.append(p)
+            rr.queue[:] = keep
+        return n
+
     def _cancel_hijacked(self, rr, taker):
         """편입하던 중립 지역을 다른 세력이 가져감: 작업 취소, 낸 비용 전액 환급, 빼앗긴 AI는 우호도 하락."""
         p = rr.project
@@ -5493,6 +5530,9 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
         surplus = max(0.0, prod - cons)
         mode = getattr(f, "food_mode", "store")
         f.ration_bonus = 0.0
+        if surplus > 0 and mode in ("sell", "ration"):
+            # 판매 계약분을 먼저 떼어 비축에 남기고, 그 밖의 잉여만 판매·배급(v1.3.25: 계약이 '0/n개만 오갔습니다'로 깨지던 문제)
+            surplus = max(0.0, min(surplus, res["food"] - self.food_contract_due(f.id)))
         if surplus > 0 and mode == "sell":
             q = math.floor(surplus)
             res["food"] -= q
@@ -6358,6 +6398,37 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 vis.update(m["members"])
         return vis
 
+    # ---- 건물 기억(v1.3.25): 안개 속 지역의 건물은 마지막으로 본 모습(본 적 없으면 시작 시점)으로만 보인다
+    def building_snapshot(self, rid, start=False) -> dict:
+        """지금 rid 의 건물 모습(지역 정보 탭·건물 지도에 보이는 그대로): 슬롯 카드(광역시 구성 지역은 광역 슬롯),
+        건물 단계, 방어선, 과학·경제 시설. 진행 중인 공사는 담지 않는다. start: 시작 시점 기억으로 적는다."""
+        r = self.regions[rid]
+        slots, mult = {}, {}
+        for t in S.SLOT_TYPES:
+            b = self.regions[M.slot_site(self, rid, t)].b
+            slots[t] = [dict(c) if c else None for c in b.slots.get(t, ())]
+            mult[t] = b.mult_of(t)
+        levels = {k: (self.blevel(rid, k) if k in S.CARD_KEYS and k not in S.ETC_KEYS else v) for k, v in r.b.items()}
+        return {"turn": None if start else self.turn, "slots": slots, "mult": mult, "levels": levels,
+                "lines": dict(self.regions[M.node(self, rid)].lines), "sci": sorted(r.sci), "econ": sorted(r.econ)}
+
+    def _start_snapshot(self, rid) -> dict:
+        """예전 세이브(기억이 없을 때)의 시작 시점 모습: 게임 모드의 시작 건물(지역 자료 기준)."""
+        b = self._start_b(rid)
+        return {"turn": None, "slots": {t: [dict(c) if c else None for c in b.slots.get(t, ())] for t in S.SLOT_TYPES},
+                "mult": {t: 1 for t in S.SLOT_TYPES}, "levels": dict(b.items()), "lines": {}, "sci": [], "econ": []}
+
+    def building_view(self, viewer, rid):
+        """viewer 에게 보이는 rid 의 건물(v1.3.25). 시야 안(내 땅 포함)이면 None — 지금 상태를 그대로 보여 준다.
+        안개 속이면 기억: 마지막으로 본 모습, 한 번도 본 적 없으면 시작 시점 모습."""
+        if self.is_visible(viewer, rid) or self.regions[rid].owner == viewer:
+            return None
+        mem = self.factions[viewer].__dict__.setdefault("seen_b", {})
+        snap = mem.get(rid)
+        if snap is None:
+            snap = mem[rid] = self._start_snapshot(rid)
+        return snap
+
     def queue_dialogue(self, kind, speaker):
         """플레이어에게 보일 지도자 대사 팝업을 쌓는다(전원 AI 시뮬레이션에서는 쌓지 않음)."""
         from . import dialogue as DLG
@@ -6408,6 +6479,15 @@ class Game(LeaderRulesMixin, QueueMixin, SlotMixin, LandMixin, DisasterMixin, Go
                 for rid, r in self.regions.items():
                     f.last_seen[rid] = r.owner
             f.explored |= {v for v in vis if v in self.regions}
+            if not f.is_ai and not self.fog_lifted():
+                # 건물 기억(v1.3.25): 시작 시점 모습을 깔고, 시야 안 지역은 지금 모습으로 덮어 쓴다
+                mem = f.__dict__.setdefault("seen_b", {})
+                if initial:
+                    for rid in self.regions:
+                        mem[rid] = self.building_snapshot(rid, start=True)
+                for rid in vis:
+                    if rid in self.regions:
+                        mem[rid] = self.building_snapshot(rid)
             if not hasattr(f, "met"):          # 예전 세이브
                 f.met = set()
             for rid in vis:
